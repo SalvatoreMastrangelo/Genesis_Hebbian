@@ -312,6 +312,4 @@ class ObservationBuilder:
             obs_actor = torch.cat((obs_actor, genome_actor), dim=1)
             obs_critic = torch.cat((obs_critic, genome_norm), dim=1)
 
-            print(genome_actor[0, :])
-
         return obs_actor, obs_critic
