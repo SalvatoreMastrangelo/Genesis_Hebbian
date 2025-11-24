@@ -1096,6 +1096,81 @@ class RigidSolver(Solver):
             torque, links_idx, envs_idx, ref, 1 if local else 0, self.links_state, self._static_rigid_sim_config
         )
 
+    def apply_links_force_at_point_link_frame(
+            self,
+            pos,               # torch tensor (B, L, 3) nel frame del link
+            force,             # torch tensor (B, L, 3) nel frame del link
+            links_idx=None,
+            envs_idx=None,
+            unsafe: bool = False,
+        ):
+            """
+            Applica una forza nel frame del link in un punto arbitrario (sempre nel frame del link).
+            Args:
+                pos:    (B, L, 3) offset del punto di applicazione nel frame del link.
+                force:  (B, L, 3) forza nel frame del link.
+            """
+            # normalizza shape/indici come fa già Genesis
+            pos, links_idx, envs_idx = self._sanitize_2D_io_variables(
+                pos,
+                links_idx,
+                self.n_links,
+                3,
+                envs_idx,
+                batched=True,
+                idx_name="links_idx",
+                unsafe=unsafe,
+            )
+            force, _, _ = self._sanitize_2D_io_variables(
+                force,
+                links_idx,
+                self.n_links,
+                3,
+                envs_idx,
+                batched=True,
+                idx_name="links_idx",
+                unsafe=unsafe,
+            )
+
+            kernel_apply_links_force_at_point_link_frame(
+                pos, force, links_idx, envs_idx,
+                self.links_state, self._static_rigid_sim_config
+            )
+
+    def apply_links_coupling_torque(
+        self,
+        torque,
+        links_idx=None,
+        envs_idx=None,
+        *,
+        ref="link_origin",
+        local=True,     # default coerente col tuo uso attuale
+        unsafe=False,
+    ):
+        torque, links_idx, envs_idx = self._sanitize_2D_io_variables(
+            torque, links_idx, self.n_links, 3, envs_idx, idx_name="links_idx",
+            skip_allocation=True, unsafe=unsafe
+        )
+        if self.n_envs == 0:
+            torque = torque.unsqueeze(0)
+
+        if ref == "root_com":
+            if local:
+                raise ValueError("'local=True' non valido con ref='root_com'.")
+            ref_code = 0
+        elif ref == "link_com":
+            ref_code = 1
+        elif ref == "link_origin":
+            ref_code = 2
+        else:
+            raise ValueError(f"ref sconosciuto: {ref}")
+
+        kernel_apply_links_coupling_torque(
+            torque, links_idx, envs_idx,
+            ref_code, 1 if local else 0,
+            self.links_state, self._static_rigid_sim_config
+        )
+
     def substep_pre_coupling(self, f):
         if self.is_active:
             # Skip rigid body computation when using IPCCoupler (IPC handles rigid simulation)
@@ -5249,6 +5324,75 @@ def kernel_apply_links_external_torque(
         torque_i = ti.Vector([torque[i_b_, i_l_, 0], torque[i_b_, i_l_, 1], torque[i_b_, i_l_, 2]], dt=gs.ti_float)
         func_apply_link_external_torque(torque_i, links_idx[i_l_], envs_idx[i_b_], ref, local, links_state)
 
+@ti.kernel
+def kernel_apply_links_force_at_point_link_frame(
+    pos_local: ti.types.ndarray(ndim=3, dtype=gs.ti_float),
+    force_local: ti.types.ndarray(ndim=3, dtype=gs.ti_float),
+    links_idx: ti.types.ndarray(ndim=1, dtype=gs.ti_int),
+    envs_idx: ti.types.ndarray(ndim=1, dtype=gs.ti_int),
+    links_state: array_class.LinksState,
+    cfg: ti.template(),
+):
+    # serializza SOLO se para_level bassissimo
+    ti.loop_config(serialize=ti.static(cfg.para_level < gs.PARA_LEVEL.PARTIAL))
+
+    L = links_idx.shape[0]
+    B = envs_idx.shape[0]
+
+    for i_l, i_b in ti.ndrange(L, B):
+        link = links_idx[i_l]
+        env  = envs_idx[i_b]
+
+        # preleva già in vettori Taichi (zero costruzioni manuali)
+        px = pos_local[i_b, i_l, 0]
+        py = pos_local[i_b, i_l, 1]
+        pz = pos_local[i_b, i_l, 2]
+
+        fx = force_local[i_b, i_l, 0]
+        fy = force_local[i_b, i_l, 1]
+        fz = force_local[i_b, i_l, 2]
+
+        func_apply_force_at_link_point_local(
+            ti.Vector([px, py, pz]),
+            ti.Vector([fx, fy, fz]),
+            link,
+            env,
+            links_state,
+        )
+
+@ti.kernel
+def kernel_apply_links_coupling_torque(
+    torque: ti.types.ndarray(ndim=3, dtype=gs.ti_float),
+    links_idx: ti.types.ndarray(ndim=1, dtype=gs.ti_int),
+    envs_idx: ti.types.ndarray(ndim=1, dtype=gs.ti_int),
+    ref: ti.template(),      # 0 root_com, 1 link_com, 2 origin
+    local: ti.template(),    # 0 global frame, 1 local
+    links_state: array_class.LinksState,
+    cfg: ti.template(),
+):
+    ti.loop_config(serialize=ti.static(cfg.para_level < gs.PARA_LEVEL.PARTIAL))
+
+    L = links_idx.shape[0]
+    B = envs_idx.shape[0]
+
+    for i_l, i_b in ti.ndrange(L, B):
+        link = links_idx[i_l]
+        env  = envs_idx[i_b]
+
+        tx = torque[i_b, i_l, 0]
+        ty = torque[i_b, i_l, 1]
+        tz = torque[i_b, i_l, 2]
+        t  = ti.Vector([tx, ty, tz])
+
+        if ti.static(local == 1 and ref == 1):
+            # trasformo da link_COM → world
+            t = gu.ti_transform_by_quat(t, links_state.i_quat[link, env])
+
+        if ti.static(local == 1 and ref == 2):
+            # trasformo da link_origin → world
+            t = gu.ti_transform_by_quat(t, links_state.quat[link, env])
+
+        func_apply_coupling_torque(t, link, env, links_state)
 
 @ti.func
 def func_apply_coupling_force(pos, force, link_idx, env_idx, links_state: array_class.LinksState):
@@ -5256,6 +5400,21 @@ def func_apply_coupling_force(pos, force, link_idx, env_idx, links_state: array_
     links_state.cfrc_coupling_ang[link_idx, env_idx] -= torque
     links_state.cfrc_coupling_vel[link_idx, env_idx] -= force
 
+@ti.func
+def func_apply_coupling_torque(torque, link_idx, env_idx, links_state):
+    links_state.cfrc_coupling_ang[link_idx, env_idx] -= torque
+
+@ti.func
+def func_apply_force_at_link_point_local(
+    pos_local, force_local, link, env, ls,
+):
+    q = ls.quat[link, env]
+    origin = ls.pos[link, env]
+
+    pos_world   = origin + gu.ti_transform_by_quat(pos_local, q)
+    force_world =          gu.ti_transform_by_quat(force_local, q)
+
+    func_apply_coupling_force(pos_world, force_world, link, env, ls)
 
 @ti.func
 def func_apply_link_external_force(

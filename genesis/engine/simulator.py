@@ -18,6 +18,7 @@ from genesis.options.solvers import (
     SPHOptions,
     SimOptions,
     ToolOptions,
+    AeroOptions,
 )
 from genesis.repr_base import RBC
 
@@ -31,6 +32,7 @@ from .solvers import (
     SFSolver,
     SPHSolver,
     ToolSolver,
+    AeroSolver,
 )
 from .couplers import IPCCoupler, LegacyCoupler, SAPCoupler
 from .states.cache import QueriedStates
@@ -87,6 +89,7 @@ class Simulator(RBC):
         sph_options: SPHOptions,
         fem_options: FEMOptions,
         sf_options: SFOptions,
+        aero_options: AeroOptions,
         pbd_options: PBDOptions,
     ):
         self._scene = scene
@@ -100,6 +103,7 @@ class Simulator(RBC):
         self.mpm_options = mpm_options
         self.sph_options = sph_options
         self.fem_options = fem_options
+        self.aero_options = aero_options
         self.sf_options = sf_options
         self.pbd_options = pbd_options
 
@@ -122,6 +126,7 @@ class Simulator(RBC):
         self.pbd_solver = PBDSolver(self.scene, self, self.pbd_options)
         self.fem_solver = FEMSolver(self.scene, self, self.fem_options)
         self.sf_solver = SFSolver(self.scene, self, self.sf_options)
+        self.aero_solver = AeroSolver(self.scene, self, self.aero_options)
 
         self._solvers: list["Solver"] = gs.List(
             [
@@ -133,6 +138,7 @@ class Simulator(RBC):
                 self.pbd_solver,
                 self.fem_solver,
                 self.sf_solver,
+                self.aero_solver,
             ]
         )
 

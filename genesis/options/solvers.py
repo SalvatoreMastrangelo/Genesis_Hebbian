@@ -437,6 +437,22 @@ class AvatarOptions(Options):
     # for dynamic properties
     max_dynamic_constraints: int = 8
 
+class AeroOptions(Options):
+    """
+    Options configuring the AeroSolver.
+    Parameters
+    ----------
+    dt : float, optional
+        Time duration for each simulation step in seconds. If none, it will inherit from `SimOptions`. Defaults to None.
+    gravity : tuple, optional
+        Gravity force in N/kg. If none, it will inherit from `SimOptions`. Defaults to None.
+    air_density : float, optional
+        Air density in kg/m^3. Defaults to 1.225.
+    """
+
+    dt: Optional[float] = None
+    gravity: Optional[tuple] = None
+    air_density: float = 1.225  # kg/m^3
 
 class MPMOptions(Options):
     """

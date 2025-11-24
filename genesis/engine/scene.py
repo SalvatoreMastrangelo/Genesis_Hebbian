@@ -31,6 +31,7 @@ from genesis.options import (
     ToolOptions,
     ViewerOptions,
     VisOptions,
+    AeroOptions,
 )
 from genesis.options.morphs import Morph
 from genesis.options.surfaces import Surface
@@ -100,6 +101,7 @@ class Scene(RBC):
         sph_options: SPHOptions | None = None,
         fem_options: FEMOptions | None = None,
         sf_options: SFOptions | None = None,
+        aero_options: AeroOptions | None = None,
         pbd_options: PBDOptions | None = None,
         vis_options: VisOptions | None = None,
         viewer_options: ViewerOptions | None = None,
@@ -120,6 +122,7 @@ class Scene(RBC):
         mpm_options = mpm_options or MPMOptions()
         sph_options = sph_options or SPHOptions()
         fem_options = fem_options or FEMOptions()
+        aero_options = aero_options or AeroOptions()
         sf_options = sf_options or SFOptions()
         pbd_options = pbd_options or PBDOptions()
         vis_options = vis_options or VisOptions()
@@ -143,6 +146,7 @@ class Scene(RBC):
             fem_options,
             sf_options,
             pbd_options,
+            aero_options,
             vis_options,
             viewer_options,
             profiling_options,
@@ -158,6 +162,7 @@ class Scene(RBC):
         self.sph_options = sph_options
         self.fem_options = fem_options
         self.sf_options = sf_options
+        self.aero_options = aero_options
         self.pbd_options = pbd_options
         self.profiling_options = profiling_options
 
@@ -174,7 +179,7 @@ class Scene(RBC):
         self.fem_options.copy_attributes_from(self.sim_options)
         self.sf_options.copy_attributes_from(self.sim_options)
         self.pbd_options.copy_attributes_from(self.sim_options)
-
+        self.aero_options.copy_attributes_from(self.sim_options)
         # simulator
         self._sim = Simulator(
             scene=self,
@@ -188,6 +193,7 @@ class Scene(RBC):
             fem_options=self.fem_options,
             sf_options=self.sf_options,
             pbd_options=self.pbd_options,
+            aero_options=self.aero_options,
         )
 
         # visualizer
@@ -229,6 +235,7 @@ class Scene(RBC):
         fem_options: FEMOptions,
         sf_options: SFOptions,
         pbd_options: PBDOptions,
+        aero_options: AeroOptions,
         vis_options: VisOptions,
         viewer_options: ViewerOptions,
         profiling_options: ProfilingOptions,
@@ -263,6 +270,9 @@ class Scene(RBC):
 
         if not isinstance(pbd_options, PBDOptions):
             gs.raise_exception("`pbd_options` should be an instance of `PBDOptions`.")
+
+        if not isinstance(aero_options, AeroOptions):
+            gs.raise_exception("`aero_options` should be an instance of `AeroOptions`.")
 
         if not isinstance(vis_options, VisOptions):
             gs.raise_exception("`vis_options` should be an instance of `VisOptions`.")
