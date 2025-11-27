@@ -140,12 +140,9 @@ def build_catalog(catalog_dir: Path, n: int, seed: int = 0) -> List[Path]:
 
     return urdfs
 
-
 # --------------------------------------------------------------------------- #
 # Training                                                                   #
 # --------------------------------------------------------------------------- #
-
-
 def train(
     experiment_name: str,
     urdf_file: Optional[str],
@@ -155,6 +152,7 @@ def train(
     device: Optional[str] = None,
     n_urdf: Optional[int] = None,
     urdf_seed: int = 0,
+    vis: bool = False,
 ) -> None:
     """
     Train a general policy on the winged-drone environments.
@@ -196,8 +194,6 @@ def train(
     train_cfg = get_train_cfg(experiment_name, max_iterations)
 
     obs_cfg["add_genome_obs"] = True  # Always include genome observation
-    #reward_cfg["reward_scales"]["energy"] = -1e-4
-    #train_cfg["algorithm"]["desired_kl"] = 0.01
 
     cfg_snapshot_path = log_dir / "cfgs.pkl"
     with cfg_snapshot_path.open("wb") as f:
@@ -247,8 +243,8 @@ def train(
             reward_cfg=reward_cfg,
             command_cfg=command_cfg,
             catalog_dir=str(catalog_path),
-            max_scenes=None,  # Gen_Env will allocate one scene per URDF
-            show_viewer=False,
+            max_scenes=None,
+            show_viewer=vis,
             eval=False,
             device=device,
         )
@@ -264,7 +260,7 @@ def train(
             reward_cfg=reward_cfg,
             command_cfg=command_cfg,
             urdf_file=urdf_file,
-            show_viewer=False,
+            show_viewer=vis,
             eval=False,
             device=device,
         )
@@ -359,7 +355,10 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Torch/Genesis device string (e.g., 'cuda:0', 'cpu').",
     )
-
+    parser.add_argument(
+        "-v", "--vis", action="store_true", default=False,
+        help="Enable Genesis viewer visualization.",
+    )
     return parser.parse_args()
 
 
@@ -375,6 +374,7 @@ def main() -> None:
         device=args.device,
         n_urdf=args.n_urdf,
         urdf_seed=args.urdf_seed,
+        vis=args.vis,
     )
 
 

@@ -305,11 +305,28 @@ class ObservationBuilder:
                 genome_norm = genome
 
             genome_actor = genome_norm
-            if self.add_noise and self.noise_std and self.noise_std.get("genome", 0.0) > 0.0:
-                genome_noise = torch.randn_like(genome_norm) * self.noise_std["genome"]
-                genome_actor = genome_actor + genome_noise
 
             obs_actor = torch.cat((obs_actor, genome_actor), dim=1)
             obs_critic = torch.cat((obs_critic, genome_norm), dim=1)
 
+            # print each different observation component of the first env separately for debugging
+            '''
+            print("Obs components (first env):")
+            idx = 0
+            print(f" z_norm: {obs_actor[0, idx:idx+1].cpu().numpy()}")
+            idx += 1
+            print(f" quat: {obs_actor[0, idx:idx+4].cpu().numpy()}")
+            idx += 4
+            print(f" vel: {obs_actor[0, idx:idx+3].cpu().numpy()}")
+            idx += 3
+            if depth_feat_actor is not None:
+                depth_dim = depth_feat_actor.shape[1]
+                print(f" depth: {obs_actor[0, idx:idx+depth_dim].cpu().numpy()}")
+                idx += depth_dim
+            print(f" last actions: {obs_actor[0, idx:idx+self.num_actions].cpu().numpy()}")
+            idx += self.num_actions
+            print(f" command speed: {obs_actor[0, idx:idx+1].cpu().numpy()}")
+            idx += 1
+            print(f" genome: {obs_actor[0, idx:idx+self.genome_dim].cpu().numpy()}")
+            '''
         return obs_actor, obs_critic

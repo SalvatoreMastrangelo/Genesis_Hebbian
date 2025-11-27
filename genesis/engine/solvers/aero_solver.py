@@ -372,6 +372,13 @@ class AeroSolver(Solver):
             (0.0, 1.0, 0.0, 4),  # prop (placeholder, S and c unused)
         ]
 
+        # Print major geometry info
+        print("[AeroSolver]: Parsed URDF geometry:")
+        print(f"  Fuselage C={c_fus:.4f} m, L={sz:.4f} m")
+        print(f"  Wing C={c_wf:.4f} m, L={sp_wp+sp_wf:.4f} m")
+        print(f"  Elevator C={c_el:.4f} m, L={2*sp_el:.4f} m")
+        print(f"  Rudder C={c_r:.4f} m, L={sp_r:.4f} m")
+
     def set_throttle(self, thr: torch.Tensor | float):
         """
         Set throttle command for propellers (scalar or torch tensor).

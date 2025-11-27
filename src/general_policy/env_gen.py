@@ -10,6 +10,7 @@ import torch
 import genesis as gs
 
 from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.train import configure_solver_noise
 
 
 def _split_even(total: int, k: int) -> List[int]:
@@ -117,7 +118,7 @@ class Gen_Env:
             max_scenes = K
 
         # Optionally shuffle URDF order to decorrelate scene layout
-        random.shuffle(urdf_list)
+        #random.shuffle(urdf_list)
         chosen_urdfs = urdf_list  # K entries, one per scene
 
         print(f"[Gen_Env] URDF scenes (K) = {K}, sizes per scene = {sizes}")
@@ -166,6 +167,8 @@ class Gen_Env:
                 eval=self.eval_mode,
                 device=self._torch_device_str,
             )
+
+            configure_solver_noise(sub, env_cfg)
 
             sub.reset()  # ensure buffers exist
             self._subs.append(sub)

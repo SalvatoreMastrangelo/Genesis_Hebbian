@@ -83,25 +83,25 @@ class Chromosome_Drone:
     # List of ParamSpec for each gene in the *physical* genome.
     # NOTE: hinge_le_ratio and cl_alpha_2d are FIXED by setting min == max.
     PARAMS: List[ParamSpec] = [
-        # 0: wing_span (m)
-        ParamSpec("wing_span", 0.40, 0.70),
+        # 0: wing_span (m) — range molto ridotto per mantenere S e AR stabili
+        ParamSpec("wing_span", 0.45, 0.75),
 
-        # 1: wing_aspect_ratio (span / chord)
+        # 1: wing_aspect_ratio (span / chord) — AR molto diverse = drag molto diverso
         ParamSpec("wing_aspect_ratio", 1.5, 5.0),
 
-        # 2: fuselage_length (m)
-        ParamSpec("fus_length", 0.40, 0.70),
+        # 2: fuselage_length (m) — se varia troppo cambia il lever arm e lo static margin
+        ParamSpec("fus_length", 0.45, 0.75),
 
-        # 3: fuselage CG ratio (x_cg / fus_length)
+        # 3: fuselage CG ratio (x_cg / fus_length) — se varia troppo il drone diventa ingovernabile
         ParamSpec("cg_x_ratio", 0.30, 0.50),
 
-        # 4: wing attach ratio (x_attach / fus_length)
+        # 4: wing attach ratio — variazione moderata OK, variazione ampia = instabilità
         ParamSpec("attach_x_ratio", 0.30, 0.50),
 
-        # 5: elevator span (m)
-        ParamSpec("elevator_span", 0.10, 0.30),
+        # 5: elevator span (m) — se troppo piccolo manca autorità, se troppo grande lo destabilizza
+        ParamSpec("elevator_span", 0.15, 0.35),
 
-        # 6: elevator aspect ratio
+        # 6: elevator aspect ratio — OK range stretto
         ParamSpec("elevator_aspect_ratio", 1.0, 3.0),
 
         # 7: rudder span (m)
@@ -110,13 +110,13 @@ class Chromosome_Drone:
         # 8: rudder aspect ratio
         ParamSpec("rudder_aspect_ratio", 1.0, 3.0),
 
-        # 9: wing dihedral (deg)
-        ParamSpec("dihedral_deg", -20.0, 20.0),
+        # 9: dihedral (deg) — range stretto: >10° o <−10° causa forti instabilità laterali
+        ParamSpec("dihedral_deg", -0.0, 0.0),
 
         # 10: hinge_le_ratio (fixed)
         ParamSpec("hinge_le_ratio", 0.25, 0.25),
 
-        # 11: sweep multiplier
+        # 11: sweep multiplier — questi range enormi creano differenze assurde nei limiti del giunto
         ParamSpec("sweep_multiplier", 1.5, 3.5),
 
         # 12: twist multiplier
@@ -125,7 +125,7 @@ class Chromosome_Drone:
         # 13: cl_alpha_2d (fixed)
         ParamSpec("cl_alpha_2d", 2.0, 2.0),
 
-        # 14: alpha0_2d (deg)
+        # 14: alpha0_2d (deg) — range ristretto per mantenere comportamento simile
         ParamSpec("alpha0_2d_deg", -5.0, 0.0),
     ]
 

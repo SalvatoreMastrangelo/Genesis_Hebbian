@@ -144,7 +144,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "drone": "morphing_drone",
 
         # Termination criteria
-        "termination_if_close_to_ground": 0.5,
+        "termination_if_close_to_ground": 1.0,
         "termination_if_y_greater_than": 50.0,
         "termination_if_z_greater_than": 30.0,
 
@@ -180,12 +180,6 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "forest_x_limit": 150.0,
         "x_upper": 150.0,
 
-        # ---------- DOMAIN RANDOMIZATION: MASS / INERTIA ------------------
-        # These control randomization of rigid-body properties inside env.
-        "robot_randomization": True,
-        "rand_mass_frac": 0.15,        # relative variation on mass
-        "rand_every_reset": False,    # if True, can randomize on every reset
-
         # ---------- AERODYNAMIC NOISE -------------------------------------
         # Single group controlling BOTH:
         #   - noise on aerodynamic forces
@@ -200,10 +194,11 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
     # --------------------------------------------------------------------- #
     obs_cfg: Dict[str, Any] = {
         # This field will be overwritten by the environment after construction.
-        "num_obs": 29,
+        "num_obs": 36,
 
         # Whether to add Gaussian noise to actor observations
         "add_noise": True,
+        "add_genome_obs": False,
 
         # Per-feature noise standard deviations.
         # The keys are understood by the current ObservationBuilder / helper functions.
@@ -215,7 +210,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "last_thr": 0.0,
             "last_jnts": 0.0,
             "v_tgt": 0.0,
-            "genome": 0.1,
+            "genome": 0.05,
         },
     }
 
@@ -230,7 +225,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "obstacle": -0.1,
             "energy": -4e-4,
             "progress": 5e-1,
-            "height": -2e-1,
+            "height": -1e-1,
             "success": 0.0,
             "cosmetic": -1.0,
             "stability": -0,
@@ -488,8 +483,9 @@ def main() -> None:
     cfg_path = log_dir / "cfgs.pkl"
     with cfg_path.open("wb") as f:
         pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
-
+    
     urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.685837, 3.90621, 0.464652, 0.489474, 0.446171, 0.150788, 1.42662, 0.15182, 1.05133, -11.7012, 0.25, 2.24834, 2.42715, 2, -2.06608].urdf"
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #

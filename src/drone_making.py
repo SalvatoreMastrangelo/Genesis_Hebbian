@@ -260,7 +260,7 @@ class UrdfMaker:
         self.LE = prm.hinge_le_ratio
 
         # Clamp dihedral to a reasonable range (kept from original implementation)
-        self.dihedral = max(-30.0, min(30.0, prm.dihedral_deg)) * math.pi / 180.0
+        self.dihedral = prm.dihedral_deg * math.pi / 180.0
 
     # ────────────────────────────────────────────────────────────────────
     # Utility helpers
@@ -740,9 +740,9 @@ class UrdfMaker:
             """
             # Joint limits scale with sweep/twist multipliers (kept compatible)
             limit_sweep  = 0.7 / max(self.p.sweep_multi, 0.5)   # [rad]
-            limit_twist  = 0.7 / max(self.p.twist_multi, 0.5)   # [rad]
-            effort_sweep = 1.0 * max(self.p.sweep_multi, 0.5)
-            effort_twist = 0.5 * max(self.p.twist_multi, 0.5)
+            limit_twist  = 0.5 / max(self.p.twist_multi, 0.5)   # [rad]
+            effort_sweep = 0.75 * max(self.p.sweep_multi, 0.5)
+            effort_twist = 0.6 * max(self.p.twist_multi, 0.5)
 
             # Attach wing root to fuselage with dihedral
             fj = ET.SubElement(robot, "joint", name=f"fixed_joint_{side}_wing", type="fixed")
@@ -882,15 +882,11 @@ class UrdfMaker:
         ET.SubElement(
             jh,
             "limit",
-            lower="-0.35",
-            upper="-0.35".replace("-", "", 1) if False else "0.35",  # keep original values
-            effort="0.5",
+            lower="-0.25",
+            upper="0.25",  # keep original values
+            effort="1.0",
             velocity="3.665191429",
         )
-        # Note: the above line keeps the original "-0.35 / 0.35" limits.
-        #       The odd construct is only to emphasize we keep behaviour.
-        #       It does *not* change the resulting XML.
-        jh.find("limit").set("upper", "0.35")  # ensure exact original value
         ET.SubElement(jh, "dynamics", damping="0.2", friction="0.05")
 
         # Elevator servo mass attached at the hinge location
@@ -978,9 +974,9 @@ class UrdfMaker:
         ET.SubElement(
             jy,
             "limit",
-            lower="-0.35",
-            upper="0.35",
-            effort="0.5",
+            lower="-0.25",
+            upper="0.25",
+            effort="1.0",
             velocity="3.665191429",
         )
         ET.SubElement(jy, "dynamics", damping="0.2", friction="0.05")
@@ -1115,7 +1111,8 @@ if __name__ == "__main__":
     genome2 = [0.5, 3.5, 0.46, 0.45, 0.4, 0.2, 1.75, 0.2, 1.75, 0.0, 0.25, 3.0, 1.5, 2.0, -2.5]
     genome3 = [0.7, 2.5, 0.66, 0.45, 0.4, 0.26, 3.0, 0.14, 2.75, 10.0, 0.25, 2.0, 3.5, 2.0, -2.0]
     genome4 = [0.44, 1.75, 0.48, 0.34, 0.3, 0.12, 3.0, 0.2, 2.5, 20.0, 0.25, 3.5, 2.25, 2.0, -5.0]
+    genome5 = [0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3]
 
-    for genome in (genome1, genome4):
+    for genome in (genome1, genome5):
         path = UrdfMaker(genome).create_urdf()
         print("URDF written to:", path)

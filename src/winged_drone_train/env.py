@@ -40,8 +40,8 @@ class WingedDroneEnv:
     SHORT_RANGE = 0.0          # Extra safety bubble in front (m)
 
     # Genome parameter ranges for normalization (if present)
-    GENOME_MIN = [0.4, 1.5, 0.4, 0.3, 0.3, 0.1, 1.0, 0.1, 1.0, -20.0, 0.0, 1.0, 1.0, 1.0, -5.0]
-    GENOME_MAX = [0.7, 5.0, 0.7, 0.7, 0.7, 0.3, 3.0, 0.2, 3.0, 20.0, 0.5, 4.0, 4.0, 3.0, 0.0]
+    GENOME_MIN = [0.45, 1.5, 0.45, 0.3, 0.3, 0.15, 1.0, 0.1, 1.0, -5.0, 0.0, 1.5, 1.5, 1.0, -5.0]
+    GENOME_MAX = [0.75, 5.0, 0.75, 0.5, 0.5, 0.35, 3.0, 0.2, 3.0, 5.0, 0.5, 3.5, 3.5, 3.0, 0.0]
 
     def __init__(
         self,
@@ -301,12 +301,7 @@ class WingedDroneEnv:
         print(f"[WingedDroneEnv] Created with {self.num_envs} envs, drone '{self.drone_name}'")
         print(f"  - Action space size: {self.num_actions} (throttle + {self.num_servos} servos)")
         print(f"  - Drone span: {self.span:.3f} m")
-        
-
-        # Domain randomization of physical properties
-        self.robot_randomization = bool(self.env_cfg.get("robot_randomization", False))
-        if self.robot_randomization and not self.evaluation:
-            self._randomize_physical_props()
+        print(f"  - Nominal mass: {self.nominal_mass:.3f} kg")
 
         # ------------------------------------------------------------------ #
         # Setup drone actuators                                          #
@@ -330,6 +325,7 @@ class WingedDroneEnv:
         # ------------------------------------------------------------------ #
         self.add_genome_obs = bool(self.obs_cfg.get("add_genome_obs", False))
         self._genome_vec: Optional[torch.Tensor] = None
+        self.noise_std = self.obs_cfg.get("noise_std", {})
 
         if urdf_file is not None:
             match = re.search(r"\[([^\]]+)\]\.urdf$", urdf_file)
@@ -343,7 +339,7 @@ class WingedDroneEnv:
 
         if self._genome_vec is not None and not self.evaluation:
             # Simple domain randomization of genome parameters during training
-            noise_std = float(self.env_cfg.get("genome_noise_std", 0.05))
+            noise_std = self.noise_std.get("genome", 0.1)
             noise = torch.randn_like(self._genome_vec) * noise_std
             gmin = torch.tensor(self.GENOME_MIN, device=self.device)
             gmax = torch.tensor(self.GENOME_MAX, device=self.device)
@@ -678,19 +674,6 @@ class WingedDroneEnv:
             self.commands[env_ids, 0] = v_min + (v_max - v_min) * u
 
     # ---------------------------------------------------------------------- #
-    # Domain randomization                                                   #
-    # ---------------------------------------------------------------------- #
-    def _randomize_physical_props(self) -> None:
-        """Randomize link masses by a small factor."""
-        dm = float(self.env_cfg.get("rand_mass_frac", 0.05))
-        for link in self.drone.links:
-            m0 = link.get_mass()
-            if m0 <= 0.0:
-                continue
-            factor = 1.0 + (torch.rand(1).item() * 2.0 - 1.0) * dm
-            link.set_mass(m0 * factor)
-
-    # ---------------------------------------------------------------------- #
     # Crash limits                                                           #
     # ---------------------------------------------------------------------- #
     def set_angle_limit(self, limit_deg: float) -> None:
@@ -954,14 +937,14 @@ class WingedDroneEnv:
         # Training: inject randomness in initial pose and speed
         if not self.evaluation:
             # Longitudinal position
-            self.base_pos[env_ids, 0] += torch.rand(n, device=self.device) * 40.0 - 20.0
+            self.base_pos[env_ids, 0] += torch.rand(n, device=self.device) * 30.0 - 15.0
             # Lateral position
             self.base_pos[env_ids, 1] += torch.rand(n, device=self.device) * 80.0 - 40.0
             # Altitude
-            self.base_pos[env_ids, 2] += torch.rand(n, device=self.device) * 12.0 - 6.0
+            self.base_pos[env_ids, 2] += torch.rand(n, device=self.device) * 8.0 - 4.0
 
             # Forward speed 
-            self.base_lin_vel[env_ids, 0] = torch.rand(n, device=self.device) * 22.0 + 4.0
+            self.base_lin_vel[env_ids, 0] = torch.rand(n, device=self.device) * 18.0 + 6.0
             # Lateral speed
             self.base_lin_vel[env_ids, 1] = torch.clamp(
                 torch.randn(n, device=self.device) * 1.5, min=-6.0, max=6.0
@@ -975,14 +958,14 @@ class WingedDroneEnv:
             self.base_euler[env_ids, 2] = torch.atan2(self.base_lin_vel[env_ids, 1], self.base_lin_vel[env_ids, 0])
 
             # Small attitude perturbations
-            self.base_euler[env_ids, 0] += torch.clamp(torch.randn(n, device=self.device) * 0.1, min=-0.4, max=0.4)
-            self.base_euler[env_ids, 1] += torch.clamp(torch.randn(n, device=self.device) * 0.1, min=-0.4, max=0.4)
-            self.base_euler[env_ids, 2] += torch.clamp(torch.randn(n, device=self.device) * 0.1, min=-0.4, max=0.4)
+            self.base_euler[env_ids, 0] += torch.clamp(torch.randn(n, device=self.device) * 0.04, min=-0.2, max=0.2)
+            self.base_euler[env_ids, 1] += torch.clamp(torch.randn(n, device=self.device) * 0.04, min=-0.2, max=0.2)
+            self.base_euler[env_ids, 2] += torch.clamp(torch.randn(n, device=self.device) * 0.04, min=-0.2, max=0.2)
 
             # Joint positions noise
             self.joint_position[env_ids] += torch.clamp(torch.randn(
                 (n, self.num_servos), device=self.device
-            ) * 0.015, min=-0.06, max=0.06)
+            ) * 0.004, min=-0.02, max=0.02)
 
         # Apply quaternion back from Euler
         self.base_quat[env_ids] = xyz_to_quat(self.base_euler[env_ids], degrees=False)
