@@ -41,14 +41,23 @@ from winged_drone_train.utils.eval_plotter import EvaluationPlotter
 # ---------------------------------------------------------------------- #
 
 
-def safe_urdf_stem(urdf_file: str | Path) -> str:
+def safe_urdf_stem(urdf_file: str | Path, *, already_clean: bool = False) -> str:
     """
     Sanitize a URDF filename for filesystem-safe folder names.
 
     Replaces brackets/commas/spaces with underscores and collapses
     repeated separators.
     """
-    stem = Path(urdf_file).stem
+    if isinstance(urdf_file, Path):
+        stem = urdf_file.stem
+    else:
+        s = str(urdf_file)
+        if already_clean:
+            stem = s
+        elif os.sep in s or s.endswith(".urdf"):
+            stem = Path(s).stem
+        else:
+            stem = s
     clean = re.sub(r"[\\[\\],\\s]+", "_", stem)
     clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", clean)
     clean = re.sub(r"_+", "_", clean).strip("_")
@@ -86,7 +95,7 @@ def _configure_cache_root() -> Path:
         os.environ[env_key] = str(cache_root)
     mpl_dir = cache_root / "mpl"
     mpl_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
+    os.environ["MPLCONFIGDIR"] = str(mpl_dir)
     print(f"[evaluation] cache dir set to {cache_root}")
     return cache_root
 
@@ -250,6 +259,7 @@ def evaluation(
     gs.init(logging_level="error", backend=gs.gpu)
 
     log_dir = (Path("logs") / "ea" / exp_name).expanduser().resolve()
+    log_dir_str = str(log_dir)
     cfg_path = log_dir / "cfgs.pkl"
     urdf_path = Path(urdf_file).expanduser()
     clean_stem = safe_urdf_stem(urdf_path)
@@ -301,7 +311,7 @@ def evaluation(
     )
 
     runner_cfg = copy.deepcopy(train_cfg)
-    runner = OnPolicyRunner(env, runner_cfg, str(log_dir), device=gs.device)
+    runner = OnPolicyRunner(env, runner_cfg, log_dir_str, device=gs.device)
 
     if custom_policy_path is not None:
         print(f"[evaluation] Using custom policy {custom_policy_path}")
@@ -330,10 +340,16 @@ def evaluation(
     final_reward = 0.0
     steps90_pct = 0.0
 
-    ea = event_accumulator.EventAccumulator(log_dir)
-    ea.Reload()
-    scalar_tags = ea.Tags().get("scalars", [])
-    reward_tags = [tag for tag in scalar_tags if tag.startswith("rew_")]
+    final_reward = 0.0
+    steps90_pct = 0.0
+    try:
+        ea = event_accumulator.EventAccumulator(log_dir_str)
+        ea.Reload()
+        scalar_tags = ea.Tags().get("scalars", [])
+        reward_tags = [tag for tag in scalar_tags if tag.startswith("rew_")]
+    except Exception as exc:
+        print(f"[evaluation][warn] skipping TensorBoard metrics: {exc}")
+        reward_tags = []
 
     if reward_tags:
         total_steps = ckpt
@@ -424,6 +440,7 @@ def evaluation(
     eval_dir_path = None
     plot_paths: Dict[str, str] = {}
     if save_plots:
+        print(f"[evaluation] save_plots block starting for {clean_stem}")
         eval_dir_path = Path(eval_dir) if eval_dir is not None else log_dir / f"eval_{clean_stem}"
         eval_dir_path.mkdir(parents=True, exist_ok=True)
         print(
@@ -476,6 +493,12 @@ def evaluation(
                 _write_placeholder_png(p, "missing after plotting")
             else:
                 print(f"[evaluation] confirmed plot exists: {p}")
+
+        try:
+            contents = sorted([str(p.name) for p in eval_dir_path.iterdir()])
+            print(f"[evaluation] eval_dir contents: {eval_dir_path} -> {contents}")
+        except Exception as exc:
+            print(f"[evaluation][warn] could not list {eval_dir_path}: {exc}")
 
         plot_paths = {
             "total_plot": str(total_out),

@@ -100,6 +100,8 @@ def get_eval_root(exp_name: str) -> Path:
 
 # Sentinel used when something goes wrong with an energy measurement
 INVALID_ENERGY = 100
+# Minimal progress below which speed/energy are set to sentinel in CSV
+MINIMAL_PROGRESS_CSV = 300.0
 
 
 # =============================================================================
@@ -316,6 +318,14 @@ def evaluate_single(
     )
 
     print("[EVAL 7] Evaluation loop completed")
+    if extra.get("plot_paths"):
+        print(f"[eval_gen] eval saved plots: {extra['plot_paths']}")
+    if extra.get("eval_dir"):
+        try:
+            contents = sorted(p.name for p in Path(extra["eval_dir"]).iterdir())
+            print(f"[eval_gen] eval dir contents {extra['eval_dir']}: {contents}")
+        except Exception as exc:
+            print(f"[eval_gen][warn] cannot list eval dir {extra.get('eval_dir')}: {exc}")
 
     # Build a fitness triple:
     #   - maximize speed (velocity at best-speed operating point)
@@ -381,6 +391,11 @@ def copy_baseline_eval_images(
             print(f"[copy][baseline] copied {src} -> {dst}")
         else:
             print(f"[copy][baseline][missing] expected plot not found: {src}")
+    try:
+        contents = sorted(p.name for p in src_dir.iterdir())
+        print(f"[copy][baseline] src contents: {src_dir} -> {contents}")
+    except Exception as exc:
+        print(f"[copy][baseline][warn] cannot list src {src_dir}: {exc}")
 
 
 def copy_individual_policy_run(
@@ -391,7 +406,7 @@ def copy_individual_policy_run(
     rep: int,
 ) -> None:
 
-    clean_stem = safe_urdf_stem(urdf_stem)
+    clean_stem = safe_urdf_stem(urdf_stem, already_clean=True)
     src_root = EA_ROOT / exp_train
     dst_root = get_eval_root(eval_name) / "individual_policy" / f"urdf_{urdf_idx:03d}_{rep+1}"
 
@@ -422,6 +437,11 @@ def copy_individual_policy_run(
             print(f"[copy][trained] copied {src} -> {dst}")
         else:
             print(f"[copy][trained][missing] expected plot not found: {src}")
+    try:
+        contents = sorted(p.name for p in eval_src.iterdir())
+        print(f"[copy][trained] src contents: {eval_src} -> {contents}")
+    except Exception as exc:
+        print(f"[copy][trained][warn] cannot list src {eval_src}: {exc}")
 
 
 
@@ -446,11 +466,18 @@ class LeanCSV:
     existing contents.
     """
 
-    def __init__(self, path: Path, n_baselines: int, n_trained: int) -> None:
+    def __init__(
+        self,
+        path: Path,
+        n_baselines: int,
+        n_trained: int,
+        minimal_progress: float = MINIMAL_PROGRESS_CSV,
+    ) -> None:
         self.path = path.with_suffix(".csv").expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.n_baselines = max(0, int(n_baselines))
         self.n_trained = max(0, int(n_trained))
+        self.minimal_progress = float(minimal_progress)
 
         if not self.path.exists():
             header = ["urdf_stem", "urdf_params"]
@@ -503,10 +530,22 @@ class LeanCSV:
         """
         row: List[str] = [urdf_stem, self.current_urdf_params]
 
+        def _gate(f: FitnessTriple) -> FitnessTriple:
+            """
+            If progress is below threshold, keep progress but set speed/energy to sentinel.
+            """
+            if f.progress < self.minimal_progress:
+                return FitnessTriple(
+                    speed=0.0,
+                    neg_energy=-INVALID_ENERGY,
+                    progress=f.progress,
+                )
+            return f
+
         # Baseline metrics
         for i in range(self.n_baselines):
             if i < len(baseline_fitness):
-                f = baseline_fitness[i]
+                f = _gate(baseline_fitness[i])
                 r = baseline_rewards[i] if i < len(baseline_rewards) else float("nan")
             else:
                 f = FitnessTriple(speed=float("nan"), neg_energy=float("nan"), progress=float("nan"))
@@ -522,7 +561,7 @@ class LeanCSV:
         # Trained metrics
         for i in range(self.n_trained):
             if i < len(trained_fitness):
-                f = trained_fitness[i]
+                f = _gate(trained_fitness[i])
                 r = trained_rewards[i] if i < len(trained_rewards) else float("nan")
             else:
                 f = FitnessTriple(speed=float("nan"), neg_energy=float("nan"), progress=float("nan"))
@@ -537,6 +576,7 @@ class LeanCSV:
 
         with self.path.open("a") as f:
             f.write(",".join(row) + "\n")
+        print(f"[csv] appended row for {urdf_stem} to {self.path}")
 
 
 # =============================================================================
@@ -679,6 +719,7 @@ def run_pipeline(
         path=csv_path,
         n_baselines=len(staged),
         n_trained=train_repeats,
+        minimal_progress=MINIMAL_PROGRESS_CSV,
     )
     logger.info("Writing lean CSV to %s", csv_writer.path)
 
