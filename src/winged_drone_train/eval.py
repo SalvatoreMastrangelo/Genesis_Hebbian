@@ -14,6 +14,8 @@ import copy
 import math
 import pickle
 import argparse
+import re
+from pathlib import Path
 from typing import Tuple, Dict, Any
 
 import numpy as np
@@ -33,6 +35,60 @@ from rsl_rl.runners import OnPolicyRunner
 from tensorboard.backend.event_processing import event_accumulator
 
 from winged_drone_train.utils.eval_plotter import EvaluationPlotter
+
+# ---------------------------------------------------------------------- #
+#  Helpers                                                              #
+# ---------------------------------------------------------------------- #
+
+
+def safe_urdf_stem(urdf_file: str | Path) -> str:
+    """
+    Sanitize a URDF filename for filesystem-safe folder names.
+
+    Replaces brackets/commas/spaces with underscores and collapses
+    repeated separators.
+    """
+    stem = Path(urdf_file).stem
+    clean = re.sub(r"[\\[\\],\\s]+", "_", stem)
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", clean)
+    clean = re.sub(r"_+", "_", clean).strip("_")
+    return clean or "urdf"
+
+
+def _write_placeholder_png(path: Path, reason: str) -> None:
+    """Create a minimal placeholder PNG so downstream copy steps never fail silently."""
+    import matplotlib.pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(3, 2))
+    ax.text(
+        0.5,
+        0.5,
+        f"No data\n{reason}",
+        ha="center",
+        va="center",
+        fontsize=10,
+    )
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+    print(f"[evaluation][placeholder] wrote {path} ({reason})")
+
+
+def _configure_cache_root() -> Path:
+    """
+    Force Taichi/genesis cache into a writable location to avoid ROFS errors.
+    """
+    cache_root = (Path("logs") / ".cache" / "gstaichi").expanduser().resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    for env_key in ("XDG_CACHE_HOME", "TI_CACHE_DIR", "TAICHI_CACHE_DIR", "GSTAICHI_CACHE_DIR"):
+        os.environ[env_key] = str(cache_root)
+    mpl_dir = cache_root / "mpl"
+    mpl_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
+    print(f"[evaluation] cache dir set to {cache_root}")
+    return cache_root
 
 
 # ---------------------------------------------------------------------- #
@@ -162,6 +218,9 @@ def evaluation(
     win_frac: float = 0.03,
     return_arrays: bool = False,
     custom_policy_path: str | None = None,
+    obs_genome: bool | None = False,
+    save_plots: bool = True,
+    eval_dir: str | Path | None = None,
 ):
     """
     Programmatic evaluation entry point.
@@ -187,10 +246,23 @@ def evaluation(
     gpu_id = os.getenv("CUDA_VISIBLE_DEVICES", "0").split(",")[0]
     device = f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu"
 
+    _configure_cache_root()
     gs.init(logging_level="error", backend=gs.gpu)
 
-    log_dir = f"logs/ea/{exp_name}"
-    with open(os.path.join(log_dir, "cfgs.pkl"), "rb") as f:
+    log_dir = (Path("logs") / "ea" / exp_name).expanduser().resolve()
+    cfg_path = log_dir / "cfgs.pkl"
+    urdf_path = Path(urdf_file).expanduser()
+    clean_stem = safe_urdf_stem(urdf_path)
+
+    print(
+        f"[evaluation] exp={exp_name} ckpt={ckpt} urdf={urdf_path.name} "
+        f"clean={clean_stem} envs={envs} save_plots={save_plots} eval_dir={eval_dir}"
+    )
+
+    if not cfg_path.is_file():
+        raise FileNotFoundError(f"Missing cfgs.pkl at {cfg_path}")
+
+    with cfg_path.open("rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
     # Command range used in this evaluation
@@ -200,6 +272,8 @@ def evaluation(
     # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
     obs_cfg_eval["add_noise"] = False
+    if obs_genome is not None:
+        obs_cfg_eval["add_genome_obs"] = bool(obs_genome)
 
     # Evaluation-specific environment tweaks
     env_cfg.update(
@@ -227,7 +301,7 @@ def evaluation(
     )
 
     runner_cfg = copy.deepcopy(train_cfg)
-    runner = OnPolicyRunner(env, runner_cfg, log_dir, device=gs.device)
+    runner = OnPolicyRunner(env, runner_cfg, str(log_dir), device=gs.device)
 
     if custom_policy_path is not None:
         print(f"[evaluation] Using custom policy {custom_policy_path}")
@@ -239,7 +313,16 @@ def evaluation(
 
     env.aero_solver._aero_log = False
 
-    v_mean, COT, v_cmd, progress, final_reason, traces_all = run_eval(env, policy, extra_data=False)
+    # Use traces when saving plots to enable heatmaps.
+    v_mean, COT, v_cmd, progress, final_reason, traces_all = run_eval(
+        env,
+        policy,
+        extra_data=bool(save_plots),
+    )
+    print(
+        f"[evaluation] rollout done | v_mean={len(v_mean)} v_cmd={len(v_cmd)} "
+        f"progress_shape={np.shape(progress)} extra_data={bool(save_plots)}"
+    )
 
     gs.destroy()
 
@@ -338,10 +421,75 @@ def evaluation(
         "mean_progress": float(prog_sel[idx_p]),
     }
 
+    eval_dir_path = None
+    plot_paths: Dict[str, str] = {}
+    if save_plots:
+        eval_dir_path = Path(eval_dir) if eval_dir is not None else log_dir / f"eval_{clean_stem}"
+        eval_dir_path.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[evaluation] Saving plots for URDF '{urdf_path.name}' "
+            f"(clean='{clean_stem}') in: {eval_dir_path} | save_plots={save_plots}"
+        )
+        plotter = EvaluationPlotter()
+
+        sweep_out = eval_dir_path / "joint_heatmap_sweep.png"
+        twist_out = eval_dir_path / "joint_heatmap_twist.png"
+        total_out = eval_dir_path / "total_plot.png"
+
+        # Pre-create placeholders so downstream copy always finds something
+        for p in (sweep_out, twist_out, total_out):
+            if not p.exists():
+                _write_placeholder_png(p, "pre-plot placeholder")
+
+        try:
+            plotter.plot_joint_diff_heatmap(traces_all, "sweep", out=str(sweep_out))
+            print(f"[evaluation] joint_heatmap_sweep → {sweep_out}")
+        except Exception as exc:
+            print(f"[evaluation][error] joint_heatmap_sweep failed: {exc}")
+            _write_placeholder_png(sweep_out, "heatmap_sweep failed")
+
+        try:
+            plotter.plot_joint_diff_heatmap(traces_all, "twist", out=str(twist_out))
+            print(f"[evaluation] joint_heatmap_twist → {twist_out}")
+        except Exception as exc:
+            print(f"[evaluation][error] joint_heatmap_twist failed: {exc}")
+            _write_placeholder_png(twist_out, "heatmap_twist failed")
+
+        try:
+            plotter.total_plot(
+                v_mean,
+                COT,
+                v_cmd,
+                progress,
+                win_frac=win_frac,
+                minimal_p=300.0,
+                out=str(total_out),
+            )
+            print(f"[evaluation] total_plot → {total_out}")
+        except Exception as exc:
+            print(f"[evaluation][error] total_plot failed: {exc}")
+            _write_placeholder_png(total_out, "total_plot failed")
+
+        # Guarantee files exist
+        for p in (sweep_out, twist_out, total_out):
+            if not p.is_file():
+                _write_placeholder_png(p, "missing after plotting")
+            else:
+                print(f"[evaluation] confirmed plot exists: {p}")
+
+        plot_paths = {
+            "total_plot": str(total_out),
+            "joint_heatmap_sweep": str(sweep_out),
+            "joint_heatmap_twist": str(twist_out),
+        }
+
     extra = {
         "max_p": max_p,
         "final_reward": final_reward,
         "steps90_pct": steps90_pct,
+        "eval_dir": str(eval_dir_path) if eval_dir_path else "",
+        "clean_urdf_stem": clean_stem,
+        "plot_paths": plot_paths,
     }
     if return_arrays:
         # For compatibility with previous behaviour, we keep these
@@ -375,6 +523,8 @@ if __name__ == "__main__":
 
     # ---------------- Load configs ------------------------------------- #
     log_dir = f"logs/{args.exp_name}"
+    # Overwrite log_dir if needed coming from cluster
+    log_dir = f"/home/andrea/tb_logs_kuma/ea/{args.exp_name}"
     with open(os.path.join(log_dir, "cfgs.pkl"), "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
@@ -389,12 +539,16 @@ if __name__ == "__main__":
         "[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, "
         "2, 2.5, 2, -3].urdf"
     )
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax
 
     # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
+    obs_cfg_eval["add_genome_obs"] = True
 
     # Print configs for sanity check
     print("\nEnvironment Configuration (eval):")

@@ -42,6 +42,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -50,9 +51,8 @@ import numpy as np
 import random
 import torch
 
-from winged_drone_train.eval import evaluation
+from winged_drone_train.eval import evaluation, safe_urdf_stem
 from train_gen import build_catalog
-from winged_drone_train.train import training
 
 
 # =============================================================================
@@ -82,7 +82,21 @@ def _configure_logging(verbosity: int) -> None:
 # =============================================================================
 
 LOG_ROOT = Path("logs").expanduser().resolve()
+# new constant for evolution-style logs
+EA_ROOT = LOG_ROOT / "ea"
 ANALYSIS_ROOT = Path("analysis").expanduser().resolve()
+PLOT_FILES = (
+    "total_plot.png",
+    "joint_heatmap_sweep.png",
+    "joint_heatmap_twist.png",
+)
+
+def get_eval_root(exp_name: str) -> Path:
+    """
+    Root of the human-readable evaluation directory:
+    logs/<exp_name>_evaluation/
+    """
+    return LOG_ROOT / f"{exp_name}_evaluation"
 
 # Sentinel used when something goes wrong with an energy measurement
 INVALID_ENERGY = 100
@@ -137,6 +151,26 @@ def list_urdfs(catalog_dir: Path) -> List[Path]:
     # Fallback: use all URDF files in the directory.
     return sorted(p.expanduser().resolve() for p in base.glob("*.urdf"))
 
+def parse_urdf_params(urdf_path: Path) -> List[float]:
+    """
+    Estrae l'array di parametri dal nome del file URDF.
+    Esempio nome:
+        [0.7, 3.5, 0.73, ... , -3].urdf
+    Restituisce una lista di float.
+    """
+    stem = urdf_path.stem  # es: "[0.7, 3.5, 0.73, ...]"
+    # rimuove parentesi quadre
+    clean = stem.strip("[]")
+    # separa per virgole
+    parts = clean.split(",")
+    # converte in float
+    out = []
+    for x in parts:
+        try:
+            out.append(float(x))
+        except:
+            pass
+    return out
 
 # =============================================================================
 #  Baseline checkpoint staging
@@ -165,99 +199,24 @@ class StagedCheckpoint:
     log_dir: Path
 
 
-def stage_baseline_checkpoint(
-    exp_name: str,
-    model_path: Path,
-    cfg_dir: Optional[Path],
-) -> StagedCheckpoint:
+def stage_baseline_checkpoint(exp_name: str, model_path: Path, cfg_dir: Optional[Path]):
     """
-    Copy a baseline checkpoint and its config snapshot into ``logs/ea/``.
-
-    The evaluation code expects runs to live under ``logs/ea/<exp_name>/``
-    with files:
-
-      - ``cfgs.pkl``        – environment / training configuration
-      - ``model_<k>.pt``    – checkpoint at iteration ``k``
-
-    and will load ``model_{ckpt-1}.pt`` given the ``ckpt`` integer.
-
-    This helper:
-
-      1. Creates ``logs/ea/<exp_name>/`` if needed.
-      2. Copies ``cfgs.pkl`` from ``cfg_dir``.
-      3. Copies ``model_*.pt`` from ``model_path``.
-         If ``model_path`` already has the pattern ``model_<N>.pt``,
-         the same index ``N`` is preserved. Otherwise we use ``N = 0``.
-
-    Parameters
-    ----------
-    exp_name:
-        Name of the experiment (directory under ``logs/ea/``).
-    model_path:
-        Path to the checkpoint to be evaluated.
-    cfg_dir:
-        Directory containing ``cfgs.pkl``. If ``None``, the parent
-        directory of ``model_path`` is used.
-
-    Returns
-    -------
-    :class:`StagedCheckpoint`
-        Description of the staged checkpoint, including the checkpoint
-        index to pass to :func:`eval.evaluation`.
+    No-op: we no longer stage or copy anything.
+    We simply infer the checkpoint index from the filename.
     """
     model_path = model_path.expanduser().resolve()
     if not model_path.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
-    run_dir = (LOG_ROOT / "ea" / exp_name).resolve()
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    # --- 1) cfgs.pkl ------------------------------------------------------
-    if cfg_dir is None:
-        cfg_dir = model_path.parent
-    cfg_dir = cfg_dir.expanduser().resolve()
-    cfg_src = cfg_dir / "cfgs.pkl"
-    cfg_dst = run_dir / "cfgs.pkl"
-
-    if not cfg_src.is_file():
-        raise FileNotFoundError(
-            f"cfgs.pkl not found in cfg_dir={cfg_dir}. "
-            "Please point --cfg-dir to a run directory that contains it."
-        )
-
-    shutil.copy2(cfg_src, cfg_dst)
-    logger.debug("Copied cfgs.pkl from %s to %s", cfg_src, cfg_dst)
-
-    # --- 2) model_<N>.pt --------------------------------------------------
-    # Try to infer N from the filename, falling back to N=0.
     m = re.search(r"model_(\d+)\.pt$", model_path.name)
-    if m:
-        index = int(m.group(1))
-    else:
-        index = 0
+    index = int(m.group(1)) if m else 0
 
-    model_dst = run_dir / f"model_{index}.pt"
-    if model_dst.exists():
-        model_dst.unlink()
-    shutil.copy2(model_path, model_dst)
-
-    logger.info(
-        "Staged baseline checkpoint: %s → %s (index=%d, exp=%s)",
-        model_path,
-        model_dst,
-        index,
-        exp_name,
-    )
-
-    # evaluation() expects a 'ckpt' such that it loads model_{ckpt-1}.pt
-    ckpt_for_eval = index + 1
     return StagedCheckpoint(
         exp_name=exp_name,
-        ckpt_index=ckpt_for_eval,
+        ckpt_index=index,   # evaluation loads model_{ckpt-1}.pt
         model_path=model_path,
-        log_dir=run_dir,
+        log_dir=model_path.parent,
     )
-
 
 # =============================================================================
 #  Evaluation helpers
@@ -294,6 +253,10 @@ def evaluate_single(
     eval_envs: int,
     vmin: float,
     vmax: float,
+    obs_genome: Optional[np.ndarray] = False,
+    model_path: Optional[Path] = None,
+    eval_dir: Optional[Path] = None,
+    clean_urdf_stem: Optional[str] = None,
 ) -> EvalSummary:
     """
     Run :func:`eval.evaluation` and convert its output into a FitnessTriple.
@@ -317,18 +280,28 @@ def evaluate_single(
     :class:`EvalSummary`
         Structured summary of the evaluation results.
     """
+    clean_label = clean_urdf_stem or safe_urdf_stem(urdf_file)
+    if eval_dir is None:
+        eval_dir = EA_ROOT / exp_name / f"eval_{clean_label}"
+
     logger.debug(
-        "Evaluating exp=%s ckpt=%d on urdf=%s (envs=%d, vmin=%.1f, vmax=%.1f)",
+        "Evaluating exp=%s ckpt=%d on urdf=%s (envs=%d, vmin=%.1f, vmax=%.1f, eval_dir=%s)",
         exp_name,
         ckpt,
         urdf_file,
         eval_envs,
         vmin,
         vmax,
+        eval_dir,
+    )
+    print(
+        f"[eval_gen] evaluation start exp={exp_name} ckpt={ckpt} "
+        f"urdf={urdf_file.name} -> {eval_dir}"
     )
 
     # evaluation() returns:
     #   top_vel, top_eff, top_prog, max_p, extra
+    # evaluation always loads from logs/ea/<exp_name>
     top_vel, top_eff, top_prog, max_p, extra = evaluation(
         exp_name=str(exp_name),
         urdf_file=str(urdf_file),
@@ -337,7 +310,12 @@ def evaluate_single(
         vmin=float(vmin),
         vmax=float(vmax),
         return_arrays=True,
+        obs_genome=obs_genome,
+        save_plots=True,
+        eval_dir=str(eval_dir),
     )
+
+    print("[EVAL 7] Evaluation loop completed")
 
     # Build a fitness triple:
     #   - maximize speed (velocity at best-speed operating point)
@@ -371,57 +349,80 @@ def evaluate_single(
         reward_ep_mean,
     )
 
+    print("[EVAL 8] EvalSummary created")
+
     return EvalSummary(fitness=fitness, reward_ep_mean=reward_ep_mean, metadata=metadata)
 
 
-def copy_eval_images(
-    exp_name: str,
+def copy_baseline_eval_images(
+    source_exp: str,
+    eval_name: str,
     urdf_file: Path,
-    dst_dir: Path,
+    urdf_idx: int,
 ) -> None:
     """
-    Copy evaluation plots for a given morphology into a destination directory.
+    Copy baseline evaluation plots into the human-readable tree.
 
-    The evaluation script writes its plots into:
-
-        logs/ea/<exp_name>/eval_<urdf_stem>/
-
-    where ``<urdf_stem>`` is the stem of the URDF filename.
-
-    This helper copies a small set of standard plots (if they exist):
-
-      - ``total_plot.png``             – velocity, energy, progress summary
-      - ``joint_heatmap_sweep.png``    – control sweep heatmap
-      - ``joint_heatmap_twist.png``    – control twist heatmap
-
-    Parameters
-    ----------
-    exp_name:
-        Name of the experiment under ``logs/ea/<exp_name>/``.
-    urdf_file:
-        URDF file for which the evaluation was run.
-    dst_dir:
-        Directory where plots will be copied.
+    Source: logs/ea/<source_exp>/eval_<clean_stem>/
+    Dest:   logs/<eval_name>_evaluation/general_policy/urdf_XXX_eval/
     """
-    src_dir = LOG_ROOT / "ea" / exp_name / f"eval_{urdf_file.stem}"
-    dst_dir = dst_dir.expanduser().resolve()
+    clean_stem = safe_urdf_stem(urdf_file)
+    src_dir = EA_ROOT / source_exp / f"eval_{clean_stem}"
+    dst_dir = get_eval_root(eval_name) / "general_policy" / f"urdf_{urdf_idx:03d}_eval"
+
     dst_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[copy][baseline] {src_dir} -> {dst_dir}")
 
-    plot_names = (
-        "total_plot.png",
-        "joint_heatmap_sweep.png",
-        "joint_heatmap_twist.png",
-    )
-
-    for name in plot_names:
+    for name in PLOT_FILES:
         src = src_dir / name
+        dst = dst_dir / name
         if src.is_file():
-            dst = dst_dir / name
-            try:
-                shutil.copy2(src, dst)
-                logger.debug("Copied %s → %s", src, dst)
-            except Exception as exc:  # pragma: no cover - best effort
-                logger.warning("Failed to copy %s → %s: %s", src, dst, exc)
+            shutil.copy2(src, dst)
+            print(f"[copy][baseline] copied {src} -> {dst}")
+        else:
+            print(f"[copy][baseline][missing] expected plot not found: {src}")
+
+
+def copy_individual_policy_run(
+    exp_train: str,
+    eval_name: str,
+    urdf_stem: str,
+    urdf_idx: int,
+    rep: int,
+) -> None:
+
+    clean_stem = safe_urdf_stem(urdf_stem)
+    src_root = EA_ROOT / exp_train
+    dst_root = get_eval_root(eval_name) / "individual_policy" / f"urdf_{urdf_idx:03d}_{rep+1}"
+
+    if not src_root.exists():
+        print(f"[copy][trained][missing] source run not found: {src_root}")
+        return
+
+    dst_root.mkdir(parents=True, exist_ok=True)
+    print(f"[copy][trained] copying run {src_root} -> {dst_root}")
+
+    for item in src_root.iterdir():
+        dst = dst_root / item.name
+        if item.is_dir():
+            shutil.copytree(item, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dst)
+
+    # Copy evaluation plots
+    eval_src = src_root / f"eval_{clean_stem}"
+    eval_dst = dst_root / "eval"
+    eval_dst.mkdir(parents=True, exist_ok=True)
+
+    for name in PLOT_FILES:
+        src = eval_src / name
+        dst = eval_dst / name
+        if src.is_file():
+            shutil.copy2(src, dst)
+            print(f"[copy][trained] copied {src} -> {dst}")
+        else:
+            print(f"[copy][trained][missing] expected plot not found: {src}")
+
 
 
 # =============================================================================
@@ -452,7 +453,7 @@ class LeanCSV:
         self.n_trained = max(0, int(n_trained))
 
         if not self.path.exists():
-            header = ["urdf_stem"]
+            header = ["urdf_stem", "urdf_params"]
             # Baseline columns
             for i in range(self.n_baselines):
                 k = i + 1
@@ -500,7 +501,7 @@ class LeanCSV:
         trained_rewards:
             Sequence of mean episode rewards for each trained policy.
         """
-        row: List[str] = [urdf_stem]
+        row: List[str] = [urdf_stem, self.current_urdf_params]
 
         # Baseline metrics
         for i in range(self.n_baselines):
@@ -548,15 +549,16 @@ def run_pipeline(
     rng_seed: int,
     baseline_models: Sequence[Path],
     cfg_dir: Optional[Path],
-    baseline_exp: str,
+    exp_name: str,      # foundation-exp (per evaluation)
+    saving_path: str,   # exp (per output)
     csv_path: Optional[Path],
-    eval_envs: int,
-    vmin: float,
-    vmax: float,
-    train_envs: int,
-    train_iters: int,
-    train_repeats: int,
-    device: str,
+    eval_envs,
+    vmin,
+    vmax,
+    train_envs,
+    train_iters,
+    train_repeats,
+    device,
 ) -> None:
     """
     Full end-to-end workflow.
@@ -601,6 +603,21 @@ def run_pipeline(
     catalog_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ #
+    # Copy meshes directory into catalog_dir                             #
+    # ------------------------------------------------------------------ #
+    # Required because URDFs reference meshes/xxx.obj
+    meshes_src = Path("/workspace/Genesis/src/urdf_generated/meshes")
+    meshes_dst = catalog_dir / "meshes"
+
+    if meshes_src.is_dir():
+        shutil.copytree(meshes_src, meshes_dst, dirs_exist_ok=True)
+        logger.info("Copied meshes directory to %s", meshes_dst)
+    else:
+        logger.error("Meshes directory not found at %s", meshes_src)
+        raise FileNotFoundError(f"Meshes directory missing: {meshes_src}")
+
+
+    # ------------------------------------------------------------------ #
     # RNG seeding                                                        #
     # ------------------------------------------------------------------ #
     random.seed(rng_seed)
@@ -639,18 +656,24 @@ def run_pipeline(
     if cfg_dir is None:
         cfg_dir = baseline_models[0].parent
 
-    staged: List[StagedCheckpoint] = []
+    print(f"[eval_gen] Baseline logs loaded from: {EA_ROOT / exp_name}")
+    print(f"[eval_gen] Evaluation artifacts will be copied to: {get_eval_root(saving_path)}")
+
+    # Baseline checkpoints: read-only, no staging
+    staged = []
     for model_path in baseline_models:
-        staged_ckpt = stage_baseline_checkpoint(
-            exp_name=baseline_exp,
+        m = re.search(r"model_(\d+)\.pt$", model_path.name)
+        ckpt_index = int(m.group(1))
+        staged.append(StagedCheckpoint(
+            exp_name=exp_name,      # foundation-exp (folder in logs/ea/)
+            ckpt_index=ckpt_index, 
             model_path=model_path,
-            cfg_dir=cfg_dir,
-        )
-        staged.append(staged_ckpt)
+            log_dir=model_path.parent,  # read-only model dir
+        ))
 
     # CSV initialization
     if csv_path is None:
-        csv_path = ANALYSIS_ROOT / "foundation_eval_lean"
+        csv_path = get_eval_root(saving_path) / "analysis" / "foundation_eval_lean"
 
     csv_writer = LeanCSV(
         path=csv_path,
@@ -665,6 +688,9 @@ def run_pipeline(
     for idx, urdf in enumerate(urdf_list, start=1):
         logger.info("=== [%d / %d] %s ===", idx, len(urdf_list), urdf.name)
 
+        clean_stem = safe_urdf_stem(urdf)
+        print(f"[eval_gen] URDF stem raw='{urdf.stem}' clean='{clean_stem}'")
+
         # A) Evaluate all baseline checkpoints
         baseline_fitness: List[FitnessTriple] = []
         baseline_rewards: List[float] = []
@@ -672,14 +698,17 @@ def run_pipeline(
         for j, sc in enumerate(staged, start=1):
             try:
                 summary = evaluate_single(
-                    exp_name=sc.exp_name,
+                    exp_name=exp_name,
                     urdf_file=urdf,
                     ckpt=sc.ckpt_index,
                     eval_envs=eval_envs,
                     vmin=vmin,
                     vmax=vmax,
+                    obs_genome=True,
+                    eval_dir=EA_ROOT / exp_name / f"eval_{clean_stem}",
+                    clean_urdf_stem=clean_stem,
                 )
-            except Exception as exc:  # pragma: no cover - robust to individual failures
+            except Exception as exc:
                 logger.error(
                     "Baseline evaluation failed for urdf=%s (checkpoint=%s): %s",
                     urdf.name,
@@ -698,19 +727,21 @@ def run_pipeline(
                 baseline_fitness.append(summary.fitness)
                 baseline_rewards.append(summary.reward_ep_mean)
 
-        # Copy baseline plots from the *last* staged experiment
-        copy_eval_images(
-            exp_name=staged[-1].exp_name,
+        print("[EVAL 9] Baseline evaluation completed for all checkpoints")
+        # Copy baseline plots from logs/ea/<foundation-exp> to logs/<EXP_NAME>_evaluation
+        copy_baseline_eval_images(
+            source_exp=exp_name,       # foundation log dir
+            eval_name=saving_path,     # human-readable evaluation folder
             urdf_file=urdf,
-            dst_dir=ANALYSIS_ROOT / "foundation_eval_runs" / urdf.stem / "baseline",
+            urdf_idx=idx,
         )
-
         # B) Train and evaluate per-URDF policies
         trained_fitness: List[FitnessTriple] = []
         trained_rewards: List[float] = []
 
         for rep in range(train_repeats):
-            exp_train = urdf.stem if train_repeats == 1 else f"{urdf.stem}_rep{rep+1}"
+            # New: clean experiment name for training
+            exp_train = f"{saving_path}_urdf{idx:03d}_rep{rep+1}"
             run_seed = rng_seed + rep
 
             logger.info(
@@ -730,17 +761,24 @@ def run_pipeline(
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(run_seed)
 
+            print(f"[EVAL 10] Starting training for exp={exp_train} with seed={run_seed}")
+
             # Training: single URDF, evolution-friendly logging layout
             try:
-                training(
-                    exp_name=exp_train,
-                    urdf_file=str(urdf),
-                    num_envs=int(train_envs),
-                    max_iterations=int(train_iters),
-                    parent_exp=None,
-                    parent_ckpt=None,
-                    device=device,
-                )
+                cmd = [
+                    "python",
+                    "-c",
+                    (
+                        "from winged_drone_train.train import training; "
+                        f"training(exp_name={exp_train!r}, urdf_file={str(urdf)!r}, "
+                        f"num_envs={int(train_envs)}, max_iterations={int(train_iters)}, "
+                        "parent_exp=None, parent_ckpt=None, "
+                        f"device={device!r})"
+                    ),
+                ]
+                env = os.environ.copy()
+                env["TAICHI_CACHE_DIR"] = "/tmp/taichi_cache"
+                subprocess.run(cmd, check=True, env=env)
             except Exception as exc:  # pragma: no cover - robust to training failures
                 logger.error(
                     "Training failed for urdf=%s (exp=%s): %s",
@@ -758,15 +796,20 @@ def run_pipeline(
                 trained_rewards.append(float("nan"))
                 continue
 
+            print(f"[EVAL 11] Starting evaluation for exp={exp_train} with checkpoint={train_iters}")
+
             # Evaluate the final checkpoint (iteration 'train_iters').
             try:
                 summary = evaluate_single(
-                    exp_name=exp_train,
+                    exp_name=exp_train,  # evaluation reads logs/ea/<exp_train>
                     urdf_file=urdf,
                     ckpt=train_iters,
                     eval_envs=eval_envs,
                     vmin=vmin,
                     vmax=vmax,
+                    obs_genome=False,
+                    eval_dir=EA_ROOT / exp_train / f"eval_{clean_stem}",
+                    clean_urdf_stem=clean_stem,
                 )
             except Exception as exc:  # pragma: no cover
                 logger.error(
@@ -787,16 +830,15 @@ def run_pipeline(
                 trained_fitness.append(summary.fitness)
                 trained_rewards.append(summary.reward_ep_mean)
 
-                # Copy plots only for the first repetition
-                if rep == 0:
-                    copy_eval_images(
-                        exp_name=exp_train,
-                        urdf_file=urdf,
-                        dst_dir=ANALYSIS_ROOT
-                        / "foundation_eval_runs"
-                        / urdf.stem
-                        / "trained",
-                    )
+                copy_individual_policy_run(
+                    exp_train=exp_train,
+                    eval_name=saving_path,
+                    urdf_stem=clean_stem,
+                    urdf_idx=idx,
+                    rep=rep,
+                )
+        urdf_params = parse_urdf_params(urdf)
+        csv_writer.current_urdf_params = str(urdf_params)
 
         # C) Append a row to the CSV
         csv_writer.append(
@@ -879,12 +921,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--baseline-exp",
+        "--exp",
         type=str,
-        default="foundation-baseline",
-        help="Experiment name under logs/ea/ used to stage baseline models.",
+        required=True,
+        help="Name/id of the foundation experiment (e.g. 7). "
+             "Used as model folder name AND baseline-exp."
     )
-
+    parser.add_argument(
+        "--foundation-exp",
+        type=str,
+        required=True,
+        help="Experiment ID della foundation policy (logs/ea/<id>/)."
+    )
     # CSV output
     parser.add_argument(
         "--csv",
@@ -985,7 +1033,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         rng_seed=int(args.seed),
         baseline_models=args.baseline_models,
         cfg_dir=args.cfg_dir,
-        baseline_exp=str(args.baseline_exp),
+        exp_name=(args.foundation_exp),
+        saving_path=str(args.exp),
         csv_path=args.csv,
         eval_envs=int(args.eval_envs),
         vmin=float(args.vmin),

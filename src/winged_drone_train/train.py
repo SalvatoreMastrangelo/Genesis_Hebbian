@@ -43,6 +43,23 @@ import builtins
 # RSL-RL resolves policy classes by name; expose our implementation on builtins
 builtins.ActorCriticTanh = ActorCriticTanh
 
+# ---------------------------------------------------------------------------
+#  Cache handling (Taichi / Genesis)
+# ---------------------------------------------------------------------------
+def _configure_cache_root() -> Path:
+    """
+    Force Taichi/genesis cache into a writable location to avoid ROFS errors.
+    """
+    cache_root = (Path("logs") / ".cache" / "gstaichi").expanduser().resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    for env_key in ("XDG_CACHE_HOME", "TI_CACHE_DIR", "TAICHI_CACHE_DIR", "GSTAICHI_CACHE_DIR"):
+        os.environ[env_key] = str(cache_root)
+    mpl_dir = cache_root / "mpl"
+    mpl_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
+    print(f"[train] cache dir set to {cache_root}")
+    return cache_root
+
 # =============================================================================
 #  TRAINING CONFIGURATION
 # =============================================================================
@@ -89,11 +106,11 @@ def get_train_cfg(exp_name: str, max_iterations: int) -> Dict[str, Any]:
         "policy": {
             "class_name": "ActorCriticTanh",   # our custom policy
             "activation": "elu",
-            "actor_hidden_dims": [64, 64],
-            "critic_hidden_dims": [64, 64],
+            "actor_hidden_dims": [32, 32],
+            "critic_hidden_dims": [32, 32],
             "init_noise_std": 0.5,
             "rnn_type": "lstm",
-            "rnn_hidden_size": 64,
+            "rnn_hidden_size": 32,
             "rnn_num_layers": 1,
             "max_servo": 1.0,
             "max_throttle": 1.0,
@@ -325,6 +342,7 @@ def training(
         eval.evaluation() can find the runs consistently.
       - Fully parameterized (no argparse).
     """
+    _configure_cache_root()
     # Genesis init
     gs.init(
         logging_level="error",
@@ -365,33 +383,6 @@ def training(
     configure_solver_noise(env, env_cfg)
 
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
-
-    # ============================
-    # Custom PPO metrics for TensorBoard
-    # ============================
-    for i in range(max_iterations):
-        runner.collect_rollouts()
-        
-        # --- Qui inserisci i log custom ---
-        alg = runner.alg
-
-        # kl
-        if hasattr(alg, "approx_kl"):
-            runner.env.extras["ppo_kl"] = float(alg.approx_kl.mean().item())
-
-        # lr
-        if hasattr(alg, "learning_rate"):
-            runner.env.extras["ppo_lr"] = float(alg.learning_rate)
-
-        # grad norms
-        if hasattr(alg, "last_actor_grad_norm"):
-            runner.env.extras["grad_norm_actor"] = float(alg.last_actor_grad_norm)
-
-        if hasattr(alg, "last_critic_grad_norm"):
-            runner.env.extras["grad_norm_critic"] = float(alg.last_critic_grad_norm)
-        runner.update()
-        runner.log(i)
-    # ---------------------------------
 
     # Optional inheritance
     if parent_exp is not None and parent_ckpt is not None:
@@ -437,7 +428,7 @@ def main() -> None:
         help="Enable Genesis viewer visualization.",
     )
     parser.add_argument(
-        "-B", "--num_envs", type=int, default=16384, # 32768,16384
+        "-B", "--num_envs", type=int, default=32768, # 32768,16384
         help="Number of parallel environments.",
     )
     parser.add_argument(
@@ -485,7 +476,9 @@ def main() -> None:
         pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
     
     urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.685837, 3.90621, 0.464652, 0.489474, 0.446171, 0.150788, 1.42662, 0.15182, 1.05133, -11.7012, 0.25, 2.24834, 2.42715, 2, -2.06608].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #

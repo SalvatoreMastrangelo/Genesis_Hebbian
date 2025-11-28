@@ -40,8 +40,8 @@ class WingedDroneEnv:
     SHORT_RANGE = 0.0          # Extra safety bubble in front (m)
 
     # Genome parameter ranges for normalization (if present)
-    GENOME_MIN = [0.45, 1.5, 0.45, 0.3, 0.3, 0.15, 1.0, 0.1, 1.0, -5.0, 0.0, 1.5, 1.5, 1.0, -5.0]
-    GENOME_MAX = [0.75, 5.0, 0.75, 0.5, 0.5, 0.35, 3.0, 0.2, 3.0, 5.0, 0.5, 3.5, 3.5, 3.0, 0.0]
+    GENOME_MIN = [0.45, 1.5, 0.45, 0.3, 0.3, 0.15, 1.0, 0.1, 1.0, -10.0, 0.0, 1.5, 1.5, 1.0, -5.0]
+    GENOME_MAX = [0.75, 5.0, 0.75, 0.5, 0.5, 0.35, 3.0, 0.2, 3.0, 10.0, 0.5, 3.5, 3.5, 3.0, 0.0]
 
     def __init__(
         self,
@@ -1091,7 +1091,7 @@ class WingedDroneEnv:
     # ---------------------------------------------------------------------- #
     # Collision / success checks                                             #
     # ---------------------------------------------------------------------- #
-    def check_collision(self, tol: float = 0.05) -> torch.Tensor:
+    def check_collision(self, tol: float = 0.01) -> torch.Tensor:
         """
         Detect collisions with trunks using a rectangle in the body frame.
 

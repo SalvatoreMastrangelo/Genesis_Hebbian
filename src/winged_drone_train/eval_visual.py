@@ -877,6 +877,8 @@ def main() -> None:
 
     # Paths: training logs and evaluation outputs
     train_log_dir = os.path.join("logs", args.exp_name)
+    # Overwrite log_dir if needed coming from cluster
+    train_log_dir = f"/home/andrea/tb_logs_kuma/ea/{args.exp_name}"
     eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
 
@@ -889,6 +891,7 @@ def main() -> None:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
     urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
 
     # Build evaluation-specific environment config (do not modify original dict)
     env_cfg_eval = dict(env_cfg)
