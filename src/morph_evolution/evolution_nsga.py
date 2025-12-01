@@ -23,6 +23,7 @@ import datetime
 import os
 import time
 import random
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar
@@ -93,7 +94,10 @@ class GAConfig:
     inherit_policy: bool = False    # if True: offspring can inherit parent policy
 
     # --- Output / logging -------------------------------------------------
-    csv_basename: str = "deap_temp"  # CSV path prefix (".csv" is automatically added)
+    csv_basename: str = "nsga"       # CSV filename (".csv" added automatically)
+    run_name: Optional[str] = None   # Optional custom run name (defaults to timestamp)
+    base_dir: str = "nsga"           # Root directory for all artifacts
+    device: str = "cuda:0"           # Device passed to training/evaluation
 
 
 # Default config used when no custom config is provided
@@ -131,6 +135,38 @@ if USE_PARALLEL:
     ray.init(log_to_driver=False)
 
 
+def _prepare_device_env(device: str) -> str:
+    """
+    Normalize a device string and set CUDA visibility accordingly.
+
+    This keeps training/eval consistent between processes and makes the
+    requested GPU explicit (useful on clusters).
+    """
+    dev = device.strip()
+    low = dev.lower()
+    if low.startswith("cuda:"):
+        _, _, idx = low.partition(":")
+        if idx:
+            os.environ["CUDA_VISIBLE_DEVICES"] = idx
+            return f"cuda:{idx}"
+        return "cuda"
+    if low == "cpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        return "cpu"
+    return dev
+
+
+@contextmanager
+def _pushd(path: Path):
+    """Temporarily change working directory."""
+    old = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old)
+
+
 # =============================================================================
 #  SENTINEL VALUES FOR INVALID INDIVIDUALS
 # =============================================================================
@@ -146,7 +182,7 @@ INVALID_P = {0.0}       # invalid progress / maneuverability
 
 
 def _extract_reward_curve(
-    log_dir: str,
+    log_dir: Path,
     train_iters: int,
     n_points: int = 10,
     win_frac: float = 0.05,
@@ -168,7 +204,10 @@ def _extract_reward_curve(
         Keys are "rew_10pct", "rew_20pct", ..., "rew_100pct".
         If the curve cannot be extracted, an empty dict is returned.
     """
-    ea = event_accumulator.EventAccumulator(log_dir)
+    if not log_dir.exists():
+        return {}
+
+    ea = event_accumulator.EventAccumulator(str(log_dir))
     try:
         ea.Reload()
     except Exception:
@@ -210,20 +249,29 @@ def _eval_only_custom(
     return_arrays=True,
 ):
     phys_genome = Chromosome_Drone.to_physical(genome_norm)
-    urdf_file = UrdfMaker(phys_genome).create_urdf()
-    exp_name = Path(urdf_file).stem
+    urdf_dir = Path(cfg["URDF_DIR"]).expanduser().resolve()
+    urdf_file = Path(UrdfMaker(phys_genome, out_dir=urdf_dir).create_urdf()).resolve()
+    exp_name = urdf_file.stem
+    if cfg.get("EXP_PREFIX"):
+        exp_name = f"{cfg['EXP_PREFIX']}-{exp_name}"
+
+    _prepare_device_env(cfg.get("DEVICE", "cuda:0"))
+    base_dir = Path(cfg["BASE_DIR"]).expanduser().resolve()
+    eval_dir = (Path(cfg["LOGS_DIR"]).expanduser().resolve() / "eval" / exp_name)
 
     # Usa evaluation ma caricando la policy custom
-    out = evaluation(
-        exp_name=exp_name,
-        urdf_file=urdf_file,
-        ckpt=None,  # Ignorato
-        envs=cfg["EVAL_ENVS"],
-        vmin=cfg["VMIN"],
-        vmax=cfg["VMAX"],
-        return_arrays=return_arrays,
-        custom_policy_path=policy_path,  # << PATCH IN eval.py
-    )
+    with _pushd(base_dir):
+        out = evaluation(
+            exp_name=exp_name,
+            urdf_file=urdf_file,
+            ckpt=None,  # Ignorato
+            envs=cfg["EVAL_ENVS"],
+            vmin=cfg["VMIN"],
+            vmax=cfg["VMAX"],
+            return_arrays=return_arrays,
+            custom_policy_path=policy_path,  # << PATCH IN eval.py
+            eval_dir=eval_dir,
+        )
 
     if return_arrays:
         v_dict, e_dict, p_dict, _, extra = out
@@ -305,8 +353,14 @@ def _train_and_eval_sync(
 
     # 1) Map genome to physical parameters and generate URDF
     phys_genome = Chromosome_Drone.to_physical(genome_norm)
-    urdf_file = UrdfMaker(phys_genome).create_urdf()
-    exp_name = Path(urdf_file).stem
+    urdf_dir = Path(cfg["URDF_DIR"]).expanduser().resolve()
+    urdf_file = Path(UrdfMaker(phys_genome, out_dir=urdf_dir).create_urdf()).resolve()
+    exp_name = urdf_file.stem
+    if cfg.get("EXP_PREFIX"):
+        exp_name = f"{cfg['EXP_PREFIX']}-{exp_name}"
+
+    device = _prepare_device_env(cfg.get("DEVICE", "cuda:0"))
+    base_dir = Path(cfg["BASE_DIR"]).expanduser().resolve()
 
     # 2) Training iterations: shorter if inheriting a parent policy
     train_iters = (
@@ -316,25 +370,31 @@ def _train_and_eval_sync(
     )
 
     # 3) Train policy for this morphology
-    training(
-        exp_name=exp_name,
-        urdf_file=urdf_file,
-        num_envs=cfg["TRAIN_ENVS"],
-        max_iterations=train_iters,
-        parent_exp=parent_exp,
-        parent_ckpt=parent_ckpt,
-    )
+    with _pushd(base_dir):
+        training(
+            exp_name=exp_name,
+            urdf_file=urdf_file,
+            num_envs=cfg["TRAIN_ENVS"],
+            max_iterations=train_iters,
+            parent_exp=parent_exp,
+            parent_ckpt=parent_ckpt,
+            device=device,
+        )
 
     # 4) Evaluate policy at multiple commanded speeds
-    out = evaluation(
-        exp_name=exp_name,
-        urdf_file=urdf_file,
-        ckpt=train_iters,
-        envs=cfg["EVAL_ENVS"],
-        vmin=cfg["VMIN"],
-        vmax=cfg["VMAX"],
-        return_arrays=return_arrays,
-    )
+    eval_dir = (Path(cfg["LOGS_DIR"]).expanduser().resolve() / "eval" / exp_name)
+
+    with _pushd(base_dir):
+        out = evaluation(
+            exp_name=exp_name,
+            urdf_file=urdf_file,
+            ckpt=train_iters,
+            envs=cfg["EVAL_ENVS"],
+            vmin=cfg["VMIN"],
+            vmax=cfg["VMAX"],
+            return_arrays=return_arrays,
+            eval_dir=eval_dir,
+        )
 
     if return_arrays:
         v_dict, e_dict, p_dict, _, extra = out
@@ -344,7 +404,7 @@ def _train_and_eval_sync(
         extra = None
 
     # 5) Read TensorBoard logs and compute a smoothed reward curve
-    tb_log_dir = os.path.join("logs", "ea", exp_name)
+    tb_log_dir = Path(cfg["LOG_ROOT"]) / exp_name
     reward_curve = _extract_reward_curve(
         tb_log_dir,
         train_iters,
@@ -560,9 +620,11 @@ class FitnessDB:
     This avoids retraining individuals that have already been evaluated.
     """
 
-    def __init__(self, name: str, n_obj: int) -> None:
+    def __init__(self, name: str, n_obj: int, root: Path) -> None:
         self.n_obj = n_obj
-        self.path = Path(f"{name}.csv")
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.path = self.root / f"{name}.csv"
         self.df = pd.read_csv(self.path) if self.path.exists() else self._blank()
         if not self.path.exists():
             self.df.to_csv(self.path, index=False)
@@ -577,10 +639,12 @@ class FitnessDB:
     def insert(self, chromo: Sequence[float], ff: Sequence[float], meta: Dict[str, Any]) -> None:
         """Append a new row (chromo, fitness, metadata) to the CSV."""
         print(f"   ↘ writing CSV  gen={meta.get('generation')}  ff={ff}")
-        row_dict = {c: np.nan for c in self.df.columns}
+        row_dict: Dict[str, Any] = {c: np.nan for c in self.df.columns}
 
         row_dict["timestamp"] = time.time()
         row_dict["chromosome"] = str(list(chromo))
+        for i, val in enumerate(ff):
+            row_dict[f"ff_{i}"] = val
         for k, v in meta.items():
             if k in row_dict:
                 row_dict[k] = v
@@ -627,7 +691,7 @@ class FitnessDB:
                 "steps90_pct",
             ]
         )
-        return pd.DataFrame([{c: np.nan for c in cols}])
+        return pd.DataFrame(columns=cols)
 
     def get_row(self, chromo: Sequence[float]) -> Optional[pd.Series]:
         """Return the entire row for the chromosome, or None if absent."""
@@ -708,9 +772,22 @@ class CodesignDEAP:
         self.gen_policy = self.cfg.gen_policy
         self.policy_path = self.cfg.policy_path
 
-        self.db = FitnessDB(self.cfg.csv_basename, 3)
-        self.stats = Stats(self.n_pop, self.n_gen, 3)
         self.tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_name = self.cfg.run_name or self.tag
+        self.base_dir = (Path(self.cfg.base_dir) / self.run_name).expanduser().resolve()
+        self.urdf_dir = self.base_dir / "urdf_generated"
+        self.logs_dir = self.base_dir / "logs"
+        self.analysis_dir = self.base_dir / "analysis"
+        for d in (self.urdf_dir, self.logs_dir, self.analysis_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        self.log_root = (self.logs_dir / "ea").resolve()
+        self.log_root.mkdir(parents=True, exist_ok=True)
+        self.exp_prefix = self.run_name
+        self.stats_path = (self.analysis_dir / "stats.pkl").resolve()
+
+        self.db = FitnessDB(self.cfg.csv_basename, 3, root=self.analysis_dir)
+        self.stats = Stats(self.n_pop, self.n_gen, 3)
 
         # Create DEAP fitness and individual types (only once)
         if "FitMulti" not in creator.__dict__:
@@ -770,6 +847,8 @@ class CodesignDEAP:
             ff_cached = [cached_row[f"ff_{i}"] for i in range(3)]
             indiv.fitness.values = tuple(ff_cached)
             indiv.max_p = cached_row.get("max_p", np.nan)
+            indiv.exp_name = cached_row.get("exp_name", None)
+            indiv.train_it = cached_row.get("train_it", self.cfg.train_iters_new)
             print(f"   ↪ cache-hit exp={cached_row.get('exp_name', 'NA')} ff={ff_cached}")
             return tuple(ff_cached)
 
@@ -791,6 +870,12 @@ class CodesignDEAP:
             EVAL_ENVS=self.cfg.eval_envs,
             VMIN=self.cfg.vmin,
             VMAX=self.cfg.vmax,
+            LOG_ROOT=str(self.log_root),
+            EXP_PREFIX=self.exp_prefix,
+            DEVICE=self.cfg.device,
+            BASE_DIR=str(self.base_dir),
+            URDF_DIR=str(self.urdf_dir),
+            LOGS_DIR=str(self.logs_dir),
         )
 
         if USE_PARALLEL:
@@ -813,6 +898,8 @@ class CodesignDEAP:
 
             indiv._meta_raw = meta
             indiv.max_p = meta["max_p"]
+            indiv.exp_name = meta["exp_name"]
+            indiv.train_it = meta["train_it"]
             
             if extra:
                 indiv._p_s = extra["p_s"]
@@ -827,6 +914,8 @@ class CodesignDEAP:
 
         indiv._meta_raw = meta
         indiv.max_p = meta["max_p"]
+        indiv.exp_name = meta["exp_name"]
+        indiv.train_it = meta["train_it"]
         if extra:
             indiv._p_s = extra["p_s"]
             indiv._v_s = extra["v_s"]
@@ -924,6 +1013,9 @@ class CodesignDEAP:
             )
         )
 
+        ind.exp_name = meta.get("exp_name", getattr(ind, "exp_name", None))
+        ind.train_it = meta.get("train_it", getattr(ind, "train_it", self.cfg.train_iters_new))
+
         print(
             f"[finalize] gen={self._gen} chr={list(ind)} "
             f"vel={vel_d['mean_v']:.2f} effE={eff_d['mean_E']:.2f} "
@@ -960,6 +1052,8 @@ class CodesignDEAP:
                 for ind, (ff, meta, extra) in zip(pend, results):
                     ind._meta_raw = meta
                     ind.max_p = meta["max_p"]
+                    ind.exp_name = meta["exp_name"]
+                    ind.train_it = meta["train_it"]
                     if extra:
                         ind._p_s = extra["p_s"]
                         ind._v_s = extra["v_s"]
@@ -1038,7 +1132,7 @@ class CodesignDEAP:
                 for p in (parents[i], parents[i + 1]):
                     if hasattr(p, "exp_name"):
                         ck_it = getattr(p, "train_it", self.cfg.train_iters_new)
-                        ck = Path(f"logs/{p.exp_name}/model_{ck_it}.pt")
+                        ck = self.log_root / p.exp_name / f"model_{ck_it}.pt"
                         if ck.is_file():
                             infos.append((p.exp_name, ck_it))
                 if infos:
@@ -1050,9 +1144,9 @@ class CodesignDEAP:
         g = self._gen
         self.stats.record(g, pop)
         if g % 3 == 0 or g == self.n_gen:
-            out_dir = Path(f"g{g:02d}")
-            out_dir.mkdir(exist_ok=True)
-            PostAnalyzer(self.db.path, self.stats).analyze(prefix=f"{out_dir}/")
+            out_dir = self.analysis_dir / f"g{g:02d}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            PostAnalyzer(self.db.path, self.stats).analyze(prefix=str(out_dir / "gen"))
 
         best_v = np.nanmax(self.stats.V[g])
         best_e = -np.nanmin(self.stats.E[g])
@@ -1070,6 +1164,9 @@ class CodesignDEAP:
         """
         Run the full NSGA-II evolution and return the final population.
         """
+        print(f"[setup] Run directory: {self.base_dir}")
+        print(f"[setup] CSV cache: {self.db.path}")
+
         # GEN 0
         pop = self.tb.pop(self.n_pop)
         self._gen = 0
@@ -1099,11 +1196,11 @@ class CodesignDEAP:
             self._after_generation(pop)
 
         # Save global stats
-        with open(f"stats_{self.tag}.pkl", "wb") as f:
+        with self.stats_path.open("wb") as f:
             import pickle
 
             pickle.dump(self.stats, f)
-        print("Statistics saved ✔")
+        print(f"Statistics saved ✔ → {self.stats_path}")
         return pop
 
 
@@ -1146,18 +1243,24 @@ def main() -> None:
         help="Percentage of individuals above minimal_p when dynamic.",
     )
     parser.add_argument(
-        "--csv",
-        type=str,
-        default="deap_temp",
-        help="Base name for the CSV cache (without .csv).",
-    )
-    parser.add_argument(
         "--gen_policy", action="store_true", default=False,
         help="Skip training and evaluate using a custom pre-trained policy"
     )
     parser.add_argument(
         "--policy_path", type=str, default=None,
         help="Path to a pre-trained policy to use together with --gen_policy"
+    )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Optional run name (defaults to timestamp).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda:0",
+        help="Device for training/eval (e.g., cuda:0 or cpu).",
     )
 
     args = parser.parse_args()
@@ -1168,12 +1271,14 @@ def main() -> None:
     cfg.num_generations = args.gen
     cfg.train_iters_new = args.train_it
     cfg.inherit_policy = args.inherit
-    cfg.csv_basename = args.csv
+    cfg.csv_basename = "nsga"
     cfg.use_dynamic_p = not args.no_dynamic_p
     cfg.fixed_p = args.fixed_p
     cfg.pct_above = args.pct_above
     cfg.gen_policy = args.gen_policy
     cfg.policy_path = args.policy_path
+    cfg.run_name = args.run_name
+    cfg.device = args.device
 
     ga = CodesignDEAP(cfg)
     ga.run()

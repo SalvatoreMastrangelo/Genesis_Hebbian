@@ -102,7 +102,7 @@ class UrdfMaker:
         "wing_chord": 0.199988144,
         "wing_span_ref": 0.70,
         "elev_chord": 0.139941293,
-        "elev_span": 0.1800018297,
+        "elev_span": 0.36,
         "rudd_chord": 0.119323096638,
         "rudd_span": 0.16357341166,
     }
@@ -141,8 +141,8 @@ class UrdfMaker:
 
     _RPY_FUSE_COLL = "-1.5898372930676048 6.123233995736766e-17 -1.5707963267948968"
     _RPY_WING_COLL = "1.570796327 -1.558922022 0"
-    _RPY_ELEV_COLL = "1.5763749568 -1.5318707859 3.1359944429"
-    _RPY_RUDD_COLL = "0.10626955814138643 0.008780081131392076 1.5717328981686811"
+    _RPY_ELEV_COLL = "0 0 0"
+    _RPY_RUDD_COLL = "0 0 0"
 
     # Revolute joint base limits and dynamics
     _REV_LIMIT = {
@@ -414,7 +414,7 @@ class UrdfMaker:
             sz = ref_scale[2] * tfus    / max(tfus_ref,    1e-9)
             return f"{sx:.6g} {sy:.6g} {sz:.6g}"
 
-        # For wing/elevator/rudder the mesh encodes:
+        # For wing meshes the STL encodes:
         #   span along Y, chord along Z, thickness along X.
         # Map:
         #   X ← thickness, Y ← span, Z ← chord
@@ -426,6 +426,21 @@ class UrdfMaker:
 
         thk_cur, chord_cur, span_cur = dims
         thk_ref, chord_ref, span_ref = ref_dims
+
+        # Elevator mesh is oriented with chord along X, span along Y, thickness along Z.
+        if what == "elevator":
+            sx = ref_scale[0] * chord_cur / max(chord_ref, 1e-9)   # chord  → X
+            sy = ref_scale[1] * span_cur  / max(span_ref,  1e-9)   # span   → Y
+            sz = ref_scale[2] * thk_cur   / max(thk_ref,   1e-9)   # thick  → Z
+            return f"{sx:.6g} {sy:.6g} {sz:.6g}"
+
+        # Rudder is treated as a vertical wing: chord along X (longitudinal),
+        # thickness along Y, span along Z (height).
+        if what == "rudder":
+            sx = ref_scale[0] * chord_cur / max(chord_ref, 1e-9)   # chord  → X
+            sy = ref_scale[1] * thk_cur   / max(thk_ref,   1e-9)   # thick  → Y
+            sz = ref_scale[2] * span_cur  / max(span_ref,  1e-9)   # span   → Z
+            return f"{sx:.6g} {sy:.6g} {sz:.6g}"
 
         sx = ref_scale[0] * thk_cur   / max(thk_ref,   1e-9)  # thickness → X
         sy = ref_scale[1] * span_cur  / max(span_ref,  1e-9)  # span      → Y
@@ -862,10 +877,12 @@ class UrdfMaker:
     def _elevator(self, robot: ET.Element) -> None:
         """Create elevator joint, links, aero frames and collision geometry."""
         p = self.p
+        thickness = self._REF["tc"]
 
-        box_full = (self._REF["tc"], p.elevator_chord, p.elevator_span)
+        # Elevator treated as a horizontal wing: chord → X, span → Y, thickness → Z
+        box_full = (p.elevator_chord, p.elevator_span, thickness)
         span_half = p.elevator_span / 2.0
-        box_half = (box_full[0], box_full[1], span_half)
+        box_half = (p.elevator_chord, span_half, thickness)
 
         rho = self._RHO_ELEV * self.S
         m_half = math.prod(box_half) * rho
@@ -903,9 +920,9 @@ class UrdfMaker:
         hinge_link = ET.SubElement(robot, "link", name="elevator_hinge")
         I_hinge = self._I_box(
             self._MASS_INTER,
-            self._REF["tc"],
             p.elevator_chord,
             p.elevator_span,
+            thickness,
         )
         self._add_inertial(hinge_link, (0.0, 0.0, 0.0), self._MASS_INTER, I_hinge)
 
@@ -931,14 +948,6 @@ class UrdfMaker:
             # CG from LE (+ forward); aero frame mirrors this
             self._add_inertial(ln, (self._CG_RATIO * chord, 0.0, 0.0), m_half, I_half)
 
-            coll = ET.SubElement(ln, "collision")
-            self._origin(coll, (-self._COLL_RATIO * chord, 0.0, -0.0226291863), self._RPY_ELEV_COLL)
-            ET.SubElement(
-                ET.SubElement(coll, "geometry"),
-                "box",
-                size=" ".join(f"{v:.12g}" for v in box_half),
-            )
-
             ja = ET.SubElement(
                 robot,
                 "joint",
@@ -952,6 +961,14 @@ class UrdfMaker:
             aero = ET.SubElement(robot, "link", name=f"aero_frame_elevator_{side}")
             self._add_inertial(aero, (0.0, 0.0, 0.0), 0.0, (0.0, 0.0, 0.0))
 
+            coll = ET.SubElement(ln, "collision")
+            self._origin(coll, (-self._COLL_RATIO * chord, 0.0, 0.0), self._RPY_ELEV_COLL)
+            ET.SubElement(
+                ET.SubElement(coll, "geometry"),
+                "box",
+                size=" ".join(f"{v:.12g}" for v in box_half),
+            )
+
     # ────────────────────────────────────────────────────────────────────
     # Rudder (yaw)
     # ────────────────────────────────────────────────────────────────────
@@ -960,10 +977,14 @@ class UrdfMaker:
         """Create rudder yaw joint, link, aero frame and collision geometry."""
         p = self.p
         chord = p.rudder_chord
+        span = p.rudder_span
+        thickness = self._REF["tc"]
 
-        box = (self._REF["tc"], chord, p.rudder_span)
-        mass_rudder = math.prod(box) * self._RHO_RUDD * self.S
-        I_rudder = self._I_box(mass_rudder, *box)
+        # Rudder geometry is aligned like a vertical wing:
+        #   X → chord (longitudinal), Y → thickness, Z → span (height)
+        box_geom = (chord, thickness, span)
+        mass_rudder = math.prod(box_geom) * self._RHO_RUDD * self.S
+        I_rudder = self._I_box(mass_rudder, *box_geom)
 
         # Rudder yaw joint (attached to elevator hinge)
         jy = ET.SubElement(robot, "joint", name="rudder_yaw_joint", type="revolute")
@@ -1005,7 +1026,7 @@ class UrdfMaker:
         ET.SubElement(
             ET.SubElement(coll, "geometry"),
             "box",
-            size=" ".join(f"{v:.12g}" for v in box),
+            size=" ".join(f"{v:.12g}" for v in box_geom),
         )
 
         # Visual mesh
@@ -1016,7 +1037,7 @@ class UrdfMaker:
             "mesh",
             filename="package://meshes/rudder.stl",
         )
-        mesh.set("scale", self._scale("rudder", box))
+        mesh.set("scale", self._scale("rudder", (thickness, chord, span)))
         ET.SubElement(vis, "material", name="red")
 
         # Aero frame at rudder CG
@@ -1112,7 +1133,7 @@ if __name__ == "__main__":
     genome3 = [0.7, 2.5, 0.66, 0.45, 0.4, 0.26, 3.0, 0.14, 2.75, 10.0, 0.25, 2.0, 3.5, 2.0, -2.0]
     genome4 = [0.44, 1.75, 0.48, 0.34, 0.3, 0.12, 3.0, 0.2, 2.5, 20.0, 0.25, 3.5, 2.25, 2.0, -5.0]
     genome5 = [0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3]
-    genome6 = [0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669]
+    genome6 = [0.5, 2, 0.5, 0.35, 0.35, 0.35, 2.5, 0.1, 1.0, 0, 0.25, 3, 3, 2, -2]
 
     for genome in (genome1, genome6):
         path = UrdfMaker(genome).create_urdf()

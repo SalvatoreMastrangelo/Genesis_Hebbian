@@ -43,6 +43,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -480,7 +481,7 @@ class LeanCSV:
         self.minimal_progress = float(minimal_progress)
 
         if not self.path.exists():
-            header = ["urdf_stem", "urdf_params"]
+            header = ["urdf_stem", "urdf_params", "eval_duration_s", "train_duration_s"]
             # Baseline columns
             for i in range(self.n_baselines):
                 k = i + 1
@@ -510,6 +511,8 @@ class LeanCSV:
         baseline_rewards: Sequence[float],
         trained_fitness: Sequence[FitnessTriple],
         trained_rewards: Sequence[float],
+        eval_duration_s: float,
+        train_duration_s: float,
     ) -> None:
         """
         Append a new CSV row for a single URDF.
@@ -528,7 +531,12 @@ class LeanCSV:
         trained_rewards:
             Sequence of mean episode rewards for each trained policy.
         """
-        row: List[str] = [urdf_stem, self.current_urdf_params]
+        row: List[str] = [
+            urdf_stem,
+            self.current_urdf_params,
+            f"{eval_duration_s:.3f}",
+            f"{train_duration_s:.3f}",
+        ]
 
         def _gate(f: FitnessTriple) -> FitnessTriple:
             """
@@ -732,6 +740,7 @@ def run_pipeline(
         clean_stem = safe_urdf_stem(urdf)
         print(f"[eval_gen] URDF stem raw='{urdf.stem}' clean='{clean_stem}'")
 
+        eval_t0 = time.time()
         # A) Evaluate all baseline checkpoints
         baseline_fitness: List[FitnessTriple] = []
         baseline_rewards: List[float] = []
@@ -769,6 +778,8 @@ def run_pipeline(
                 baseline_rewards.append(summary.reward_ep_mean)
 
         print("[EVAL 9] Baseline evaluation completed for all checkpoints")
+        eval_duration = time.time() - eval_t0
+        print(f"[timing] baseline eval duration: {eval_duration:.2f}s for URDF {idx}")
         # Copy baseline plots from logs/ea/<foundation-exp> to logs/<EXP_NAME>_evaluation
         copy_baseline_eval_images(
             source_exp=exp_name,       # foundation log dir
@@ -780,6 +791,7 @@ def run_pipeline(
         trained_fitness: List[FitnessTriple] = []
         trained_rewards: List[float] = []
 
+        train_t0 = time.time()
         for rep in range(train_repeats):
             # New: clean experiment name for training
             exp_train = f"{saving_path}_urdf{idx:03d}_rep{rep+1}"
@@ -880,6 +892,8 @@ def run_pipeline(
                 )
         urdf_params = parse_urdf_params(urdf)
         csv_writer.current_urdf_params = str(urdf_params)
+        train_duration = time.time() - train_t0
+        print(f"[timing] training+trained eval duration: {train_duration:.2f}s for URDF {idx}")
 
         # C) Append a row to the CSV
         csv_writer.append(
@@ -888,6 +902,8 @@ def run_pipeline(
             baseline_rewards=baseline_rewards,
             trained_fitness=trained_fitness,
             trained_rewards=trained_rewards,
+            eval_duration_s=eval_duration,
+            train_duration_s=train_duration,
         )
 
     logger.info("Pipeline finished successfully.")

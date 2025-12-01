@@ -48,14 +48,15 @@ RUN python -m pip install --no-cache-dir \
     tqdm \
     jsonschema \
     click \
-    pandas
+    pandas \
+    ray
 
 # ------------------------------------------------------------
 # Clona la tua fork di Genesis e installala SENZA deps
 # (le dipendenze sono già coperte da genesis-world + extra)
 # ------------------------------------------------------------
 WORKDIR /workspace
-RUN git clone --branch base_0_3_7 https://github.com/andrevic1/Genesis.git genesis-local
+RUN git clone --branch dev https://github.com/andrevic1/Genesis.git genesis-local
 
 WORKDIR /workspace/genesis-local
 RUN python -m pip install --no-cache-dir --no-deps .

@@ -99,16 +99,16 @@ class Chromosome_Drone:
         ParamSpec("attach_x_ratio", 0.30, 0.50),
 
         # 5: elevator span (m) — se troppo piccolo manca autorità, se troppo grande lo destabilizza
-        ParamSpec("elevator_span", 0.15, 0.35),
+        ParamSpec("elevator_span", 0.2, 0.6),
 
         # 6: elevator aspect ratio — OK range stretto
-        ParamSpec("elevator_aspect_ratio", 1.0, 3.0),
+        ParamSpec("elevator_aspect_ratio", 1.5, 4.0),
 
         # 7: rudder span (m)
-        ParamSpec("rudder_span", 0.10, 0.20),
+        ParamSpec("rudder_span", 0.10, 0.30),
 
         # 8: rudder aspect ratio
-        ParamSpec("rudder_aspect_ratio", 1.0, 3.0),
+        ParamSpec("rudder_aspect_ratio", 1.5, 4.0),
 
         # 9: dihedral (deg) — range stretto: >10° o <−10° causa forti instabilità laterali
         ParamSpec("dihedral_deg", -0.0, 0.0),

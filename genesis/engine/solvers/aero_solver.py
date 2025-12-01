@@ -323,7 +323,7 @@ class AeroSolver(Solver):
         cg_x = xyz("fuselage")[0]
         self.cg_fus_local_x = cg_x
 
-        # Wings (inner "prop" and outer "free")
+        # Wings (inner "prop" and outer "free") – boxes are (thickness, chord, span)
         _, c_wp, sp_wp = box("right_wing_prop")
         _, c_wf, sp_wf = box("right_wing_free")
 
@@ -336,14 +336,15 @@ class AeroSolver(Solver):
         S_rw_prop, AR_rw_prop = S_lw_prop, AR_lw_prop
         S_rw_free, AR_rw_free = S_lw_free, AR_lw_free
 
-        # Elevators (horizontal tail, two symmetric halves)
-        _, c_el, sp_el = box("elevator_left")
+        # Elevators (horizontal tail, two symmetric halves) – boxes are (chord, span, thickness)
+        c_el, sp_el, _ = box("elevator_left")
+        print(f"Elevator box: c={c_el}, sp={sp_el}")
         S_el = c_el * sp_el
         AR_el = sp_el / c_el
         S_er, AR_er = S_el, AR_el
 
-        # Rudder (vertical tail)
-        _, c_r, sp_r = box("rudder")
+        # Rudder (vertical tail) – box is (chord, thickness, span)
+        c_r, _, sp_r = box("rudder")
         S_r = c_r * sp_r
         AR_r = sp_r / c_r
         cz_r = xyz("rudder")[2] + 0.5 * S_r / c_r  # z offset for rudder aero center

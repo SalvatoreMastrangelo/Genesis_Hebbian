@@ -547,7 +547,7 @@ if __name__ == "__main__":
     # ---------------- Load configs ------------------------------------- #
     log_dir = f"logs/{args.exp_name}"
     # Overwrite log_dir if needed coming from cluster
-    log_dir = f"/home/andrea/tb_logs_kuma/ea/{args.exp_name}"
+    #log_dir = f"/home/andrea/tb_logs_kuma/ea/{args.exp_name}"
     with open(os.path.join(log_dir, "cfgs.pkl"), "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
@@ -564,7 +564,7 @@ if __name__ == "__main__":
     )
     #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
     #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.5, 2, 0.5, 0.35, 0.35, 0.15, 1, 0.1, 1, 0, 0.25, 3, 3, 2, -2].urdf"
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax
