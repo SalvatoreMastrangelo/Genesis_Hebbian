@@ -86,5 +86,9 @@ The simulation loop runs in a background thread, so the viewer remains responsiv
 Things to be changed:
 
 src/winged_drone_fly.py --> make it compatible with the new urdf (new links and new joints)
+
+
 genesis/asset/urdf/mydrone --> add mesh and urdf file
+
+
 genesis/engine/solvers/aero_solver.py --> study, adapt for new aerodynamic parameters, adapt for new link. Here you have to do a lot of changes, so I would suggest that you can add also a utilitiy folder with drone specific features, and then adapt the solver on top of it.
