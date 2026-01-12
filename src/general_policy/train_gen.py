@@ -104,11 +104,11 @@ def build_catalog(catalog_dir: Path, n: int, seed: int = 0) -> List[Path]:
                 0.16,  # rudder_span
                 1.30,  # rudder_aspect_ratio
                 0.0,   # dihedral_deg
-                0.25,  # hinge_le_ratio (fixed in Chromosome_Drone as well)
                 2.0,   # sweep_multiplier
                 2.5,   # twist_multiplier
-                2.0,   # cl_alpha_2d (fixed in Chromosome_Drone)
-                -3.0,  # alpha0_2d
+                3.0,   # naca_d1
+                4.0,   # naca_d2
+                16.0,  # naca_last2
             ]
             phys_genome = baseline_phys
         else:

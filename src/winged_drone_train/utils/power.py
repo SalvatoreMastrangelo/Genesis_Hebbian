@@ -18,7 +18,11 @@ This module is intentionally independent from Genesis internals.  It provides:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional, Sequence, Tuple
+import csv
+import yaml
 
 import torch
 
@@ -315,7 +319,86 @@ class ActuatorDynamics:
 # -----------------------------------------------------------------------------
 # Power consumption model
 # -----------------------------------------------------------------------------
-def _default_prop_coeffs(drone_name: str, device: torch.device, n_propellers: int) -> torch.Tensor:
+def _default_catalog_paths() -> tuple[Path, Path]:
+    base = Path(__file__).resolve().parents[3]
+    urdf_dir = base / "genesis" / "assets" / "urdf" / "mydrone"
+    return urdf_dir / "actuators.csv", urdf_dir / "aero_parameters.yaml"
+
+
+def _clean_name(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    if not isinstance(name, str):
+        return None
+    value = name.strip()
+    if not value or value.lower() == "none":
+        return None
+    return value
+
+
+@lru_cache(maxsize=8)
+def _read_actuator_catalog(path_str: str) -> dict[str, dict]:
+    path = Path(path_str)
+    if not path.exists():
+        return {}
+    catalog: dict[str, dict] = {}
+    with path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = _clean_name(row.get("name"))
+            if not name:
+                continue
+            kind = (row.get("type") or "").strip().lower()
+
+            def fkey(k: str) -> Optional[float]:
+                v = (row.get(k) or "").strip()
+                if not v or v.lower() == "none":
+                    return None
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+            catalog[name] = {
+                "type": kind,
+                "c0": fkey("c0"),
+                "c1": fkey("c1"),
+                "c2": fkey("c2"),
+                "max_thrust": fkey("max_thrust"),
+                "radius": fkey("radius"),
+            }
+    return catalog
+
+
+@lru_cache(maxsize=8)
+def _read_propeller_actuator_names(path_str: str) -> tuple[str, ...]:
+    path = Path(path_str)
+    if not path.exists():
+        return ()
+    with path.open("r") as f:
+        data = yaml.safe_load(f) or {}
+    links = data.get("links", {}) or {}
+    names = []
+    for _, info in links.items():
+        if not isinstance(info, dict):
+            continue
+        if (info.get("type") or "").strip().lower() != "propeller":
+            continue
+        act_name = _clean_name(info.get("actuator"))
+        if act_name:
+            names.append(act_name)
+    return tuple(names)
+
+
+def _default_prop_coeffs(
+    drone_name: str,
+    device: torch.device,
+    n_propellers: int,
+    *,
+    actuator_catalog_path: Optional[Path] = None,
+    aero_parameters_path: Optional[Path] = None,
+    propeller_names: Optional[Sequence[str]] = None,
+) -> torch.Tensor:
     """Return polynomial coefficients for propeller power as (N, 3) tensor.
 
     The polynomial is: P_prop = c0 + c1 * T + c2 * T^2  (per propeller),
@@ -324,10 +407,41 @@ def _default_prop_coeffs(drone_name: str, device: torch.device, n_propellers: in
 
     # Generic morphing drone / default model
     base = torch.tensor([[0.0, 15.053, 2.431]], device=device, dtype=torch.float32)
+    coeffs = base if n_propellers == 1 else base.expand(n_propellers, 3).clone()
 
-    if n_propellers == 1:
-        return base
-    return base.expand(n_propellers, 3)
+    if propeller_names:
+        names = [_clean_name(n) for n in propeller_names]
+        names = [n for n in names if n]
+    else:
+        csv_path, yaml_path = _default_catalog_paths()
+        if actuator_catalog_path is not None:
+            csv_path = Path(actuator_catalog_path)
+        if aero_parameters_path is not None:
+            yaml_path = Path(aero_parameters_path)
+        names = list(_read_propeller_actuator_names(str(yaml_path)))
+
+    if not names:
+        return coeffs
+
+    if len(names) < n_propellers:
+        names = names + [names[0]] * (n_propellers - len(names))
+    if len(names) > n_propellers:
+        names = names[:n_propellers]
+
+    csv_path = actuator_catalog_path or _default_catalog_paths()[0]
+    catalog = _read_actuator_catalog(str(csv_path))
+    for i, name in enumerate(names):
+        row = catalog.get(name)
+        if not row or row.get("type") != "propeller":
+            continue
+        c0 = row.get("c0")
+        c1 = row.get("c1")
+        c2 = row.get("c2")
+        if c0 is None or c1 is None or c2 is None:
+            continue
+        coeffs[i] = torch.tensor([c0, c1, c2], device=device, dtype=torch.float32)
+
+    return coeffs
 
 
 def _default_servo_power_constants(
@@ -397,6 +511,9 @@ def compute_power_consumption(
     twist_multiplier: float = 2.5,
     tail_multiplier: float = 2.0,
     prop_coefficients: Optional[torch.Tensor] = None,
+    actuator_catalog_path: Optional[str | Path] = None,
+    aero_parameters_path: Optional[str | Path] = None,
+    propeller_names: Optional[Sequence[str]] = None,
     servo_power_constants: Optional[torch.Tensor] = None,
     torque_multipliers: Optional[torch.Tensor] = None,
     device: Optional[torch.device] = None,
@@ -424,6 +541,12 @@ def compute_power_consumption(
         prop_coefficients:
             Optional (n_prop, 3) or (1, 3) tensor with [c0, c1, c2] for each
             propeller.  If None, a default set is chosen based on `drone_name`.
+        actuator_catalog_path:
+            Optional path to actuators.csv used to resolve propeller c0/c1/c2.
+        aero_parameters_path:
+            Optional path to aero_parameters.yaml used to map propeller names.
+        propeller_names:
+            Optional list of propeller actuator names to resolve c0/c1/c2.
         servo_power_constants:
             Optional (n_servos, 3) tensor with [R, kV, kI] per servo.  If None,
             default values are selected based on `drone_name`.
@@ -461,7 +584,16 @@ def compute_power_consumption(
     # Propeller power: polynomial in thrust
     # ------------------------------------------------------------------
     if prop_coefficients is None:
-        prop_coefficients = _default_prop_coeffs(drone_name, device, n_prop)
+        csv_path = Path(actuator_catalog_path) if actuator_catalog_path is not None else None
+        yaml_path = Path(aero_parameters_path) if aero_parameters_path is not None else None
+        prop_coefficients = _default_prop_coeffs(
+            drone_name,
+            device,
+            n_prop,
+            actuator_catalog_path=csv_path,
+            aero_parameters_path=yaml_path,
+            propeller_names=propeller_names,
+        )
     else:
         prop_coefficients = prop_coefficients.to(device)
         if prop_coefficients.ndim != 2 or prop_coefficients.shape[1] != 3:

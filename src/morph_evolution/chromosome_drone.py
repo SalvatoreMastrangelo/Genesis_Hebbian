@@ -8,16 +8,13 @@ Continuous drone morphology encoding used by the NSGA-II evolution:
 - `Chromosome_Drone.to_physical()` maps this normalized genome to
   physically meaningful parameters for `UrdfMaker`.
 
-HARD-CODED / FIXED PARAMETERS
------------------------------
-Two aerodynamic parameters are kept fixed (not explored by the GA):
+The airfoil is represented by three discrete genes (NACA 4-digit):
+  * first digit (camber)        -> {0, 1, 2, 3, 4}
+  * second digit (camber pos.)  -> {2, 3, 4, 5}
+  * last two digits (thickness) -> {08..22}
 
-  * hinge_le_ratio  = 0.25
-  * cl_alpha_2d     = 2.0
-
-These are implemented as ParamSpec entries where min_val == max_val,
-so they are constants in physical space while the genome dimension
-stays the same for compatibility with existing code.
+These discrete genes are stored in normalized space but are snapped
+to valid values when mapping to physical parameters.
 """
 
 from __future__ import annotations
@@ -73,15 +70,26 @@ class Chromosome_Drone:
       7: rudder_span              [m]
       8: rudder_aspect_ratio      [-]
       9: dihedral_deg             [deg]
-     10: hinge_le_ratio           [-]  FIXED at 0.25
-     11: sweep_multiplier         [-]
-     12: twist_multiplier         [-]
-     13: cl_alpha_2d              [-]  FIXED at 2.0
-     14: alpha0_2d_deg            [deg]
+     10: sweep_multiplier         [-]
+     11: twist_multiplier         [-]
+     12: naca_d1                  [-]  first digit (0..4)
+     13: naca_d2                  [-]  second digit (2..5)
+     14: naca_last2               [-]  last two digits (08..22)
     """
 
+    # Discrete NACA value sets
+    NACA_D1_VALUES = [0, 1, 2, 3, 4]
+    NACA_D2_VALUES = [2, 3, 4, 5]
+    NACA_LAST2_VALUES = list(range(8, 23))
+
+    NACA_GENE_INDICES = (12, 13, 14)
+    NACA_VALUES_BY_INDEX = {
+        12: NACA_D1_VALUES,
+        13: NACA_D2_VALUES,
+        14: NACA_LAST2_VALUES,
+    }
+
     # List of ParamSpec for each gene in the *physical* genome.
-    # NOTE: hinge_le_ratio and cl_alpha_2d are FIXED by setting min == max.
     PARAMS: List[ParamSpec] = [
         # 0: wing_span (m) — range molto ridotto per mantenere S e AR stabili
         ParamSpec("wing_span", 0.45, 0.75),
@@ -113,20 +121,20 @@ class Chromosome_Drone:
         # 9: dihedral (deg) — range stretto: >10° o <−10° causa forti instabilità laterali
         ParamSpec("dihedral_deg", -0.0, 0.0),
 
-        # 10: hinge_le_ratio (fixed)
-        ParamSpec("hinge_le_ratio", 0.25, 0.25),
-
-        # 11: sweep multiplier — questi range enormi creano differenze assurde nei limiti del giunto
+        # 10: sweep multiplier — questi range enormi creano differenze assurde nei limiti del giunto
         ParamSpec("sweep_multiplier", 1.5, 3.5),
 
-        # 12: twist multiplier
+        # 11: twist multiplier
         ParamSpec("twist_multiplier", 1.5, 3.5),
 
-        # 13: cl_alpha_2d (fixed)
-        ParamSpec("cl_alpha_2d", 2.0, 2.0),
+        # 12: naca_d1 (discrete)
+        ParamSpec("naca_d1", min(NACA_D1_VALUES), max(NACA_D1_VALUES)),
 
-        # 14: alpha0_2d (deg) — range ristretto per mantenere comportamento simile
-        ParamSpec("alpha0_2d_deg", -5.0, 0.0),
+        # 13: naca_d2 (discrete)
+        ParamSpec("naca_d2", min(NACA_D2_VALUES), max(NACA_D2_VALUES)),
+
+        # 14: naca_last2 (discrete)
+        ParamSpec("naca_last2", min(NACA_LAST2_VALUES), max(NACA_LAST2_VALUES)),
     ]
 
     # Cached arrays of min / max (useful for env normalization / logging)
@@ -141,6 +149,57 @@ class Chromosome_Drone:
     # ------------------------------------------------------------------ #
     # Mapping between normalized genome and physical parameters          #
     # ------------------------------------------------------------------ #
+
+    @classmethod
+    def _discrete_index(cls, x: float, n: int) -> int:
+        x_clamped = min(max(float(x), 0.0), 1.0)
+        idx = int(np.floor(x_clamped * n))
+        return min(max(idx, 0), n - 1)
+
+    @classmethod
+    def snap_genome_norm(cls, genome_norm: Sequence[float]) -> List[float]:
+        """
+        Snap discrete genes to the center of their normalized bins.
+
+        This keeps SBX/mutation continuous while ensuring discrete genes
+        stay consistent with the airfoil value sets.
+        """
+        out = list(genome_norm)
+        for idx in cls.NACA_GENE_INDICES:
+            if idx >= len(out):
+                continue
+            values = cls.NACA_VALUES_BY_INDEX[idx]
+            bin_idx = cls._discrete_index(out[idx], len(values))
+            out[idx] = (bin_idx + 0.5) / len(values)
+        return out
+
+    @classmethod
+    def apply_discrete_mutation(
+        cls, before: Sequence[float], after: Sequence[float]
+    ) -> List[float]:
+        """
+        Force a bin change for discrete genes when mutation is applied.
+
+        If the mutated value stays in the same bin, we move to the next
+        higher/lower bin based on the mutation direction.
+        """
+        out = list(after)
+        for idx in cls.NACA_GENE_INDICES:
+            if idx >= len(out) or idx >= len(before):
+                continue
+            values = cls.NACA_VALUES_BY_INDEX[idx]
+            n_bins = len(values)
+            old_val = float(before[idx])
+            new_val = float(after[idx])
+            idx_old = cls._discrete_index(old_val, n_bins)
+            idx_new = cls._discrete_index(new_val, n_bins)
+            if idx_new == idx_old:
+                if new_val > old_val and idx_old < n_bins - 1:
+                    idx_new = idx_old + 1
+                elif new_val < old_val and idx_old > 0:
+                    idx_new = idx_old - 1
+            out[idx] = (idx_new + 0.5) / n_bins
+        return out
 
     @classmethod
     def to_physical(cls, genome_norm: Sequence[float]) -> List[float]:
@@ -164,9 +223,14 @@ class Chromosome_Drone:
             )
 
         phys: List[float] = []
-        for g, spec in zip(genome_norm, cls.PARAMS):
-            phys_val = spec.clip(float(g))
-            phys.append(phys_val)
+        for i, (g, spec) in enumerate(zip(genome_norm, cls.PARAMS)):
+            if i in cls.NACA_VALUES_BY_INDEX:
+                values = cls.NACA_VALUES_BY_INDEX[i]
+                idx = cls._discrete_index(float(g), len(values))
+                phys.append(float(values[idx]))
+            else:
+                phys_val = spec.clip(float(g))
+                phys.append(phys_val)
 
         return phys
 
@@ -194,9 +258,16 @@ class Chromosome_Drone:
             )
 
         genome: List[float] = []
-        for v, spec in zip(phys, cls.PARAMS):
+        for i, (v, spec) in enumerate(zip(phys, cls.PARAMS)):
+            if i in cls.NACA_VALUES_BY_INDEX:
+                values = cls.NACA_VALUES_BY_INDEX[i]
+                try:
+                    idx = values.index(int(round(float(v))))
+                except ValueError:
+                    idx = int(np.argmin([abs(float(v) - vv) for vv in values]))
+                genome.append((idx + 0.5) / len(values))
+                continue
             if spec.max_val == spec.min_val:
-                # Fixed parameter → arbitrary (but consistent) normalized value
                 genome.append(0.5)
                 continue
 
@@ -211,6 +282,28 @@ class Chromosome_Drone:
     def random_genome(cls) -> List[float]:
         """Generate a random normalized genome in [0,1]^D."""
         return np.random.rand(cls.num_genes()).tolist()
+
+    @classmethod
+    def genome_min_max(cls) -> Tuple[List[float], List[float]]:
+        """Return physical min/max bounds for the genome (for normalization)."""
+        return cls.PHYS_MIN.tolist(), cls.PHYS_MAX.tolist()
+
+    @classmethod
+    def naca_from_physical(cls, phys: Sequence[float]) -> str | None:
+        """Decode a NACA 4-digit code from a physical genome sequence."""
+        if len(phys) != cls.num_genes():
+            return None
+        d1_val = float(phys[cls.NACA_GENE_INDICES[0]])
+        d2_val = float(phys[cls.NACA_GENE_INDICES[1]])
+        last2_val = float(phys[cls.NACA_GENE_INDICES[2]])
+
+        def nearest(values: List[int], v: float) -> int:
+            return values[int(np.argmin([abs(v - vv) for vv in values]))]
+
+        d1 = nearest(cls.NACA_D1_VALUES, d1_val)
+        d2 = nearest(cls.NACA_D2_VALUES, d2_val)
+        last2 = nearest(cls.NACA_LAST2_VALUES, last2_val)
+        return f"{d1}{d2}{last2:02d}"
 
 
     # ------------------------------------------------------------------ #

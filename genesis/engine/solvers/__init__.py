@@ -6,4 +6,4 @@ from .sph_solver import SPHSolver
 from .fem_solver import FEMSolver
 from .sf_solver import SFSolver
 from .pbd_solver import PBDSolver
-from .aero_solver import AeroSolver
+from .drones.simple_drone import AeroSolver

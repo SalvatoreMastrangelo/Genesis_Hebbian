@@ -159,6 +159,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "num_actions": 5,              # throttle + 4 servos (kept for reference)
         "dt": 0.01,                    # not used directly; env sets dt from control_hz
         "drone": "morphing_drone",
+        "naca": "3416",
 
         # Termination criteria
         "termination_if_close_to_ground": 1.0,
@@ -204,6 +205,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "aero_noise": True,
         "aero_noise_sigma0": 0.05,    # base std for mag/dir noise on aero forces
         "noise_sigma_param": 0.15,
+
     }
 
     # --------------------------------------------------------------------- #
@@ -240,7 +242,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "angular": -5e-3,
             "crash": -20.0,
             "obstacle": -0.1,
-            "energy": -4e-4,
+            "energy": -4e-4,   
             "progress": 5e-1,
             "height": -1e-1,
             "success": 0.0,
@@ -475,10 +477,10 @@ def main() -> None:
     with cfg_path.open("wb") as f:
         pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
     
-    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3].urdf"
-    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
-    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
-    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #

@@ -1,0 +1,1306 @@
+[38;5;159m[Genesis] [15:04:13] [INFO] [38;5;121m╭─────────────────────────────────────────────────────────────────────────────────────╮[0m[38;5;159m[0m
+[38;5;159m[Genesis] [15:04:13] [INFO] [38;5;121m│┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉[0m[38;5;159m [38;5;121m[1m[3mGenesis[0m[38;5;159m [38;5;121m┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉│[0m[38;5;159m[0m
+[38;5;159m[Genesis] [15:04:13] [INFO] [38;5;121m╰─────────────────────────────────────────────────────────────────────────────────────╯[0m[38;5;159m[0m
+[38;5;159m[Genesis] [15:04:13] [INFO] Running on [38;5;121m[4m[NVIDIA GeForce RTX 4070 Laptop GPU][0m[38;5;159m with backend [38;5;121m[4mgs.cuda[0m[38;5;159m. Device memory: [38;5;121m[4m7.75[0m[38;5;159m GB.[0m
+[38;5;159m[Genesis] [15:04:13] [INFO] 🚀 Genesis initialized. 🔖 version: [38;5;121m[4m0.3.7[0m[38;5;159m, 🎨 theme: [38;5;121m[4mdark[0m[38;5;159m, 🌱 seed: [38;5;121m[4mNone[0m[38;5;159m, 🐛 debug: [38;5;121m[4mFalse[0m[38;5;159m, 📏 precision: [38;5;121m[4m32[0m[38;5;159m, 🏎️ performance: [38;5;121m[4mFalse[0m[38;5;159m, 💬 verbose: [38;5;121m[4mINFO[0m[38;5;159m[0m
+[38;5;159m[Genesis] [15:04:14] [INFO] Scene [38;5;121m[3m<f0dda26>[0m[38;5;159m created.[0m
+[38;5;159m[Genesis] [15:04:14] [INFO] Adding [38;5;121m<gs.RigidEntity>[0m[38;5;159m. idx: [38;5;121m0[0m[38;5;159m, uid: [38;5;121m[3m<fd48a0c>[0m[38;5;159m, morph: [38;5;121m<gs.morphs.Plane>[0m[38;5;159m, material: [38;5;121m<gs.materials.Rigid>[0m[38;5;159m.[0m
+Computed geom for aero_frame_fuselage: S=0.07648066770058, chord=0.104768037946, AR=6.967773896617781, span=0.73
+Computed geom for aero_frame_left_wing: S=0.13999999999999999, chord=0.2, AR=6.999999999999999, span=0.7
+Computed geom for aero_frame_right_wing: S=0.13999999999999999, chord=0.2, AR=6.999999999999999, span=0.7
+Computed geom for aero_frame_elevator_left: S=0.03125, chord=0.125, AR=4.0, span=0.25
+Computed geom for aero_frame_elevator_right: S=0.03125, chord=0.125, AR=4.0, span=0.25
+Computed geom for aero_frame_rudder: S=0.020000000000000004, chord=0.1, AR=2.0, span=0.2
+Computed geom for prop_frame_fuselage_0: S=0.001, chord=0.2, AR=0.024999999999999998, span=0.005
+[PROP PARAMS] prop_frame_fuselage_0 5.2 1.0 0.01
+[38;5;159m[Genesis] [15:04:14] [INFO] Adding [38;5;121m<gs.RigidEntity>[0m[38;5;159m. idx: [38;5;121m1[0m[38;5;159m, uid: [38;5;121m[3m<fcafeb4>[0m[38;5;159m, morph: [38;5;121m<gs.morphs.URDF(file='/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 0.25, 2, 2.5, 2, -3].urdf')>[0m[38;5;159m, material: [38;5;121m<gs.materials.Rigid>[0m[38;5;159m.[0m
+[38;5;159m[Genesis] [15:04:14] [INFO] Applying offset to base link's pose with user provided value in morph.[0m
+[38;5;159m[Genesis] [15:04:14] [INFO] Building scene [38;5;121m[3m<f0dda26>[0m[38;5;159m...[0m
+[38;5;159m[Genesis] [15:04:17] [INFO] Compiling simulation kernels...[0m
+[38;5;159m[Genesis] [15:04:23] [INFO] Building visualizer...[0m
+[38;5;159m[Genesis] [15:04:23] [INFO] Viewer created. Resolution: [38;5;121m2666×2000[0m[38;5;159m, max_FPS: [38;5;121m60[0m[38;5;159m.[0m
+
+--- Command mapping (servo_cmd index -> joint -> dofs_idx) ---
+cmd[0] -> joint_0_sweep_left_wing        -> dofs_idx=7
+cmd[1] -> joint_0_sweep_right_wing       -> dofs_idx=6
+cmd[2] -> joint_1_twist_left_wing        -> dofs_idx=10
+cmd[3] -> joint_1_twist_right_wing       -> dofs_idx=9
+cmd[4] -> elevator_pitch_joint           -> dofs_idx=8
+cmd[5] -> rudder_yaw_joint               -> dofs_idx=11
+servo_dof_indices array: [ 7  6 10  9  8 11] 
+
+[AeroSolver]: Parsed URDF geometry:
+
+Winged Drone Controls:
+↑ / ↓   - Increase / decrease thrust (via AeroSolver)
+← / →   - Asymmetric twist (roll)
+space   - Increase symmetric twist
+shift   - Decrease symmetric twist
+w / s   - Increase / decrease symmetric sweep
+q / e   - Elevator up / down (pitch)
+a / d   - Rudder left / right (yaw)
+ESC     - Quit
+
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:25] [INFO] Running at [38;5;121m8.09[0m[38;5;159m FPS ([38;5;121m8.09[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:25] [INFO] Running at [38;5;121m32.40[0m[38;5;159m FPS ([38;5;121m32.40[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:25] [INFO] Running at [38;5;121m32.42[0m[38;5;159m FPS ([38;5;121m32.42[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:25] [INFO] Running at [38;5;121m32.30[0m[38;5;159m FPS ([38;5;121m32.30[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:25] [INFO] Running at [38;5;121m32.32[0m[38;5;159m FPS ([38;5;121m32.32[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-9.9794513e-01  6.1230891e-04  6.4071380e-02] | y_w=[ 8.5336354e-04 -9.9973863e-01  2.2845751e-02] | z_w=[0.06406862 0.02285348 0.99768376]
+[DroneModel] link=aero_frame_fuselage | pos=[1.6484370e+00 9.0064033e-04 1.9928972e+01] | vel=[ 9.309985    0.01259805 -0.86978877] | ang_vel=[-0.17202544  0.6897954   0.01348625] | rpy(deg)=(1.3, -3.7, 180.0) | alpha=1.67 deg | beta=0.15 deg | Lift=0.000 | Drag=3.070 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[ 1.6486847  -0.29902092 19.935825  ] | vel=[ 9.318764    0.01378029 -0.81836593] | ang_vel=[-0.17202431  0.6898309   0.01350345] | rpy(deg)=(1.3, -3.7, 180.0) | alpha=1.67 deg | beta=0.15 deg | Lift=2.143 | Drag=0.120 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[ 1.6481763   0.30082223 19.922117  ] | vel=[ 9.301143    0.01141534 -0.9211986 ] | ang_vel=[-0.17201261  0.6897416   0.0136866 ] | rpy(deg)=(1.3, -3.7, 180.0) | alpha=1.67 deg | beta=0.15 deg | Lift=2.143 | Drag=0.120 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[ 1.1339343  -0.24940498 19.937675  ] | vel=[ 9.3193645e+00  7.1565593e-03 -4.7182611e-01] | ang_vel=[-0.1720255   0.6898618   0.01348474] | rpy(deg)=(1.3, -3.7, 180.0) | alpha=1.15 deg | beta=0.17 deg | Lift=0.101 | Drag=0.065 | Side=0.000 | alpha_raw=1.90 deg | eps_dw=0.74 deg | CL_w=0.286 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[ 1.1335075   0.25046435 19.926254  ] | vel=[ 9.3047457e+00  5.1860665e-03 -5.5752200e-01] | ang_vel=[-0.1720255   0.6898618   0.01348474] | rpy(deg)=(1.3, -3.7, 180.0) | alpha=1.15 deg | beta=0.17 deg | Lift=0.101 | Drag=0.065 | Side=0.000 | alpha_raw=1.90 deg | eps_dw=0.74 deg | CL_w=0.286 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[1.1450847e+00 2.3541306e-03 2.0011379e+01] | vel=[ 9.366816    0.01998581 -0.5228274 ] | ang_vel=[-0.1720254   0.68986183  0.01348642] | rpy(deg)=(1.3, -3.7, 180.0) | alpha=1.67 deg | beta=0.15 deg | Lift=0.000 | Drag=0.054 | Side=0.007
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-91.62 deg | beta=-0.15 deg | thrust=0.916 N | |F|=0.916 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0092 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=-0.0000
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.9233e+00,  4.5181e-05,  1.9881e+01, -2.2903e-02,  6.4113e-02,
+         8.5512e-04, -1.3629e-05,  2.3850e-05, -1.5915e-05,  2.8409e-06,
+         1.9334e-06, -2.1833e-07], device='cuda:0') 
+
+fuselage tensor([[1.9233e+00, 4.5181e-05, 1.9881e+01]], device='cuda:0') tensor([[ 1.1431e-02,  9.9942e-01,  6.0299e-05, -3.2054e-02]], device='cuda:0')
+left_wing tensor([[ 1.6484,  0.0509, 19.9278]], device='cuda:0') tensor([[ 1.1432e-02,  9.9942e-01,  4.8519e-05, -3.2052e-02]], device='cuda:0')
+right_wing tensor([[ 1.6485, -0.0491, 19.9301]], device='cuda:0') tensor([[ 1.1431e-02,  9.9942e-01,  6.7051e-05, -3.2052e-02]], device='cuda:0')
+elevator_hinge tensor([[1.1649e+00, 5.1054e-04, 1.9930e+01]], device='cuda:0') tensor([[ 1.1431e-02,  9.9942e-01,  6.0209e-05, -3.2061e-02]], device='cuda:0')
+rudder tensor([[1.1649e+00, 5.1054e-04, 1.9930e+01]], device='cuda:0') tensor([[ 1.1431e-02,  9.9942e-01,  6.0209e-05, -3.2061e-02]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:25] [INFO] Running at [38;5;121m23.97[0m[38;5;159m FPS ([38;5;121m23.97[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:25] [INFO] Running at [38;5;121m31.81[0m[38;5;159m FPS ([38;5;121m31.81[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m24.10[0m[38;5;159m FPS ([38;5;121m24.10[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m32.17[0m[38;5;159m FPS ([38;5;121m32.17[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m32.15[0m[38;5;159m FPS ([38;5;121m32.15[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m32.08[0m[38;5;159m FPS ([38;5;121m32.08[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.9763403   0.00249045  0.21622564] | y_w=[ 0.01173172 -0.99785095  0.06446623] | z_w=[0.2159215  0.06547768 0.9742128 ]
+[DroneModel] link=aero_frame_fuselage | pos=[3.4610326e+00 5.3743147e-03 1.9638083e+01] | vel=[ 8.881844    0.03249188 -2.0411153 ] | ang_vel=[-0.22608177  0.73159707  0.04104897] | rpy(deg)=(3.8, -12.5, 179.9) | alpha=0.44 deg | beta=0.37 deg | Lift=0.000 | Drag=2.918 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[ 3.464538   -0.29398096 19.657425  ] | vel=[ 8.908291    0.03700873 -1.9760029 ] | ang_vel=[-0.2260768  0.7316413  0.0410709] | rpy(deg)=(3.8, -12.5, 179.9) | alpha=0.44 deg | beta=0.38 deg | Lift=1.294 | Drag=0.099 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[ 3.4575078  0.3047296 19.618744 ] | vel=[ 8.855481    0.02797489 -2.1062317 ] | ang_vel=[-0.22612926  0.731614    0.04083439] | rpy(deg)=(3.8, -12.5, 179.9) | alpha=0.44 deg | beta=0.37 deg | Lift=1.294 | Drag=0.099 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[ 2.9557958 -0.244773  19.736082 ] | vel=[ 8.963807    0.03390831 -1.6149322 ] | ang_vel=[-0.22608158  0.73158056  0.04105004] | rpy(deg)=(3.8, -12.5, 179.9) | alpha=0.05 deg | beta=0.45 deg | Lift=0.003 | Drag=0.056 | Side=0.000 | alpha_raw=0.52 deg | eps_dw=0.47 deg | CL_w=0.182 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[ 2.9499297   0.25415248 19.703848  ] | vel=[ 8.919744    0.02637995 -1.7234385 ] | ang_vel=[-0.22608158  0.73158056  0.04105004] | rpy(deg)=(3.8, -12.5, 179.9) | alpha=0.05 deg | beta=0.45 deg | Lift=0.003 | Drag=0.056 | Side=0.000 | alpha_raw=0.52 deg | eps_dw=0.47 deg | CL_w=0.182 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[2.976240e+00 9.912359e-03 1.979655e+01] | vel=[ 8.99759     0.04841827 -1.6874684 ] | ang_vel=[-0.2260805   0.73158085  0.04105489] | rpy(deg)=(3.8, -12.5, 179.9) | alpha=0.44 deg | beta=0.37 deg | Lift=0.000 | Drag=0.051 | Side=0.017
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.44 deg | beta=-0.37 deg | thrust=1.186 N | |F|=1.186 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0119 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=-0.0000
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 3.7254e+00,  2.7191e-03,  1.9549e+01, -6.7110e-02,  2.1764e-01,
+         1.2015e-02, -1.5741e-05,  4.1480e-05, -1.7853e-05,  4.6410e-06,
+         2.4231e-06, -8.2600e-07], device='cuda:0') 
+
+fuselage tensor([[3.7254e+00, 2.7191e-03, 1.9549e+01]], device='cuda:0') tensor([[ 0.0327,  0.9935,  0.0023, -0.1087]], device='cuda:0')
+left_wing tensor([[ 3.4604,  0.0553, 19.6349]], device='cuda:0') tensor([[ 0.0327,  0.9935,  0.0023, -0.1087]], device='cuda:0')
+right_wing tensor([[ 3.4616, -0.0445, 19.6413]], device='cuda:0') tensor([[ 0.0327,  0.9935,  0.0023, -0.1087]], device='cuda:0')
+elevator_hinge tensor([[2.9834e+00, 4.6119e-03, 1.9713e+01]], device='cuda:0') tensor([[ 0.0327,  0.9935,  0.0023, -0.1087]], device='cuda:0')
+rudder tensor([[2.9834e+00, 4.6119e-03, 1.9713e+01]], device='cuda:0') tensor([[ 0.0327,  0.9935,  0.0023, -0.1087]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m24.29[0m[38;5;159m FPS ([38;5;121m24.29[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m32.41[0m[38;5;159m FPS ([38;5;121m32.41[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m32.38[0m[38;5;159m FPS ([38;5;121m32.38[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m32.36[0m[38;5;159m FPS ([38;5;121m32.36[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:26] [INFO] Running at [38;5;121m32.36[0m[38;5;159m FPS ([38;5;121m32.36[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.93966395 -0.00306125  0.3420853 ] | y_w=[ 0.04527748 -0.992276    0.1154917 ] | z_w=[0.33908945 0.12401213 0.9325446 ]
+[DroneModel] link=aero_frame_fuselage | pos=[5.2078853e+00 1.6276140e-02 1.9097527e+01] | vel=[ 8.614603    0.08395114 -3.277121  ] | ang_vel=[-0.32191762  0.61857957  0.20361741] | rpy(deg)=(7.1, -20.0, -179.8) | alpha=0.78 deg | beta=0.44 deg | Lift=0.000 | Drag=2.984 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[ 5.2214546  -0.28140673 19.13218   ] | vel=[ 8.6966915   0.09786955 -3.1896996 ] | ang_vel=[-0.3218795   0.6186439   0.20372267] | rpy(deg)=(7.1, -20.0, -179.8) | alpha=0.78 deg | beta=0.45 deg | Lift=1.534 | Drag=0.105 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[ 5.1942964   0.31395894 19.06288   ] | vel=[ 8.532525    0.07003062 -3.3645327 ] | ang_vel=[-0.32188442  0.6185958   0.20370875] | rpy(deg)=(7.1, -20.0, -179.8) | alpha=0.78 deg | beta=0.44 deg | Lift=1.534 | Drag=0.105 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[ 4.726186   -0.23708619 19.274204  ] | vel=[ 8.775481    0.04274444 -2.8975897 ] | ang_vel=[-0.32191795  0.6185867   0.20361657] | rpy(deg)=(7.1, -20.0, -179.8) | alpha=0.38 deg | beta=0.53 deg | Lift=0.029 | Drag=0.057 | Side=0.000 | alpha_raw=0.93 deg | eps_dw=0.55 deg | CL_w=0.211 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[ 4.7035475  0.2590518 19.216457 ] | vel=[ 8.638739    0.01954514 -3.0433016 ] | ang_vel=[-0.32191795  0.6185867   0.20361657] | rpy(deg)=(7.1, -20.0, -179.8) | alpha=0.38 deg | beta=0.53 deg | Lift=0.029 | Drag=0.057 | Side=0.000 | alpha_raw=0.93 deg | eps_dw=0.55 deg | CL_w=0.211 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[ 4.7478676   0.02092287 19.317797  ] | vel=[ 8.749912    0.06119228 -2.9940593 ] | ang_vel=[-0.3219162   0.6185874   0.20362145] | rpy(deg)=(7.1, -20.0, -179.8) | alpha=0.78 deg | beta=0.44 deg | Lift=0.000 | Drag=0.052 | Side=0.021
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.75 deg | beta=-0.44 deg | thrust=1.266 N | |F|=1.266 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0127 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=-0.0000
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 5.4584e+00,  1.3405e-02,  1.8975e+01, -1.3221e-01,  3.4595e-01,
+         4.8148e-02, -1.8669e-05,  4.2881e-05, -1.5972e-05,  1.3485e-06,
+         1.8654e-06, -1.8710e-06], device='cuda:0') 
+
+fuselage tensor([[5.4584e+00, 1.3405e-02, 1.8975e+01]], device='cuda:0') tensor([[ 0.0609,  0.9829,  0.0123, -0.1733]], device='cuda:0')
+left_wing tensor([[ 5.2056,  0.0659, 19.0918]], device='cuda:0') tensor([[ 0.0609,  0.9829,  0.0123, -0.1733]], device='cuda:0')
+right_wing tensor([[ 5.2101, -0.0333, 19.1033]], device='cuda:0') tensor([[ 0.0609,  0.9829,  0.0123, -0.1733]], device='cuda:0')
+elevator_hinge tensor([[4.7442e+00, 1.1078e-02, 1.9235e+01]], device='cuda:0') tensor([[ 0.0609,  0.9829,  0.0123, -0.1733]], device='cuda:0')
+rudder tensor([[4.7442e+00, 1.1078e-02, 1.9235e+01]], device='cuda:0') tensor([[ 0.0609,  0.9829,  0.0123, -0.1733]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m24.38[0m[38;5;159m FPS ([38;5;121m24.38[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m32.48[0m[38;5;159m FPS ([38;5;121m32.48[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m32.51[0m[38;5;159m FPS ([38;5;121m32.51[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m32.42[0m[38;5;159m FPS ([38;5;121m32.42[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m32.47[0m[38;5;159m FPS ([38;5;121m32.47[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.8913778  -0.01686618  0.45294717] | y_w=[ 0.11602832 -0.97450185  0.19205095] | z_w=[0.43815872 0.22374466 0.8706063 ]
+[DroneModel] link=aero_frame_fuselage | pos=[ 6.9110084   0.04418525 18.322073  ] | vel=[ 8.428754    0.19825403 -4.4101076 ] | ang_vel=[-0.52964693  0.571708    0.33284545] | rpy(deg)=(12.4, -26.9, -178.9) | alpha=0.62 deg | beta=0.37 deg | Lift=0.000 | Drag=3.180 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[ 6.945801  -0.2481656 18.379696 ] | vel=[ 8.5590725   0.24035563 -4.2751904 ] | ang_vel=[-0.52955705  0.571803    0.33302575] | rpy(deg)=(12.4, -26.9, -178.9) | alpha=0.62 deg | beta=0.37 deg | Lift=1.529 | Drag=0.110 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[ 6.8761997  0.3365358 18.264456 ] | vel=[ 8.298597   0.1561531 -4.545096 ] | ang_vel=[-0.5297808   0.571696    0.33258152] | rpy(deg)=(12.4, -26.9, -178.9) | alpha=0.62 deg | beta=0.37 deg | Lift=1.529 | Drag=0.110 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[ 6.468836   -0.21481913 18.576715  ] | vel=[ 8.6605425   0.18594952 -4.020133  ] | ang_vel=[-0.52964646  0.57170403  0.33284622] | rpy(deg)=(12.4, -26.9, -178.9) | alpha=0.22 deg | beta=0.44 deg | Lift=0.018 | Drag=0.061 | Side=0.000 | alpha_raw=0.74 deg | eps_dw=0.51 deg | CL_w=0.197 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[ 6.410822    0.27243182 18.480688  ] | vel=[ 8.443464    0.11577924 -4.245037  ] | ang_vel=[-0.52964646  0.57170403  0.33284622] | rpy(deg)=(12.4, -26.9, -178.9) | alpha=0.22 deg | beta=0.44 deg | Lift=0.018 | Drag=0.061 | Side=0.000 | alpha_raw=0.74 deg | eps_dw=0.51 deg | CL_w=0.197 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[ 6.480454    0.04681126 18.59552   ] | vel=[ 8.584212    0.19977623 -4.1653466 ] | ang_vel=[-0.52964455  0.57170504  0.33285004] | rpy(deg)=(12.4, -26.9, -178.9) | alpha=0.62 deg | beta=0.37 deg | Lift=0.000 | Drag=0.056 | Side=0.019
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.62 deg | beta=-0.37 deg | thrust=1.290 N | |F|=1.290 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0129 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0001
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=-0.0000
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 7.1451e+00,  4.2152e-02,  1.8170e+01, -2.5155e-01,  4.5355e-01,
+         1.2944e-01, -1.9312e-07,  5.1411e-05, -1.6208e-05, -1.5629e-06,
+        -2.6242e-06, -2.8104e-06], device='cuda:0') 
+
+fuselage tensor([[ 7.1451,  0.0422, 18.1703]], device='cuda:0') tensor([[ 0.1076,  0.9665,  0.0344, -0.2305]], device='cuda:0')
+left_wing tensor([[ 6.9052,  0.0929, 18.3125]], device='cuda:0') tensor([[ 0.1076,  0.9665,  0.0344, -0.2305]], device='cuda:0')
+right_wing tensor([[ 6.9168e+00, -4.5398e-03,  1.8332e+01]], device='cuda:0') tensor([[ 0.1076,  0.9665,  0.0344, -0.2305]], device='cuda:0')
+elevator_hinge tensor([[ 6.4677,  0.0293, 18.5145]], device='cuda:0') tensor([[ 0.1076,  0.9665,  0.0344, -0.2305]], device='cuda:0')
+rudder tensor([[ 6.4677,  0.0293, 18.5145]], device='cuda:0') tensor([[ 0.1076,  0.9665,  0.0344, -0.2305]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m24.52[0m[38;5;159m FPS ([38;5;121m24.52[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m32.70[0m[38;5;159m FPS ([38;5;121m32.70[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:27] [INFO] Running at [38;5;121m32.65[0m[38;5;159m FPS ([38;5;121m32.65[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m32.66[0m[38;5;159m FPS ([38;5;121m32.66[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m32.61[0m[38;5;159m FPS ([38;5;121m32.61[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.8385169 -0.0343698  0.5437905] | y_w=[ 0.22230807 -0.9327447   0.28384244] | z_w=[0.4974621  0.35889572 0.78976285]
+[DroneModel] link=aero_frame_fuselage | pos=[ 8.58016     0.10119068 17.32377   ] | vel=[ 8.279132    0.37850928 -5.5045652 ] | ang_vel=[-0.55838466  0.45357978  0.5024497 ] | rpy(deg)=(19.8, -32.9, -177.7) | alpha=0.54 deg | beta=0.43 deg | Lift=0.000 | Drag=3.477 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[ 8.646841   -0.17863327 17.408932  ] | vel=[ 8.458358    0.45956585 -5.3785615 ] | ang_vel=[-0.5584039   0.45366874  0.5024256 ] | rpy(deg)=(19.8, -32.9, -177.7) | alpha=0.54 deg | beta=0.43 deg | Lift=1.615 | Drag=0.119 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[ 8.513474    0.38101435 17.238613  ] | vel=[ 8.099896   0.297452  -5.6305594] | ang_vel=[-0.55834734  0.45352086  0.5025035 ] | rpy(deg)=(19.8, -32.9, -177.7) | alpha=0.54 deg | beta=0.43 deg | Lift=1.615 | Drag=0.119 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[ 8.189942   -0.16042313 17.650467  ] | vel=[ 8.558762    0.36486652 -5.181489  ] | ang_vel=[-0.5583808   0.45356345  0.50245464] | rpy(deg)=(19.8, -32.9, -177.7) | alpha=0.14 deg | beta=0.50 deg | Lift=0.013 | Drag=0.069 | Side=0.000 | alpha_raw=0.63 deg | eps_dw=0.50 deg | CL_w=0.190 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[ 8.078788   0.3059492 17.508545 ] | vel=[ 8.26006    0.2297699 -5.391487 ] | ang_vel=[-0.5583808   0.45356345  0.50245464] | rpy(deg)=(19.8, -32.9, -177.7) | alpha=0.14 deg | beta=0.50 deg | Lift=0.013 | Drag=0.069 | Side=0.000 | alpha_raw=0.63 deg | eps_dw=0.50 deg | CL_w=0.190 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[ 8.179403    0.10168943 17.639286  ] | vel=[ 8.421991    0.35332784 -5.3230677 ] | ang_vel=[-0.5583788   0.45356485  0.50245774] | rpy(deg)=(19.8, -32.9, -177.7) | alpha=0.54 deg | beta=0.43 deg | Lift=0.000 | Drag=0.061 | Side=0.023
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.56 deg | beta=-0.43 deg | thrust=1.297 N | |F|=1.297 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0000
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 8.7978e+00,  9.9958e-02,  1.7149e+01, -4.2654e-01,  5.2067e-01,
+         2.5916e-01,  2.2567e-05,  4.1866e-05, -1.4251e-05, -5.0557e-06,
+        -5.0749e-06, -3.8340e-06], device='cuda:0') 
+
+fuselage tensor([[ 8.7978,  0.1000, 17.1492]], device='cuda:0') tensor([[ 0.1703,  0.9435,  0.0680, -0.2759]], device='cuda:0')
+left_wing tensor([[ 8.5690,  0.1478, 17.3096]], device='cuda:0') tensor([[ 0.1703,  0.9435,  0.0680, -0.2759]], device='cuda:0')
+right_wing tensor([[ 8.5913,  0.0546, 17.3380]], device='cuda:0') tensor([[ 0.1703,  0.9435,  0.0680, -0.2759]], device='cuda:0')
+elevator_hinge tensor([[ 8.1606,  0.0738, 17.5625]], device='cuda:0') tensor([[ 0.1703,  0.9435,  0.0680, -0.2759]], device='cuda:0')
+rudder tensor([[ 8.1606,  0.0738, 17.5625]], device='cuda:0') tensor([[ 0.1703,  0.9435,  0.0680, -0.2759]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m32.55[0m[38;5;159m FPS ([38;5;121m32.55[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m32.50[0m[38;5;159m FPS ([38;5;121m32.50[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m16.29[0m[38;5;159m FPS ([38;5;121m16.29[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m32.60[0m[38;5;159m FPS ([38;5;121m32.60[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m32.63[0m[38;5;159m FPS ([38;5;121m32.63[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:28] [INFO] Running at [38;5;121m32.63[0m[38;5;159m FPS ([38;5;121m32.63[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.7864529  -0.06663039  0.6140458 ] | y_w=[ 0.3617386  -0.8555085   0.37047315] | z_w=[0.50063664 0.51348376 0.6969199 ]
+[DroneModel] link=aero_frame_fuselage | pos=[10.221362    0.20466076 16.117493  ] | vel=[ 8.148097   0.6675255 -6.494409 ] | ang_vel=[-0.6798312   0.35295078  0.76430655] | rpy(deg)=(28.0, -37.9, -175.2) | alpha=0.57 deg | beta=0.16 deg | Lift=0.000 | Drag=3.830 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[10.329875   -0.05199262 16.228642  ] | vel=[ 8.383535    0.82602894 -6.358264  ] | ang_vel=[-0.6797295   0.35299352  0.7644414 ] | rpy(deg)=(28.0, -37.9, -175.2) | alpha=0.57 deg | beta=0.16 deg | Lift=1.806 | Drag=0.132 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[10.112851   0.4613142 16.006344 ] | vel=[ 7.9126725  0.5090246 -6.6305656] | ang_vel=[-0.67979366  0.35306206  0.7643667 ] | rpy(deg)=(28.0, -37.9, -175.2) | alpha=0.57 deg | beta=0.16 deg | Lift=1.806 | Drag=0.132 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[ 9.89266    -0.05885868 16.504732  ] | vel=[ 8.486183    0.67955375 -6.199245  ] | ang_vel=[-0.67982835  0.35294405  0.76430947] | rpy(deg)=(28.0, -37.9, -175.2) | alpha=0.16 deg | beta=0.18 deg | Lift=0.017 | Drag=0.078 | Side=0.000 | alpha_raw=0.66 deg | eps_dw=0.50 deg | CL_w=0.193 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[ 9.71179     0.36889553 16.319494  ] | vel=[ 8.093867    0.41538307 -6.426207  ] | ang_vel=[-0.67982835  0.35294405  0.76430947] | rpy(deg)=(28.0, -37.9, -175.2) | alpha=0.16 deg | beta=0.18 deg | Lift=0.017 | Drag=0.078 | Side=0.000 | alpha_raw=0.66 deg | eps_dw=0.50 deg | CL_w=0.193 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[ 9.847192   0.1965135 16.464027 ] | vel=[ 8.276634   0.6171296 -6.3568068] | ang_vel=[-0.6798275   0.35294494  0.76431066] | rpy(deg)=(28.0, -37.9, -175.2) | alpha=0.57 deg | beta=0.16 deg | Lift=0.000 | Drag=0.067 | Side=0.009
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.56 deg | beta=-0.16 deg | thrust=1.299 N | |F|=1.299 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0000
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.0425e+01,  2.0774e-01,  1.5926e+01, -6.3499e-01,  5.2433e-01,
+         4.3111e-01,  3.8420e-05,  3.2991e-05, -1.2767e-05, -1.1903e-05,
+        -9.3335e-06, -4.5239e-06], device='cuda:0') 
+
+fuselage tensor([[10.4245,  0.2077, 15.9262]], device='cuda:0') tensor([[ 0.2419,  0.9136,  0.1172, -0.3050]], device='cuda:0')
+left_wing tensor([[10.2033,  0.2474, 16.0990]], device='cuda:0') tensor([[ 0.2419,  0.9136,  0.1172, -0.3050]], device='cuda:0')
+right_wing tensor([[10.2394,  0.1619, 16.1360]], device='cuda:0') tensor([[ 0.2419,  0.9136,  0.1172, -0.3050]], device='cuda:0')
+elevator_hinge tensor([[ 9.8268,  0.1571, 16.3929]], device='cuda:0') tensor([[ 0.2419,  0.9136,  0.1172, -0.3050]], device='cuda:0')
+rudder tensor([[ 9.8268,  0.1571, 16.3929]], device='cuda:0') tensor([[ 0.2419,  0.9136,  0.1172, -0.3050]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m32.58[0m[38;5;159m FPS ([38;5;121m32.58[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m32.61[0m[38;5;159m FPS ([38;5;121m32.61[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m32.56[0m[38;5;159m FPS ([38;5;121m32.56[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m32.58[0m[38;5;159m FPS ([38;5;121m32.58[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m32.59[0m[38;5;159m FPS ([38;5;121m32.59[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.7328984  -0.11102658  0.6712176 ] | y_w=[ 0.5233787  -0.72234285  0.4519907 ] | z_w=[0.43466622 0.68256426 0.5875129 ]
+[DroneModel] link=aero_frame_fuselage | pos=[11.836955    0.38412946 14.7188835 ] | vel=[ 8.00758    1.125771  -7.4338446] | ang_vel=[-0.65788776  0.26739103  0.9470567 ] | rpy(deg)=(37.6, -42.2, -171.4) | alpha=0.62 deg | beta=-0.10 deg | Lift=0.000 | Drag=4.238 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[11.993963    0.16742581 14.854486  ] | vel=[ 8.2491455  1.3636897 -7.3333297] | ang_vel=[-0.65777594  0.26761657  0.94721615] | rpy(deg)=(37.6, -42.2, -171.4) | alpha=0.62 deg | beta=-0.10 deg | Lift=2.039 | Drag=0.146 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[11.679952   0.6008339 14.583277 ] | vel=[ 7.766089  0.887866 -7.534431] | ang_vel=[-0.6578856   0.26738307  0.9470578 ] | rpy(deg)=(37.6, -42.2, -171.4) | alpha=0.62 deg | beta=-0.10 deg | Lift=2.039 | Drag=0.146 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[11.57816     0.12601607 15.159162  ] | vel=[ 8.369753  1.170331 -7.194835] | ang_vel=[-0.65788215  0.2673833   0.94706154] | rpy(deg)=(37.6, -42.2, -171.4) | alpha=0.19 deg | beta=-0.11 deg | Lift=0.023 | Drag=0.089 | Side=0.000 | alpha_raw=0.71 deg | eps_dw=0.51 deg | CL_w=0.197 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[11.31647    0.4871875 14.933166 ] | vel=[ 7.9672747  0.7738156 -7.362472 ] | ang_vel=[-0.65788215  0.2673833   0.94706154] | rpy(deg)=(37.6, -42.2, -171.4) | alpha=0.19 deg | beta=-0.11 deg | Lift=0.023 | Drag=0.089 | Side=0.000 | alpha_raw=0.71 deg | eps_dw=0.51 deg | CL_w=0.197 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[11.48667    0.3619008 15.088968 ] | vel=[ 8.127588   1.0375048 -7.3255563] | ang_vel=[-0.6578831   0.26738182  0.9470603 ] | rpy(deg)=(37.6, -42.2, -171.4) | alpha=0.62 deg | beta=-0.10 deg | Lift=0.000 | Drag=0.074 | Side=-0.007
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.62 deg | beta=0.10 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0000
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.2027e+01,  3.9445e-01,  1.4515e+01, -8.6010e-01,  4.4967e-01,
+         6.2014e-01,  3.9417e-05,  2.1512e-05, -1.0831e-05, -1.6089e-05,
+        -1.4423e-05, -4.5603e-06], device='cuda:0') 
+
+fuselage tensor([[12.0272,  0.3945, 14.5151]], device='cuda:0') tensor([[ 0.3252,  0.8722,  0.1818, -0.3170]], device='cuda:0')
+left_wing tensor([[11.8108,  0.4202, 14.6963]], device='cuda:0') tensor([[ 0.3252,  0.8722,  0.1818, -0.3170]], device='cuda:0')
+right_wing tensor([[11.8631,  0.3480, 14.7415]], device='cuda:0') tensor([[ 0.3252,  0.8722,  0.1818, -0.3170]], device='cuda:0')
+elevator_hinge tensor([[11.4702,  0.3101, 15.0252]], device='cuda:0') tensor([[ 0.3252,  0.8722,  0.1818, -0.3170]], device='cuda:0')
+rudder tensor([[11.4702,  0.3101, 15.0252]], device='cuda:0') tensor([[ 0.3252,  0.8722,  0.1818, -0.3170]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m24.62[0m[38;5;159m FPS ([38;5;121m24.62[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m32.86[0m[38;5;159m FPS ([38;5;121m32.86[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:29] [INFO] Running at [38;5;121m32.87[0m[38;5;159m FPS ([38;5;121m32.87[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.85[0m[38;5;159m FPS ([38;5;121m32.85[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.87[0m[38;5;159m FPS ([38;5;121m32.87[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.6811303  -0.15735888  0.71505225] | y_w=[ 0.6689637  -0.53068614  0.52044195] | z_w=[0.29757214 0.83283275 0.46673378]
+[DroneModel] link=aero_frame_fuselage | pos=[13.416587    0.66964144 13.1407    ] | vel=[ 7.786171   1.7311977 -8.306317 ] | ang_vel=[-0.7562101   0.08032948  1.1180543 ] | rpy(deg)=(48.1, -45.6, -167.0) | alpha=0.59 deg | beta=0.16 deg | Lift=0.000 | Drag=4.660 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[13.617273   0.5104349 13.296836 ] | vel=[ 7.976714   2.0736473 -8.2020445] | ang_vel=[-0.7562491   0.08035664  1.118023  ] | rpy(deg)=(48.1, -45.6, -167.0) | alpha=0.59 deg | beta=0.16 deg | Lift=2.211 | Drag=0.160 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[13.215916   0.8288513 12.9845495] | vel=[ 7.59569    1.3887693 -8.410665 ] | ang_vel=[-0.7562331   0.08004543  1.1179699 ] | rpy(deg)=(48.1, -45.6, -167.0) | alpha=0.59 deg | beta=0.16 deg | Lift=2.211 | Drag=0.160 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[13.224902    0.43112633 13.624239  ] | vel=[ 8.091686   1.8825405 -8.110552 ] | ang_vel=[-0.7562053   0.08032568  1.118058  ] | rpy(deg)=(48.1, -45.6, -167.0) | alpha=0.16 deg | beta=0.18 deg | Lift=0.021 | Drag=0.100 | Side=0.000 | alpha_raw=0.66 deg | eps_dw=0.51 deg | CL_w=0.194 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[12.89042    0.6964694 13.3640175] | vel=[ 7.7741146  1.3117892 -8.284338 ] | ang_vel=[-0.7562053   0.08032568  1.118058  ] | rpy(deg)=(48.1, -45.6, -167.0) | alpha=0.16 deg | beta=0.18 deg | Lift=0.021 | Drag=0.100 | Side=0.000 | alpha_raw=0.66 deg | eps_dw=0.51 deg | CL_w=0.194 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[13.085724  0.631408 13.526998] | vel=[ 7.8599486  1.6533966 -8.250827 ] | ang_vel=[-0.7562045   0.08032806  1.1180593 ] | rpy(deg)=(48.1, -45.6, -167.0) | alpha=0.59 deg | beta=0.16 deg | Lift=0.000 | Drag=0.081 | Side=0.011
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.56 deg | beta=-0.16 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=+0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0001
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.3597e+01,  6.8831e-01,  1.2928e+01, -1.0600e+00,  3.0215e-01,
+         7.7639e-01,  7.3762e-05,  1.2198e-05, -9.5266e-06, -1.6767e-05,
+        -1.7767e-05, -4.2607e-06], device='cuda:0') 
+
+fuselage tensor([[13.5966,  0.6883, 12.9283]], device='cuda:0') tensor([[ 0.4134,  0.8183,  0.2524, -0.3094]], device='cuda:0')
+left_wing tensor([[13.3831,  0.6962, 13.1147]], device='cuda:0') tensor([[ 0.4134,  0.8183,  0.2524, -0.3094]], device='cuda:0')
+right_wing tensor([[13.4500,  0.6431, 13.1667]], device='cuda:0') tensor([[ 0.4134,  0.8183,  0.2524, -0.3094]], device='cuda:0')
+elevator_hinge tensor([[13.0789,  0.5687, 13.4718]], device='cuda:0') tensor([[ 0.4134,  0.8183,  0.2524, -0.3094]], device='cuda:0')
+rudder tensor([[13.0789,  0.5687, 13.4718]], device='cuda:0') tensor([[ 0.4134,  0.8183,  0.2524, -0.3094]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.70[0m[38;5;159m FPS ([38;5;121m32.70[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.73[0m[38;5;159m FPS ([38;5;121m32.73[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.75[0m[38;5;159m FPS ([38;5;121m32.75[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.73[0m[38;5;159m FPS ([38;5;121m32.73[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.63[0m[38;5;159m FPS ([38;5;121m32.63[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.6245533  -0.21244487  0.75153196] | y_w=[ 0.7763549  -0.27348277  0.5678735 ] | z_w=[0.08488924 0.9381228  0.33573714]
+[DroneModel] link=aero_frame_fuselage | pos=[14.93513   1.09158  11.391704] | vel=[ 7.380766  2.466753 -9.129273] | ang_vel=[-0.61784524  0.11338907  1.2502016 ] | rpy(deg)=(59.4, -48.7, -161.2) | alpha=0.59 deg | beta=0.61 deg | Lift=0.000 | Drag=5.055 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[15.168044   1.0095377 11.562057 ] | vel=[ 7.5027304  2.8632212 -9.105088 ] | ang_vel=[-0.61781925  0.11372884  1.2503192 ] | rpy(deg)=(59.4, -48.7, -161.2) | alpha=0.59 deg | beta=0.61 deg | Lift=2.404 | Drag=0.174 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[14.702253   1.1736346 11.221307 ] | vel=[ 7.2588634  2.0703328 -9.153569 ] | ang_vel=[-0.6178502   0.11337334  1.250193  ] | rpy(deg)=(59.4, -48.7, -161.2) | alpha=0.59 deg | beta=0.62 deg | Lift=2.404 | Drag=0.174 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[14.805746   0.8859011 11.909775 ] | vel=[ 7.6966496  2.6250846 -8.987525 ] | ang_vel=[-0.6178427   0.11338818  1.2502035 ] | rpy(deg)=(59.4, -48.7, -161.2) | alpha=0.16 deg | beta=0.68 deg | Lift=0.023 | Drag=0.110 | Side=0.000 | alpha_raw=0.66 deg | eps_dw=0.51 deg | CL_w=0.195 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[14.417568   1.0226425 11.625837 ] | vel=[ 7.4934998  1.9643546 -9.027995 ] | ang_vel=[-0.6178427   0.11338818  1.2502035 ] | rpy(deg)=(59.4, -48.7, -161.2) | alpha=0.16 deg | beta=0.68 deg | Lift=0.023 | Drag=0.110 | Side=0.000 | alpha_raw=0.66 deg | eps_dw=0.51 deg | CL_w=0.195 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[14.622352   1.0306494 11.789968 ] | vel=[ 7.5021005  2.3217824 -9.056162 ] | ang_vel=[-0.6178418   0.11339816  1.2502071 ] | rpy(deg)=(59.4, -48.7, -161.2) | alpha=0.59 deg | beta=0.61 deg | Lift=0.000 | Drag=0.088 | Side=0.049
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.56 deg | beta=-0.61 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0000
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0001
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.5106e+01,  1.1224e+00,  1.1173e+01, -1.2271e+00,  8.4992e-02,
+         8.9334e-01,  1.3212e-04, -3.3416e-05, -7.7688e-06, -1.7920e-05,
+        -2.2214e-05, -5.9469e-06], device='cuda:0') 
+
+fuselage tensor([[15.1058,  1.1224, 11.1732]], device='cuda:0') tensor([[ 0.5038,  0.7473,  0.3308, -0.2798]], device='cuda:0')
+left_wing tensor([[14.8963,  1.1053, 11.3633]], device='cuda:0') tensor([[ 0.5038,  0.7473,  0.3308, -0.2798]], device='cuda:0')
+right_wing tensor([[14.9739,  1.0779, 11.4201]], device='cuda:0') tensor([[ 0.5038,  0.7473,  0.3307, -0.2798]], device='cuda:0')
+elevator_hinge tensor([[14.6312,  0.9609, 11.7443]], device='cuda:0') tensor([[ 0.5038,  0.7473,  0.3308, -0.2798]], device='cuda:0')
+rudder tensor([[14.6312,  0.9609, 11.7443]], device='cuda:0') tensor([[ 0.5038,  0.7473,  0.3308, -0.2798]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:30] [INFO] Running at [38;5;121m32.58[0m[38;5;159m FPS ([38;5;121m32.58[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.57[0m[38;5;159m FPS ([38;5;121m32.57[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.58[0m[38;5;159m FPS ([38;5;121m32.58[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.60[0m[38;5;159m FPS ([38;5;121m32.60[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.59[0m[38;5;159m FPS ([38;5;121m32.59[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.5370813 -0.277501   0.7965783] | y_w=[0.8253472  0.02214078 0.5641914 ] | z_w=[-0.17420052  0.96047026  0.21714325]
+[DroneModel] link=aero_frame_fuselage | pos=[16.34802   1.672155  9.481405] | vel=[ 6.73966    3.3031008 -9.937964 ] | ang_vel=[-0.6407794   0.15476924  1.4775413 ] | rpy(deg)=(68.9, -52.8, -152.7) | alpha=0.73 deg | beta=-0.14 deg | Lift=0.000 | Drag=5.449 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[16.595642  1.678806  9.650639] | vel=[ 6.756243  3.777526 -9.980874] | ang_vel=[-0.6410301   0.15588245  1.4777601 ] | rpy(deg)=(68.9, -52.8, -152.7) | alpha=0.73 deg | beta=-0.15 deg | Lift=2.746 | Drag=0.190 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[16.100447   1.6655287  9.312102 ] | vel=[ 6.723341   2.8288627 -9.89554  ] | ang_vel=[-0.6406887   0.15429047  1.4774357 ] | rpy(deg)=(69.0, -52.8, -152.7) | alpha=0.73 deg | beta=-0.13 deg | Lift=2.748 | Drag=0.190 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[16.283604   1.5062824 10.02526  ] | vel=[ 7.0689154  3.5564132 -9.821707 ] | ang_vel=[-0.6407828   0.15476915  1.4775391 ] | rpy(deg)=(69.0, -52.8, -152.7) | alpha=0.27 deg | beta=-0.16 deg | Lift=0.045 | Drag=0.121 | Side=0.000 | alpha_raw=0.81 deg | eps_dw=0.54 deg | CL_w=0.207 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[15.870931  1.495212  9.743165] | vel=[ 7.0416126  2.765911  -9.750745 ] | ang_vel=[-0.6407828   0.15476915  1.4775391 ] | rpy(deg)=(69.0, -52.8, -152.7) | alpha=0.27 deg | beta=-0.16 deg | Lift=0.045 | Drag=0.121 | Side=0.000 | alpha_raw=0.81 deg | eps_dw=0.54 deg | CL_w=0.207 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[16.066689   1.5793192  9.8966055] | vel=[ 6.9410887  3.1534731 -9.834937 ] | ang_vel=[-0.64078265  0.15476854  1.477539  ] | rpy(deg)=(68.9, -52.8, -152.7) | alpha=0.73 deg | beta=-0.14 deg | Lift=0.000 | Drag=0.095 | Side=-0.012
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.75 deg | beta=0.14 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0001
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0002
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.6502e+01,  1.7203e+00,  9.2539e+00, -1.3485e+00, -1.7509e-01,
+         9.9391e-01,  1.6385e-04, -9.0195e-05, -7.5883e-06, -1.9867e-05,
+        -2.8677e-05, -7.2492e-06], device='cuda:0') 
+
+fuselage tensor([[16.5022,  1.7203,  9.2539]], device='cuda:0') tensor([[ 0.5792,  0.6580,  0.4190, -0.2365]], device='cuda:0')
+left_wing tensor([[16.3068,  1.6710,  9.4532]], device='cuda:0') tensor([[ 0.5792,  0.6580,  0.4190, -0.2365]], device='cuda:0')
+right_wing tensor([[16.3893,  1.6733,  9.5096]], device='cuda:0') tensor([[ 0.5793,  0.6581,  0.4189, -0.2364]], device='cuda:0')
+elevator_hinge tensor([[16.0941,  1.5094,  9.8593]], device='cuda:0') tensor([[ 0.5792,  0.6580,  0.4190, -0.2365]], device='cuda:0')
+rudder tensor([[16.0941,  1.5094,  9.8593]], device='cuda:0') tensor([[ 0.5792,  0.6580,  0.4190, -0.2365]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.54[0m[38;5;159m FPS ([38;5;121m32.54[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.55[0m[38;5;159m FPS ([38;5;121m32.55[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.53[0m[38;5;159m FPS ([38;5;121m32.53[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.51[0m[38;5;159m FPS ([38;5;121m32.51[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:31] [INFO] Running at [38;5;121m32.55[0m[38;5;159m FPS ([38;5;121m32.55[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.44340616 -0.32919487  0.8336797 ] | y_w=[0.76991725 0.33634886 0.542307  ] | z_w=[-0.45893183  0.8823266   0.10431367]
+[DroneModel] link=aero_frame_fuselage | pos=[17.595875   2.419314   7.4098744] | vel=[  5.749023   4.101488 -10.751976] | ang_vel=[-0.53557557 -0.07352534  1.5411221 ] | rpy(deg)=(79.1, -56.5, -143.4) | alpha=0.63 deg | beta=0.10 deg | Lift=0.000 | Drag=5.812 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[17.826866   2.520231   7.5725355] | vel=[  5.581514    4.5445733 -10.788995 ] | ang_vel=[-0.53549594 -0.07365919  1.5411116 ] | rpy(deg)=(79.1, -56.5, -143.4) | alpha=0.62 deg | beta=0.10 deg | Lift=2.805 | Drag=0.201 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[17.364931   2.3184323  7.247124 ] | vel=[  5.916422   3.658382 -10.714854] | ang_vel=[-0.5356559  -0.07329495  1.5411704 ] | rpy(deg)=(79.1, -56.5, -143.4) | alpha=0.62 deg | beta=0.11 deg | Lift=2.805 | Drag=0.201 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[17.574278   2.3077748  7.970708 ] | vel=[  5.879683   4.368573 -10.693827] | ang_vel=[-0.53557396 -0.07352465  1.5411232 ] | rpy(deg)=(79.1, -56.5, -143.4) | alpha=0.18 deg | beta=0.11 deg | Lift=0.031 | Drag=0.130 | Side=0.000 | alpha_raw=0.69 deg | eps_dw=0.51 deg | CL_w=0.198 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[17.189318   2.1396005  7.6995544] | vel=[  6.158797    3.6300795 -10.632061 ] | ang_vel=[-0.53557396 -0.07352465  1.5411232 ] | rpy(deg)=(79.1, -56.5, -143.4) | alpha=0.18 deg | beta=0.11 deg | Lift=0.031 | Drag=0.130 | Side=0.000 | alpha_raw=0.69 deg | eps_dw=0.52 deg | CL_w=0.198 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[17.347855   2.2963314  7.8382654] | vel=[  5.9070563   3.9486942 -10.704345 ] | ang_vel=[-0.53557384 -0.07352493  1.5411232 ] | rpy(deg)=(79.1, -56.5, -143.4) | alpha=0.63 deg | beta=0.10 deg | Lift=0.000 | Drag=0.101 | Side=0.009
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.62 deg | beta=-0.10 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0001
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0002
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=-0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.7733e+01,  2.4842e+00,  7.1755e+00, -1.4531e+00, -4.7679e-01,
+         1.0483e+00,  1.9999e-04, -1.0676e-04, -8.0719e-06, -2.2484e-05,
+        -2.8013e-05, -6.2475e-06], device='cuda:0') 
+
+fuselage tensor([[17.7326,  2.4842,  7.1755]], device='cuda:0') tensor([[ 0.6472,  0.5503,  0.4993, -0.1702]], device='cuda:0')
+left_wing tensor([[17.5574,  2.4025,  7.3828]], device='cuda:0') tensor([[ 0.6472,  0.5503,  0.4993, -0.1703]], device='cuda:0')
+right_wing tensor([[17.6344,  2.4361,  7.4370]], device='cuda:0') tensor([[ 0.6472,  0.5504,  0.4993, -0.1702]], device='cuda:0')
+elevator_hinge tensor([[17.3957,  2.2340,  7.8091]], device='cuda:0') tensor([[ 0.6472,  0.5503,  0.4993, -0.1702]], device='cuda:0')
+rudder tensor([[17.3957,  2.2340,  7.8091]], device='cuda:0') tensor([[ 0.6472,  0.5503,  0.4993, -0.1702]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m24.58[0m[38;5;159m FPS ([38;5;121m24.58[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m32.72[0m[38;5;159m FPS ([38;5;121m32.72[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m32.70[0m[38;5;159m FPS ([38;5;121m32.70[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m32.67[0m[38;5;159m FPS ([38;5;121m32.67[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m32.69[0m[38;5;159m FPS ([38;5;121m32.69[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.33104295 -0.36143982  0.87164897] | y_w=[0.6013102  0.6310855  0.49005845] | z_w=[-0.72721165  0.6863618   0.00842106]
+[DroneModel] link=aero_frame_fuselage | pos=[18.621174   3.3061588  5.171876 ] | vel=[  4.518532   4.683571 -11.570184] | ang_vel=[-0.57144326 -0.04175508  1.798955  ] | rpy(deg)=(89.0, -60.7, -132.5) | alpha=0.73 deg | beta=-0.02 deg | Lift=0.000 | Drag=6.191 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[18.801607  3.495529  5.318786] | vel=[  4.172278    5.0927124 -11.672311 ] | ang_vel=[-0.57526845 -0.03889651  1.7986878 ] | rpy(deg)=(89.0, -60.7, -132.5) | alpha=0.72 deg | beta=-0.04 deg | Lift=3.107 | Drag=0.216 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[18.440811   3.1168666  5.0247774] | vel=[  4.8653264   4.275184  -11.469873 ] | ang_vel=[-0.5703956  -0.04221472  1.7991624 ] | rpy(deg)=(89.0, -60.6, -132.5) | alpha=0.73 deg | beta=-0.01 deg | Lift=3.115 | Drag=0.216 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[18.62321    3.2576137  5.7420344] | vel=[  4.5820546   5.0130486 -11.542357 ] | ang_vel=[-0.57144934 -0.04176145  1.7989501 ] | rpy(deg)=(89.0, -60.7, -132.5) | alpha=0.26 deg | beta=-0.02 deg | Lift=0.049 | Drag=0.140 | Side=0.000 | alpha_raw=0.79 deg | eps_dw=0.54 deg | CL_w=0.206 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[18.322556  2.942071  5.497005] | vel=[  5.159933   4.332163 -11.374598] | ang_vel=[-0.57144934 -0.04176145  1.7989501 ] | rpy(deg)=(89.0, -60.7, -132.5) | alpha=0.26 deg | beta=-0.02 deg | Lift=0.049 | Drag=0.140 | Side=0.000 | alpha_raw=0.79 deg | eps_dw=0.54 deg | CL_w=0.206 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[18.416777   3.1570106  5.6147456] | vel=[  4.7683506   4.5689445 -11.493488 ] | ang_vel=[-0.57144785 -0.04176285  1.7989501 ] | rpy(deg)=(89.0, -60.7, -132.5) | alpha=0.72 deg | beta=-0.02 deg | Lift=0.000 | Drag=0.108 | Side=-0.002
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.69 deg | beta=0.02 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0004
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0003
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0001
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0000
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.8735e+01,  3.3858e+00,  4.9298e+00, -1.5585e+00, -8.1425e-01,
+         1.0675e+00,  2.6583e-04, -3.5128e-04, -6.3227e-06,  1.7702e-05,
+        -9.5382e-05, -6.4792e-06], device='cuda:0') 
+
+fuselage tensor([[18.7348,  3.3858,  4.9298]], device='cuda:0') tensor([[ 0.6989,  0.4208,  0.5719, -0.0858]], device='cuda:0')
+left_wing tensor([[18.5911,  3.2746,  5.1474]], device='cuda:0') tensor([[ 0.6989,  0.4207,  0.5720, -0.0859]], device='cuda:0')
+right_wing tensor([[18.6512,  3.3377,  5.1964]], device='cuda:0') tensor([[ 0.6989,  0.4209,  0.5719, -0.0857]], device='cuda:0')
+elevator_hinge tensor([[18.4832,  3.1111,  5.5923]], device='cuda:0') tensor([[ 0.6989,  0.4208,  0.5719, -0.0858]], device='cuda:0')
+rudder tensor([[18.4832,  3.1111,  5.5923]], device='cuda:0') tensor([[ 0.6989,  0.4208,  0.5719, -0.0858]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m32.50[0m[38;5;159m FPS ([38;5;121m32.50[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m32.56[0m[38;5;159m FPS ([38;5;121m32.56[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:32] [INFO] Running at [38;5;121m32.56[0m[38;5;159m FPS ([38;5;121m32.56[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.58[0m[38;5;159m FPS ([38;5;121m32.58[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.60[0m[38;5;159m FPS ([38;5;121m32.60[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.20745791 -0.36527926  0.9074868 ] | y_w=[0.3144071  0.8535532  0.41544574] | z_w=[-0.9263419   0.37150782 -0.06222999]
+[DroneModel] link=aero_frame_fuselage | pos=[19.366547   4.2760344  2.7713282] | vel=[  2.9687474   4.928541  -12.381888 ] | ang_vel=[-0.5065026  -0.09381916  1.9693387 ] | rpy(deg)=(98.5, -65.2, -119.6) | alpha=0.62 deg | beta=0.00 deg | Lift=0.000 | Drag=6.551 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[19.460903   4.53216    2.8958147] | vel=[  2.4527955   5.1776342 -12.503311 ] | ang_vel=[-0.50825715 -0.09360819  1.9690226 ] | rpy(deg)=(98.6, -65.2, -119.6) | alpha=0.61 deg | beta=-0.02 deg | Lift=3.135 | Drag=0.226 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[19.272253   4.020018   2.6465716] | vel=[  3.4846559   4.679693  -12.261156 ] | ang_vel=[-0.5059505  -0.09317097  1.9697262 ] | rpy(deg)=(98.5, -65.1, -119.6) | alpha=0.63 deg | beta=0.03 deg | Lift=3.164 | Drag=0.227 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[19.366337   4.290579   3.3433688] | vel=[  2.8864357   5.217868  -12.389275 ] | ang_vel=[-0.5065012  -0.09381534  1.9693406 ] | rpy(deg)=(98.5, -65.2, -119.6) | alpha=0.17 deg | beta=0.00 deg | Lift=0.034 | Drag=0.150 | Side=0.000 | alpha_raw=0.68 deg | eps_dw=0.51 deg | CL_w=0.196 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[19.209133   3.8638022  3.135646 ] | vel=[  3.746392    4.8030686 -12.18786  ] | ang_vel=[-0.5065012  -0.09381534  1.9693406 ] | rpy(deg)=(98.5, -65.2, -119.6) | alpha=0.16 deg | beta=0.00 deg | Lift=0.033 | Drag=0.150 | Side=0.000 | alpha_raw=0.68 deg | eps_dw=0.52 deg | CL_w=0.198 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[19.214924   4.1091943  3.2288568] | vel=[  3.254387    4.8616843 -12.311607 ] | ang_vel=[-0.5065011  -0.09381538  1.9693406 ] | rpy(deg)=(98.5, -65.2, -119.6) | alpha=0.62 deg | beta=0.00 deg | Lift=0.000 | Drag=0.114 | Side=0.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.62 deg | beta=-0.00 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0005
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0004
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0002
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0002
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=-0.0000
+Full DOF positions array: tensor([ 1.9452e+01,  4.3662e+00,  2.5215e+00, -1.7368e+00, -1.1846e+00,
+         9.8754e-01,  3.8784e-04, -4.6380e-04, -6.5352e-06,  1.5719e-04,
+        -2.2248e-04, -6.3609e-06], device='cuda:0') 
+
+fuselage tensor([[19.4519,  4.3662,  2.5215]], device='cuda:0') tensor([[0.7286, 0.2700, 0.6293, 0.0175]], device='cuda:0')
+left_wing tensor([[19.3508,  4.2334,  2.7506]], device='cuda:0') tensor([[0.7286, 0.2699, 0.6292, 0.0173]], device='cuda:0')
+right_wing tensor([[19.3823,  4.3187,  2.7921]], device='cuda:0') tensor([[0.7285, 0.2702, 0.6293, 0.0176]], device='cuda:0')
+elevator_hinge tensor([[19.2942,  4.0886,  3.2111]], device='cuda:0') tensor([[0.7286, 0.2700, 0.6293, 0.0175]], device='cuda:0')
+rudder tensor([[19.2942,  4.0886,  3.2111]], device='cuda:0') tensor([[0.7286, 0.2700, 0.6293, 0.0175]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.51[0m[38;5;159m FPS ([38;5;121m32.51[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.53[0m[38;5;159m FPS ([38;5;121m32.53[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.57[0m[38;5;159m FPS ([38;5;121m32.57[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.61[0m[38;5;159m FPS ([38;5;121m32.61[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.60[0m[38;5;159m FPS ([38;5;121m32.60[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[-0.09382027 -0.16449001  0.9819067 ] | y_w=[-0.05597859  0.9855683   0.15975471] | z_w=[-0.9940142  -0.03997751 -0.10167423]
+[DroneModel] link=aero_frame_fuselage | pos=[19.78445     5.2698216   0.24041454] | vel=[  0.95951855   7.222648   -11.251332  ] | ang_vel=[-18.466797    -0.39584157  -0.0369179 ] | rpy(deg)=(122.5, -79.1, -119.7) | alpha=0.45 deg | beta=-22.97 deg | Lift=0.000 | Drag=6.297 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[19.769127    5.5677      0.27309123] | vel=[  1.1041582   8.010628  -18.263603 ] | ang_vel=[-22.792763    -0.5921795   -0.48213816] | rpy(deg)=(131.4, -81.1, -128.7) | alpha=0.42 deg | beta=-25.11 deg | Lift=2.848 | Drag=0.220 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[19.80159     4.974782    0.18884106] | vel=[ 1.0020435  6.3315544 -6.1431093] | ang_vel=[-17.461384    -0.35486877   0.06601805] | rpy(deg)=(120.8, -78.6, -118.0) | alpha=0.46 deg | beta=-22.28 deg | Lift=2.848 | Drag=0.216 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[19.752064   5.43289    0.7879562] | vel=[  0.74872136  17.33518    -14.275509  ] | ang_vel=[-18.466658    -0.39830267  -0.03731683] | rpy(deg)=(122.5, -79.1, -119.7) | alpha=0.04 deg | beta=-25.23 deg | Lift=0.006 | Drag=0.118 | Side=0.000 | alpha_raw=0.51 deg | eps_dw=0.47 deg | CL_w=0.180 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[19.780052   4.9401054  0.7080788] | vel=[ 0.76214755 15.859068   -5.1642785 ] | ang_vel=[-18.466658    -0.39830267  -0.03731683] | rpy(deg)=(122.5, -79.1, -119.7) | alpha=0.03 deg | beta=-25.23 deg | Lift=0.004 | Drag=0.118 | Side=0.000 | alpha_raw=0.51 deg | eps_dw=0.48 deg | CL_w=0.184 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[19.687124   5.1843247  0.7337437] | vel=[ 0.76105744 16.336151   -9.71126   ] | ang_vel=[-18.453316    -0.39776614  -0.03595169] | rpy(deg)=(122.5, -79.1, -119.7) | alpha=0.45 deg | beta=-22.98 deg | Lift=0.000 | Drag=0.670 | Side=-1.580
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.50 deg | beta=22.97 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0442
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0106
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0006
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0003
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0000
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9840e+01,  5.3167e+00, -2.8916e-02,  2.7670e+00, -1.4613e+00,
+        -5.3796e-01,  1.0622e-02, -4.4229e-02, -3.0910e-05,  2.7846e-04,
+        -6.1740e-04,  1.2729e-04], device='cuda:0') 
+
+fuselage tensor([[19.8403,  5.3167, -0.0289]], device='cuda:0') tensor([[0.7384, 0.0406, 0.6690, 0.0746]], device='cuda:0')
+left_wing tensor([[19.7872,  5.2205,  0.2324]], device='cuda:0') tensor([[0.7401, 0.0258, 0.6695, 0.0583]], device='cuda:0')
+right_wing tensor([[19.7817,  5.3191,  0.2484]], device='cuda:0') tensor([[0.7379, 0.0441, 0.6688, 0.0786]], device='cuda:0')
+elevator_hinge tensor([[19.7690,  5.1916,  0.7173]], device='cuda:0') tensor([[0.7384, 0.0406, 0.6690, 0.0746]], device='cuda:0')
+rudder tensor([[19.7690,  5.1916,  0.7173]], device='cuda:0') tensor([[0.7384, 0.0406, 0.6690, 0.0747]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:33] [INFO] Running at [38;5;121m32.50[0m[38;5;159m FPS ([38;5;121m32.50[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.47[0m[38;5;159m FPS ([38;5;121m32.47[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.50[0m[38;5;159m FPS ([38;5;121m32.50[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.43[0m[38;5;159m FPS ([38;5;121m32.43[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.43[0m[38;5;159m FPS ([38;5;121m32.43[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[0.41330478 0.67208445 0.61439544] | y_w=[-0.110333    0.7067108  -0.69884664] | z_w=[-0.90388376  0.2210486   0.36624005]
+[DroneModel] link=aero_frame_fuselage | pos=[19.883114    5.626352    0.51515317] | vel=[0.5195696 1.1586837 0.8002629] | ang_vel=[-1.5125426  2.7855296 -1.1353092] | rpy(deg)=(-62.3, -37.9, 58.4) | alpha=-175.50 deg | beta=-7.04 deg | Lift=0.000 | Drag=0.078 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[19.816988    5.775912    0.26168448] | vel=[0.11146771 1.1300504  0.9057063 ] | ang_vel=[-0.63143355  2.5698812  -1.492     ] | rpy(deg)=(-66.1, -25.7, 65.5) | alpha=-175.75 deg | beta=6.33 deg | Lift=-0.022 | Drag=0.003 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[19.86451    5.348893   0.6366986] | vel=[0.5849025 1.4019146 1.351736 ] | ang_vel=[-1.7655272  2.850485  -1.0342807] | rpy(deg)=(-50.6, -54.6, 42.4) | alpha=-174.88 deg | beta=-26.73 deg | Lift=-0.027 | Drag=0.003 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.095005   6.1417537  0.6451692] | vel=[ 1.4668738   1.1147764  -0.56953365] | ang_vel=[-1.5125439  2.7855377 -1.1353172] | rpy(deg)=(-62.4, -37.9, 58.5) | alpha=-178.38 deg | beta=-2.13 deg | Lift=-0.051 | Drag=0.024 | Side=0.000 | alpha_raw=-178.62 deg | eps_dw=-0.28 deg | CL_w=-0.106 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.150173   5.7883983  0.9945925] | vel=[ 2.039035    1.580661   -0.18874103] | ang_vel=[-1.5125439  2.7855377 -1.1353172] | rpy(deg)=(-62.4, -37.9, 58.5) | alpha=-178.25 deg | beta=-2.13 deg | Lift=-0.054 | Drag=0.024 | Side=0.000 | alpha_raw=-178.62 deg | eps_dw=-0.36 deg | CL_w=-0.137 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[20.047676    5.97852     0.84530705] | vel=[ 1.8390433   1.471227   -0.19079894] | ang_vel=[-1.5125508  2.7855394 -1.1353143] | rpy(deg)=(-62.4, -37.9, 58.5) | alpha=-175.50 deg | beta=-7.04 deg | Lift=0.000 | Drag=0.002 | Side=-0.009
+[PropDebug] link=prop_frame_fuselage_0 | alpha=85.44 deg | beta=7.04 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.2381
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.3484
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0022
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0013
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0007
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9796e+01,  5.4333e+00,  3.3373e-01, -5.4303e-01, -1.1288e+00,
+        -2.8807e+00,  3.4840e-01, -2.3808e-01, -6.7967e-04,  1.3242e-03,
+        -2.2412e-03,  1.0761e-04], device='cuda:0') 
+
+fuselage tensor([[19.7956,  5.4333,  0.3337]], device='cuda:0') tensor([[ 0.4814, -0.2481,  0.7884, -0.2917]], device='cuda:0')
+left_wing tensor([[19.8886,  5.5910,  0.5501]], device='cuda:0') tensor([[ 0.4442, -0.3404,  0.7529, -0.3464]], device='cuda:0')
+right_wing tensor([[19.8776,  5.6617,  0.4802]], device='cuda:0') tensor([[ 0.5242, -0.1076,  0.8198, -0.2039]], device='cuda:0')
+elevator_hinge tensor([[20.1097,  5.9441,  0.8007]], device='cuda:0') tensor([[ 0.4817, -0.2482,  0.7882, -0.2916]], device='cuda:0')
+rudder tensor([[20.1097,  5.9441,  0.8007]], device='cuda:0') tensor([[ 0.4817, -0.2482,  0.7882, -0.2916]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.41[0m[38;5;159m FPS ([38;5;121m32.41[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.39[0m[38;5;159m FPS ([38;5;121m32.39[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.36[0m[38;5;159m FPS ([38;5;121m32.36[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:34] [INFO] Running at [38;5;121m32.42[0m[38;5;159m FPS ([38;5;121m32.42[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.46[0m[38;5;159m FPS ([38;5;121m32.46[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[0.8339188 0.5169846 0.1931481] | y_w=[-0.3501534  0.7661476 -0.5388973] | z_w=[-0.4265816   0.38176513  0.8199289 ]
+[DroneModel] link=aero_frame_fuselage | pos=[19.97802    5.789362   0.5162296] | vel=[ 0.4391612   0.5452938  -0.74421024] | ang_vel=[ 1.6501127  4.0209804 -1.6866866] | rpy(deg)=(-33.3, -11.1, 31.8) | alpha=131.50 deg | beta=-41.88 deg | Lift=0.000 | Drag=0.036 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[19.843904    5.9993987   0.34865963] | vel=[0.23960586 1.1375122  0.16239601] | ang_vel=[ 1.8344419  3.855901  -2.0404851] | rpy(deg)=(-34.1, -8.0, 36.8) | alpha=136.00 deg | beta=-37.38 deg | Lift=0.029 | Drag=0.028 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[20.023657   5.5293255  0.6610496] | vel=[ 0.82513326  0.32700765 -1.2762398 ] | ang_vel=[ 1.3138678  4.333756  -1.0547656] | rpy(deg)=(-30.9, -16.9, 21.8) | alpha=125.31 deg | beta=-47.84 deg | Lift=0.028 | Drag=0.039 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.331778   6.2351065  0.4561735] | vel=[ 0.94951195  0.04771115 -1.4311421 ] | ang_vel=[ 1.6500127  4.021199  -1.6868407] | rpy(deg)=(-33.3, -11.2, 31.8) | alpha=171.75 deg | beta=-8.71 deg | Lift=0.192 | Drag=0.026 | Side=0.000 | alpha_raw=172.62 deg | eps_dw=0.85 deg | CL_w=0.326 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.506853   5.8520327  0.7256222] | vel=[ 1.3868343 -0.6922071 -2.7672324] | ang_vel=[ 1.6500127  4.021199  -1.6868407] | rpy(deg)=(-33.3, -11.2, 31.8) | alpha=171.88 deg | beta=-8.71 deg | Lift=0.191 | Drag=0.026 | Side=0.000 | alpha_raw=172.62 deg | eps_dw=0.80 deg | CL_w=0.309 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[20.379936   6.0708485  0.6552728] | vel=[ 1.4730526 -0.3620411 -1.8958255] | ang_vel=[ 1.6500113  4.0212007 -1.6868379] | rpy(deg)=(-33.3, -11.2, 31.8) | alpha=131.50 deg | beta=-41.88 deg | Lift=0.000 | Drag=0.011 | Side=-0.012
+[PropDebug] link=prop_frame_fuselage_0 | alpha=138.50 deg | beta=41.88 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.1020
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.1967
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0023
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0041
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0007
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9759e+01,  5.6345e+00,  4.3805e-01, -4.3576e-01, -4.4071e-01,
+        -2.7441e+00,  1.9670e-01, -1.0195e-01, -6.5964e-04,  4.0546e-03,
+        -2.3080e-03,  1.0365e-04], device='cuda:0') 
+
+fuselage tensor([[19.7595,  5.6345,  0.4381]], device='cuda:0') tensor([[ 0.1676, -0.2344,  0.9247, -0.2489]], device='cuda:0')
+left_wing tensor([[19.9955,  5.7511,  0.5432]], device='cuda:0') tensor([[ 0.1557, -0.2816,  0.9113, -0.2568]], device='cuda:0')
+right_wing tensor([[19.9605,  5.8277,  0.4893]], device='cuda:0') tensor([[ 0.1893, -0.1420,  0.9436, -0.2316]], device='cuda:0')
+elevator_hinge tensor([[20.3933,  6.0274,  0.5848]], device='cuda:0') tensor([[ 0.1679, -0.2345,  0.9246, -0.2488]], device='cuda:0')
+rudder tensor([[20.3933,  6.0274,  0.5848]], device='cuda:0') tensor([[ 0.1679, -0.2345,  0.9246, -0.2488]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.42[0m[38;5;159m FPS ([38;5;121m32.42[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.48[0m[38;5;159m FPS ([38;5;121m32.48[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.49[0m[38;5;159m FPS ([38;5;121m32.49[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.52[0m[38;5;159m FPS ([38;5;121m32.52[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.54[0m[38;5;159m FPS ([38;5;121m32.54[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9909367   0.13132626 -0.02824379] | y_w=[-0.12306566  0.97183186  0.20099138] | z_w=[ 0.05384366 -0.1956939   0.97918564]
+[DroneModel] link=aero_frame_fuselage | pos=[19.996046   5.85394    0.2254452] | vel=[-0.8030721  -0.01082858 -1.3026009 ] | ang_vel=[ 4.4788117 -5.3487406 -2.427725 ] | rpy(deg)=(11.6, 1.6, 7.5) | alpha=60.75 deg | beta=6.06 deg | Lift=0.000 | Drag=0.084 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[19.94551     6.1434174   0.28607714] | vel=[-0.31428272 -0.1407274  -0.27866042] | ang_vel=[ 4.4571548 -5.2597055 -2.7354414] | rpy(deg)=(11.7, 1.2, 9.8) | alpha=61.09 deg | beta=4.96 deg | Lift=0.084 | Drag=0.152 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[20.007957   5.5599685  0.1660389] | vel=[-1.0498512   0.23548071 -2.561905  ] | ang_vel=[ 4.4995966 -5.3901753 -2.00072  ] | rpy(deg)=(11.5, 2.9, 3.6) | alpha=62.34 deg | beta=8.11 deg | Lift=0.081 | Drag=0.155 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.472797   6.1704254  0.2309216] | vel=[-0.06500538 -1.1904943   2.6532564 ] | ang_vel=[ 4.4319386 -4.978591  -2.351172 ] | rpy(deg)=(11.6, 3.2, 7.9) | alpha=157.75 deg | beta=2.86 deg | Lift=0.143 | Drag=0.058 | Side=0.000 | alpha_raw=158.88 deg | eps_dw=1.08 deg | CL_w=0.414 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.534328   5.6845093  0.1304259] | vel=[-0.70715076 -0.88977367  0.806044  ] | ang_vel=[ 4.4319386 -4.978591  -2.351172 ] | rpy(deg)=(11.6, 3.2, 7.9) | alpha=157.88 deg | beta=2.86 deg | Lift=0.142 | Drag=0.058 | Side=0.000 | alpha_raw=158.88 deg | eps_dw=1.05 deg | CL_w=0.402 | k_eps=1.000
+[DroneModel] link=aero_frame_rudder | pos=[20.503977    5.9112635   0.25926334] | vel=[-0.81544167 -1.389411    1.6598964 ] | ang_vel=[ 4.43194   -4.978595  -2.3511534] | rpy(deg)=(11.6, 3.2, 7.9) | alpha=59.03 deg | beta=6.79 deg | Lift=0.000 | Drag=0.001 | Side=0.007
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-150.75 deg | beta=-6.06 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0394
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0718
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0005
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0075
+elevator_pitch_joint           | dofs_idx= 8 | q=+0.0289
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9720e+01,  5.8234e+00,  2.0390e-01,  1.9725e-01,  5.3870e-02,
+        -3.0180e+00,  7.1849e-02, -3.9364e-02,  2.8866e-02,  7.5477e-03,
+         4.8220e-04,  1.0206e-04], device='cuda:0') 
+
+fuselage tensor([[19.7195,  5.8234,  0.2039]], device='cuda:0') tensor([[-0.0207, -0.0641,  0.9927,  0.0999]], device='cuda:0')
+left_wing tensor([[20.0022,  5.8053,  0.2154]], device='cuda:0') tensor([[-0.0189, -0.0836,  0.9913,  0.1003]], device='cuda:0')
+right_wing tensor([[19.9899,  5.9025,  0.2355]], device='cuda:0') tensor([[-0.0280, -0.0287,  0.9943,  0.0990]], device='cuda:0')
+elevator_hinge tensor([[20.4727,  5.9232,  0.1824]], device='cuda:0') tensor([[-0.0350, -0.0655,  0.9923,  0.0990]], device='cuda:0')
+rudder tensor([[20.4727,  5.9232,  0.1824]], device='cuda:0') tensor([[-0.0350, -0.0654,  0.9923,  0.0990]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.39[0m[38;5;159m FPS ([38;5;121m32.39[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:35] [INFO] Running at [38;5;121m32.37[0m[38;5;159m FPS ([38;5;121m32.37[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m32.35[0m[38;5;159m FPS ([38;5;121m32.35[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m32.40[0m[38;5;159m FPS ([38;5;121m32.40[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m32.58[0m[38;5;159m FPS ([38;5;121m32.58[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[0.99679124 0.00312092 0.07998396] | y_w=[ 0.01111765  0.98415637 -0.17695363] | z_w=[-0.07926899  0.17727508  0.9809638 ]
+[DroneModel] link=aero_frame_fuselage | pos=[19.975807    5.904335    0.16738059] | vel=[ 0.01577438 -0.11010449 -0.10878076] | ang_vel=[ 0.7256483   0.18618    -0.00859927] | rpy(deg)=(-10.2, -4.6, 0.2) | alpha=92.88 deg | beta=34.59 deg | Lift=0.000 | Drag=0.001 | Side=0.000
+[DroneModel] link=aero_frame_left_wing | pos=[19.96904     6.1994057   0.11350984] | vel=[ 0.0392193  -0.06997372  0.10891929] | ang_vel=[ 0.73318416  0.14242189 -0.09048857] | rpy(deg)=(-10.3, -3.8, 1.7) | alpha=94.25 deg | beta=34.56 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_right_wing | pos=[19.958982    5.6093035   0.21933787] | vel=[ 0.05534099 -0.14880061 -0.3169112 ] | ang_vel=[0.71826893 0.20263709 0.08270232] | rpy(deg)=(-10.0, -4.6, -2.1) | alpha=96.88 deg | beta=34.34 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.493227    6.1464853   0.13384992] | vel=[ 0.0114534  -0.08962887 -0.02610685] | ang_vel=[0.7244571  0.08073514 0.01035996] | rpy(deg)=(-10.2, -2.8, -0.1) | alpha=177.50 deg | beta=1.22 deg | Lift=0.055 | Drag=0.017 | Side=0.000 | alpha_raw=177.50 deg | eps_dw=0.02 deg | CL_w=0.007 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.487669    5.6544075   0.22232673] | vel=[ 0.0236945 -0.1537841 -0.3821474] | ang_vel=[0.7244571  0.08073514 0.01035996] | rpy(deg)=(-10.2, -2.8, -0.1) | alpha=177.50 deg | beta=1.22 deg | Lift=0.055 | Drag=0.017 | Side=0.000 | alpha_raw=177.50 deg | eps_dw=0.03 deg | CL_w=0.012 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=177.12 deg | beta=-34.59 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0290
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0387
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0084
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=+0.0314
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9702e+01,  5.8982e+00,  1.1576e-01, -1.7879e-01, -7.9352e-02,
+         3.1304e+00,  3.8679e-02, -2.8961e-02,  3.1383e-02,  7.0436e-03,
+         8.4486e-03,  1.0071e-04], device='cuda:0') 
+
+fuselage tensor([[19.7017,  5.8982,  0.1158]], device='cuda:0') tensor([[ 0.0400,  0.0020,  0.9952, -0.0890]], device='cuda:0')
+left_wing tensor([[19.9753,  5.8551,  0.1762]], device='cuda:0') tensor([[ 0.0345, -0.0120,  0.9953, -0.0896]], device='cuda:0')
+right_wing tensor([[19.9764,  5.9535,  0.1585]], device='cuda:0') tensor([[ 0.0382,  0.0216,  0.9951, -0.0881]], device='cuda:0')
+elevator_hinge tensor([[20.4592,  5.9005,  0.1766]], device='cuda:0') tensor([[ 0.0244,  0.0034,  0.9957, -0.0889]], device='cuda:0')
+rudder tensor([[20.4592,  5.9005,  0.1766]], device='cuda:0') tensor([[ 0.0244,  0.0035,  0.9957, -0.0889]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m32.71[0m[38;5;159m FPS ([38;5;121m32.71[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m32.77[0m[38;5;159m FPS ([38;5;121m32.77[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m32.81[0m[38;5;159m FPS ([38;5;121m32.81[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m32.90[0m[38;5;159m FPS ([38;5;121m32.90[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m33.09[0m[38;5;159m FPS ([38;5;121m33.09[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994527  -0.00709785  0.0323096 ] | y_w=[7.0985188e-03 9.9997485e-01 9.3944109e-05] | z_w=[-3.2309450e-02  1.3545759e-04  9.9947786e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.981693    5.877076    0.13871157] | vel=[-0.00313766  0.00047004  0.00137047] | ang_vel=[-3.1630634e-03 -1.2175924e-03 -4.8501483e-06] | rpy(deg)=(0.0, -1.9, -0.4) | alpha=-25.41 deg | beta=-0.25 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.498018    6.123419    0.12483779] | vel=[-0.00313897  0.00042367  0.00244576] | ang_vel=[-3.4415459e-03 -4.0447664e-02 -8.5356751e-06] | rpy(deg)=(0.0, -0.9, -0.4) | alpha=179.88 deg | beta=-0.01 deg | Lift=0.004 | Drag=0.016 | Side=0.000 | alpha_raw=179.75 deg | eps_dw=-0.07 deg | CL_w=-0.027 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.49447     5.623431    0.12479082] | vel=[-0.00314134  0.00042354  0.004023  ] | ang_vel=[-3.4415459e-03 -4.0447664e-02 -8.5356751e-06] | rpy(deg)=(0.0, -0.9, -0.4) | alpha=179.88 deg | beta=-0.01 deg | Lift=0.005 | Drag=0.016 | Side=0.000 | alpha_raw=179.75 deg | eps_dw=-0.03 deg | CL_w=-0.012 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-64.62 deg | beta=0.25 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0159
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0207
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0037
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0071
+elevator_pitch_joint           | dofs_idx= 8 | q=+0.0165
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9705e+01,  5.8790e+00,  9.9765e-02, -1.3553e-04, -3.2315e-02,
+         3.1345e+00,  2.0719e-02, -1.5941e-02,  1.6492e-02,  7.0767e-03,
+         3.7442e-03,  9.9325e-05], device='cuda:0') 
+
+fuselage tensor([[19.7054,  5.8790,  0.0998]], device='cuda:0') tensor([[ 1.6157e-02,  3.5496e-03,  9.9986e-01, -1.0380e-05]], device='cuda:0')
+left_wing tensor([[19.9813,  5.8271,  0.1387]], device='cuda:0') tensor([[ 1.4285e-02, -4.4194e-03,  9.9989e-01, -1.4743e-04]], device='cuda:0')
+right_wing tensor([[19.9820,  5.9271,  0.1387]], device='cuda:0') tensor([[1.2619e-02, 1.3906e-02, 9.9982e-01, 2.0620e-04]], device='cuda:0')
+elevator_hinge tensor([[20.4650,  5.8736,  0.1243]], device='cuda:0') tensor([[7.9117e-03, 3.5495e-03, 9.9996e-01, 1.8890e-05]], device='cuda:0')
+rudder tensor([[20.4650,  5.8736,  0.1243]], device='cuda:0') tensor([[7.9117e-03, 3.5992e-03, 9.9996e-01, 1.9282e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:36] [INFO] Running at [38;5;121m33.21[0m[38;5;159m FPS ([38;5;121m33.21[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m33.44[0m[38;5;159m FPS ([38;5;121m33.44[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m33.62[0m[38;5;159m FPS ([38;5;121m33.62[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m33.85[0m[38;5;159m FPS ([38;5;121m33.85[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m34.04[0m[38;5;159m FPS ([38;5;121m34.04[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994583  -0.00709452  0.03213907] | y_w=[7.0978836e-03 9.9997485e-01 9.5803925e-06] | z_w=[-3.2138325e-02  2.1854416e-04  9.9948347e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.98119     5.877091    0.13869108] | vel=[-2.2781091e-03  1.4631573e-05 -2.9271893e-04] | ang_vel=[-5.4514853e-06  1.0381618e-03 -1.1778747e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=5.43 deg | beta=0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.497507    6.123432    0.12492397] | vel=[-2.31073145e-03  8.61663648e-06  1.11201596e-04] | ang_vel=[-2.1931191e-04 -2.9091248e-02 -1.2067406e-05] | rpy(deg)=(0.0, -1.3, -0.4) | alpha=179.75 deg | beta=0.00 deg | Lift=0.006 | Drag=0.016 | Side=0.000 | alpha_raw=179.88 deg | eps_dw=0.06 deg | CL_w=0.022 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.49396     5.6234446   0.12491918] | vel=[-2.3166260e-03  8.6583977e-06  1.1764873e-04] | ang_vel=[-2.1931191e-04 -2.9091248e-02 -1.2067406e-05] | rpy(deg)=(0.0, -1.3, -0.4) | alpha=179.75 deg | beta=0.00 deg | Lift=0.005 | Drag=0.016 | Side=0.000 | alpha_raw=179.88 deg | eps_dw=0.04 deg | CL_w=0.015 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-95.44 deg | beta=-0.00 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0103
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0121
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0015
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0071
+elevator_pitch_joint           | dofs_idx= 8 | q=+0.0096
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9705e+01,  5.8791e+00,  9.9791e-02, -2.1866e-04, -3.2144e-02,
+         3.1345e+00,  1.2145e-02, -1.0303e-02,  9.5928e-03,  7.0624e-03,
+         1.5163e-03,  9.7697e-05], device='cuda:0') 
+
+fuselage tensor([[19.7049,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.6072e-02,  3.5486e-03,  9.9986e-01, -5.2248e-05]], device='cuda:0')
+left_wing tensor([[19.9808,  5.8271,  0.1387]], device='cuda:0') tensor([[ 1.5313e-02, -1.6019e-03,  9.9988e-01, -1.3625e-04]], device='cuda:0')
+right_wing tensor([[19.9815,  5.9271,  0.1387]], device='cuda:0') tensor([[1.2541e-02, 9.6200e-03, 9.9988e-01, 7.9317e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4645,  5.8737,  0.1242]], device='cuda:0') tensor([[ 1.1276e-02,  3.5488e-03,  9.9993e-01, -3.5227e-05]], device='cuda:0')
+rudder tensor([[20.4645,  5.8737,  0.1242]], device='cuda:0') tensor([[ 1.1276e-02,  3.5975e-03,  9.9993e-01, -3.4678e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m34.14[0m[38;5;159m FPS ([38;5;121m34.14[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m34.29[0m[38;5;159m FPS ([38;5;121m34.29[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m34.48[0m[38;5;159m FPS ([38;5;121m34.48[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m34.67[0m[38;5;159m FPS ([38;5;121m34.67[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:37] [INFO] Running at [38;5;121m34.82[0m[38;5;159m FPS ([38;5;121m34.82[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99946404 -0.0070936   0.03196055] | y_w=[7.0969220e-03 9.9997485e-01 9.4399165e-06] | z_w=[-3.1959817e-02  2.1738671e-04  9.9948919e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.98077    5.877091   0.1386403] | vel=[-1.9567402e-03  1.4298113e-05 -2.2539384e-04] | ang_vel=[7.9819611e-06 7.9202262e-04 5.7885486e-06] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=4.70 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.49708    6.123433   0.1249423] | vel=[-1.9880976e-03  1.7525019e-05  6.0653842e-05] | ang_vel=[-1.4946710e-04 -2.1392962e-02  5.5791188e-06] | rpy(deg)=(0.0, -1.6, -0.4) | alpha=179.88 deg | beta=-0.00 deg | Lift=0.004 | Drag=0.016 | Side=0.000 | alpha_raw=179.88 deg | eps_dw=0.05 deg | CL_w=0.020 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.493532    5.6234455   0.12493757] | vel=[-1.9852070e-03  1.7504521e-05  5.9490405e-05] | ang_vel=[-1.4946710e-04 -2.1392962e-02  5.5791188e-06] | rpy(deg)=(0.0, -1.6, -0.4) | alpha=179.88 deg | beta=-0.00 deg | Lift=0.005 | Drag=0.016 | Side=0.000 | alpha_raw=179.88 deg | eps_dw=0.06 deg | CL_w=0.022 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-94.69 deg | beta=0.00 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0082
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0089
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0006
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=+0.0044
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9704e+01,  5.8791e+00,  9.9790e-02, -2.1750e-04, -3.1965e-02,
+         3.1345e+00,  8.8893e-03, -8.1982e-03,  4.4380e-03,  7.0484e-03,
+         6.1466e-04,  9.6097e-05], device='cuda:0') 
+
+fuselage tensor([[19.7045,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5982e-02,  3.5481e-03,  9.9987e-01, -5.1994e-05]], device='cuda:0')
+left_wing tensor([[19.9804,  5.8271,  0.1386]], device='cuda:0') tensor([[ 1.5675e-02, -5.5040e-04,  9.9988e-01, -1.1767e-04]], device='cuda:0')
+right_wing tensor([[19.9811,  5.9271,  0.1386]], device='cuda:0') tensor([[1.2459e-02, 7.9919e-03, 9.9989e-01, 4.7206e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4641,  5.8737,  0.1241]], device='cuda:0') tensor([[ 1.3763e-02,  3.5482e-03,  9.9990e-01, -4.4120e-05]], device='cuda:0')
+rudder tensor([[20.4641,  5.8737,  0.1241]], device='cuda:0') tensor([[ 1.3763e-02,  3.5961e-03,  9.9990e-01, -4.3460e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m34.91[0m[38;5;159m FPS ([38;5;121m34.91[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.08[0m[38;5;159m FPS ([38;5;121m35.08[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.26[0m[38;5;159m FPS ([38;5;121m35.26[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.41[0m[38;5;159m FPS ([38;5;121m35.41[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.51[0m[38;5;159m FPS ([38;5;121m35.51[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994683  -0.00709185  0.03182622] | y_w=[7.0951455e-03 9.9997485e-01 9.2657365e-06] | z_w=[-3.182548e-02  2.165508e-04  9.994935e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.980406    5.8770914   0.13860245] | vel=[-1.74261304e-03  1.20056375e-05 -1.67040722e-04] | ang_vel=[1.5089897e-05 6.1074510e-04 8.6036789e-06] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=3.62 deg | beta=0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.496712    6.1234345   0.12495402] | vel=[-1.7691093e-03  1.6762775e-05  3.5399535e-05] | ang_vel=[-1.0167744e-04 -1.5846197e-02  8.4511894e-06] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=179.88 deg | beta=0.00 deg | Lift=0.003 | Drag=0.016 | Side=0.000 | alpha_raw=179.88 deg | eps_dw=0.04 deg | CL_w=0.015 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.493164    5.623447    0.12494939] | vel=[-1.7648104e-03  1.6732321e-05  3.0019939e-05] | ang_vel=[-1.0167744e-04 -1.5846197e-02  8.4511894e-06] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=179.88 deg | beta=0.00 deg | Lift=0.003 | Drag=0.016 | Side=0.000 | alpha_raw=179.88 deg | eps_dw=0.04 deg | CL_w=0.017 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-93.62 deg | beta=-0.00 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0074
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0077
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0003
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=+0.0006
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9704e+01,  5.8791e+00,  9.9789e-02, -2.1666e-04, -3.1831e-02,
+         3.1345e+00,  7.6683e-03, -7.4102e-03,  6.3533e-04,  7.0346e-03,
+         2.6814e-04,  9.4523e-05], device='cuda:0') 
+
+fuselage tensor([[19.7041,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5915e-02,  3.5472e-03,  9.9987e-01, -5.1828e-05]], device='cuda:0')
+left_wing tensor([[19.9801,  5.8271,  0.1386]], device='cuda:0') tensor([[ 1.5781e-02, -1.5737e-04,  9.9988e-01, -1.1082e-04]], device='cuda:0')
+right_wing tensor([[19.9808,  5.9271,  0.1386]], device='cuda:0') tensor([[1.2398e-02, 7.3807e-03, 9.9990e-01, 3.5152e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4637,  5.8737,  0.1240]], device='cuda:0') tensor([[ 1.5597e-02,  3.5472e-03,  9.9987e-01, -5.0702e-05]], device='cuda:0')
+rudder tensor([[20.4637,  5.8737,  0.1240]], device='cuda:0') tensor([[ 1.5597e-02,  3.5944e-03,  9.9987e-01, -4.9966e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.55[0m[38;5;159m FPS ([38;5;121m35.55[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.69[0m[38;5;159m FPS ([38;5;121m35.69[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.78[0m[38;5;159m FPS ([38;5;121m35.78[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.89[0m[38;5;159m FPS ([38;5;121m35.89[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:38] [INFO] Running at [38;5;121m35.96[0m[38;5;159m FPS ([38;5;121m35.96[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99947155 -0.00709211  0.03172332] | y_w=[7.0953807e-03 9.9997485e-01 9.4450816e-06] | z_w=[-3.1722594e-02  2.1564894e-04  9.9949670e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.980066    5.8770914   0.13857427] | vel=[-1.6306783e-03  3.8684502e-06 -1.3124230e-04] | ang_vel=[ 2.6597561e-05  4.7590790e-04 -1.6637096e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=2.75 deg | beta=0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.496367    6.123434    0.12496168] | vel=[-1.6461593e-03 -4.2699089e-06  1.5514981e-05] | ang_vel=[-6.1076942e-05 -1.1880342e-02 -1.6753804e-05] | rpy(deg)=(0.0, -1.9, -0.4) | alpha=179.88 deg | beta=0.00 deg | Lift=0.003 | Drag=0.016 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.03 deg | CL_w=0.012 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.492819    5.6234465   0.12495696] | vel=[-1.654480e-03 -4.210761e-06  3.905180e-06] | ang_vel=[-6.1076942e-05 -1.1880342e-02 -1.6753804e-05] | rpy(deg)=(0.0, -1.9, -0.4) | alpha=179.88 deg | beta=0.00 deg | Lift=0.003 | Drag=0.016 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.04 deg | CL_w=0.013 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-92.75 deg | beta=-0.00 deg | thrust=1.300 N | |F|=1.300 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0130 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0071
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0072
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0001
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0022
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9704e+01,  5.8791e+00,  9.9789e-02, -2.1576e-04, -3.1728e-02,
+         3.1345e+00,  7.2101e-03, -7.1139e-03, -2.2068e-03,  7.0210e-03,
+         1.3212e-04,  9.2975e-05], device='cuda:0') 
+
+fuselage tensor([[19.7038,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5864e-02,  3.5473e-03,  9.9987e-01, -5.1558e-05]], device='cuda:0')
+left_wing tensor([[19.9797,  5.8271,  0.1386]], device='cuda:0') tensor([[ 1.5797e-02, -9.1630e-06,  9.9988e-01, -1.0798e-04]], device='cuda:0')
+right_wing tensor([[19.9804,  5.9271,  0.1386]], device='cuda:0') tensor([[1.2354e-02, 7.1519e-03, 9.9990e-01, 3.0739e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4634,  5.8737,  0.1239]], device='cuda:0') tensor([[ 1.6967e-02,  3.5473e-03,  9.9985e-01, -5.5472e-05]], device='cuda:0')
+rudder tensor([[20.4634,  5.8737,  0.1239]], device='cuda:0') tensor([[ 1.6967e-02,  3.5937e-03,  9.9985e-01, -5.4684e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m36.02[0m[38;5;159m FPS ([38;5;121m36.02[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m26.43[0m[38;5;159m FPS ([38;5;121m26.43[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m35.41[0m[38;5;159m FPS ([38;5;121m35.41[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m35.53[0m[38;5;159m FPS ([38;5;121m35.53[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m35.69[0m[38;5;159m FPS ([38;5;121m35.69[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m35.76[0m[38;5;159m FPS ([38;5;121m35.76[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99947405 -0.00709112  0.03164516] | y_w=[7.0943814e-03 9.9997485e-01 9.3165145e-06] | z_w=[-3.1644426e-02  2.1519118e-04  9.9949920e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.979755    5.8770914   0.13855283] | vel=[-1.54488126e-03  1.32855121e-05 -1.00743855e-04] | ang_vel=[5.4021775e-06 3.6473191e-04 1.2004248e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=1.89 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.496054    6.123435    0.12496673] | vel=[-1.5632635e-03  1.9628249e-05  3.0326171e-06] | ang_vel=[-6.0647555e-05 -8.9451810e-03  1.1917509e-05] | rpy(deg)=(0.0, -2.1, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.002 | Drag=0.016 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.03 deg | CL_w=0.010 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.492506    5.6234474   0.12496206] | vel=[-1.5572632e-03  1.9585688e-05  1.6211062e-06] | ang_vel=[-6.0647555e-05 -8.9451810e-03  1.1917509e-05] | rpy(deg)=(0.0, -2.1, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.002 | Drag=0.016 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.03 deg | CL_w=0.011 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-91.88 deg | beta=0.00 deg | thrust=1.316 N | |F|=1.316 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0132 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0070
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0070
+joint_1_twist_left_wing        | dofs_idx=10 | q=+0.0000
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0043
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9703e+01,  5.8791e+00,  9.9789e-02, -2.1530e-04, -3.1650e-02,
+         3.1345e+00,  7.0376e-03, -6.9944e-03, -4.3442e-03,  7.0076e-03,
+         2.9662e-05,  9.1453e-05], device='cuda:0') 
+
+fuselage tensor([[19.7035,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5824e-02,  3.5468e-03,  9.9987e-01, -5.1475e-05]], device='cuda:0')
+left_wing tensor([[19.9794,  5.8271,  0.1386]], device='cuda:0') tensor([[ 1.5809e-02,  5.0057e-05,  9.9987e-01, -1.0682e-04]], device='cuda:0')
+right_wing tensor([[19.9801,  5.9271,  0.1386]], device='cuda:0') tensor([[1.2321e-02, 7.0651e-03, 9.9990e-01, 2.8962e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4631,  5.8737,  0.1238]], device='cuda:0') tensor([[ 1.7996e-02,  3.5467e-03,  9.9983e-01, -5.9179e-05]], device='cuda:0')
+rudder tensor([[20.4631,  5.8737,  0.1238]], device='cuda:0') tensor([[ 1.7996e-02,  3.5924e-03,  9.9983e-01, -5.8357e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m35.79[0m[38;5;159m FPS ([38;5;121m35.79[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m35.86[0m[38;5;159m FPS ([38;5;121m35.86[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:39] [INFO] Running at [38;5;121m35.98[0m[38;5;159m FPS ([38;5;121m35.98[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.10[0m[38;5;159m FPS ([38;5;121m36.10[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.20[0m[38;5;159m FPS ([38;5;121m36.20[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99947596 -0.00709137  0.03158502] | y_w=[7.0945588e-03 9.9997485e-01 1.0988436e-05] | z_w=[-3.1584308e-02  2.1309912e-04  9.9950111e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.979427    5.8770914   0.13853537] | vel=[-1.8061609e-03  3.1481773e-06 -8.9368477e-05] | ang_vel=[ 4.2257630e-05  2.9754546e-04 -9.4461438e-06] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=1.01 deg | beta=0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.495724    6.123435    0.12497272] | vel=[-1.8177461e-03 -1.0885151e-06  2.9538787e-05] | ang_vel=[-1.7291950e-05 -8.0959406e-03 -9.5383775e-06] | rpy(deg)=(0.0, -2.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.002 | Drag=0.020 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.02 deg | CL_w=0.007 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.492176    5.6234474   0.12496722] | vel=[-1.8224707e-03 -1.0547712e-06  9.4628349e-06] | ang_vel=[-1.7291950e-05 -8.0959406e-03 -9.5383775e-06] | rpy(deg)=(0.0, -2.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.002 | Drag=0.020 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.02 deg | CL_w=0.008 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-91.00 deg | beta=-0.01 deg | thrust=1.628 N | |F|=1.628 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0163 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0069
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0069
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0001
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0061
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9703e+01,  5.8791e+00,  9.9789e-02, -2.1321e-04, -3.1590e-02,
+         3.1345e+00,  6.9384e-03, -6.8959e-03, -6.0733e-03,  6.9945e-03,
+        -7.1135e-05,  8.9955e-05], device='cuda:0') 
+
+fuselage tensor([[19.7031,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5794e-02,  3.5469e-03,  9.9987e-01, -5.0534e-05]], device='cuda:0')
+left_wing tensor([[19.9791,  5.8271,  0.1385]], device='cuda:0') tensor([[ 1.5830e-02,  9.9396e-05,  9.9987e-01, -1.0500e-04]], device='cuda:0')
+right_wing tensor([[19.9798,  5.9271,  0.1385]], device='cuda:0') tensor([[1.2298e-02, 7.0155e-03, 9.9990e-01, 2.8794e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4627,  5.8737,  0.1238]], device='cuda:0') tensor([[ 1.8831e-02,  3.5468e-03,  9.9982e-01, -6.1305e-05]], device='cuda:0')
+rudder tensor([[20.4627,  5.8737,  0.1238]], device='cuda:0') tensor([[ 1.8831e-02,  3.5917e-03,  9.9982e-01, -6.0458e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.16[0m[38;5;159m FPS ([38;5;121m36.16[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.26[0m[38;5;159m FPS ([38;5;121m36.26[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.34[0m[38;5;159m FPS ([38;5;121m36.34[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.39[0m[38;5;159m FPS ([38;5;121m36.39[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.41[0m[38;5;159m FPS ([38;5;121m36.41[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99947774 -0.00709014  0.03152547] | y_w=[7.0931995e-03 9.9997485e-01 1.4720427e-05] | z_w=[-3.1524785e-02  2.0890372e-04  9.9950290e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.979013    5.8770914   0.13851883] | vel=[-2.3659703e-03  1.7130981e-06 -8.9063287e-05] | ang_vel=[ 3.8360602e-05  3.4382136e-04 -2.3143366e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=0.34 deg | beta=0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.495306    6.1234355   0.12498064] | vel=[-2.3761690e-03 -9.6407566e-06  2.8589368e-05] | ang_vel=[-2.6540562e-05 -8.8057211e-03 -2.3278055e-05] | rpy(deg)=(0.0, -2.3, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.002 | Drag=0.026 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.006 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.491758    5.623448    0.12497327] | vel=[-2.3877427e-03 -9.5583682e-06  1.0619539e-05] | ang_vel=[-2.6540562e-05 -8.8057211e-03 -2.3278055e-05] | rpy(deg)=(0.0, -2.3, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.002 | Drag=0.026 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.02 deg | CL_w=0.007 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.31 deg | beta=-0.01 deg | thrust=2.110 N | |F|=2.110 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0211 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0068
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0068
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0002
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0078
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9703e+01,  5.8791e+00,  9.9789e-02, -2.0901e-04, -3.1530e-02,
+         3.1345e+00,  6.8407e-03, -6.7989e-03, -7.8087e-03,  6.9815e-03,
+        -1.7030e-04,  8.8482e-05], device='cuda:0') 
+
+fuselage tensor([[19.7027,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5765e-02,  3.5463e-03,  9.9987e-01, -4.8552e-05]], device='cuda:0')
+left_wing tensor([[19.9787,  5.8271,  0.1385]], device='cuda:0') tensor([[ 1.5849e-02,  1.4723e-04,  9.9987e-01, -1.0216e-04]], device='cuda:0')
+right_wing tensor([[19.9794,  5.9271,  0.1385]], device='cuda:0') tensor([[1.2274e-02, 6.9660e-03, 9.9990e-01, 2.9684e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4623,  5.8737,  0.1237]], device='cuda:0') tensor([[ 1.9668e-02,  3.5461e-03,  9.9980e-01, -6.2398e-05]], device='cuda:0')
+rudder tensor([[20.4623,  5.8737,  0.1237]], device='cuda:0') tensor([[ 1.9668e-02,  3.5903e-03,  9.9980e-01, -6.1528e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.38[0m[38;5;159m FPS ([38;5;121m36.38[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:40] [INFO] Running at [38;5;121m36.44[0m[38;5;159m FPS ([38;5;121m36.44[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.55[0m[38;5;159m FPS ([38;5;121m36.55[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.63[0m[38;5;159m FPS ([38;5;121m36.63[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.65[0m[38;5;159m FPS ([38;5;121m36.65[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99948    -0.00708754  0.03145638] | y_w=[7.0904554e-03 9.9997485e-01 1.8896966e-05] | z_w=[-3.1455722e-02  2.0415289e-04  9.9950516e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.978468    5.8770924   0.13850099] | vel=[-3.0414555e-03  2.9816356e-05 -1.0761681e-04] | ang_vel=[-1.1228260e-05  4.1597028e-04  4.1485575e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=0.21 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.494757    6.1234384   0.12498946] | vel=[-3.0706516e-03  5.1171766e-05 -1.3746552e-06] | ang_vel=[-8.4752355e-05 -9.9532148e-03  4.1289622e-05] | rpy(deg)=(0.0, -2.4, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.003 | Drag=0.033 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.005 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.491213    5.6234508   0.12498001] | vel=[-3.0499133e-03  5.1024639e-05  5.7277334e-06] | ang_vel=[-8.4752355e-05 -9.9532148e-03  4.1289622e-05] | rpy(deg)=(0.0, -2.4, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.003 | Drag=0.033 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.02 deg | CL_w=0.006 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.19 deg | beta=0.00 deg | thrust=2.646 N | |F|=2.646 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0265 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0067
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0067
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0003
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0098
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9702e+01,  5.8791e+00,  9.9790e-02, -2.0425e-04, -3.1461e-02,
+         3.1345e+00,  6.7445e-03, -6.7033e-03, -9.7678e-03,  6.9688e-03,
+        -2.6786e-04,  8.7033e-05], device='cuda:0') 
+
+fuselage tensor([[19.7022,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5730e-02,  3.5450e-03,  9.9987e-01, -4.6320e-05]], device='cuda:0')
+left_wing tensor([[19.9781,  5.8271,  0.1385]], device='cuda:0') tensor([[ 1.5864e-02,  1.9382e-04,  9.9987e-01, -9.9066e-05]], device='cuda:0')
+right_wing tensor([[19.9788,  5.9271,  0.1385]], device='cuda:0') tensor([[1.2246e-02, 6.9166e-03, 9.9990e-01, 3.0824e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4618,  5.8737,  0.1237]], device='cuda:0') tensor([[ 2.0613e-02,  3.5447e-03,  9.9978e-01, -6.3632e-05]], device='cuda:0')
+rudder tensor([[20.4618,  5.8737,  0.1237]], device='cuda:0') tensor([[ 2.0613e-02,  3.5881e-03,  9.9978e-01, -6.2737e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.46[0m[38;5;159m FPS ([38;5;121m36.46[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.42[0m[38;5;159m FPS ([38;5;121m36.42[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.47[0m[38;5;159m FPS ([38;5;121m36.47[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.56[0m[38;5;159m FPS ([38;5;121m36.56[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.60[0m[38;5;159m FPS ([38;5;121m36.60[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994824  -0.00708317  0.03137836] | y_w=[7.0859632e-03 9.9997485e-01 2.2346823e-05] | z_w=[-3.1377736e-02  2.0001068e-04  9.9950755e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.977787    5.8770933   0.13848071] | vel=[-3.7410641e-03  2.2063459e-05 -1.1606963e-04] | ang_vel=[2.1297967e-05 4.4532394e-04 2.2299637e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-0.03 deg | beta=0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.49407    6.1234417  0.1249982] | vel=[-3.7679435e-03  3.3964603e-05  1.3963238e-05] | ang_vel=[-5.9205930e-05 -1.0915428e-02  2.2045753e-05] | rpy(deg)=(0.0, -2.5, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.003 | Drag=0.040 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.004 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.490526    5.623454    0.12498703] | vel=[-3.7567988e-03  3.3885815e-05  4.8827865e-06] | ang_vel=[-5.9205930e-05 -1.0915428e-02  2.2045753e-05] | rpy(deg)=(0.0, -2.5, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.003 | Drag=0.040 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.006 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-90.00 deg | beta=-0.00 deg | thrust=3.208 N | |F|=3.208 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0321 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0066
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0066
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0004
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0070
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0120
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9701e+01,  5.8791e+00,  9.9791e-02, -2.0011e-04, -3.1383e-02,
+         3.1345e+00,  6.6497e-03, -6.6092e-03, -1.1956e-02,  6.9563e-03,
+        -3.6384e-04,  8.5608e-05], device='cuda:0') 
+
+fuselage tensor([[19.7015,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5691e-02,  3.5427e-03,  9.9987e-01, -4.4422e-05]], device='cuda:0')
+left_wing tensor([[19.9774,  5.8271,  0.1385]], device='cuda:0') tensor([[ 1.5873e-02,  2.3859e-04,  9.9987e-01, -9.6317e-05]], device='cuda:0')
+right_wing tensor([[19.9781,  5.9271,  0.1385]], device='cuda:0') tensor([[1.2213e-02, 6.8670e-03, 9.9990e-01, 3.1632e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4611,  5.8737,  0.1236]], device='cuda:0') tensor([[ 2.1668e-02,  3.5424e-03,  9.9976e-01, -6.5599e-05]], device='cuda:0')
+rudder tensor([[20.4611,  5.8737,  0.1236]], device='cuda:0') tensor([[ 2.1668e-02,  3.5851e-03,  9.9976e-01, -6.4674e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:41] [INFO] Running at [38;5;121m36.60[0m[38;5;159m FPS ([38;5;121m36.60[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m36.68[0m[38;5;159m FPS ([38;5;121m36.68[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m36.70[0m[38;5;159m FPS ([38;5;121m36.70[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m36.78[0m[38;5;159m FPS ([38;5;121m36.78[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m36.88[0m[38;5;159m FPS ([38;5;121m36.88[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99948525 -0.00707914  0.03129336] | y_w=[7.0817429e-03 9.9997497e-01 2.7522274e-05] | z_w=[-3.1292774e-02  1.9410346e-04  9.9951029e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.976963    5.8770957   0.13845849] | vel=[-4.4235438e-03  1.9154157e-05 -1.1615707e-04] | ang_vel=[4.2734962e-05 4.3867665e-04 1.6588156e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-0.30 deg | beta=0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.493242    6.123446    0.12500754] | vel=[-4.4508758e-03  2.8405486e-05  4.7809666e-05] | ang_vel=[-4.3449025e-05 -1.1730902e-02  1.6253212e-05] | rpy(deg)=(0.0, -2.6, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.004 | Drag=0.047 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.004 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.489702    5.6234584   0.12499379] | vel=[-4.4425884e-03  2.8347351e-05  2.8005788e-05] | ang_vel=[-4.3449025e-05 -1.1730902e-02  1.6253212e-05] | rpy(deg)=(0.0, -2.6, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.004 | Drag=0.047 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.005 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-89.69 deg | beta=-0.01 deg | thrust=3.763 N | |F|=3.763 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0376 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0065
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0066
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0005
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0143
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9701e+01,  5.8791e+00,  9.9792e-02, -1.9420e-04, -3.1298e-02,
+         3.1345e+00,  6.5564e-03, -6.5165e-03, -1.4327e-02,  6.9440e-03,
+        -4.5827e-04,  8.4206e-05], device='cuda:0') 
+
+fuselage tensor([[19.7006,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5649e-02,  3.5407e-03,  9.9987e-01, -4.1651e-05]], device='cuda:0')
+left_wing tensor([[19.9766,  5.8271,  0.1385]], device='cuda:0') tensor([[ 1.5877e-02,  2.8277e-04,  9.9987e-01, -9.2703e-05]], device='cuda:0')
+right_wing tensor([[19.9773,  5.9271,  0.1385]], device='cuda:0') tensor([[1.2177e-02, 6.8183e-03, 9.9990e-01, 3.3321e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4603,  5.8737,  0.1236]], device='cuda:0') tensor([[ 2.2811e-02,  3.5403e-03,  9.9973e-01, -6.7014e-05]], device='cuda:0')
+rudder tensor([[20.4603,  5.8737,  0.1236]], device='cuda:0') tensor([[ 2.2811e-02,  3.5822e-03,  9.9973e-01, -6.6057e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m36.84[0m[38;5;159m FPS ([38;5;121m36.84[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m36.86[0m[38;5;159m FPS ([38;5;121m36.86[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m36.93[0m[38;5;159m FPS ([38;5;121m36.93[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m37.00[0m[38;5;159m FPS ([38;5;121m37.00[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m37.02[0m[38;5;159m FPS ([38;5;121m37.02[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994881  -0.0070731   0.03120134] | y_w=[7.0755770e-03 9.9997497e-01 3.0852949e-05] | z_w=[-3.1200774e-02  1.8993029e-04  9.9951315e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.976004    5.8770995   0.13843428] | vel=[-5.1013678e-03  3.7649210e-05 -1.2336044e-04] | ang_vel=[-4.9596936e-05  4.6573189e-04  1.7624063e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-0.41 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.492275   6.1234536  0.1250145] | vel=[-5.130907e-03  4.620434e-05  1.823405e-05] | ang_vel=[-1.38967662e-04 -1.21648265e-02  1.72343625e-05] | rpy(deg)=(0.0, -2.8, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.004 | Drag=0.054 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.003 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.488739    5.623466    0.12499908] | vel=[-5.1221023e-03  4.6141249e-05  4.4698601e-05] | ang_vel=[-1.38967662e-04 -1.21648265e-02  1.72343625e-05] | rpy(deg)=(0.0, -2.8, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.004 | Drag=0.054 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.005 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-89.56 deg | beta=0.00 deg | thrust=4.318 N | |F|=4.318 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0432 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0064
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0065
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0006
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0168
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9700e+01,  5.8791e+00,  9.9794e-02, -1.9002e-04, -3.1206e-02,
+         3.1345e+00,  6.4645e-03, -6.4253e-03, -1.6817e-02,  6.9319e-03,
+        -5.5117e-04,  8.2827e-05], device='cuda:0') 
+
+fuselage tensor([[19.6997,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5603e-02,  3.5376e-03,  9.9987e-01, -3.9774e-05]], device='cuda:0')
+left_wing tensor([[19.9757,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.5878e-02,  3.2539e-04,  9.9987e-01, -8.9988e-05]], device='cuda:0')
+right_wing tensor([[19.9764,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2137e-02, 6.7694e-03, 9.9990e-01, 3.4120e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4593,  5.8737,  0.1235]], device='cuda:0') tensor([[ 2.4009e-02,  3.5372e-03,  9.9971e-01, -6.9518e-05]], device='cuda:0')
+rudder tensor([[20.4593,  5.8737,  0.1235]], device='cuda:0') tensor([[ 2.4009e-02,  3.5785e-03,  9.9971e-01, -6.8524e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:42] [INFO] Running at [38;5;121m37.01[0m[38;5;159m FPS ([38;5;121m37.01[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.00[0m[38;5;159m FPS ([38;5;121m37.00[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.05[0m[38;5;159m FPS ([38;5;121m37.05[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.06[0m[38;5;159m FPS ([38;5;121m37.06[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.05[0m[38;5;159m FPS ([38;5;121m37.05[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994911  -0.00705816  0.03110876] | y_w=[7.0601897e-03 9.9997509e-01 4.4575856e-05] | z_w=[-3.1108297e-02  1.7508055e-04  9.9951601e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.974895    5.8771048   0.13841377] | vel=[-6.1205812e-03  6.5600689e-05 -5.9548438e-05] | ang_vel=[-4.4217744e-05  5.1232468e-04  1.9704318e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.23 deg | beta=-0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.491158    6.1234665   0.12502967] | vel=[-6.1962395e-03  1.6685996e-04  6.5946777e-05] | ang_vel=[-0.0001349  -0.01233206  0.00019647] | rpy(deg)=(0.0, -2.9, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.004 | Drag=0.060 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.487629    5.623479    0.12500738] | vel=[-6.0977316e-03  1.6616368e-04  8.9882160e-05] | ang_vel=[-0.0001349  -0.01233206  0.00019647] | rpy(deg)=(0.0, -2.9, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.004 | Drag=0.060 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.002 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.75 deg | beta=0.01 deg | thrust=4.856 N | |F|=4.856 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0486 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0063
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0064
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0006
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0194
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9699e+01,  5.8791e+00,  9.9799e-02, -1.7517e-04, -3.1113e-02,
+         3.1345e+00,  6.3740e-03, -6.3353e-03, -1.9377e-02,  6.9200e-03,
+        -6.4256e-04,  8.1471e-05], device='cuda:0') 
+
+fuselage tensor([[19.6986,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5556e-02,  3.5300e-03,  9.9987e-01, -3.2630e-05]], device='cuda:0')
+left_wing tensor([[19.9745,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.5877e-02,  3.6274e-04,  9.9987e-01, -8.2024e-05]], device='cuda:0')
+right_wing tensor([[19.9752,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2097e-02, 6.7165e-03, 9.9990e-01, 4.0186e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4582,  5.8737,  0.1234]], device='cuda:0') tensor([[ 2.5242e-02,  3.5296e-03,  9.9968e-01, -6.6828e-05]], device='cuda:0')
+rudder tensor([[20.4582,  5.8737,  0.1234]], device='cuda:0') tensor([[ 2.5242e-02,  3.5702e-03,  9.9967e-01, -6.5802e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m36.97[0m[38;5;159m FPS ([38;5;121m36.97[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.04[0m[38;5;159m FPS ([38;5;121m37.04[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.06[0m[38;5;159m FPS ([38;5;121m37.06[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.13[0m[38;5;159m FPS ([38;5;121m37.13[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:43] [INFO] Running at [38;5;121m37.12[0m[38;5;159m FPS ([38;5;121m37.12[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994936  -0.00703274  0.03103267] | y_w=[7.0346021e-03 9.9997520e-01 4.9137023e-05] | z_w=[-3.1032251e-02  1.6919035e-04  9.9951839e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.973589    5.877112    0.13840145] | vel=[-6.7995400e-03  4.8835998e-05 -5.7377187e-05] | ang_vel=[3.3664834e-05 2.9513883e-04 1.5167473e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.30 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.48984    6.123487   0.1250502] | vel=[-0.00685691  0.00012769  0.00010318] | ang_vel=[-3.5003755e-05 -9.4661657e-03  1.5119507e-04] | rpy(deg)=(0.0, -3.0, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.003 | Drag=0.063 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.486322    5.6234994   0.12502563] | vel=[-6.7810849e-03  1.2715303e-04  8.7385968e-05] | ang_vel=[-3.5003755e-05 -9.4661657e-03  1.5119507e-04] | rpy(deg)=(0.0, -3.0, -0.4) | alpha=180.00 deg | beta=-0.00 deg | Lift=0.003 | Drag=0.063 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.01 deg | CL_w=0.002 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.69 deg | beta=0.00 deg | thrust=5.098 N | |F|=5.098 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0510 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0062
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0063
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0007
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0216
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9697e+01,  5.8791e+00,  9.9807e-02, -1.6927e-04, -3.1037e-02,
+         3.1346e+00,  6.2849e-03, -6.2468e-03, -2.1648e-02,  6.9082e-03,
+        -7.3247e-04,  8.0137e-05], device='cuda:0') 
+
+fuselage tensor([[19.6973,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5518e-02,  3.5173e-03,  9.9987e-01, -3.0017e-05]], device='cuda:0')
+left_wing tensor([[19.9732,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.5884e-02,  3.9416e-04,  9.9987e-01, -7.8632e-05]], device='cuda:0')
+right_wing tensor([[19.9739,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2064e-02, 6.6591e-03, 9.9990e-01, 4.1749e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4569,  5.8737,  0.1234]], device='cuda:0') tensor([[ 2.6340e-02,  3.5167e-03,  9.9965e-01, -6.8085e-05]], device='cuda:0')
+rudder tensor([[20.4569,  5.8737,  0.1234]], device='cuda:0') tensor([[ 2.6340e-02,  3.5566e-03,  9.9965e-01, -6.7034e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m37.11[0m[38;5;159m FPS ([38;5;121m37.11[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m37.13[0m[38;5;159m FPS ([38;5;121m37.13[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m36.85[0m[38;5;159m FPS ([38;5;121m36.85[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m36.94[0m[38;5;159m FPS ([38;5;121m36.94[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m37.04[0m[38;5;159m FPS ([38;5;121m37.04[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994954  -0.00700642  0.03098027] | y_w=[7.0081968e-03 9.9997544e-01 5.1191601e-05] | z_w=[-3.0979864e-02  1.6595004e-04  9.9951994e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.972214    5.877119    0.13838881] | vel=[-6.9633592e-03  2.3952516e-05 -4.3096257e-05] | ang_vel=[-2.4669211e-05  2.1109979e-04  1.7605722e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.42 deg | beta=0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.488457    6.123508    0.12506041] | vel=[-6.9813463e-03  3.2778262e-05  4.1536157e-05] | ang_vel=[-6.9515459e-05 -6.1878567e-03  1.7278142e-05] | rpy(deg)=(0.0, -3.1, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.002 | Drag=0.064 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.484951    5.6235204   0.12503481] | vel=[-6.9725490e-03  3.2715910e-05  5.4600212e-05] | ang_vel=[-6.9515459e-05 -6.1878567e-03  1.7278142e-05] | rpy(deg)=(0.0, -3.1, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.002 | Drag=0.064 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.002 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.56 deg | beta=-0.01 deg | thrust=5.170 N | |F|=5.170 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0517 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0062
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0062
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0008
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0232
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9696e+01,  5.8791e+00,  9.9809e-02, -1.6603e-04, -3.0985e-02,
+         3.1346e+00,  6.1973e-03, -6.1598e-03, -2.3228e-02,  6.8967e-03,
+        -8.2093e-04,  7.8825e-05], device='cuda:0') 
+
+fuselage tensor([[19.6959,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5492e-02,  3.5041e-03,  9.9987e-01, -2.8693e-05]], device='cuda:0')
+left_wing tensor([[19.9719,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.5902e-02,  4.2460e-04,  9.9987e-01, -7.6580e-05]], device='cuda:0')
+right_wing tensor([[19.9726,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2044e-02, 6.6021e-03, 9.9991e-01, 4.2077e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4555,  5.8737,  0.1234]], device='cuda:0') tensor([[ 2.7103e-02,  3.5035e-03,  9.9963e-01, -6.9386e-05]], device='cuda:0')
+rudder tensor([[20.4555,  5.8737,  0.1234]], device='cuda:0') tensor([[ 2.7103e-02,  3.5428e-03,  9.9963e-01, -6.8320e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m37.01[0m[38;5;159m FPS ([38;5;121m37.01[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m37.05[0m[38;5;159m FPS ([38;5;121m37.05[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m18.36[0m[38;5;159m FPS ([38;5;121m18.36[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:44] [INFO] Running at [38;5;121m18.22[0m[38;5;159m FPS ([38;5;121m18.22[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.48[0m[38;5;159m FPS ([38;5;121m36.48[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.56[0m[38;5;159m FPS ([38;5;121m36.56[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994967  -0.00698122  0.03094398] | y_w=[6.9829184e-03 9.9997556e-01 5.3148749e-05] | z_w=[-3.0943597e-02  1.6295729e-04  9.9952114e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.970839    5.8771267   0.13837866] | vel=[-6.9888076e-03  1.3852342e-05 -2.1532265e-05] | ang_vel=[0.0001173  0.00015241 0.00013078] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.60 deg | beta=0.02 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.48707     6.1235285   0.12506334] | vel=[-7.0300847e-03  8.2970837e-05  5.5840253e-05] | ang_vel=[ 8.8846340e-05 -3.9223456e-03  1.3056643e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.001 | Drag=0.064 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.48358     5.623541    0.12503678] | vel=[-6.964699e-03  8.251746e-05 -2.272559e-06] | ang_vel=[ 8.8846340e-05 -3.9223456e-03  1.3056643e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.001 | Drag=0.064 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.38 deg | beta=-0.02 deg | thrust=5.191 N | |F|=5.191 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0519 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0061
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0061
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0009
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0242
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9695e+01,  5.8791e+00,  9.9809e-02, -1.6304e-04, -3.0949e-02,
+         3.1346e+00,  6.1110e-03, -6.0741e-03, -2.4231e-02,  6.8854e-03,
+        -9.0795e-04,  7.7534e-05], device='cuda:0') 
+
+fuselage tensor([[19.6945,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5474e-02,  3.4915e-03,  9.9987e-01, -2.7456e-05]], device='cuda:0')
+left_wing tensor([[19.9705,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.5928e-02,  4.5485e-04,  9.9987e-01, -7.4655e-05]], device='cuda:0')
+right_wing tensor([[19.9712,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2032e-02, 6.5465e-03, 9.9991e-01, 4.2363e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4541,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.7586e-02,  3.4909e-03,  9.9961e-01, -6.9752e-05]], device='cuda:0')
+rudder tensor([[20.4541,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.7586e-02,  3.5296e-03,  9.9961e-01, -6.8683e-05]], device='cuda:0')
+pressed_keys: {<Key.up: <65362>>}
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.52[0m[38;5;159m FPS ([38;5;121m36.52[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.61[0m[38;5;159m FPS ([38;5;121m36.61[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.68[0m[38;5;159m FPS ([38;5;121m36.68[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.75[0m[38;5;159m FPS ([38;5;121m36.75[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.79[0m[38;5;159m FPS ([38;5;121m36.79[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99949753 -0.00695539  0.03092491] | y_w=[6.9570821e-03 9.9997580e-01 5.2966694e-05] | z_w=[-3.0924531e-02  1.6220704e-04  9.9952173e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.969461    5.877134    0.13837244] | vel=[-6.9103786e-03  2.4451629e-05  1.1801710e-05] | ang_vel=[-3.0343654e-06  1.1001119e-05  6.6369917e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.87 deg | beta=0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.485687    6.123549    0.12506613] | vel=[-6.9308644e-03  5.8697060e-05  7.6760523e-05] | ang_vel=[-1.895147e-05 -2.276843e-03  6.624874e-05] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.064 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=-0.00 deg | CL_w=-0.001 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.482208    5.6235614   0.12503965] | vel=[-6.8976805e-03  5.8466077e-05  7.8314879e-05] | ang_vel=[-1.895147e-05 -2.276843e-03  6.624874e-05] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.001 | Drag=0.064 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.12 deg | beta=-0.01 deg | thrust=5.197 N | |F|=5.197 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0060
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0060
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0010
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0248
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9693e+01,  5.8791e+00,  9.9808e-02, -1.6228e-04, -3.0929e-02,
+         3.1346e+00,  6.0261e-03, -5.9898e-03, -2.4835e-02,  6.8742e-03,
+        -9.9357e-04,  7.6265e-05], device='cuda:0') 
+
+fuselage tensor([[19.6931,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5464e-02,  3.4786e-03,  9.9987e-01, -2.7314e-05]], device='cuda:0')
+left_wing tensor([[19.9691,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.5961e-02,  4.8406e-04,  9.9987e-01, -7.3867e-05]], device='cuda:0')
+right_wing tensor([[19.9698,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2028e-02, 6.4910e-03, 9.9991e-01, 4.1591e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4527,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.7879e-02,  3.4779e-03,  9.9961e-01, -7.0505e-05]], device='cuda:0')
+rudder tensor([[20.4527,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.7879e-02,  3.5159e-03,  9.9961e-01, -6.9446e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.77[0m[38;5;159m FPS ([38;5;121m36.77[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:45] [INFO] Running at [38;5;121m36.82[0m[38;5;159m FPS ([38;5;121m36.82[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m36.85[0m[38;5;159m FPS ([38;5;121m36.85[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m36.87[0m[38;5;159m FPS ([38;5;121m36.87[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m36.90[0m[38;5;159m FPS ([38;5;121m36.90[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99949807 -0.00693211  0.03091096] | y_w=[6.9338069e-03 9.9997598e-01 5.2233743e-05] | z_w=[-3.0910578e-02  1.6212306e-04  9.9952215e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.968088    5.8771405   0.13836834] | vel=[-6.8305344e-03  6.3144853e-06 -1.5934253e-05] | ang_vel=[6.9267240e-05 4.0722563e-05 1.1409293e-05] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.64 deg | beta=0.02 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.484308    6.1235676   0.12506607] | vel=[-6.8363533e-03  1.3140407e-05  2.4007939e-05] | ang_vel=[ 5.9512677e-05 -1.3660559e-03  1.1335810e-05] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.48084     5.62358     0.12503995] | vel=[-6.83064945e-03  1.31026545e-05 -1.04845421e-05] | ang_vel=[ 5.9512677e-05 -1.3660559e-03  1.1335810e-05] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.38 deg | beta=-0.02 deg | thrust=5.199 N | |F|=5.199 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0059
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0059
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0011
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0252
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9692e+01,  5.8791e+00,  9.9808e-02, -1.6220e-04, -3.0915e-02,
+         3.1347e+00,  5.9425e-03, -5.9068e-03, -2.5201e-02,  6.8632e-03,
+        -1.0778e-03,  7.5016e-05], device='cuda:0') 
+
+fuselage tensor([[19.6918,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5457e-02,  3.4669e-03,  9.9987e-01, -2.7476e-05]], device='cuda:0')
+left_wing tensor([[19.9677,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.5996e-02,  5.1379e-04,  9.9987e-01, -7.3405e-05]], device='cuda:0')
+right_wing tensor([[19.9684,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2026e-02, 6.4377e-03, 9.9991e-01, 4.0543e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4514,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.8054e-02,  3.4663e-03,  9.9960e-01, -7.1156e-05]], device='cuda:0')
+rudder tensor([[20.4514,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.8054e-02,  3.5037e-03,  9.9960e-01, -7.0106e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m36.87[0m[38;5;159m FPS ([38;5;121m36.87[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m36.92[0m[38;5;159m FPS ([38;5;121m36.92[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m36.94[0m[38;5;159m FPS ([38;5;121m36.94[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m37.02[0m[38;5;159m FPS ([38;5;121m37.02[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m37.08[0m[38;5;159m FPS ([38;5;121m37.08[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994985 -0.006903   0.0309033] | y_w=[6.9046980e-03 9.9997616e-01 5.1700288e-05] | z_w=[-3.0902922e-02  1.6170359e-04  9.9952233e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.966715    5.8771486   0.13836606] | vel=[-6.8177818e-03  3.7971353e-05 -2.3239696e-05] | ang_vel=[3.1134186e-05 8.2152168e-05 1.1571381e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.58 deg | beta=0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.482927   6.1235914  0.1250665] | vel=[-6.8488955e-03  9.8127348e-05 -3.1297921e-05] | ang_vel=[ 2.5230671e-05 -7.7282725e-04  1.1566961e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.479475    5.623603    0.12504065] | vel=[-6.7910422e-03  9.7728676e-05 -4.6580997e-05] | ang_vel=[ 2.5230671e-05 -7.7282725e-04  1.1566961e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.38 deg | beta=-0.01 deg | thrust=5.200 N | |F|=5.200 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0058
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0059
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0012
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0069
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0254
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9690e+01,  5.8791e+00,  9.9808e-02, -1.6178e-04, -3.0908e-02,
+         3.1347e+00,  5.8602e-03, -5.8250e-03, -2.5418e-02,  6.8524e-03,
+        -1.1607e-03,  7.3788e-05], device='cuda:0') 
+
+fuselage tensor([[19.6904,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5453e-02,  3.4524e-03,  9.9987e-01, -2.7504e-05]], device='cuda:0')
+left_wing tensor([[19.9664,  5.8271,  0.1384]], device='cuda:0') tensor([[ 1.6034e-02,  5.4024e-04,  9.9987e-01, -7.2825e-05]], device='cuda:0')
+right_wing tensor([[19.9671,  5.9271,  0.1384]], device='cuda:0') tensor([[1.2028e-02, 6.3819e-03, 9.9991e-01, 3.9641e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4500,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.8159e-02,  3.4517e-03,  9.9960e-01, -7.1376e-05]], device='cuda:0')
+rudder tensor([[20.4500,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.8159e-02,  3.4886e-03,  9.9960e-01, -7.0338e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:46] [INFO] Running at [38;5;121m37.02[0m[38;5;159m FPS ([38;5;121m37.02[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.07[0m[38;5;159m FPS ([38;5;121m37.07[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.08[0m[38;5;159m FPS ([38;5;121m37.08[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.07[0m[38;5;159m FPS ([38;5;121m37.07[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.13[0m[38;5;159m FPS ([38;5;121m37.13[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99949884 -0.00687763  0.0308994 ] | y_w=[6.8793274e-03 9.9997640e-01 5.1415540e-05] | z_w=[-3.0899025e-02  1.6117732e-04  9.9952245e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.965347    5.877156    0.13836499] | vel=[-6.7815250e-03  6.7503534e-05 -2.0949436e-05] | ang_vel=[-9.5018855e-05  4.2546740e-06  1.8472379e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.59 deg | beta=-0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.481552    6.1236115   0.12506762] | vel=[-6.8280692e-03  1.6160108e-04 -2.9550101e-05] | ang_vel=[-9.8769982e-05 -5.4100802e-04  1.8469575e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=-0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.478111    5.623623    0.12504192] | vel=[-6.7357095e-03  1.6096304e-04  1.7972228e-05] | ang_vel=[-9.8769982e-05 -5.4100802e-04  1.8469575e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.38 deg | beta=0.01 deg | thrust=5.200 N | |F|=5.200 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0057
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0058
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0012
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0068
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0256
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9689e+01,  5.8791e+00,  9.9808e-02, -1.6125e-04, -3.0904e-02,
+         3.1347e+00,  5.7792e-03, -5.7446e-03, -2.5555e-02,  6.8418e-03,
+        -1.2422e-03,  7.2580e-05], device='cuda:0') 
+
+fuselage tensor([[19.6890,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5452e-02,  3.4397e-03,  9.9987e-01, -2.7444e-05]], device='cuda:0')
+left_wing tensor([[19.9650,  5.8272,  0.1384]], device='cuda:0') tensor([[ 1.6072e-02,  5.6762e-04,  9.9987e-01, -7.2179e-05]], device='cuda:0')
+right_wing tensor([[19.9657,  5.9272,  0.1384]], device='cuda:0') tensor([[1.2031e-02, 6.3288e-03, 9.9991e-01, 3.8855e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4486,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.8226e-02,  3.4390e-03,  9.9960e-01, -7.1391e-05]], device='cuda:0')
+rudder tensor([[20.4486,  5.8738,  0.1233]], device='cuda:0') tensor([[ 2.8226e-02,  3.4752e-03,  9.9960e-01, -7.0370e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.04[0m[38;5;159m FPS ([38;5;121m37.04[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.13[0m[38;5;159m FPS ([38;5;121m37.13[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.06[0m[38;5;159m FPS ([38;5;121m37.06[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.14[0m[38;5;159m FPS ([38;5;121m37.14[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.14[0m[38;5;159m FPS ([38;5;121m37.14[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994991  -0.00685122  0.03089553] | y_w=[6.8528587e-03 9.9997652e-01 5.2909385e-05] | z_w=[-3.0895166e-02  1.5883980e-04  9.9952257e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.963984    5.877163    0.13836376] | vel=[-6.7971367e-03  6.5927583e-05 -3.2135147e-05] | ang_vel=[-7.7622011e-05  1.0855038e-04  1.8770857e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.50 deg | beta=-0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.480179    6.123632    0.12506801] | vel=[-6.8457588e-03  1.6179522e-04 -9.1161033e-05] | ang_vel=[-8.116690e-05 -4.087243e-04  1.876812e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.476753    5.6236434   0.12504156] | vel=[-6.7519089e-03  1.6115015e-04 -5.1978637e-05] | ang_vel=[-8.116690e-05 -4.087243e-04  1.876812e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.002 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.50 deg | beta=0.01 deg | thrust=5.200 N | |F|=5.200 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0057
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0057
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0013
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0068
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0257
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9688e+01,  5.8791e+00,  9.9808e-02, -1.5892e-04, -3.0900e-02,
+         3.1347e+00,  5.6995e-03, -5.6654e-03, -2.5659e-02,  6.8313e-03,
+        -1.3224e-03,  7.1391e-05], device='cuda:0') 
+
+fuselage tensor([[19.6876,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5450e-02,  3.4264e-03,  9.9987e-01, -2.6486e-05]], device='cuda:0')
+left_wing tensor([[19.9636,  5.8272,  0.1384]], device='cuda:0') tensor([[ 1.6111e-02,  5.9409e-04,  9.9987e-01, -7.0642e-05]], device='cuda:0')
+right_wing tensor([[19.9643,  5.9272,  0.1384]], device='cuda:0') tensor([[1.2034e-02, 6.2757e-03, 9.9991e-01, 3.8976e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4473,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8275e-02,  3.4258e-03,  9.9959e-01, -7.0441e-05]], device='cuda:0')
+rudder tensor([[20.4473,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8275e-02,  3.4614e-03,  9.9959e-01, -6.9435e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:47] [INFO] Running at [38;5;121m37.06[0m[38;5;159m FPS ([38;5;121m37.06[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.14[0m[38;5;159m FPS ([38;5;121m37.14[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.19[0m[38;5;159m FPS ([38;5;121m37.19[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.25[0m[38;5;159m FPS ([38;5;121m37.25[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.26[0m[38;5;159m FPS ([38;5;121m37.26[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99949956 -0.00682452  0.03089132] | y_w=[6.8261200e-03 9.9997675e-01 5.3773820e-05] | z_w=[-3.0890968e-02  1.5712094e-04  9.9952281e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.962614    5.8771706   0.13836272] | vel=[-6.8493420e-03  3.3271892e-05  3.3888211e-06] | ang_vel=[9.0319350e-05 1.4080932e-05 1.4985446e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.80 deg | beta=0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.478804   6.1236534  0.1250682] | vel=[-6.88737491e-03  1.11831294e-04  3.44131258e-05] | ang_vel=[ 8.6812062e-05 -4.9971079e-04  1.4982682e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=-180.00 deg | beta=0.00 deg | Lift=-0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=-0.00 deg | CL_w=-0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.47539     5.623665    0.12504132] | vel=[-6.81245001e-03  1.11322101e-04 -1.06980015e-05] | ang_vel=[ 8.6812062e-05 -4.9971079e-04  1.4982682e-04] | rpy(deg)=(0.0, -3.2, -0.4) | alpha=-180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.19 deg | beta=-0.01 deg | thrust=5.200 N | |F|=5.200 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0056
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0056
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0014
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0068
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0258
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9686e+01,  5.8791e+00,  9.9808e-02, -1.5720e-04, -3.0896e-02,
+         3.1348e+00,  5.6209e-03, -5.5874e-03, -2.5761e-02,  6.8210e-03,
+        -1.4013e-03,  7.0222e-05], device='cuda:0') 
+
+fuselage tensor([[19.6863,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5448e-02,  3.4131e-03,  9.9987e-01, -2.5840e-05]], device='cuda:0')
+left_wing tensor([[19.9623,  5.8272,  0.1384]], device='cuda:0') tensor([[ 1.6148e-02,  6.1967e-04,  9.9987e-01, -6.9430e-05]], device='cuda:0')
+right_wing tensor([[19.9630,  5.9272,  0.1384]], device='cuda:0') tensor([[1.2037e-02, 6.2230e-03, 9.9991e-01, 3.8797e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4459,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8324e-02,  3.4125e-03,  9.9959e-01, -6.9798e-05]], device='cuda:0')
+rudder tensor([[20.4459,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8324e-02,  3.4475e-03,  9.9959e-01, -6.8806e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.21[0m[38;5;159m FPS ([38;5;121m37.21[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.07[0m[38;5;159m FPS ([38;5;121m37.07[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.13[0m[38;5;159m FPS ([38;5;121m37.13[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.22[0m[38;5;159m FPS ([38;5;121m37.22[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:48] [INFO] Running at [38;5;121m37.24[0m[38;5;159m FPS ([38;5;121m37.24[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9994998  -0.0067983   0.03088739] | y_w=[6.7999428e-03 9.9997687e-01 5.1851704e-05] | z_w=[-3.0887028e-02  1.5820672e-04  9.9952292e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.961246    5.877178    0.13836148] | vel=[-6.7695961e-03  4.2538159e-05 -3.1965552e-05] | ang_vel=[-5.9405931e-05  6.4767373e-05  1.2736567e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.50 deg | beta=0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.47743    6.123675   0.1250676] | vel=[-6.80273632e-03  1.07497726e-04 -6.44820029e-05] | ang_vel=[-6.2797066e-05 -4.3392114e-04  1.2733981e-04] | rpy(deg)=(0.0, -3.3, -0.4) | alpha=-180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.474031    5.6236863   0.12504168] | vel=[-6.7390567e-03  1.0706328e-04 -3.4559038e-05] | ang_vel=[-6.2797066e-05 -4.3392114e-04  1.2733981e-04] | rpy(deg)=(0.0, -3.3, -0.4) | alpha=-180.00 deg | beta=0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.002 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.50 deg | beta=-0.00 deg | thrust=5.200 N | |F|=5.200 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0055
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0055
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0015
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0068
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0259
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9685e+01,  5.8791e+00,  9.9808e-02, -1.5828e-04, -3.0892e-02,
+         3.1348e+00,  5.5437e-03, -5.5106e-03, -2.5861e-02,  6.8109e-03,
+        -1.4789e-03,  6.9072e-05], device='cuda:0') 
+
+fuselage tensor([[19.6849,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5446e-02,  3.4000e-03,  9.9987e-01, -2.6592e-05]], device='cuda:0')
+left_wing tensor([[19.9609,  5.8272,  0.1384]], device='cuda:0') tensor([[ 1.6185e-02,  6.4495e-04,  9.9987e-01, -6.9626e-05]], device='cuda:0')
+right_wing tensor([[19.9616,  5.9272,  0.1384]], device='cuda:0') tensor([[1.2040e-02, 6.1713e-03, 9.9991e-01, 3.7236e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4445,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8373e-02,  3.3994e-03,  9.9959e-01, -7.0552e-05]], device='cuda:0')
+rudder tensor([[20.4445,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8373e-02,  3.4338e-03,  9.9959e-01, -6.9575e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.20[0m[38;5;159m FPS ([38;5;121m37.20[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.25[0m[38;5;159m FPS ([38;5;121m37.25[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.25[0m[38;5;159m FPS ([38;5;121m37.25[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.24[0m[38;5;159m FPS ([38;5;121m37.24[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.27[0m[38;5;159m FPS ([38;5;121m37.27[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.99950016 -0.00677285  0.03088346] | y_w=[6.7744576e-03 9.9997711e-01 5.2563639e-05] | z_w=[-3.0883111e-02  1.5668136e-04  9.9952304e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.959879    5.877186    0.13836025] | vel=[-6.7817844e-03  4.9396069e-05  3.0429073e-06] | ang_vel=[-3.0570536e-05 -4.0933475e-05  1.3720868e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.80 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.476057    6.1236954   0.12506762] | vel=[-6.81592105e-03  1.19818855e-04  3.17030244e-05] | ang_vel=[-3.3842123e-05 -5.2385230e-04  1.3718331e-04] | rpy(deg)=(0.0, -3.3, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=-0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=-0.00 deg | CL_w=-0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.47267     5.623707    0.12504134] | vel=[-6.7473170e-03  1.1935326e-04  4.6849174e-05] | ang_vel=[-3.3842123e-05 -5.2385230e-04  1.3718331e-04] | rpy(deg)=(0.0, -3.3, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.001 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.19 deg | beta=0.00 deg | thrust=5.200 N | |F|=5.200 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0054
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0055
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0016
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0068
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0260
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9684e+01,  5.8791e+00,  9.9807e-02, -1.5676e-04, -3.0888e-02,
+         3.1348e+00,  5.4676e-03, -5.4351e-03, -2.5960e-02,  6.8010e-03,
+        -1.5553e-03,  6.7941e-05], device='cuda:0') 
+
+fuselage tensor([[19.6835,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5444e-02,  3.3872e-03,  9.9988e-01, -2.6033e-05]], device='cuda:0')
+left_wing tensor([[19.9595,  5.8272,  0.1384]], device='cuda:0') tensor([[ 1.6221e-02,  6.7003e-04,  9.9987e-01, -6.8521e-05]], device='cuda:0')
+right_wing tensor([[19.9602,  5.9272,  0.1384]], device='cuda:0') tensor([[1.2044e-02, 6.1206e-03, 9.9991e-01, 3.7000e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4432,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8420e-02,  3.3866e-03,  9.9959e-01, -6.9996e-05]], device='cuda:0')
+rudder tensor([[20.4432,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8420e-02,  3.4205e-03,  9.9959e-01, -6.9032e-05]], device='cuda:0')
+pressed_keys: set()
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.25[0m[38;5;159m FPS ([38;5;121m37.25[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.27[0m[38;5;159m FPS ([38;5;121m37.27[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.32[0m[38;5;159m FPS ([38;5;121m37.32[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.38[0m[38;5;159m FPS ([38;5;121m37.38[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[38;5;159m[Genesis] [15:04:49] [INFO] Running at [38;5;121m37.41[0m[38;5;159m FPS ([38;5;121m37.41[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m
+[Axes] link=aero_frame_fuselage | x_w=[ 0.9995004  -0.00675043  0.03087942] | y_w=[6.7520342e-03 9.9997723e-01 5.2239448e-05] | z_w=[-3.0879075e-02  1.5628556e-04  9.9952316e-01]
+[DroneModel] link=aero_frame_fuselage | pos=[19.958508    5.877192    0.13835964] | vel=[-6.7770076e-03  7.1022907e-05 -3.5420038e-05] | ang_vel=[-8.9281704e-05  5.7321708e-05  2.0078034e-04] | rpy(deg)=(0.0, -1.8, -0.4) | alpha=-1.47 deg | beta=-0.01 deg | Lift=0.000 | Drag=0.000 | Side=0.000
+[DroneModel] link=aero_frame_elevator_left | pos=[20.47468    6.123713   0.1250679] | vel=[-6.8281218e-03  1.7347847e-04 -7.2005707e-05] | ang_vel=[-9.2530565e-05 -4.2383495e-04  2.0075521e-04] | rpy(deg)=(0.0, -3.3, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.000 | k_eps=1.000
+[DroneModel] link=aero_frame_elevator_right | pos=[20.471304    5.6237245   0.12504178] | vel=[-6.7277355e-03  1.7279830e-04 -2.7172355e-05] | ang_vel=[-9.2530565e-05 -4.2383495e-04  2.0075521e-04] | rpy(deg)=(0.0, -3.3, -0.4) | alpha=-180.00 deg | beta=-0.00 deg | Lift=0.000 | Drag=0.065 | Side=0.000 | alpha_raw=-180.00 deg | eps_dw=0.00 deg | CL_w=0.002 | k_eps=1.000
+[PropDebug] link=prop_frame_fuselage_0 | alpha=-88.50 deg | beta=0.01 deg | thrust=5.200 N | |F|=5.200 N | dot(F,axis)=1.000 | kappa=0.010000 | reaction_torque_z=-0.0520 N·m
+
+--- Joint positions (DOFs) ---
+joint_0_sweep_left_wing        | dofs_idx= 7 | q=-0.0054
+joint_0_sweep_right_wing       | dofs_idx= 6 | q=+0.0054
+joint_1_twist_left_wing        | dofs_idx=10 | q=-0.0016
+joint_1_twist_right_wing       | dofs_idx= 9 | q=+0.0068
+elevator_pitch_joint           | dofs_idx= 8 | q=-0.0261
+rudder_yaw_joint               | dofs_idx=11 | q=+0.0001
+Full DOF positions array: tensor([ 1.9682e+01,  5.8791e+00,  9.9808e-02, -1.5636e-04, -3.0884e-02,
+         3.1348e+00,  5.3927e-03, -5.3607e-03, -2.6058e-02,  6.7912e-03,
+        -1.6304e-03,  6.6829e-05], device='cuda:0') 
+
+fuselage tensor([[19.6822,  5.8791,  0.0998]], device='cuda:0') tensor([[ 1.5442e-02,  3.3760e-03,  9.9988e-01, -2.6015e-05]], device='cuda:0')
+left_wing tensor([[19.9582,  5.8272,  0.1384]], device='cuda:0') tensor([[ 1.6256e-02,  6.9607e-04,  9.9987e-01, -6.7969e-05]], device='cuda:0')
+right_wing tensor([[19.9588,  5.9272,  0.1384]], device='cuda:0') tensor([[1.2046e-02, 6.0719e-03, 9.9991e-01, 3.6239e-05]], device='cuda:0')
+elevator_hinge tensor([[20.4418,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8467e-02,  3.3754e-03,  9.9959e-01, -6.9998e-05]], device='cuda:0')
+rudder tensor([[20.4418,  5.8739,  0.1233]], device='cuda:0') tensor([[ 2.8467e-02,  3.4087e-03,  9.9959e-01, -6.9049e-05]], device='cuda:0')
+pressed_keys: {<Key.ctrl: <65507>>}
+[38;5;159m[Genesis] [15:04:50] [INFO] Running at [38;5;121m37.37[0m[38;5;159m FPS ([38;5;121m37.37[0m[38;5;159m FPS per env, [38;5;121m1[0m[38;5;159m envs).[0m

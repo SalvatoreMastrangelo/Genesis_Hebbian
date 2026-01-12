@@ -1118,13 +1118,21 @@ class CodesignDEAP:
                 if hasattr(c2.fitness, "values"):
                     del c2.fitness.values
 
+            # Keep discrete genes aligned to valid bins after crossover
+            c1[:] = Chromosome_Drone.snap_genome_norm(c1)
+            c2[:] = Chromosome_Drone.snap_genome_norm(c2)
+
             # mutation
             if random.random() < self.mut_pb:
+                before = list(c1)
                 self.tb.mutate(c1)
                 del c1.fitness.values
+                c1[:] = Chromosome_Drone.apply_discrete_mutation(before, c1)
             if random.random() < self.mut_pb:
+                before = list(c2)
                 self.tb.mutate(c2)
                 del c2.fitness.values
+                c2[:] = Chromosome_Drone.apply_discrete_mutation(before, c2)
 
             # inheritance → assign exp/ckpt BEFORE training
             if self.inherit_policy:
@@ -1169,6 +1177,8 @@ class CodesignDEAP:
 
         # GEN 0
         pop = self.tb.pop(self.n_pop)
+        for ind in pop:
+            ind[:] = Chromosome_Drone.snap_genome_norm(ind)
         self._gen = 0
         self._train_eval_population(pop)
         pop = tools.selNSGA2(pop, self.n_pop)

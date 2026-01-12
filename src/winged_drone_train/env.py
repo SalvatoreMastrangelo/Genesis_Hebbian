@@ -1,18 +1,103 @@
 # env.py
 from __future__ import annotations
 
+import csv
 import math
 import re
-from typing import Dict, Tuple, Sequence, Optional
+from pathlib import Path
+from typing import Dict, Tuple, Sequence, Optional, List
 
 import torch
 import genesis as gs
 from genesis.utils.geom import quat_to_xyz, transform_by_quat, inv_quat, xyz_to_quat
+from genesis.assets.urdf.mydrone.drone import DroneAeroModel
 
+from morph_evolution.chromosome_drone import Chromosome_Drone
 from winged_drone_train.utils import depth as depth_utils
 from winged_drone_train.utils import forest as forest_utils
 from winged_drone_train.utils import obs as obs_utils
 from winged_drone_train.utils import power as power_utils
+
+
+def _servo_gains_from_catalog(
+    drone_model: DroneAeroModel,
+    joint_names: Sequence[str],
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Fetch per-joint kp/kv gains using actuator assignments from DroneAeroModel."""
+    if drone_model is None or not getattr(drone_model, "urdf_path", None):
+        raise ValueError("servo gain loading requires a DroneAeroModel with a valid urdf_path.")
+
+    csv_path = Path(str(drone_model.urdf_path)).parent / "actuators.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Missing actuator catalog: {csv_path}")
+
+    catalog: Dict[Tuple[str, str], Dict[str, str]] = {}
+    with csv_path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = (row.get("name") or "").strip()
+            kind = (row.get("type") or "").strip().lower()
+            if name and kind:
+                catalog[(name, kind)] = row
+
+    def get_servo_gains(actuator_name: str) -> Tuple[float, float]:
+        row = catalog.get((actuator_name, "servo"))
+        if row is None:
+            raise ValueError(f"Servo actuator '{actuator_name}' not found in {csv_path}")
+        kp = (row.get("kp") or "").strip()
+        kv = (row.get("kv") or "").strip()
+        if kp == "" or kv == "":
+            raise ValueError(f"Servo actuator '{actuator_name}' missing kp/kv in {csv_path}")
+        return float(kp), float(kv)
+
+    def pick_actuator(frame: str, axis: Optional[str] = None) -> Optional[str]:
+        info = getattr(drone_model, "actuators", {}).get(frame) if drone_model else None
+        if info is None:
+            return None
+        if axis == "yaw" and getattr(info, "yaw_actuator", None):
+            return info.yaw_actuator
+        if axis == "pitch" and getattr(info, "pitch_actuator", None):
+            return info.pitch_actuator
+        return info.actuator
+
+    act_left_wing_yaw = pick_actuator("aero_frame_left_wing", "yaw")
+    act_left_wing_pitch = pick_actuator("aero_frame_left_wing", "pitch")
+    act_right_wing_yaw = pick_actuator("aero_frame_right_wing", "yaw")
+    act_right_wing_pitch = pick_actuator("aero_frame_right_wing", "pitch")
+    act_elev_pitch = pick_actuator("aero_frame_elevator_left", "pitch") or pick_actuator(
+        "aero_frame_elevator_right", "pitch"
+    )
+    act_rudd_yaw = pick_actuator("aero_frame_rudder", "yaw")
+
+    kp_list: List[float] = []
+    kv_list: List[float] = []
+    for name in joint_names:
+        act = None
+        if "sweep_left" in name:
+            act = act_left_wing_yaw
+        elif "sweep_right" in name:
+            act = act_right_wing_yaw
+        elif "twist_left" in name:
+            act = act_left_wing_pitch
+        elif "twist_right" in name:
+            act = act_right_wing_pitch
+        elif "elevator" in name:
+            act = act_elev_pitch
+        elif "rudder" in name:
+            act = act_rudd_yaw
+
+        if not act:
+            raise ValueError(
+                f"Missing actuator assignment for joint '{name}' (check aero_parameters.yaml links actuators)."
+            )
+        kp_i, kv_i = get_servo_gains(act)
+        kp_list.append(kp_i)
+        kv_list.append(kv_i)
+
+    kp = torch.tensor(kp_list, device=device, dtype=torch.float32)
+    kv = torch.tensor(kv_list, device=device, dtype=torch.float32)
+    return kp, kv
 
 
 class WingedDroneEnv:
@@ -40,8 +125,7 @@ class WingedDroneEnv:
     SHORT_RANGE = 0.0          # Extra safety bubble in front (m)
 
     # Genome parameter ranges for normalization (if present)
-    GENOME_MIN = [0.45, 1.5, 0.45, 0.3, 0.3, 0.2, 1.5, 0.1, 1.5, -10.0, 0.0, 1.5, 1.5, 1.0, -5.0]
-    GENOME_MAX = [0.75, 5.0, 0.75, 0.5, 0.5, 0.6, 4.0, 0.3, 4.0, 10.0, 0.5, 3.5, 3.5, 3.0, 0.0]
+    GENOME_MIN, GENOME_MAX = Chromosome_Drone.genome_min_max()
 
     def __init__(
         self,
@@ -115,6 +199,11 @@ class WingedDroneEnv:
         else:
             self.set_angle_limit(self.env_cfg.get("default_angle_limit_deg", 90.0))
 
+        if urdf_file is None:
+            urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 0.25, 2, 2.5, 2, -3].urdf"
+        self.urdf_file = str(urdf_file)
+        self.drone_model = DroneAeroModel(self.urdf_file)
+
         # ------------------------------------------------------------------ #
         # Genesis scene                                                      #
         # ------------------------------------------------------------------ #
@@ -182,7 +271,7 @@ class WingedDroneEnv:
         self.drone_name = self.env_cfg.get("drone", "morphing_drone")
 
         urdf_args = {
-            "file": urdf_file,
+            "file": self.urdf_file,
             "pos": base_init_pos.cpu().numpy(),
             "quat": base_init_quat.cpu().numpy(),
             "collision": False,
@@ -191,14 +280,12 @@ class WingedDroneEnv:
 
         if "links_to_keep" in self.env_cfg:
             urdf_args["links_to_keep"] = self.env_cfg["links_to_keep"]
-        elif self.drone_name == "morphing_drone":
+        else:
             # Keep aerodynamic reference frames and main structural links
-            urdf_args["links_to_keep"] = [
+            default_links = [
                 "aero_frame_fuselage",
-                "aero_frame_left_wing_prop",
-                "aero_frame_left_wing_free",
-                "aero_frame_right_wing_prop",
-                "aero_frame_right_wing_free",
+                "aero_frame_left_wing",
+                "aero_frame_right_wing",
                 "aero_frame_elevator_left",
                 "aero_frame_elevator_right",
                 "aero_frame_rudder",
@@ -210,6 +297,8 @@ class WingedDroneEnv:
                 "left_wing",
                 "right_wing",
             ]
+            links = list(dict.fromkeys(list(self.drone_model.frames) + default_links))
+            urdf_args["links_to_keep"] = links
 
         self.drone = self.scene.add_entity(gs.morphs.URDF(**urdf_args))
 
@@ -225,7 +314,17 @@ class WingedDroneEnv:
                 "rudder_yaw_joint",
             ]
         self.servo_joint_names = servo_joint_names
-        self.servo_dof_indices = [self.drone.get_joint(name).dof_idx_local for name in servo_joint_names]
+        self.servo_dof_indices = []
+        for name in servo_joint_names:
+            joint = self.drone.get_joint(name)
+            idx = getattr(joint, "dofs_idx_local", None)
+            if idx is None:
+                idx = joint.dof_idx_local
+            if isinstance(idx, (list, tuple)):
+                idx = idx[0] if idx else None
+            if idx is None:
+                raise ValueError(f"Joint '{name}' has no DOF index.")
+            self.servo_dof_indices.append(int(idx))
 
         # Throttle + servos
         self.THROTTLE_SIZE = 1
@@ -288,12 +387,47 @@ class WingedDroneEnv:
             )
         )
         # ------------------------------------------------------------------ #
+        # Genome handling (optional)                                        #
+        # ------------------------------------------------------------------ #
+        self.add_genome_obs = bool(self.obs_cfg.get("add_genome_obs", False))
+        self._genome_vec: Optional[torch.Tensor] = None
+        self.noise_std = self.obs_cfg.get("noise_std", {})
+        self._naca_code: Optional[str] = None
+
+        if self.urdf_file:
+            match = re.search(r"\[([^\]]+)\]\.urdf$", self.urdf_file)
+            if match:
+                try:
+                    values = [float(x) for x in match.group(1).split(",")]
+                    self._naca_code = Chromosome_Drone.naca_from_physical(values)
+                    g = torch.tensor(values, dtype=torch.float32, device=self.device)
+                    self._genome_vec = g.unsqueeze(0).repeat(self.num_envs, 1)
+                except Exception:
+                    self._genome_vec = None
+
+        if self._genome_vec is not None and not self.evaluation:
+            # Simple domain randomization of genome parameters during training
+            noise_std = self.noise_std.get("genome", 0.1)
+            noise = torch.randn_like(self._genome_vec) * noise_std
+            gmin = torch.tensor(self.GENOME_MIN, device=self.device)
+            gmax = torch.tensor(self.GENOME_MAX, device=self.device)
+            noise *= (gmax - gmin).unsqueeze(0)
+            for idx in Chromosome_Drone.NACA_GENE_INDICES:
+                if idx < noise.shape[1]:
+                    noise[:, idx] = 0.0
+            self._genome_vec += noise
+            self._genome_vec = torch.max(torch.min(self._genome_vec, gmax), gmin)
+
+        # ------------------------------------------------------------------ #
         # Build scene and get solvers                                       #
         # ------------------------------------------------------------------ #
         self.scene.build(n_envs=self.num_envs)
         self.rigid_solver = self.scene.sim.rigid_solver
         self.aero_solver = self.scene.sim.aero_solver
-        self.aero_solver.add_target(self.drone, urdf_file=urdf_file)
+        self.aero_solver.add_target(self.drone, drone_model=self.drone_model)
+        naca_code = self._naca_code or str(self.env_cfg.get("naca", "") or "").strip()
+        if naca_code and hasattr(self.aero_solver, "apply_naca_wing_override"):
+            self.aero_solver.apply_naca_wing_override(naca_code)
 
         self.span = self.aero_solver.tip_to_tip
         self.nominal_mass = float(sum(link.get_mass() for link in self.drone.links))
@@ -315,37 +449,9 @@ class WingedDroneEnv:
         self.joint_limit_max = joint_maxs
 
         # PD gains for servo position control
-        kp = torch.full((self.num_servos,), 8.0, device=self.device)
-        kv = torch.full((self.num_servos,), 2.0, device=self.device)
+        kp, kv = _servo_gains_from_catalog(self.drone_model, self.servo_joint_names, self.device)
         self.drone.set_dofs_kp(kp, self.servo_dof_indices)
         self.drone.set_dofs_kv(kv, self.servo_dof_indices)
-
-        # ------------------------------------------------------------------ #
-        # Genome handling (optional)                                        #
-        # ------------------------------------------------------------------ #
-        self.add_genome_obs = bool(self.obs_cfg.get("add_genome_obs", False))
-        self._genome_vec: Optional[torch.Tensor] = None
-        self.noise_std = self.obs_cfg.get("noise_std", {})
-
-        if urdf_file is not None:
-            match = re.search(r"\[([^\]]+)\]\.urdf$", urdf_file)
-            if match:
-                try:
-                    values = [float(x) for x in match.group(1).split(",")]
-                    g = torch.tensor(values, dtype=torch.float32, device=self.device)
-                    self._genome_vec = g.unsqueeze(0).repeat(self.num_envs, 1)
-                except Exception:
-                    self._genome_vec = None
-
-        if self._genome_vec is not None and not self.evaluation:
-            # Simple domain randomization of genome parameters during training
-            noise_std = self.noise_std.get("genome", 0.1)
-            noise = torch.randn_like(self._genome_vec) * noise_std
-            gmin = torch.tensor(self.GENOME_MIN, device=self.device)
-            gmax = torch.tensor(self.GENOME_MAX, device=self.device)
-            noise *= (gmax - gmin).unsqueeze(0)
-            self._genome_vec += noise
-            self._genome_vec = torch.max(torch.min(self._genome_vec, gmax), gmin)
 
         # ------------------------------------------------------------------ #
         # Depth solver + precomputed ray directions                          #

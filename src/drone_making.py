@@ -16,11 +16,11 @@ This module builds a drone URDF from a *structured genome* of **15 parameters**:
  7) rudder_span                   [m]
  8) rudder_aspect_ratio           = span / chord
  9) dihedral_deg                  [deg]
-10) hinge_le_ratio                [fraction of chord]
-11) sweep_multiplier              [-]
-12) twist_multiplier              [-]
-13) cl_alpha_2d                   [1/rad]
-14) alpha0_2d                     [deg] (converted to rad internally)
+10) sweep_multiplier              [-]
+11) twist_multiplier              [-]
+12) naca_d1                       [-]  first digit (0..4)
+13) naca_d2                       [-]  second digit (2..5)
+14) naca_last2                    [-]  last two digits (08..22)
 
 All *physical* dimensions required by the URDF (chords, x-positions) are
 derived internally from the genome above.
@@ -33,7 +33,9 @@ import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, Tuple, Union, List
+from typing import Sequence, Tuple, Union, List, Dict, Optional
+import yaml
+import csv
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,14 +128,16 @@ class UrdfMaker:
     _RHO_ELEV = 20.0
     _RHO_RUDD = 20.0
     _RHO_PROP = 500.0
+    _PROP_CAMERA_MASS = 0.05
 
     # Lever arms as fraction of chord (from LE reference frame)
     _CG_RATIO   = 0.31
     _COLL_RATIO = 0.25
+    _AERO_RATIO = 0.25
 
     # Inertia fudge factor + collision shrink
     _I_FUDGE = 0.6
-    _SHRINK  = 0.25
+    _SHRINK  = 1.0
 
     # Root offsets and fixed RPYs (legacy values kept)
     _MASS_INTER     = 0.01
@@ -190,6 +194,11 @@ class UrdfMaker:
             Directory where the generated URDF will be written.
         """
         self._raw_genome: List[float] | None = None
+        self._actuator_catalog: Dict[Tuple[str, str], Dict[str, str]] = {}
+        self._link_actuators: Dict[str, Dict[str, Optional[str]]] = {}
+        self._prop_max_thrust: Optional[float] = None
+        self._load_actuator_catalog()
+        self._load_link_actuators()
 
         # Resolve input into GeometryParams
         if isinstance(genome_or_params, GeometryParams):
@@ -211,11 +220,11 @@ class UrdfMaker:
                 rudd_span,
                 rudd_AR,
                 dihedral_deg,
-                hinge_le_ratio,
                 sweep_multi,
                 twist_multi,
-                cl_alpha_2d,
-                alpha0_2d_deg,
+                naca_d1,
+                naca_d2,
+                naca_last2,
             ) = seq
 
             # --- Derived physical quantities --------------------------------
@@ -229,8 +238,12 @@ class UrdfMaker:
             density_scale = 1.0
             prop_radius   = 0.10
 
+            hinge_le_ratio = 0.25
+            cl_alpha_2d = 2.0
+            alpha0_2d_deg = -3.0
+
             alpha0_2d_rad = alpha0_2d_deg * math.pi / 180.0
-            cl_alpha_2d   = cl_alpha_2d * math.pi  # legacy scaling kept
+            cl_alpha_2d = cl_alpha_2d * math.pi  # legacy scaling kept
 
             prm = GeometryParams(
                 wing_span=wing_span,
@@ -258,9 +271,177 @@ class UrdfMaker:
         self.out = Path(out_dir)
         self.S = prm.density_scale
         self.LE = prm.hinge_le_ratio
+        self._apply_actuator_masses()
 
         # Clamp dihedral to a reasonable range (kept from original implementation)
         self.dihedral = prm.dihedral_deg * math.pi / 180.0
+
+    # ────────────────────────────────────────────────────────────────────
+    # Actuator data (YAML + CSV)
+    # ────────────────────────────────────────────────────────────────────
+    def _load_actuator_catalog(self) -> None:
+        """Load actuator properties from actuators.csv into _actuator_catalog."""
+        csv_path = Path(__file__).resolve().parents[2] / "genesis" / "assets" / "urdf" / "mydrone" / "actuators.csv"
+        catalog: Dict[Tuple[str, str], Dict[str, str]] = {}
+        if csv_path.exists():
+            try:
+                with open(csv_path, newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        name = row.get("name", "").strip()
+                        kind = row.get("type", "").strip().lower()
+                        if name and kind:
+                            catalog[(name, kind)] = {k: v for k, v in row.items()}
+            except Exception:
+                catalog = {}
+        self._actuator_catalog = catalog
+
+    @staticmethod
+    def _clean_actuator_name(name: Optional[str]) -> Optional[str]:
+        if not name:
+            return None
+        if not isinstance(name, str):
+            return None
+        stripped = name.strip()
+        if not stripped or stripped.lower() == "none":
+            return None
+        return stripped
+
+    def _get_link_actuator(self, link_name: str, key: str) -> Optional[str]:
+        info = self._link_actuators.get(link_name)
+        if isinstance(info, dict):
+            name = info.get(key)
+        elif isinstance(info, str):
+            name = info if key == "actuator" else None
+        else:
+            name = None
+        return self._clean_actuator_name(name)
+
+    def _load_link_actuators(self) -> None:
+        """Load actuator names per aero link from aero_parameters.yaml."""
+        yaml_path = Path(__file__).resolve().parents[2] / "genesis" / "assets" / "urdf" / "mydrone" / "aero_parameters.yaml"
+        links_cfg: Dict[str, Dict] = {}
+        if yaml_path.exists():
+            try:
+                with open(yaml_path, "r") as f:
+                    data = yaml.safe_load(f) or {}
+                    links_cfg = data.get("links", {}) or {}
+            except Exception:
+                links_cfg = {}
+
+        link_actuators: Dict[str, Dict[str, Optional[str]]] = {}
+        for k, v in links_cfg.items():
+            if isinstance(v, dict):
+                link_actuators[k] = {
+                    "actuator": self._clean_actuator_name(v.get("actuator")),
+                    "actuator_yaw": self._clean_actuator_name(v.get("actuator_yaw")),
+                    "actuator_pitch": self._clean_actuator_name(v.get("actuator_pitch")),
+                }
+            else:
+                link_actuators[k] = {
+                    "actuator": self._clean_actuator_name(v) if isinstance(v, str) else None,
+                    "actuator_yaw": None,
+                    "actuator_pitch": None,
+                }
+        self._link_actuators = link_actuators
+
+    def _actuator_mass(self, name: Optional[str], kind: str, fallback: Optional[float]) -> Optional[float]:
+        if not name:
+            return fallback
+        entry = self._actuator_catalog.get((name, kind.lower()))
+        if entry and "mass" in entry:
+            try:
+                return float(entry["mass"])
+            except Exception:
+                return fallback
+        return fallback
+
+    def _actuator_value(
+        self,
+        name: Optional[str],
+        kind: str,
+        key: str,
+        fallback: Optional[float] = None,
+    ) -> Optional[float]:
+        if not name:
+            return fallback
+        entry = self._actuator_catalog.get((name, kind.lower()))
+        if not entry:
+            return fallback
+        raw = entry.get(key)
+        if raw is None:
+            return fallback
+        value = str(raw).strip()
+        if not value or value.lower() == "none":
+            return fallback
+        try:
+            return float(value)
+        except Exception:
+            return fallback
+
+    @staticmethod
+    def _format_float_str(value: Optional[str], fallback: str) -> str:
+        if value is None:
+            return fallback
+        s = str(value).strip()
+        if not s or s.lower() == "none":
+            return fallback
+        try:
+            return f"{float(s):g}"
+        except Exception:
+            return fallback
+
+    def _actuator_dynamics(
+        self,
+        name: Optional[str],
+        kind: str,
+        fallback: Dict[str, str],
+        *,
+        ratio: float = 1.0,
+    ) -> Dict[str, str]:
+        if not name:
+            return dict(fallback)
+        entry = self._actuator_catalog.get((name, kind.lower()))
+        if not entry:
+            return dict(fallback)
+        damping_s = self._format_float_str(entry.get("damping"), fallback.get("damping", "0.0"))
+        friction_s = self._format_float_str(entry.get("friction"), fallback.get("friction", "0.0"))
+
+        r = max(float(ratio), 1e-6)
+        d = float(damping_s) * (r * r)
+        f = float(friction_s) * r
+
+        return {"damping": f"{d:g}", "friction": f"{f:g}"}
+
+
+    def _apply_actuator_masses(self) -> None:
+        """Override servo/prop masses based on YAML-selected actuators and catalog."""
+        wing_act = self._get_link_actuator("aero_frame_left_wing", "actuator") or self._get_link_actuator(
+            "aero_frame_right_wing", "actuator"
+        )
+        elev_act = self._get_link_actuator("aero_frame_elevator_left", "actuator") or self._get_link_actuator(
+            "aero_frame_elevator_right", "actuator"
+        )
+        rudd_act = self._get_link_actuator("aero_frame_rudder", "actuator")
+        prop_act = self._get_link_actuator("prop_frame_fuselage_0", "actuator")
+
+        self._SERVO_WING_SWEEP_MASS = self._actuator_mass(wing_act, "servo", self._SERVO_WING_SWEEP_MASS)
+        self._SERVO_WING_TWIST_MASS = self._actuator_mass(wing_act, "servo", self._SERVO_WING_TWIST_MASS)
+        self._SERVO_TAIL_ELEV_MASS = self._actuator_mass(elev_act, "servo", self._SERVO_TAIL_ELEV_MASS)
+        self._SERVO_TAIL_RUDD_MASS = self._actuator_mass(rudd_act, "servo", self._SERVO_TAIL_RUDD_MASS)
+
+        prop_mass = self._actuator_mass(prop_act, "propeller", None)
+        prop_radius = self._actuator_value(prop_act, "propeller", "radius", None)
+        self._prop_max_thrust = self._actuator_value(prop_act, "propeller", "max_thrust", None)
+
+        if prop_radius is not None and prop_radius > 0.0:
+            self.p.prop_radius = prop_radius
+        if prop_mass is not None:
+            r = self.p.prop_radius
+            h = 0.005
+            vol = math.pi * r * r * h
+            if vol > 0:
+                self._RHO_PROP = prop_mass / vol
 
     # ────────────────────────────────────────────────────────────────────
     # Utility helpers
@@ -371,11 +552,11 @@ class UrdfMaker:
             p.rudder_span,
             p.rudder_span / p.rudder_chord if p.rudder_chord else float("nan"),
             p.dihedral_deg,
-            p.hinge_le_ratio,
             p.sweep_multi,
             p.twist_multi,
-            p.cl_alpha_2d,
-            math.degrees(p.alpha0_2d),
+            3.0,
+            4.0,
+            16.0,
         ]
 
     # ------------------------------------------------------------------
@@ -542,7 +723,7 @@ class UrdfMaker:
         fus = ET.SubElement(robot, "link", name="fuselage")
         self._add_inertial(fus, (p.fus_cg_x, 0.0, -0.04), m_total, I_total)
 
-        # Collision (shrunken box)
+        # Collision box (no artificial shrink; use physical size)
         box_coll = (
             box[0] * self._SHRINK,
             box[1] * self._SHRINK,
@@ -625,6 +806,15 @@ class UrdfMaker:
 
         prop_link = ET.SubElement(robot, "link", name="prop_frame_fuselage_0")
         self._add_inertial(prop_link, (0.0, 0.0, 0.0), m, I)
+        if self._PROP_CAMERA_MASS > 0.0:
+            self._add_fixed_mass(
+                robot,
+                name="prop_camera_payload",
+                parent="prop_frame_fuselage_0",
+                xyz=(0.0, 0.0, 0.0),
+                m=self._PROP_CAMERA_MASS,
+                size=None,
+            )
 
         # Visual cylinder
         vis = ET.SubElement(prop_link, "visual", name="prop_frame_fuselage_0_visual_0")
@@ -654,13 +844,14 @@ class UrdfMaker:
         """Create both left and right wing assemblies with joints and aero frames."""
         p = self.p
         thickness = self._REF["tw"]
-
-        # Span region inside the propwash disc (per side)
-        sp_prop = max(0.0, min(p.wing_span, max(0.0, p.prop_radius - self._ROOT_Y_OFFSET)))
-        sp_free = p.wing_span - sp_prop
+        left_yaw_act = self._get_link_actuator("aero_frame_left_wing", "actuator_yaw")
+        left_pitch_act = self._get_link_actuator("aero_frame_left_wing", "actuator_pitch")
+        right_yaw_act = self._get_link_actuator("aero_frame_right_wing", "actuator_yaw")
+        right_pitch_act = self._get_link_actuator("aero_frame_right_wing", "actuator_pitch")
 
         rho = self._RHO_WING * self.S
         chord = p.wing_chord
+        span_total = p.wing_span  # per-side span
 
         def _service_link(name: str) -> None:
             """
@@ -679,9 +870,7 @@ class UrdfMaker:
 
         def _panel(
             side: str,
-            label: str,
-            span: float,
-            y_offset: float,
+            sign: int,
         ) -> None:
             """
             Create a wing panel (either in propwash or free stream).
@@ -690,44 +879,63 @@ class UrdfMaker:
             ----------
             side:
                 "left" or "right".
-            label:
-                "prop" or "free".
-            span:
-                span of this panel [m].
-            y_offset:
-                offset from the wing root along Y [m].
             """
-            name = f"{side}_wing_{label}"
-            box = (thickness, chord, span)
-            mass_panel = math.prod(box) * rho
-            I_panel = self._I_box(mass_panel, *box)
+            name = f"{side}_wing"
+            span_side = span_total
+            span_offset = 0.5 * span_side
 
-            # Fixed joint from main wing root
-            joint = ET.SubElement(robot, "joint", name=f"fixed_joint_{name}", type="fixed")
-            ET.SubElement(joint, "parent", link=f"{side}_wing")
-            ET.SubElement(joint, "child", link=name)
-            self._origin(joint, (0.0, y_offset, 0.0))
+            # Geometric box used for inertia (dims order doesn't matter,
+            # only the magnitudes enter the inertia calculation)
+            box_geom = (thickness, chord, span_side)
+            mass_panel = math.prod(box_geom) * rho
+            I_panel = self._I_box(mass_panel, *box_geom)
 
             # Link with inertia at aerodynamic CG
             link = ET.SubElement(robot, "link", name=name)
             self._add_inertial(
                 link,
-                ((self._CG_RATIO - self.LE) * chord, 0.0, 0.0),
+                ((self._AERO_RATIO - self.LE) * chord, -sign * span_offset, 0.0),
                 mass_panel,
                 I_panel,
             )
 
-            # Collision geometry
+            # Visual (half-wing mesh scaled to full span per side)
+            vis = ET.SubElement(link, "visual", name=f"{name}_visual")
+            # The wing STL has span along Y and chord along Z.
+            # To make the leading edge face forward (consistent between left
+            # and right), add a 180° rotation around Y that flips the chord.
+            if side == "left":
+                # Left wing: mirror in X (existing π roll) and flip chord with π pitch.
+                rpy = "0 3.141592653589793 0"
+            else:
+                # Right wing: only flip chord with π pitch.
+                rpy = "3.141592653589793 3.141592653589793 0"
+            vis_shift_x = (self.LE - self._LE_REF) * chord
+            self._origin(vis, (vis_shift_x, 0.0, 0.0), rpy)
+            mesh = ET.SubElement(
+                ET.SubElement(vis, "geometry"),
+                "mesh",
+                filename="package://meshes/wing0009.stl",
+            )
+            mesh.set("scale", self._scale("wing", (thickness, chord, span_side)))
+            ET.SubElement(vis, "material", name="red")
+
+            # Collision geometry:
+            # IMPORTANT: DroneAeroModel assumes box size is (thickness, chord, span)
+            # so that chord=sy and span=sz.
             coll = ET.SubElement(link, "collision", name=f"{name}_collision")
+            coll_box = (thickness, chord, span_side)  # (sx, sy, sz) = (thk, chord, span)
+            # Rotate the box so it still looks like (chord, span, thickness) in the link frame.
+            # This rotation maps: X(thk)->Z, Y(chord)->X, Z(span)->Y
             self._origin(
                 coll,
-                (self._COLL_RATIO * chord, 0.0, -0.000421042),
-                self._RPY_WING_COLL,
+                (0.5 * chord, sign * span_offset, 0.0),
+                "0 -1.5707963267948966 -1.5707963267948966",
             )
             ET.SubElement(
                 ET.SubElement(coll, "geometry"),
                 "box",
-                size=" ".join(f"{v:.12g}" for v in box),
+                size=" ".join(f"{v:.12g}" for v in coll_box),
             )
 
             # Aero frame anchored at CG (LE-based frame)
@@ -739,7 +947,11 @@ class UrdfMaker:
             )
             ET.SubElement(ja, "parent", link=name)
             ET.SubElement(ja, "child", link=f"aero_frame_{name}")
-            self._origin(ja, ((self._CG_RATIO - self.LE) * chord, 0.0, 0.0), "3.141592654 0 0")
+            self._origin(
+                ja,
+                ((self._AERO_RATIO - self.LE) * chord, -sign * span_offset, 0.0),
+                "0 3.141592654 0",
+            )
 
             aero_link = ET.SubElement(robot, "link", name=f"aero_frame_{name}")
             self._add_inertial(aero_link, (0.0, 0.0, 0.0), 0.0, (0.0, 0.0, 0.0))
@@ -758,6 +970,12 @@ class UrdfMaker:
             limit_twist  = 0.5 / max(self.p.twist_multi, 0.5)   # [rad]
             effort_sweep = 0.75 * max(self.p.sweep_multi, 0.5)
             effort_twist = 0.6 * max(self.p.twist_multi, 0.5)
+            if side == "left":
+                yaw_act = left_yaw_act
+                pitch_act = left_pitch_act
+            else:
+                yaw_act = right_yaw_act
+                pitch_act = right_pitch_act
 
             # Attach wing root to fuselage with dihedral
             fj = ET.SubElement(robot, "joint", name=f"fixed_joint_{side}_wing", type="fixed")
@@ -766,7 +984,7 @@ class UrdfMaker:
             self._origin(
                 fj,
                 (p.wing_attach_x, self._ROOT_Y_OFFSET * sign, -0.03),
-                f"{self.dihedral * sign:.12g} 0 3.141592653589793",
+                f"{self.dihedral * sign:.12g} 0 0",
             )
 
             # Intermediate service links
@@ -792,7 +1010,11 @@ class UrdfMaker:
                 effort=f"{effort_sweep:.6g}",
                 velocity=self._REV_LIMIT["velocity"],
             )
-            ET.SubElement(js, "dynamics", **self._REV_DYN)
+            ET.SubElement(
+                js,
+                "dynamics",
+                **self._actuator_dynamics(yaw_act, "servo", self._REV_DYN, ratio=p.sweep_multi),
+            )
 
             # Sweep servo mass
             self._add_fixed_mass(
@@ -814,7 +1036,9 @@ class UrdfMaker:
             )
             ET.SubElement(jt, "parent", link=f"fuselage_{side}_1")
             ET.SubElement(jt, "child", link=f"{side}_wing")
-            self._origin(jt, (0.0, -self._ROOT_Y_OFFSET * sign, 0.0))
+            # Do not cancel the lateral ROOT_Y_OFFSET here: keep the wing
+            # link at the same y as fuselage_{side}_1.
+            self._origin(jt, (0.0, 0.0, 0.0))
             ET.SubElement(jt, "axis", xyz="0 1 0")
             ET.SubElement(
                 jt,
@@ -824,47 +1048,27 @@ class UrdfMaker:
                 effort=f"{effort_twist:.6g}",
                 velocity=self._REV_LIMIT["velocity"],
             )
-            ET.SubElement(jt, "dynamics", **self._REV_DYN)
+
+            ET.SubElement(
+                jt,
+                "dynamics",
+                **self._actuator_dynamics(pitch_act, "servo", self._REV_DYN, ratio=p.twist_multi),
+            )
 
             # Twist servo mass
             self._add_fixed_mass(
                 robot,
                 name=f"{side}_wing_servo_twist",
                 parent=f"fuselage_{side}_1",
-                xyz=(0.0, -self._ROOT_Y_OFFSET * sign, 0.0),
+                # Co-located with the twist joint (no extra y-offset).
+                xyz=(0.0, 0.0, 0.0),
                 m=self._SERVO_WING_TWIST_MASS,
                 size=None,
                 sphere_radius=0.015,
             )
 
-            # Root link for the wing side (visual is the whole half-wing mesh)
-            root_link = ET.SubElement(robot, "link", name=f"{side}_wing")
-            I_eps = self._I_box(
-                self._MASS_INTER,
-                thickness,
-                p.wing_chord,
-                sp_prop + sp_free,
-            )
-            self._add_inertial(root_link, (0.0, 0.0, 0.0), self._MASS_INTER, I_eps)
-
-            vis = ET.SubElement(root_link, "visual", name=f"{side}_wing_visual")
-            rpy = "3.141592654 0 0" if side == "left" else "0 0 0"
-            vis_shift_x = (self.LE - self._LE_REF) * chord
-            self._origin(vis, (vis_shift_x, 0.0, 0.0), rpy)
-
-            mesh = ET.SubElement(
-                ET.SubElement(vis, "geometry"),
-                "mesh",
-                filename="package://meshes/wing0009.stl",
-            )
-            mesh.set("scale", self._scale("wing", (thickness, chord, sp_prop + sp_free)))
-            ET.SubElement(vis, "material", name="red")
-
-            # Two physical panels: propwash panel + free-stream panel
-            if sp_prop > 0.0:
-                _panel(side, "prop", sp_prop, -sign * sp_prop / 2.0)
-            if sp_free > 0.0:
-                _panel(side, "free", sp_free, -sign * (sp_prop + sp_free / 2.0))
+            # Single wing panel (no propwash/free split)
+            _panel(side, sign)
 
         # Build right and left sides
         _wing_side("right", +1)
@@ -882,13 +1086,17 @@ class UrdfMaker:
         # Elevator treated as a horizontal wing: chord → X, span → Y, thickness → Z
         box_full = (p.elevator_chord, p.elevator_span, thickness)
         span_half = p.elevator_span / 2.0
-        box_half = (p.elevator_chord, span_half, thickness)
+        box_half = (thickness, p.elevator_chord, span_half)
 
         rho = self._RHO_ELEV * self.S
         m_half = math.prod(box_half) * rho
         I_half = self._I_box(m_half, *box_half)
 
         chord = p.elevator_chord
+        elev_pitch_act = self._get_link_actuator(
+            "aero_frame_elevator_left",
+            "actuator_pitch",
+        ) or self._get_link_actuator("aero_frame_elevator_right", "actuator_pitch")
 
         # Main revolute hinge (pitch)
         jh = ET.SubElement(robot, "joint", name="elevator_pitch_joint", type="revolute")
@@ -904,7 +1112,11 @@ class UrdfMaker:
             effort="1.0",
             velocity="3.665191429",
         )
-        ET.SubElement(jh, "dynamics", damping="0.2", friction="0.05")
+        ET.SubElement(
+            jh,
+            "dynamics",
+            **self._actuator_dynamics(elev_pitch_act, "servo", self._REV_DYN),
+        )
 
         # Elevator servo mass attached at the hinge location
         self._add_fixed_mass(
@@ -956,7 +1168,7 @@ class UrdfMaker:
             )
             ET.SubElement(ja, "parent", link=f"elevator_{side}")
             ET.SubElement(ja, "child", link=f"aero_frame_elevator_{side}")
-            self._origin(ja, (-self._CG_RATIO * chord, 0.0, 0.0), "0 3.141592654 0")
+            self._origin(ja, (-self._AERO_RATIO * chord, 0.0, 0.0), "0 3.141592654 0")
 
             aero = ET.SubElement(robot, "link", name=f"aero_frame_elevator_{side}")
             self._add_inertial(aero, (0.0, 0.0, 0.0), 0.0, (0.0, 0.0, 0.0))
@@ -982,9 +1194,10 @@ class UrdfMaker:
 
         # Rudder geometry is aligned like a vertical wing:
         #   X → chord (longitudinal), Y → thickness, Z → span (height)
-        box_geom = (chord, thickness, span)
+        box_geom = (thickness, chord, span)
         mass_rudder = math.prod(box_geom) * self._RHO_RUDD * self.S
         I_rudder = self._I_box(mass_rudder, *box_geom)
+        rudder_yaw_act = self._get_link_actuator("aero_frame_rudder", "actuator_yaw")
 
         # Rudder yaw joint (attached to elevator hinge)
         jy = ET.SubElement(robot, "joint", name="rudder_yaw_joint", type="revolute")
@@ -1000,7 +1213,11 @@ class UrdfMaker:
             effort="1.0",
             velocity="3.665191429",
         )
-        ET.SubElement(jy, "dynamics", damping="0.2", friction="0.05")
+        ET.SubElement(
+            jy,
+            "dynamics",
+            **self._actuator_dynamics(rudder_yaw_act, "servo", self._REV_DYN),
+        )
 
         # Rudder servo mass
         self._add_fixed_mass(
@@ -1049,7 +1266,7 @@ class UrdfMaker:
         )
         ET.SubElement(ja, "parent", link="rudder")
         ET.SubElement(ja, "child", link="aero_frame_rudder")
-        self._origin(ja, (-self._CG_RATIO * chord, 0.0, -0.08), "0 3.141592653589793 0")
+        self._origin(ja, (-self._AERO_RATIO * chord, 0.0, -0.08), "0 3.141592653589793 0")
 
         aero = ET.SubElement(robot, "link", name="aero_frame_rudder")
         self._add_inertial(aero, (0.0, 0.0, 0.0), 0.0, (0.0, 0.0, 0.0))
@@ -1067,6 +1284,12 @@ class UrdfMaker:
         """
         comment_text = "[" + ", ".join(f"{v:g}" for v in self._raw_genome_values()) + "]"
         robot.append(ET.Comment(comment_text))
+        if self._prop_max_thrust is not None:
+            act = self._get_link_actuator("prop_frame_fuselage_0", "actuator")
+            if act:
+                robot.append(
+                    ET.Comment(f"propeller_actuator={act} max_thrust={self._prop_max_thrust:g}")
+                )
 
     def build_tree(self) -> ET.ElementTree:
         """
@@ -1128,13 +1351,9 @@ class UrdfMaker:
 
 if __name__ == "__main__":
     # Simple genome examples (values chosen for sanity, not performance)
-    genome1 = [0.5, 2.5, 0.46, 0.45, 0.4, 0.3, 1.75, 0.2, 1.0, 0.0, 0.25, 3.0, 3.5, 2.0, -2.0]
-    genome2 = [0.5, 3.5, 0.46, 0.45, 0.4, 0.2, 1.75, 0.2, 1.75, 0.0, 0.25, 3.0, 1.5, 2.0, -2.5]
-    genome3 = [0.7, 2.5, 0.66, 0.45, 0.4, 0.26, 3.0, 0.14, 2.75, 10.0, 0.25, 2.0, 3.5, 2.0, -2.0]
-    genome4 = [0.44, 1.75, 0.48, 0.34, 0.3, 0.12, 3.0, 0.2, 2.5, 20.0, 0.25, 3.5, 2.25, 2.0, -5.0]
-    genome5 = [0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3]
-    genome6 = [0.5, 2, 0.5, 0.35, 0.35, 0.35, 2.5, 0.1, 1.0, 0, 0.25, 3, 3, 2, -2]
+    genome1 = [0.5, 2.5, 0.46, 0.45, 0.4, 0.3, 1.75, 0.2, 1.0, 0.0, 3.0, 3.5, 3, 4, 16]
+    genome2 = [0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4.0, 0.2, 2.0, 0, 2.0, 2.5, 3, 4, 16]
 
-    for genome in (genome1, genome6):
+    for genome in (genome1, genome2):
         path = UrdfMaker(genome).create_urdf()
         print("URDF written to:", path)

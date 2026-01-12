@@ -2,6 +2,9 @@ import os
 import time
 import threading
 from typing import List, Optional
+from pathlib import Path
+import csv
+import xml.etree.ElementTree as ET
 
 from pynput import keyboard
 import numpy as np
@@ -13,10 +16,41 @@ from genesis.utils.geom import (
     transform_by_quat,
     quat_to_xyz,
 )
+from genesis.assets.urdf.mydrone.drone import DroneAeroModel
+import sys
+
+# -------- Redirect ONLY print() output to file --------
+log_file = open("winged_drone_output.txt", "w", buffering=1)
+sys.stdout = log_file
 
 
 # Batch size: keep 1 for now, but code is structured to extend to B > 1.
 BATCH_SIZE = 1
+
+
+def _load_joint_position_limits_from_urdf(urdf_path: str, joint_names: List[str]) -> np.ndarray:
+    """
+    Return per-joint absolute position limits from the URDF (in radians).
+
+    No defaults: every requested joint must exist and define a <limit lower= upper=>.
+    """
+    root = ET.parse(str(urdf_path)).getroot()
+    out = []
+    for name in joint_names:
+        joint = root.find(f".//joint[@name='{name}']")
+        if joint is None:
+            raise ValueError(f"URDF is missing joint '{name}'.")
+        lim = joint.find("limit")
+        if lim is None:
+            raise ValueError(f"URDF joint '{name}' is missing a <limit> tag.")
+        lower = lim.get("lower")
+        upper = lim.get("upper")
+        if lower is None or upper is None:
+            raise ValueError(f"URDF joint '{name}' must define both 'lower' and 'upper' in <limit>.")
+        lo = float(lower)
+        hi = float(upper)
+        out.append(max(abs(lo), abs(hi)))
+    return np.asarray(out, dtype=np.float32)
 
 
 class DroneController:
@@ -33,7 +67,7 @@ class DroneController:
     def __init__(self):
         # Initial spawn state for the drone
         self.init_pos = np.array([0.0, 0.0, 20.0], dtype=np.float32)
-        self.init_vel = np.array([8.0, 0.0, 0.0], dtype=np.float32)
+        self.init_vel = np.array([10.0, 0.0, 0.0], dtype=np.float32)
         self.init_euler = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.init_ang_vel = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.init_joint_velocity = np.zeros(6, dtype=np.float32)  # 6 servo joints
@@ -44,7 +78,7 @@ class DroneController:
         self.pressed_keys: set = set()
 
         # Throttle state (broadcast inside AeroSolver to all envs)
-        self.throttle: float = 0.1
+        self.throttle: float = 0.25
         self._throttle_min: float = 0.0
         self._throttle_max: float = 1.0
         self._throttle_rate: float = 0.2  # change per second
@@ -72,10 +106,8 @@ class DroneController:
         self._twist_rate_asym = 0.02
         self._tail_rate = 0.2
 
-        # [sweep_L, sweep_R, twist_L, twist_R, elevator, rudder]
-        self._servo_limits = np.array(
-            [0.8, 0.8, 0.6, 0.6, 0.6, 0.6], dtype=np.float32
-        )
+        # Filled from URDF in main() (no defaults).
+        self._servo_limits: Optional[np.ndarray] = None
 
         # Key aliases
         self._key_w = keyboard.KeyCode.from_char("w")
@@ -97,6 +129,16 @@ class DroneController:
         """Store drone handle and DOF indices (local)."""
         self.drone = drone
         self.servo_dof_indices = np.array(servo_dof_indices, dtype=np.int32)
+
+    def set_servo_limits(self, limits: np.ndarray):
+        limits = np.asarray(limits, dtype=np.float32).reshape(-1)
+        if limits.shape[0] != len(self.servo_joint_names):
+            raise ValueError(
+                f"Expected {len(self.servo_joint_names)} joint limits, got shape {limits.shape}."
+            )
+        if not np.all(np.isfinite(limits)) or np.any(limits <= 0.0):
+            raise ValueError(f"Invalid joint limits: {limits}")
+        self._servo_limits = limits
 
     # ------------------------------ Keyboard --------------------------------
 
@@ -192,6 +234,8 @@ class DroneController:
             self.servo_cmd[RUD] -= self._tail_rate * dt
 
         # Clamp joint targets to safe range
+        if self._servo_limits is None:
+            raise RuntimeError("Servo limits are not initialized. Load them from the URDF before running.")
         self.servo_cmd = np.clip(self.servo_cmd, -self._servo_limits, self._servo_limits)
 
     def apply_joint_commands(self, dt: float):
@@ -199,10 +243,100 @@ class DroneController:
         if self.drone is None or self.servo_dof_indices is None:
             return
         self._update_servo_targets(dt)
-        self.drone.control_dofs_position(
-            self.servo_cmd.astype(np.float32),
-            self.servo_dof_indices,  # dofs_idx_local
+        pairs = sorted(
+            zip(self.servo_dof_indices.tolist(), self.servo_cmd.tolist()),
+            key=lambda x: x[0],
         )
+        idx_sorted = np.asarray([p[0] for p in pairs], dtype=np.int32)
+        cmd_sorted = np.asarray([p[1] for p in pairs], dtype=np.float32)
+        self.drone.control_dofs_position(
+            cmd_sorted,
+            idx_sorted,  # dofs_idx_local
+        )
+
+
+def _servo_gains_from_catalog(drone_model, joint_names):
+    """
+    Fetch kp/kv for joints using actuator names from aero_parameters.yaml / actuators.csv.
+    yaw -> sweep, pitch -> twist.
+    """
+    if drone_model is None or not hasattr(drone_model, "urdf_path"):
+        raise ValueError("servo gain loading requires a DroneAeroModel with a valid urdf_path.")
+
+    csv_path = Path(str(drone_model.urdf_path)).parent / "actuators.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Missing actuator catalog: {csv_path}")
+
+    catalog = {}
+    with csv_path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = (row.get("name") or "").strip()
+            kind = (row.get("type") or "").strip().lower()
+            if name and kind:
+                catalog[(name, kind)] = row
+
+    def get_servo_gains(actuator_name: str) -> tuple[float, float]:
+        row = catalog.get((actuator_name, "servo"))
+        if row is None:
+            raise ValueError(f"Servo actuator '{actuator_name}' not found in {csv_path}")
+        kp = (row.get("kp") or "").strip()
+        kv = (row.get("kv") or "").strip()
+        if kp == "" or kv == "":
+            raise ValueError(f"Servo actuator '{actuator_name}' missing kp/kv in {csv_path}")
+        return float(kp), float(kv)
+
+    def pick_actuator(frame: str, axis: str | None = None):
+        info = getattr(drone_model, "actuators", {}).get(frame) if drone_model else None
+        if info is None:
+            return None
+        if axis == "yaw" and getattr(info, "yaw_actuator", None):
+            return info.yaw_actuator
+        if axis == "pitch" and getattr(info, "pitch_actuator", None):
+            return info.pitch_actuator
+        return info.actuator
+
+    act_left_wing_yaw = pick_actuator("aero_frame_left_wing", "yaw")
+    act_left_wing_pitch = pick_actuator("aero_frame_left_wing", "pitch")
+    act_left_wing = pick_actuator("aero_frame_left_wing")
+
+    act_right_wing_yaw = pick_actuator("aero_frame_right_wing", "yaw")
+    act_right_wing_pitch = pick_actuator("aero_frame_right_wing", "pitch")
+    act_right_wing = pick_actuator("aero_frame_right_wing")
+
+    act_elev_pitch = pick_actuator("aero_frame_elevator_left", "pitch") or pick_actuator(
+        "aero_frame_elevator_right", "pitch"
+    )
+    act_elev = pick_actuator("aero_frame_elevator_left") or pick_actuator("aero_frame_elevator_right")
+
+    act_rudd_yaw = pick_actuator("aero_frame_rudder", "yaw")
+    act_rudd = pick_actuator("aero_frame_rudder")
+
+    kp, kv = [], []
+    for name in joint_names:
+        act = None
+        if "sweep_left" in name:
+            act = act_left_wing_yaw
+        elif "sweep_right" in name:
+            act = act_right_wing_yaw
+        elif "twist_left" in name:
+            act = act_left_wing_pitch
+        elif "twist_right" in name:
+            act = act_right_wing_pitch
+        elif "elevator" in name:
+            act = act_elev_pitch
+        elif "rudder" in name:
+            act = act_rudd_yaw
+
+        if not act:
+            raise ValueError(
+                f"Missing actuator assignment for joint '{name}' (check aero_parameters.yaml links actuators)."
+            )
+        kp_i, kv_i = get_servo_gains(act)
+        kp.append(kp_i)
+        kv.append(kv_i)
+
+    return np.array(kp, dtype=np.float32), np.array(kv, dtype=np.float32)
 
 
 class DroneModel:
@@ -244,7 +378,7 @@ class DroneModel:
         self.lift_color = (0.0, 0.6, 1.0, 0.95)   # blue  = lift
 
         # Print every N sim steps (avoid spamming)
-        self._print_every_n_steps: int = 30
+        self._print_every_n_steps: int = 20
         self._step_counter: int = 0
 
     # -------------------------- Attach + setup ---------------------------
@@ -303,6 +437,20 @@ class DroneModel:
         beta = self.aero_solver.beta_dbg.to_torch(device=self._aero_device)[0, :L]
         lift = self.aero_solver.lift_dbg.to_torch(device=self._aero_device)[0, :L]
         drag = self.aero_solver.drag_dbg.to_torch(device=self._aero_device)[0, :L]
+        side_np = self.aero_solver.side_force_dbg.to_torch(device=self._aero_device)[0, :L]
+
+        alpha_tail_raw = None
+        downwash_eps = None
+        cl_wing_tail = None
+        k_eps_tail = None
+        if hasattr(self.aero_solver, "alpha_tail_raw_dbg"):
+            alpha_tail_raw = self.aero_solver.alpha_tail_raw_dbg.to_torch(device=self._aero_device)[0, :L]
+        if hasattr(self.aero_solver, "downwash_eps_dbg"):
+            downwash_eps = self.aero_solver.downwash_eps_dbg.to_torch(device=self._aero_device)[0, :L]
+        if hasattr(self.aero_solver, "cl_wing_for_tail_dbg"):
+            cl_wing_tail = self.aero_solver.cl_wing_for_tail_dbg.to_torch(device=self._aero_device)[0, :L]
+        if hasattr(self.aero_solver, "k_eps_tail_dbg"):
+            k_eps_tail = self.aero_solver.k_eps_tail_dbg.to_torch(device=self._aero_device)[0, :L]
 
         return (
             fb.detach().cpu().numpy(),
@@ -311,6 +459,11 @@ class DroneModel:
             beta.detach().cpu().numpy(),
             lift.detach().cpu().numpy(),
             drag.detach().cpu().numpy(),
+            side_np.detach().cpu().numpy(),
+            None if alpha_tail_raw is None else alpha_tail_raw.detach().cpu().numpy(),
+            None if downwash_eps is None else downwash_eps.detach().cpu().numpy(),
+            None if cl_wing_tail is None else cl_wing_tail.detach().cpu().numpy(),
+            None if k_eps_tail is None else k_eps_tail.detach().cpu().numpy(),
         )
 
     # ---------------------------- Debug step ------------------------------
@@ -328,7 +481,19 @@ class DroneModel:
         if tensors is None or self.scene is None:
             return
 
-        fb_np, cp_np, alpha_np, beta_np, lift_np, drag_np = tensors
+        (
+            fb_np,
+            cp_np,
+            alpha_np,
+            beta_np,
+            lift_np,
+            drag_np,
+            side_np,
+            alpha_tail_raw_np,
+            downwash_eps_np,
+            cl_wing_tail_np,
+            k_eps_tail_np,
+        ) = tensors
 
         # Clear old arrows so we redraw fresh ones every frame
         try:
@@ -392,33 +557,114 @@ class DroneModel:
             cp_world = pos_world + cp_world_offset_t.detach().cpu().numpy()
             f_world = f_world_t.detach().cpu().numpy()
 
-            # ---------- Decompose total force into drag + lift ----------
+            is_prop = "prop" in name.lower()
 
-            # Direction of motion (world frame)
-            v_world = vel_world.astype(np.float32)
-            v_norm = float(np.linalg.norm(v_world))
-            if v_norm < 1e-4:
-                # If velocity is almost zero, pick a default axis
-                vel_dir = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-            else:
-                vel_dir = v_world / v_norm
+            if is_prop:
+                axis_local_t = torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32)
+                axis_world = transform_by_quat(axis_local_t, quat_world_t)[0].detach().cpu().numpy()
+                axis_world /= (np.linalg.norm(axis_world) + 1e-12)
 
-            # Drag is the component of force parallel to -velocity
-            drag_axis = -vel_dir  # unit vector
-            drag_mag = float(np.dot(f_world, drag_axis))
-            f_drag = drag_mag * drag_axis
+                thrust_vec = f_world * self.force_vis_scale
+                axis_vec = axis_world * self.force_vis_scale
 
-            # Lift is the component of force perpendicular to velocity
-            f_lift = f_world - f_drag
+                try:
+                    self.scene.draw_debug_arrow(
+                        pos=cp_world,
+                        vec=axis_vec,
+                        radius=self.arrow_radius * 0.5,
+                        color=(1.0, 1.0, 0.0, 1.0),  # yellow = prop +Z axis
+                    )
+                    self.scene.draw_debug_arrow(
+                        pos=cp_world,
+                        vec=thrust_vec,
+                        radius=self.arrow_radius,
+                        color=(1.0, 0.0, 1.0, 1.0),  # magenta = prop thrust (applied force)
+                    )
+                except Exception:
+                    pass
 
-            # Scale vectors for visualization (longer arrows, more visible)
-            drag_vec = f_drag * self.force_vis_scale
-            lift_vec = f_lift * self.force_vis_scale
+                if do_print and self.aero_solver is not None:
+                    alpha_deg = float(np.degrees(alpha_np[idx]))
+                    beta_deg = float(np.degrees(beta_np[idx]))
+                    thrust_N = float(np.dot(f_world, axis_world))
+                    fmag = float(np.linalg.norm(f_world))
+                    dot = float(thrust_N / (fmag + 1e-12))
+                    try:
+                        kappa = float(self.aero_solver.kappa_prop.to_torch(device=self._aero_device)[0].item())
+                    except Exception:
+                        kappa = float("nan")
+                    torque_Nm = -kappa * thrust_N
+                    print(
+                        f"[PropDebug] link={name} | alpha={alpha_deg:.2f} deg | beta={beta_deg:.2f} deg | "
+                        f"thrust={thrust_N:.3f} N | |F|={fmag:.3f} N | dot(F,axis)={dot:.3f} | "
+                        f"kappa={kappa:.6f} | reaction_torque_z={torque_Nm:.4f} N·m"
+                    )
 
-            # Draw two arrows at the center of pressure:
-            #   - red   = drag   (along -velocity)
-            #   - blue  = lift   (perpendicular to velocity)
+                continue
+
+            # ---------- Visualize per-link wind axis + perpendicular axis ----------
+            # Use the SAME alpha/beta used in the solver for this link
+            a = float(alpha_np[idx])
+            b = float(beta_np[idx])
+
+            ca, sa = np.cos(a), np.sin(a)
+            cb, sb = np.cos(b), np.sin(b)
+
+            # This matches AeroSolver._rot_yz(alpha, beta)
+            R = np.array(
+                [
+                    [cb * ca, -sb, cb * sa],
+                    [sb * ca, cb, sb * sa],
+                    [-sa, 0.0, ca],
+                ],
+                dtype=np.float32,
+            )
+
+            drag_axis_local = R[:, 0]
+            side_axis_local = R[:, 1]
+            lift_axis_local = R[:, 2]
+
+            drag_axis_local /= (np.linalg.norm(drag_axis_local) + 1e-12)
+            side_axis_local /= (np.linalg.norm(side_axis_local) + 1e-12)
+            lift_axis_local /= (np.linalg.norm(lift_axis_local) + 1e-12)
+
+            # Rotate axes to world frame for drawing
+            drag_axis_world = transform_by_quat(torch.from_numpy(drag_axis_local[None, :]), quat_world_t)[
+                0
+            ].detach().cpu().numpy()
+            side_axis_world = transform_by_quat(torch.from_numpy(side_axis_local[None, :]), quat_world_t)[
+                0
+            ].detach().cpu().numpy()
+            lift_axis_world = transform_by_quat(torch.from_numpy(lift_axis_local[None, :]), quat_world_t)[
+                0
+            ].detach().cpu().numpy()
+
+            # ---- Arrow 1: "velocity opposite to link" axis (relative wind axis)
+            # Here we draw the axis direction, scaled for visibility
+            wind_axis_vec = drag_axis_world * self.force_vis_scale  # axis-only arrow
+
+            # ---- Arrow 2: perpendicular axis (lift axis)
+            perp_axis_vec = lift_axis_world * self.force_vis_scale  # axis-only arrow
+
+            # Decompose the ACTUAL applied force along those axes.
+            # This stays consistent even if the solver changes internal debug scalars.
+            drag_comp = float(np.dot(f_local, drag_axis_local))
+            side_comp = float(np.dot(f_local, side_axis_local))
+            lift_comp = float(np.dot(f_local, lift_axis_local))
+
+            drag_vec = drag_axis_world * (drag_comp * self.force_vis_scale)
+            side_vec = side_axis_world * (side_comp * self.force_vis_scale)
+            lift_vec = lift_axis_world * (lift_comp * self.force_vis_scale)
+
             try:
+                self.scene.draw_debug_arrow(
+                    pos=cp_world,
+                    vec=side_vec,
+                    radius=self.arrow_radius,
+                    color=(0.0, 0.8, 0.0, 1.0),  # green = side force
+                )
+
+                # Forces (thicker) — these should match what the solver applies
                 self.scene.draw_debug_arrow(
                     pos=cp_world,
                     vec=drag_vec,
@@ -432,35 +678,94 @@ class DroneModel:
                     color=self.lift_color,
                 )
             except Exception:
-                # Debug drawing is best-effort only
                 pass
+
 
             # Optional console logging (angles, forces, velocities)
             if do_print:
-                # Convert world quaternion to roll/pitch/yaw (rad → deg)
+                # Convert world quaternion to roll/pitch/yaw (deg).
+                # `quat_to_xyz(..., rpy=True)` returns intrinsic ZYX (roll-pitch-yaw style) angles.
                 quat_world_t_single = torch.from_numpy(quat_world[None, :])
                 rpy = (
-                    quat_to_xyz(quat_world_t_single)[0]
+                    quat_to_xyz(quat_world_t_single, rpy=True, degrees=True)[0]
                     .detach()
                     .cpu()
                     .numpy()
                 )
                 roll, pitch, yaw = rpy
 
+                if name == "aero_frame_fuselage":
+                    axes_local = torch.tensor(
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        dtype=torch.float32,
+                    )
+                    axes_world = (
+                        transform_by_quat(axes_local, quat_world_t)
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+                    x_w, y_w, z_w = axes_world
+                    print(f"[Axes] link={name} | x_w={x_w} | y_w={y_w} | z_w={z_w}")
+
                 alpha_deg = float(np.degrees(alpha_np[idx]))
                 beta_deg = float(np.degrees(beta_np[idx]))
                 lift_val = float(lift_np[idx])
                 drag_val = float(drag_np[idx])
+                side_val = float(side_np[idx])
+
+                extra = ""
+                if (
+                    "elevator" in name
+                    and alpha_tail_raw_np is not None
+                    and downwash_eps_np is not None
+                ):
+                    alpha_raw_deg = float(np.degrees(alpha_tail_raw_np[idx]))
+                    eps_deg = float(np.degrees(downwash_eps_np[idx]))
+                    cl_w = float(cl_wing_tail_np[idx]) if cl_wing_tail_np is not None else float("nan")
+                    k_eps = float(k_eps_tail_np[idx]) if k_eps_tail_np is not None else float("nan")
+                    extra = f" | alpha_raw={alpha_raw_deg:.2f} deg | eps_dw={eps_deg:.2f} deg | CL_w={cl_w:.3f} | k_eps={k_eps:.3f}"
 
                 print(
                     f"[DroneModel] link={name} | "
                     f"pos={pos_world} | vel={vel_world} | ang_vel={ang_world} | "
-                    f"rpy(deg)=({np.degrees(roll):.1f}, "
-                    f"{np.degrees(pitch):.1f}, {np.degrees(yaw):.1f}) | "
+                    f"rpy(deg)=({roll:.1f}, {pitch:.1f}, {yaw:.1f}) | "
                     f"alpha={alpha_deg:.2f} deg | beta={beta_deg:.2f} deg | "
-                    f"Lift={lift_val:.3f} | Drag={drag_val:.3f}"
+                    f"Lift={lift_val:.3f} | Drag={drag_val:.3f} | Side={side_val:.3f}"
+                    f"{extra}"
                 )
 
+    def print_joint_positions(self, drone, joint_names: List[str]):
+        do_print = (self._step_counter % self._print_every_n_steps) == 0
+        if not do_print:
+            return
+
+        print("\n--- Joint positions (DOFs) ---")
+        for name in joint_names:
+            j = drone.get_joint(name)
+
+            # usa dofs_idx_local (nuovo) se c'è, altrimenti fallback
+            idx = getattr(j, "dofs_idx_local", None)
+            if idx is None:
+                idx = j.dof_idx_local  # deprecated ma ok per ora
+            # idx può essere int o lista/np array (1 DOF -> prendi il primo)
+            if isinstance(idx, (list, tuple, np.ndarray)):
+                idx = int(idx[0])
+
+            # LEGGI POSIZIONE DOF (non qpos!)
+            q = drone.scene.sim.rigid_solver.get_dofs_position()[0]  # env 0
+            pos = float(q[idx])
+
+            print(f"{name:30s} | dofs_idx={idx:2d} | q={pos:+.4f}")
+
+        joint_pos = drone.get_dofs_position()
+        print("Full DOF positions array:", joint_pos[0], "\n")
+
+        for ln in ["fuselage", "left_wing","right_wing","elevator_hinge","rudder"]:
+            L = drone.get_link(ln)
+            p = L.get_pos(envs_idx=0)
+            q = L.get_quat(envs_idx=0)
+            print(ln, p, q)
 
 # ------------------------------- Sim thread ---------------------------------
 
@@ -485,7 +790,8 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
 
         # 1) Control surfaces (servo joints)
         controller.apply_joint_commands(dt)
-
+        if model._step_counter % model._print_every_n_steps == 0:
+            print("pressed_keys:", controller.pressed_keys)
         # 2) Thrust via AeroSolver (ONLY path to apply thrust)
         controller.apply_thrust(aero_solver, dt)
 
@@ -494,6 +800,9 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
 
         # 4) Debug visualization of aero forces (lift + drag arrows)
         model.debug_step()
+        model.print_joint_positions(drone, controller.servo_joint_names)
+
+        #time.sleep(0.02)  # yield to other threads
 
         # 5) Limit loop rate to viewer max FPS
         v = scene.viewer
@@ -505,8 +814,6 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
 
 
 # ---------------------------------- Main ------------------------------------
-
-
 def main():
     # Initialize Genesis (GPU backend if available)
     gs.init(backend=gs.gpu)
@@ -516,6 +823,11 @@ def main():
     # Scene
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(dt=0.01, gravity=(0.0, 0.0, -9.81)),
+        rigid_options=gs.options.RigidOptions(
+            enable_collision=True,
+            enable_self_collision=False,
+            enable_adjacent_collision=False,
+        ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(-2.0, -2.0, 2.0),
             camera_lookat=(0.0, 0.0, 0.3),
@@ -531,10 +843,12 @@ def main():
 
     # URDF path (your parametrized winged drone)
     urdf_path = (
-        "genesis/assets/urdf/mydrone/"
-        "[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3].urdf"
+        "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 0.25, 2, 2.5, 2, -3].urdf"
     )
 
+    NACA = "2412"  # used in the URDF
+
+    drone_model = DroneAeroModel(urdf_path)
     # Drone as generic URDF (RigidEntity)
     drone = scene.add_entity(
         morph=gs.morphs.URDF(
@@ -545,10 +859,8 @@ def main():
             merge_fixed_links=True,
             links_to_keep=[
                 "aero_frame_fuselage",
-                "aero_frame_left_wing_prop",
-                "aero_frame_left_wing_free",
-                "aero_frame_right_wing_prop",
-                "aero_frame_right_wing_free",
+                "aero_frame_left_wing",
+                "aero_frame_right_wing",
                 "aero_frame_elevator_left",
                 "aero_frame_elevator_right",
                 "aero_frame_rudder",
@@ -572,12 +884,34 @@ def main():
 
     # Map joints → DOF indices (local)
     servo_joint_names = controller.servo_joint_names
-    servo_dof_indices = [drone.get_joint(name).dof_idx_local for name in servo_joint_names]
+    servo_dof_indices = []
+    for name in servo_joint_names:
+        j = drone.get_joint(name)
+        idx = getattr(j, "dofs_idx_local", None)
+        if idx is None:
+            idx = j.dof_idx_local
+        if isinstance(idx, (list, tuple, np.ndarray)):
+            idx = int(idx[0])
+        servo_dof_indices.append(idx)
+
     controller.attach_drone(drone, servo_dof_indices)
 
-    # PD gains (tune later)
-    kp = np.array([8.0] * len(servo_dof_indices), dtype=np.float32)
-    kv = np.array([2.0] * len(servo_dof_indices), dtype=np.float32)
+    # Servo joint position limits come from the URDF (no hardcoded numbers).
+    controller.set_servo_limits(_load_joint_position_limits_from_urdf(urdf_path, servo_joint_names))
+    # DEBUG: verify mapping between servo_cmd indices and actual DOF indices
+    print("\n--- Command mapping (servo_cmd index -> joint -> dofs_idx) ---")
+    for i, name in enumerate(controller.servo_joint_names):
+        j = drone.get_joint(name)
+        idx = getattr(j, "dofs_idx_local", None)
+        if idx is None:
+            idx = j.dof_idx_local
+        if isinstance(idx, (list, tuple, np.ndarray)):
+            idx = int(idx[0])
+        print(f"cmd[{i}] -> {name:30s} -> dofs_idx={idx}")
+    print("servo_dof_indices array:", controller.servo_dof_indices, "\n")
+
+    # PD gains from actuator catalog
+    kp, kv = _servo_gains_from_catalog(drone_model, servo_joint_names)
     drone.set_dofs_kp(kp=kp, dofs_idx_local=servo_dof_indices)
     drone.set_dofs_kv(kv=kv, dofs_idx_local=servo_dof_indices)
 
@@ -608,7 +942,10 @@ def main():
     scene.sim.rigid_solver.set_dofs_velocity(initial_velocity)
 
     # Register drone in AeroSolver AFTER build (batch size known)
-    scene.sim.aero_solver.add_target(drone, urdf_file=urdf_path)
+    scene.sim.aero_solver.add_target(drone, drone_model=drone_model)
+    # Per-run NACA override (does not touch aero_parameters.yaml on disk).
+    if NACA and hasattr(scene.sim.aero_solver, "apply_naca_wing_override"):
+        scene.sim.aero_solver.apply_naca_wing_override(NACA)
 
     # Create debug model and attach to scene + drone
     model = DroneModel()
@@ -652,6 +989,11 @@ def main():
         except NotImplementedError:
             pass
         sim_thread.join(timeout=2.0)
+        try:
+            log_file.close()
+        except Exception:
+            pass
+
 
 
 if __name__ == "__main__":

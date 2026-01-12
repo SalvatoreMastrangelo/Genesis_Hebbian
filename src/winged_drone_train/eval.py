@@ -564,14 +564,15 @@ if __name__ == "__main__":
     )
     #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
     #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
-    urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.5, 2, 0.5, 0.35, 0.35, 0.15, 1, 0.1, 1, 0, 0.25, 3, 3, 2, -2].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 0.25, 2, 2.5, 2, -3].urdf"
+
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax
 
     # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
-    obs_cfg_eval["add_genome_obs"] = True
+    obs_cfg_eval["add_genome_obs"] = False
 
     # Print configs for sanity check
     print("\nEnvironment Configuration (eval):")
