@@ -270,38 +270,6 @@ class WingedDroneEnv:
 
         self.drone_name = self.env_cfg.get("drone", "morphing_drone")
 
-        urdf_args = {
-            "file": self.urdf_file,
-            "pos": base_init_pos.cpu().numpy(),
-            "quat": base_init_quat.cpu().numpy(),
-            "collision": False,
-            "merge_fixed_links": True,
-        }
-
-        if "links_to_keep" in self.env_cfg:
-            urdf_args["links_to_keep"] = self.env_cfg["links_to_keep"]
-        else:
-            # Keep aerodynamic reference frames and main structural links
-            default_links = [
-                "aero_frame_fuselage",
-                "aero_frame_left_wing",
-                "aero_frame_right_wing",
-                "aero_frame_elevator_left",
-                "aero_frame_elevator_right",
-                "aero_frame_rudder",
-                "elevator_left",
-                "elevator_right",
-                "rudder",
-                "prop_frame_fuselage_0",
-                "fuselage",
-                "left_wing",
-                "right_wing",
-            ]
-            links = list(dict.fromkeys(list(self.drone_model.frames) + default_links))
-            urdf_args["links_to_keep"] = links
-
-        self.drone = self.scene.add_entity(gs.morphs.URDF(**urdf_args))
-
         # Servo joints
         servo_joint_names = self.env_cfg.get("servo_joint_names", None)
         if servo_joint_names is None:
@@ -314,8 +282,24 @@ class WingedDroneEnv:
                 "rudder_yaw_joint",
             ]
         self.servo_joint_names = servo_joint_names
+
+        urdf_args = {
+            "file": self.urdf_file,
+            "pos": base_init_pos.cpu().numpy(),
+            "quat": base_init_quat.cpu().numpy(),
+            "collision": False,
+            "merge_fixed_links": True,
+        }
+
+        if "links_to_keep" in self.env_cfg:
+            urdf_args["links_to_keep"] = self.env_cfg["links_to_keep"]
+        else:
+            urdf_args["links_to_keep"] = self.drone_model.required_links(self.servo_joint_names)
+
+        self.drone = self.scene.add_entity(gs.morphs.URDF(**urdf_args))
+
         self.servo_dof_indices = []
-        for name in servo_joint_names:
+        for name in self.servo_joint_names:
             joint = self.drone.get_joint(name)
             idx = getattr(joint, "dofs_idx_local", None)
             if idx is None:
@@ -422,6 +406,11 @@ class WingedDroneEnv:
         # Build scene and get solvers                                       #
         # ------------------------------------------------------------------ #
         self.scene.build(n_envs=self.num_envs)
+        self.drone_model.validate_entity(
+            self.drone,
+            self.servo_joint_names,
+            self.servo_dof_indices,
+        )
         self.rigid_solver = self.scene.sim.rigid_solver
         self.aero_solver = self.scene.sim.aero_solver
         self.aero_solver.add_target(self.drone, drone_model=self.drone_model)

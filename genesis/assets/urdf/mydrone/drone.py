@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 import math
 import re
-from typing import Dict, Iterable, List, Tuple, Optional
+from typing import Dict, Iterable, List, Tuple, Optional, Sequence
 import csv
 ############################################################
 # ENUM: aerodynamic surface type
@@ -677,6 +677,128 @@ class DroneAeroModel:
     def link_indices(self, entity) -> List[int]:
         """Map aerodynamic frame names to link indices on the given entity."""
         return [entity.get_link(name).idx for name in self.frames]
+
+    def required_links(self, servo_joint_names: Sequence[str] | None = None) -> List[str]:
+        """
+        Compute a minimal-but-safe set of links to keep for the URDF loader.
+
+        Includes:
+          - all aerodynamic frames (from aero_parameters.yaml),
+          - the full parent chains for those frames,
+          - parent/child links for the requested servo joints and their chains,
+          - a fallback 'fuselage' link.
+        """
+        frames = list(self.frames)
+        extra_links: List[str] = []
+
+        root = self._urdf_root or ET.parse(self._model.urdf_path).getroot()
+        child_to_parent: Dict[str, str] = {}
+        joint_map: Dict[str, Tuple[str, str]] = {}
+        for joint in root.findall("joint"):
+            parent = joint.find("parent")
+            child = joint.find("child")
+            if parent is None or child is None:
+                continue
+            parent_link = parent.get("link")
+            child_link = child.get("link")
+            if not parent_link or not child_link:
+                continue
+            child_to_parent[child_link] = parent_link
+            name = joint.get("name")
+            if name:
+                joint_map[name] = (parent_link, child_link)
+
+        chain_seen: set[str] = set()
+
+        def add_chain(link: str) -> None:
+            while link and link not in chain_seen:
+                chain_seen.add(link)
+                extra_links.append(link)
+                link = child_to_parent.get(link, "")
+
+        for frame in frames:
+            add_chain(frame)
+        for jname in servo_joint_names or ():
+            pair = joint_map.get(jname)
+            if pair:
+                add_chain(pair[0])
+                add_chain(pair[1])
+
+        return list(dict.fromkeys(frames + extra_links + ["fuselage"]))
+
+    def validate_entity(
+        self,
+        entity,
+        servo_joint_names: Sequence[str] | None = None,
+        servo_dof_indices: Sequence[int] | None = None,
+    ) -> None:
+        """
+        Validate consistency between link/joint references and indices.
+        """
+        missing_links: List[str] = []
+        bad_link_indices: List[Tuple[str, int]] = []
+        n_links = getattr(entity, "n_links", None)
+        for name in self.frames:
+            try:
+                link = entity.get_link(name)
+            except Exception:
+                missing_links.append(name)
+                continue
+            if n_links is not None:
+                idx_local = link.idx_local
+                if idx_local < 0 or idx_local >= n_links:
+                    bad_link_indices.append((name, int(idx_local)))
+
+        if missing_links:
+            raise ValueError(f"Missing links for aero frames: {missing_links}")
+        if bad_link_indices:
+            raise ValueError(f"Out-of-range link indices: {bad_link_indices}")
+
+        if not servo_joint_names:
+            return
+
+        missing_joints: List[str] = []
+        empty_dof_joints: List[str] = []
+        dof_indices: List[int] = []
+        mismatched_dof_indices: List[Tuple[str, Optional[int], int]] = []
+        n_dofs = getattr(entity, "n_dofs", None)
+
+        for i, name in enumerate(servo_joint_names):
+            try:
+                joint = entity.get_joint(name)
+            except Exception:
+                missing_joints.append(name)
+                continue
+
+            idxs = getattr(joint, "dofs_idx_local", None)
+            if not idxs:
+                empty_dof_joints.append(name)
+                continue
+            if isinstance(idxs, (list, tuple)):
+                idx_list = [int(v) for v in idxs]
+            else:
+                idx_list = [int(idxs)]
+            dof_indices.extend(idx_list)
+
+            if servo_dof_indices is not None:
+                expected = idx_list[0]
+                actual = servo_dof_indices[i] if i < len(servo_dof_indices) else None
+                if actual is None or int(actual) != expected:
+                    mismatched_dof_indices.append((name, None if actual is None else int(actual), expected))
+
+        if missing_joints:
+            raise ValueError(f"Missing servo joints: {missing_joints}")
+        if empty_dof_joints:
+            raise ValueError(f"Servo joints without DOF indices: {empty_dof_joints}")
+
+        if n_dofs is not None:
+            bad_dof = [idx for idx in dof_indices if idx < 0 or idx >= n_dofs]
+            if bad_dof:
+                raise ValueError(f"Out-of-range DOF indices: {bad_dof}")
+        if len(set(dof_indices)) != len(dof_indices):
+            raise ValueError(f"Duplicate DOF indices: {dof_indices}")
+        if mismatched_dof_indices:
+            raise ValueError(f"Servo DOF index mismatch: {mismatched_dof_indices}")
 
     # ------------------------------------------------------------------ #
     # Internal utilities                                                 #

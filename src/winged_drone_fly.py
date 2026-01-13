@@ -819,6 +819,7 @@ def main():
     gs.init(backend=gs.gpu)
 
     controller = DroneController()
+    servo_joint_names = controller.servo_joint_names
 
     # Scene
     scene = gs.Scene(
@@ -849,6 +850,7 @@ def main():
     NACA = "2412"  # used in the URDF
 
     drone_model = DroneAeroModel(urdf_path)
+    links_to_keep = drone_model.required_links(servo_joint_names)
     # Drone as generic URDF (RigidEntity)
     drone = scene.add_entity(
         morph=gs.morphs.URDF(
@@ -857,21 +859,7 @@ def main():
             quat=euler_to_quat(controller.init_euler),
             collision=True,
             merge_fixed_links=True,
-            links_to_keep=[
-                "aero_frame_fuselage",
-                "aero_frame_left_wing",
-                "aero_frame_right_wing",
-                "aero_frame_elevator_left",
-                "aero_frame_elevator_right",
-                "aero_frame_rudder",
-                "elevator_left",
-                "elevator_right",
-                "rudder",
-                "prop_frame_fuselage_0",
-                "fuselage",
-                "left_wing",
-                "right_wing",
-            ],
+            links_to_keep=links_to_keep,
         )
     )
 
@@ -883,7 +871,6 @@ def main():
     scene.build(n_envs=BATCH_SIZE, env_spacing=(4.0, 4.0))
 
     # Map joints → DOF indices (local)
-    servo_joint_names = controller.servo_joint_names
     servo_dof_indices = []
     for name in servo_joint_names:
         j = drone.get_joint(name)
@@ -894,6 +881,7 @@ def main():
             idx = int(idx[0])
         servo_dof_indices.append(idx)
 
+    drone_model.validate_entity(drone, servo_joint_names, servo_dof_indices)
     controller.attach_drone(drone, servo_dof_indices)
 
     # Servo joint position limits come from the URDF (no hardcoded numbers).
