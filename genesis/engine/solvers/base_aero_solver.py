@@ -184,6 +184,28 @@ class BaseAeroSolver(Solver):
     # ---------------------------------------------------------------------
     # Initialization utilities
     # ---------------------------------------------------------------------
+    def _alloc_common_fields(self, B: int, L: int) -> None:
+        """
+        Allocate Taichi and Torch buffers that are shared across aero solvers.
+        """
+        self.force_b = ti.Vector.field(3, ti.f32, shape=(B, self.n_links_))
+        self.cp_b = ti.Vector.field(3, ti.f32, shape=(B, self.n_links_))
+        self._thr_raw = ti.field(ti.f32, shape=(B,))
+        self._thr_flt = ti.field(ti.f32, shape=(B,))
+        # Per-env sign for prop thrust direction (+1 or -1), set after binding a target.
+        self.prop_thrust_sign = ti.field(ti.f32, shape=(B,))
+        for b in range(B):
+            self.prop_thrust_sign[b] = 1.0
+        self.B = B  # alias used inside kernels
+
+        # Aerodynamic force center and global CoM per env
+        self._aero_CF_world_b = ti.Vector.field(3, ti.f32, shape=(B,))
+        self._CoM_world_b = ti.Vector.field(3, ti.f32, shape=(B,))
+
+        # Torch buffers for zero-copy fetch (filled by _copy_force_cp)
+        self._force_buf = torch.empty((B, L, 3), device=self._aero_device, dtype=torch.float32)
+        self._cp_buf = torch.empty_like(self._force_buf)
+
     def _get_params_from_csv(self, csv_file: str):
         """
         Load aerodynamic parameters from a CSV file.
@@ -474,6 +496,22 @@ class BaseAeroSolver(Solver):
     # ------------------------------------------------------------------
     # Parameter randomization (Python side)
     # ------------------------------------------------------------------
+    def _iter_randomizable_params(self):
+        names = getattr(self, "_randomizable_param_names", None)
+        if not names:
+            names = self._aero_base.keys()
+        seen = set()
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            if name not in self._aero_base:
+                continue
+            fld = self._param.get(name)
+            if fld is None:
+                continue
+            yield name, self._aero_base[name], fld
+
     def randomize_aero_params(self, envs_idx, sigma=None):
         """
         Randomize aerodynamic parameters for a subset of environments.
@@ -487,15 +525,14 @@ class BaseAeroSolver(Solver):
             `self.noise_sigma_mag` as default.
         """
         if sigma is None:
-            sigma = self.noise_sigma_param
+            sigma = getattr(self, "noise_sigma_param", 0.0)
         if len(envs_idx) == 0:
             return
 
         envs_np = envs_idx.cpu().numpy()
 
         # Loop over aerodynamic constants
-        for k, base_val in self._aero_base.items():
-            fld = self._param[k]  # ScalarField (shape = (B,))
+        for k, base_val, fld in self._iter_randomizable_params():
             arr = fld.to_numpy()  # host copy
             arr[envs_np] = base_val  # reset to nominal value
 

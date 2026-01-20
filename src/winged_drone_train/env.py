@@ -4,13 +4,14 @@ from __future__ import annotations
 import csv
 import math
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Tuple, Sequence, Optional, List
 
 import torch
 import genesis as gs
 from genesis.utils.geom import quat_to_xyz, transform_by_quat, inv_quat, xyz_to_quat
-from genesis.assets.urdf.mydrone.drone import DroneAeroModel
+from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
 
 from morph_evolution.chromosome_drone import Chromosome_Drone
 from winged_drone_train.utils import depth as depth_utils
@@ -18,19 +19,93 @@ from winged_drone_train.utils import forest as forest_utils
 from winged_drone_train.utils import obs as obs_utils
 from winged_drone_train.utils import power as power_utils
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_MYDRONE_URDF = PROJECT_ROOT / "genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
+DEFAULT_LISPARROW_URDF = PROJECT_ROOT / "genesis/assets/urdf/lisparrow/lisparrow.urdf"
+
+
+def _classify_joint_role(name: str) -> Optional[str]:
+    lname = name.lower()
+    if "sweep" in lname:
+        if "left" in lname:
+            return "sweep_left"
+        if "right" in lname:
+            return "sweep_right"
+        return "sweep"
+    if "twist" in lname:
+        if "left" in lname:
+            return "twist_left"
+        if "right" in lname:
+            return "twist_right"
+        return "twist"
+    if "elevator" in lname:
+        return "elevator"
+    if "rudder" in lname:
+        return "rudder"
+    return None
+
+
+def _resolve_servo_joint_names(
+    urdf_path: str,
+    preferred_names: Optional[Sequence[str]] = None,
+) -> List[str]:
+    root = ET.parse(str(urdf_path)).getroot()
+    joint_nodes = root.findall(".//joint")
+    joint_names = [j.get("name") for j in joint_nodes if j.get("name")]
+    joint_set = set(joint_names)
+
+    if preferred_names is not None:
+        missing = [name for name in preferred_names if name not in joint_set]
+        if missing:
+            raise ValueError(f"Missing servo joints in URDF: {missing}")
+        return list(preferred_names)
+
+    role_to_name: Dict[str, str] = {}
+    for joint in joint_nodes:
+        jtype = (joint.get("type") or "").strip().lower()
+        if jtype not in ("revolute", "continuous"):
+            continue
+        name = joint.get("name")
+        if not name:
+            continue
+        role = _classify_joint_role(name)
+        if role and role not in role_to_name:
+            role_to_name[role] = name
+
+    ordered_roles = [
+        "sweep_left",
+        "sweep_right",
+        "twist_left",
+        "twist_right",
+        "elevator",
+        "rudder",
+        "sweep",
+        "twist",
+    ]
+    return [role_to_name[role] for role in ordered_roles if role in role_to_name]
+
 
 def _servo_gains_from_catalog(
     drone_model: DroneAeroModel,
     joint_names: Sequence[str],
     device: torch.device,
+    fallback_gains: Optional[Tuple[float, float]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Fetch per-joint kp/kv gains using actuator assignments from DroneAeroModel."""
+    if not joint_names:
+        empty = torch.zeros((0,), device=device, dtype=torch.float32)
+        return empty, empty
     if drone_model is None or not getattr(drone_model, "urdf_path", None):
         raise ValueError("servo gain loading requires a DroneAeroModel with a valid urdf_path.")
 
     csv_path = Path(str(drone_model.urdf_path)).parent / "actuators.csv"
     if not csv_path.exists():
-        raise FileNotFoundError(f"Missing actuator catalog: {csv_path}")
+        if fallback_gains is None:
+            raise FileNotFoundError(f"Missing actuator catalog: {csv_path}")
+        kp_f, kv_f = fallback_gains
+        kp = torch.full((len(joint_names),), float(kp_f), device=device, dtype=torch.float32)
+        kv = torch.full((len(joint_names),), float(kv_f), device=device, dtype=torch.float32)
+        return kp, kv
 
     catalog: Dict[Tuple[str, str], Dict[str, str]] = {}
     with csv_path.open("r", newline="") as f:
@@ -51,49 +126,76 @@ def _servo_gains_from_catalog(
             raise ValueError(f"Servo actuator '{actuator_name}' missing kp/kv in {csv_path}")
         return float(kp), float(kv)
 
-    def pick_actuator(frame: str, axis: Optional[str] = None) -> Optional[str]:
-        info = getattr(drone_model, "actuators", {}).get(frame) if drone_model else None
-        if info is None:
-            return None
-        if axis == "yaw" and getattr(info, "yaw_actuator", None):
-            return info.yaw_actuator
-        if axis == "pitch" and getattr(info, "pitch_actuator", None):
-            return info.pitch_actuator
-        return info.actuator
+    def side_from_name(name: str) -> Optional[str]:
+        lname = name.lower()
+        if "left" in lname:
+            return "left"
+        if "right" in lname:
+            return "right"
+        return None
 
-    act_left_wing_yaw = pick_actuator("aero_frame_left_wing", "yaw")
-    act_left_wing_pitch = pick_actuator("aero_frame_left_wing", "pitch")
-    act_right_wing_yaw = pick_actuator("aero_frame_right_wing", "yaw")
-    act_right_wing_pitch = pick_actuator("aero_frame_right_wing", "pitch")
-    act_elev_pitch = pick_actuator("aero_frame_elevator_left", "pitch") or pick_actuator(
-        "aero_frame_elevator_right", "pitch"
-    )
-    act_rudd_yaw = pick_actuator("aero_frame_rudder", "yaw")
+    frame_kind: Dict[str, SurfaceKind] = {}
+    if hasattr(drone_model, "frames") and hasattr(drone_model, "surface_kinds"):
+        for frame, kind in zip(drone_model.frames, drone_model.surface_kinds):
+            frame_kind[frame] = kind
+
+    act_by_kind_side = {}
+    for frame, info in getattr(drone_model, "actuators", {}).items():
+        kind = frame_kind.get(frame)
+        if kind is None:
+            continue
+        side = side_from_name(frame)
+        key = (kind, side)
+        if key not in act_by_kind_side:
+            act_by_kind_side[key] = info
+
+    def pick_info(kind: SurfaceKind, side: Optional[str]):
+        info = act_by_kind_side.get((kind, side))
+        if info is not None:
+            return info
+        info = act_by_kind_side.get((kind, None))
+        if info is not None:
+            return info
+        for key in ((kind, "left"), (kind, "right")):
+            info = act_by_kind_side.get(key)
+            if info is not None:
+                return info
+        return None
 
     kp_list: List[float] = []
     kv_list: List[float] = []
     for name in joint_names:
+        lname = name.lower()
+        side = side_from_name(name)
         act = None
-        if "sweep_left" in name:
-            act = act_left_wing_yaw
-        elif "sweep_right" in name:
-            act = act_right_wing_yaw
-        elif "twist_left" in name:
-            act = act_left_wing_pitch
-        elif "twist_right" in name:
-            act = act_right_wing_pitch
-        elif "elevator" in name:
-            act = act_elev_pitch
-        elif "rudder" in name:
-            act = act_rudd_yaw
+        info = None
+        if "sweep" in lname:
+            info = pick_info(SurfaceKind.WING, side)
+            if info is not None:
+                act = info.yaw_actuator or info.actuator
+        elif "twist" in lname:
+            info = pick_info(SurfaceKind.WING, side)
+            if info is not None:
+                act = info.pitch_actuator or info.actuator
+        elif "elevator" in lname:
+            info = pick_info(SurfaceKind.ELEVATOR, side)
+            if info is not None:
+                act = info.pitch_actuator or info.actuator
+        elif "rudder" in lname:
+            info = pick_info(SurfaceKind.RUDDER, side)
+            if info is not None:
+                act = info.yaw_actuator or info.actuator
 
         if not act:
-            raise ValueError(
-                f"Missing actuator assignment for joint '{name}' (check aero_parameters.yaml links actuators)."
-            )
-        kp_i, kv_i = get_servo_gains(act)
-        kp_list.append(kp_i)
-        kv_list.append(kv_i)
+            if fallback_gains is None:
+                raise ValueError(
+                    f"Missing actuator assignment for joint '{name}' (check aero solver actuator config)."
+                )
+            kp_i, kv_i = fallback_gains
+        else:
+            kp_i, kv_i = get_servo_gains(act)
+        kp_list.append(float(kp_i))
+        kv_list.append(float(kv_i))
 
     kp = torch.tensor(kp_list, device=device, dtype=torch.float32)
     kv = torch.tensor(kv_list, device=device, dtype=torch.float32)
@@ -127,6 +229,34 @@ class WingedDroneEnv:
     # Genome parameter ranges for normalization (if present)
     GENOME_MIN, GENOME_MAX = Chromosome_Drone.genome_min_max()
 
+    @staticmethod
+    def _resolve_aero_config(solver_kind: str) -> dict:
+        from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
+        from genesis.engine.solvers.drones.lisparrow import LisparrowAeroParameters
+        name = (solver_kind or "").strip().lower()
+        if name in ("lisparrow", "cpp", "morphing"):
+            return LisparrowAeroParameters.as_dict()
+        return SimpleDroneAeroParameters.as_dict()
+
+    def _apply_dynamics_noise(self, env_ids: torch.Tensor) -> None:
+        noise_cfg = self._aero_config.get("noise", {}) or {}
+        sigma_mass = float(noise_cfg.get("mass_shift", 0.0))
+        sigma_com = float(noise_cfg.get("com_shift", 0.0))
+
+        n = env_ids.numel()
+        n_links = int(self.drone.n_links)
+
+        mass_shift = torch.zeros((n, n_links), device=self.device, dtype=torch.float32)
+        if sigma_mass > 0.0:
+            mass_shift = torch.randn((n, n_links), device=self.device) * (sigma_mass * self._link_masses.view(1, -1))
+        self.drone.set_mass_shift(mass_shift, envs_idx=env_ids)
+
+        com_shift = torch.zeros((n, n_links, 3), device=self.device, dtype=torch.float32)
+        if sigma_com > 0.0:
+            com_shift = torch.randn((n, n_links, 3), device=self.device) * sigma_com
+        self.drone.set_COM_shift(com_shift, envs_idx=env_ids)
+
+
     def __init__(
         self,
         num_envs: int,
@@ -139,6 +269,7 @@ class WingedDroneEnv:
         eval: bool = False,
         device: str = "cuda",
     ) -> None:
+        self.aero_solver_kind = str(env_cfg.get("aero_solver_kind", "simple")).strip().lower()
         # ------------------------------------------------------------------ #
         # Basic configuration                                               #
         # ------------------------------------------------------------------ #
@@ -200,9 +331,20 @@ class WingedDroneEnv:
             self.set_angle_limit(self.env_cfg.get("default_angle_limit_deg", 90.0))
 
         if urdf_file is None:
-            urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 0.25, 2, 2.5, 2, -3].urdf"
+            env_urdf = self.env_cfg.get("urdf_file")
+            if env_urdf:
+                urdf_file = env_urdf
+            else:
+                drone_key = str(self.env_cfg.get("drone", "")).strip().lower()
+                if "lisparrow" in drone_key:
+                    urdf_file = str(DEFAULT_LISPARROW_URDF)
+                else:
+                    urdf_file = str(DEFAULT_MYDRONE_URDF)
         self.urdf_file = str(urdf_file)
-        self.drone_model = DroneAeroModel(self.urdf_file)
+        if not Path(self.urdf_file).exists():
+            raise FileNotFoundError(f"URDF not found: {self.urdf_file}")
+        self._aero_config = self._resolve_aero_config(self.aero_solver_kind)
+        self.drone_model = DroneAeroModel(self.urdf_file, config_override=self._aero_config)
 
         # ------------------------------------------------------------------ #
         # Genesis scene                                                      #
@@ -227,7 +369,7 @@ class WingedDroneEnv:
             ),
             rigid_options=gs.options.RigidOptions(
                 dt=self.dt,
-                constraint_solver=gs.constraint_solver.Newton,
+                constraint_solver=gs.constraint_solver.CG,
                 enable_collision=False,
                 enable_joint_limit=True,
             ),
@@ -272,16 +414,7 @@ class WingedDroneEnv:
 
         # Servo joints
         servo_joint_names = self.env_cfg.get("servo_joint_names", None)
-        if servo_joint_names is None:
-            servo_joint_names = [
-                "joint_0_sweep_left_wing",
-                "joint_0_sweep_right_wing",
-                "joint_1_twist_left_wing",
-                "joint_1_twist_right_wing",
-                "elevator_pitch_joint",
-                "rudder_yaw_joint",
-            ]
-        self.servo_joint_names = servo_joint_names
+        self.servo_joint_names = _resolve_servo_joint_names(self.urdf_file, servo_joint_names)
 
         urdf_args = {
             "file": self.urdf_file,
@@ -297,24 +430,6 @@ class WingedDroneEnv:
             urdf_args["links_to_keep"] = self.drone_model.required_links(self.servo_joint_names)
 
         self.drone = self.scene.add_entity(gs.morphs.URDF(**urdf_args))
-
-        self.servo_dof_indices = []
-        for name in self.servo_joint_names:
-            joint = self.drone.get_joint(name)
-            idx = getattr(joint, "dofs_idx_local", None)
-            if idx is None:
-                idx = joint.dof_idx_local
-            if isinstance(idx, (list, tuple)):
-                idx = idx[0] if idx else None
-            if idx is None:
-                raise ValueError(f"Joint '{name}' has no DOF index.")
-            self.servo_dof_indices.append(int(idx))
-
-        # Throttle + servos
-        self.THROTTLE_SIZE = 1
-        self.num_servos = len(self.servo_dof_indices)
-        self.num_actions = self.THROTTLE_SIZE + self.num_servos
-        self.throttle_limit: Tuple[float, float] = (0.0, 1.0)
 
         # ------------------------------------------------------------------ #
         # Forest generation (geometry only, no physics)                      #
@@ -406,6 +521,39 @@ class WingedDroneEnv:
         # Build scene and get solvers                                       #
         # ------------------------------------------------------------------ #
         self.scene.build(n_envs=self.num_envs)
+        print(
+            f"[Scene] n_envs={self.num_envs} n_links={self.drone.n_links} "
+            f"n_dofs={self.drone.n_dofs}"
+        )
+        if hasattr(self.scene.sim, "rigid_solver"):
+            rigid_solver = self.scene.sim.rigid_solver
+            print(
+                f"[Visual] n_vverts={rigid_solver.n_vverts} "
+                f"n_vgeoms={len(rigid_solver.vgeoms)}"
+            )
+        self.servo_dof_indices = []
+        for name in self.servo_joint_names:
+            joint = self.drone.get_joint(name)
+            idx = getattr(joint, "dofs_idx_local", None)
+            if idx is None:
+                idx = joint.dof_idx_local
+            if isinstance(idx, (list, tuple)):
+                idx = idx[0] if idx else None
+            if idx is None:
+                raise ValueError(f"Joint '{name}' has no DOF index.")
+            self.servo_dof_indices.append(int(idx))
+        if self.servo_dof_indices:
+            print(
+                f"[DOF] servo_dof_indices={self.servo_dof_indices} "
+                f"max={max(self.servo_dof_indices)} n_dofs={self.drone.n_dofs}"
+            )
+
+        # Throttle + servos
+        self.THROTTLE_SIZE = 1
+        self.num_servos = len(self.servo_dof_indices)
+        self.num_actions = self.THROTTLE_SIZE + self.num_servos
+        self.throttle_limit: Tuple[float, float] = (0.0, 1.0)
+
         self.drone_model.validate_entity(
             self.drone,
             self.servo_joint_names,
@@ -420,6 +568,11 @@ class WingedDroneEnv:
 
         self.span = self.aero_solver.tip_to_tip
         self.nominal_mass = float(sum(link.get_mass() for link in self.drone.links))
+        self._link_masses = torch.tensor(
+            [link.get_mass() for link in self.drone.links],
+            device=self.device,
+            dtype=torch.float32,
+        )
 
         print(f"[WingedDroneEnv] Created with {self.num_envs} envs, drone '{self.drone_name}'")
         print(f"  - Action space size: {self.num_actions} (throttle + {self.num_servos} servos)")
@@ -431,16 +584,36 @@ class WingedDroneEnv:
         # ------------------------------------------------------------------ #
 
         # Joint limits for servos
-        joint_mins, joint_maxs = self.drone.get_dofs_limit(self.servo_dof_indices)
-        joint_mins = torch.as_tensor(joint_mins, device=self.device, dtype=torch.float32)
-        joint_maxs = torch.as_tensor(joint_maxs, device=self.device, dtype=torch.float32)
-        self.joint_limit_min = joint_mins
-        self.joint_limit_max = joint_maxs
+        if self.servo_dof_indices:
+            joint_mins, joint_maxs = self.drone.get_dofs_limit(self.servo_dof_indices)
+            joint_mins = torch.as_tensor(joint_mins, device=self.device, dtype=torch.float32)
+            joint_maxs = torch.as_tensor(joint_maxs, device=self.device, dtype=torch.float32)
+            self.joint_limit_min = joint_mins
+            self.joint_limit_max = joint_maxs
+        else:
+            self.joint_limit_min = torch.zeros((0,), device=self.device, dtype=torch.float32)
+            self.joint_limit_max = torch.zeros((0,), device=self.device, dtype=torch.float32)
 
         # PD gains for servo position control
-        kp, kv = _servo_gains_from_catalog(self.drone_model, self.servo_joint_names, self.device)
-        self.drone.set_dofs_kp(kp, self.servo_dof_indices)
-        self.drone.set_dofs_kv(kv, self.servo_dof_indices)
+        fallback_gains = self.env_cfg.get("fallback_servo_gains")
+        fallback_tuple = None
+        if fallback_gains is not None:
+            if not isinstance(fallback_gains, (list, tuple)) or len(fallback_gains) != 2:
+                raise ValueError("fallback_servo_gains must be a (kp, kv) pair.")
+            fallback_tuple = (float(fallback_gains[0]), float(fallback_gains[1]))
+        kp, kv = _servo_gains_from_catalog(
+            self.drone_model,
+            self.servo_joint_names,
+            self.device,
+            fallback_gains=fallback_tuple,
+        )
+        self.base_kp = kp.clone()
+        self.base_kv = kv.clone()
+        if self.num_servos > 0:
+            print(f"[WingedDroneEnv] Servo gains (kp): {kp.cpu().numpy()}")
+            print(f"[WingedDroneEnv] Servo gains (kv): {kv.cpu().numpy()}")
+            self.drone.set_dofs_kp(kp, self.servo_dof_indices)
+            self.drone.set_dofs_kv(kv, self.servo_dof_indices)
 
         # ------------------------------------------------------------------ #
         # Depth solver + precomputed ray directions                          #
@@ -594,6 +767,7 @@ class WingedDroneEnv:
         self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device)
         self.privileged_obs_buf = torch.zeros((self.num_envs, self.num_privileged_obs), device=self.device)
         self.rew_buf = torch.zeros((self.num_envs,), device=self.device)
+        self._time_outs = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
         # Extras dictionary for logging (RSL-RL convention)
         self.extras: Dict = {"observations": {}}
         self._video_on = False
@@ -804,7 +978,8 @@ class WingedDroneEnv:
         self.actions[:, 1:] = servo_targets
 
         # Apply to simulator
-        self.drone.control_dofs_position(servo_targets, self.servo_dof_indices)
+        if self.num_servos > 0:
+            self.drone.control_dofs_position(servo_targets, self.servo_dof_indices)
         self.aero_solver.set_throttle(throttle)
 
         # Print everything about the state for debugging
@@ -840,9 +1015,10 @@ class WingedDroneEnv:
         self.base_euler[:] = quat_to_xyz(self.base_quat, rpy=True, degrees=False)
 
         # Joint state
-        self.joint_position[:] = dofs_pos[:, self.servo_dof_indices]
-        self.joint_velocity[:] = self.drone.get_dofs_velocity()[:, self.servo_dof_indices]
-        self.torque[:] = self.drone.get_dofs_control_force(self.servo_dof_indices)
+        if self.num_servos > 0:
+            self.joint_position[:] = dofs_pos[:, self.servo_dof_indices]
+            self.joint_velocity[:] = self.drone.get_dofs_velocity()[:, self.servo_dof_indices]
+            self.torque[:] = self.drone.get_dofs_control_force(self.servo_dof_indices)
 
         # Velocities (world/body)
         inv_base = inv_quat(self.base_quat)
@@ -867,7 +1043,10 @@ class WingedDroneEnv:
         self.accelerations[:, 3:6] = ang_vel
         '''
         # ------------------------- Terminations ---------------------------- #
-        self.collision = self.check_collision()
+        if self.evaluation:
+            self.collision = self.check_collision(tol=0.01)
+        else:
+            self.collision = self.check_collision(tol=0.1)
         self.success = self.check_success()
 
         self.wall_crash_condition = (
@@ -890,7 +1069,7 @@ class WingedDroneEnv:
             | self.nan_envs.to(torch.bool)
         )
 
-        just_reset = self.reset_buf.clone()  # envs that will be reset this step
+        just_reset = self.reset_buf  # envs that will be reset this step
 
         self.pre_wall_crash[just_reset] = self.wall_crash_condition[just_reset]
         self.pre_angle_limit[just_reset] = self.angle_limit_condition[just_reset]
@@ -902,8 +1081,9 @@ class WingedDroneEnv:
         timeout = (self.episode_length_buf >= self.max_episode_length_per_env) & ~(
             self.success | self.collision | self.wall_crash_condition | self.angle_limit_condition
         )
-        self.extras["time_outs"] = torch.zeros_like(self.reset_buf, dtype=torch.float32)
-        self.extras["time_outs"][timeout] = 1.0
+        self._time_outs.zero_()
+        self._time_outs[timeout] = 1.0
+        self.extras["time_outs"] = self._time_outs
 
         # ------------------------- Depth sensing --------------------------- #
         cyl_xy = None
@@ -1078,6 +1258,8 @@ class WingedDroneEnv:
         self.rigid_solver.set_dofs_position(initial_pos, envs_idx=env_ids)
         self.rigid_solver.set_dofs_velocity(initial_vel, envs_idx=env_ids)
 
+        self._apply_dynamics_noise(env_ids)
+
         # Optional aero parameter randomization
         if hasattr(self.aero_solver, "_enable_noise"):
             if hasattr(self.rigid_solver, "randomize_aero_params"):
@@ -1142,6 +1324,7 @@ class WingedDroneEnv:
             servo_torque=self.torque,
             servo_velocity=self.joint_velocity,
             drone_name=self.drone_name,
+            aero_config=self._aero_config,
             device=self.device,
         )
         return total_power
@@ -1252,17 +1435,15 @@ class WingedDroneEnv:
         energy = self.power
         return energy / (10.0 * self.dt)
 
-    def _reward_progress(self, sigma: float = 0.15) -> torch.Tensor:
+    def _reward_progress(self, sigma: float = 0.2) -> torch.Tensor:
         """
         Reward for forward speed tracking.
 
         Target:
             v_proj (along +X) ≈ v_target (commands[:,0]).
         """
-        # Desired direction fixed along +X (heading = 0)
-        desired_dir = torch.tensor([1.0, 0.0], device=self.device)
         v_xy = self.base_lin_vel[:, :2]
-        v_proj = torch.sum(v_xy * desired_dir, dim=1)
+        v_proj = v_xy[:, 0]
 
         v_tgt = self.commands[:, 0].clamp(min=1e-3)
         x = v_proj / v_tgt

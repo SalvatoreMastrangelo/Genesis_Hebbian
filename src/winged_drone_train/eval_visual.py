@@ -49,6 +49,7 @@ builtins.ActorCriticTanh = ActorCriticTanh
 # ---------------------------------------------------------------------------
 
 SUCCESS_TIME_SEC = 300.0  # required minimum flight time to count as "completed"
+MINIMAL_PROGRESS_M = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -586,10 +587,13 @@ def run_and_record(env,
     # Episode-level accumulators (for stats over all envs)
     time_acc = torch.zeros(B, device=device)
     energy_acc = torch.zeros(B, device=device)
+    energy_eff = torch.zeros(B, device=device)
     energy_propulsion = torch.zeros(B, device=device)
     energy_joints = torch.zeros(B, device=device)
     x_init = torch.zeros(B, device=device)
     x_progress = torch.zeros(B, device=device)
+    x_eff = torch.zeros(B, device=device)
+    reached_min = torch.zeros(B, dtype=torch.bool, device=device)
     straight = torch.zeros(B, device=device)
     final_reason = [""] * B  # "collision", "wall_crash", "angle_limit", "success", "timeout", ...
 
@@ -679,7 +683,8 @@ def run_and_record(env,
         still_flying = (~done) & (~terminated) & (~nan_mask)
 
         time_acc[still_flying] += env.dt
-        energy_acc[still_flying] += env.power_consumption()[still_flying] * env.dt
+        power = env.power_consumption()
+        energy_acc[still_flying] += power[still_flying] * env.dt
 
         # If the env exposes cons_prop / cons_joint, accumulate them; otherwise skip
         if hasattr(env, "cons_prop") and hasattr(env, "cons_joint"):
@@ -692,6 +697,15 @@ def run_and_record(env,
             torch.norm(env.base_lin_vel[still_flying, 1:], dim=1)
             / env.base_lin_vel[still_flying, 0].clamp_min(1e-6)
         )
+
+        still_count = still_flying & (~reached_min)
+        if still_count.any():
+            energy_eff[still_count] += power[still_count] * env.dt
+            x_eff[still_count] = x_progress[still_count]
+            newly_reached = still_count & (x_progress >= MINIMAL_PROGRESS_M)
+            if newly_reached.any():
+                reached_min[newly_reached] = True
+                x_eff[newly_reached] = MINIMAL_PROGRESS_M
 
         # --------------------------------------------------------------
         #  Final reason for envs that just terminated
@@ -735,15 +749,17 @@ def run_and_record(env,
     # ----------------------------------------------------------------------
     # Aggregate statistics
     # ----------------------------------------------------------------------
-    SUCCESS_TIME_SEC = 300.0  # minimal required flight time for "success"
-
     success_mask = time_acc >= SUCCESS_TIME_SEC - 0.1
     n_completed_20s = int(success_mask.sum().item())
 
     mean_x = x_progress.mean().item()
     mean_survival_time = time_acc.mean().item()
     mean_energy_total = energy_acc.mean().item()
-    mean_energy_per_m_x = (energy_acc / x_progress.clamp_min(1e-6)).mean().item()
+    not_reached = ~reached_min
+    if not_reached.any():
+        energy_eff[not_reached] = energy_acc[not_reached]
+        x_eff[not_reached] = x_progress[not_reached]
+    mean_energy_per_m_x = (energy_eff / x_eff.clamp_min(1e-6)).mean().item()
 
     mean_en_propulsion = energy_propulsion.mean().item()
     mean_en_joints = energy_joints.mean().item()
@@ -890,9 +906,7 @@ def main() -> None:
     with open(cfg_path, "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
-    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
-    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 0.25, 2, 2.5, 2, -3].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
 
     # Build evaluation-specific environment config (do not modify original dict)
     env_cfg_eval = dict(env_cfg)
@@ -912,9 +926,7 @@ def main() -> None:
     )
     command_cfg["eval_speed"] = args.vtgt
 
-    # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
-    obs_cfg_eval["add_noise"] = False
 
     # Print configs for sanity check
     print("\nEnvironment Configuration (eval):")

@@ -1,9 +1,143 @@
-import torch
+import copy
+from dataclasses import dataclass
 import gstaichi as ti
 
 from genesis.engine.solvers.base_aero_solver import BaseAeroSolver
 from genesis.engine.entities import RigidEntity  # for get_link()
 from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
+
+
+@dataclass
+class BoundTarget:
+    model: DroneAeroModel | None
+    B: int
+    L: int
+    frames: list[str]
+    kinds: list[SurfaceKind]
+    link_indices: list[int]
+    geom: list[tuple[float, float, float, int]]
+    base_param_overrides: dict[str, float]
+    noise_params: dict[str, float]
+    side: list[int]
+    slip_code: list[int]
+    fus_width: float
+
+
+class SimpleDroneAeroParameters:
+    """
+    Inline aero configuration for the simple drone solver.
+    """
+
+    GLOBAL = {
+        "rho": 1.225,
+        "force_cap": 10.0,
+    }
+
+    TYPES = {
+        "fuselage": {
+            "cd0": 0.75,
+            "k_slip_fus": 0.0,
+            "cp_start": 0.25,
+            "cp_end": 0.5,
+            "cg_to_chord": 0.31,
+        },
+        "wing": {
+            "cl_alpha_2d": 6.283185307179586,
+            "alpha0_2d": -0.05235987755982988,
+            "cd0": 0.05,
+            "k_slip_wing": 0.1,
+            "alpha_stall_deg": 10.0,
+            "m_smooth": 0.2,
+            "w": 0.0,
+            "cp_start": 0.25,
+            "cp_end": 0.5,
+            "cg_to_chord": 0.31,
+            "re_nominal": 100000.0,
+            "a": 1.0,
+        },
+        "elevator": {
+            "cl_alpha_2d": 6.283185307179586,
+            "alpha0_2d": 0.0,
+            "cd0": 0.013,
+            "k_slip_tail": 1.0,
+            "k_eps_tail": 1.0,
+            "alpha_stall_deg": 10.0,
+            "m_smooth": 0.2,
+            "w": 0.0,
+            "cp_start": 0.25,
+            "cp_end": 0.5,
+            "cg_to_chord": 0.31,
+            "re_nominal": 50000.0,
+            "a": 1.0,
+        },
+        "rudder": {
+            "cl_alpha_2d": 6.283185307179586,
+            "alpha0_2d": 0.0,
+            "cd0": 0.013,
+            "alpha_stall_deg": 10.0,
+            "m_smooth": 0.2,
+            "w": 0.0,
+            "cp_start": 0.25,
+            "cp_end": 0.5,
+            "cg_to_chord": 0.31,
+            "re_nominal": 50000.0,
+            "a": 1.0,
+        },
+    }
+
+    LINKS = {
+        "aero_frame_fuselage": {
+            "type": "fuselage",
+            "s_folded": 1.0,
+        },
+        "aero_frame_left_wing": {
+            "type": "wing",
+            "actuator_yaw": "X10_servo",
+            "actuator_pitch": "X08_servo",
+        },
+        "aero_frame_right_wing": {
+            "type": "wing",
+            "actuator_yaw": "X10_servo",
+            "actuator_pitch": "X08_servo",
+        },
+        "aero_frame_elevator_left": {
+            "type": "elevator",
+            "actuator_pitch": "X08_servo",
+            "actuator_yaw": None,
+        },
+        "aero_frame_elevator_right": {
+            "type": "elevator",
+            "actuator_pitch": "X08_servo",
+            "actuator_yaw": None,
+        },
+        "aero_frame_rudder": {
+            "type": "rudder",
+            "actuator_pitch": None,
+            "actuator_yaw": "X08_servo",
+        },
+        "prop_frame_fuselage_0": {
+            "type": "propeller",
+            "actuator": "morphing_prop",
+        },
+    }
+
+    NOISE = {
+        "sigma_mag": 0.05,
+        "sigma_dir": 0.05,
+        "sigma_param": 0.2,
+        "sigma_cp": 0.05,
+        "mass_shift": 0.2,
+        "com_shift": 0.01,
+    }
+
+    @classmethod
+    def as_dict(cls) -> dict:
+        return {
+            "global": copy.deepcopy(cls.GLOBAL),
+            "types": copy.deepcopy(cls.TYPES),
+            "links": copy.deepcopy(cls.LINKS),
+            "noise": copy.deepcopy(cls.NOISE),
+        }
 
 
 @ti.data_oriented
@@ -21,6 +155,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             "cd0",
             "alpha_stall_deg",
             "m_smooth",
+            "w",
             "cp_start",
             "cp_end",
             "cg_to_chord",
@@ -32,6 +167,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             "cd0",
             "alpha_stall_deg",
             "m_smooth",
+            "w",
             "cp_start",
             "cp_end",
             "cg_to_chord",
@@ -49,8 +185,11 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         """
         # Base values (per env, uniform at start)
         self._aero_base = dict(DroneAeroModel.DEFAULT_BASE_PARAMS)
+        self._aero_base.setdefault("w", 0.0)
         self._ensure_wing_param_entries()
         self._ensure_elevator_param_entries()
+        # Control which parameters are randomized (default: all base params).
+        self._randomizable_param_names = list(self._aero_base.keys())
 
         # Link names used as aerodynamic frames (populated from DroneAeroModel)
         # The last one is assumed to be the propeller frame.
@@ -77,6 +216,262 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self.noise_sigma_dir: float = DroneAeroModel.NOISE_DEFAULTS["sigma_dir"]  # std-dev for directional noise
         self.noise_sigma_param: float = DroneAeroModel.NOISE_DEFAULTS["sigma_param"]  # relative std-dev on aero params
         self.noise_sigma_cp: float = DroneAeroModel.NOISE_DEFAULTS["sigma_cp"]  # absolute std-dev on CP location
+
+    def _bind_target_model(
+        self,
+        entity: RigidEntity,
+        urdf_file: str | None,
+        drone_model: DroneAeroModel | None,
+    ) -> BoundTarget:
+        """
+        Phase 1: resolve the model, validate inputs, and collect binding metadata.
+        """
+        model = self._resolve_drone_model(urdf_file, drone_model)
+        if model is not None:
+            self._apply_drone_model(model, entity)
+        else:
+            if not self._aero_frames:
+                raise RuntimeError(
+                    "AeroSolver.add_target: `_aero_frames` missing. Provide a DroneAeroModel or URDF."
+                )
+            self._aero_link_idx = [entity.get_link(name).idx for name in self._aero_frames]
+
+        if not self._geom:
+            raise RuntimeError(
+                "AeroSolver.add_target: empty `_geom`. Provide a valid URDF "
+                "before adding the target or pre-populate `self._geom`."
+            )
+
+        # Number of aerodynamic surfaces
+        self.L = len(self._geom)
+
+        # Batch size (B) and number of global links
+        self._B = getattr(self._rigid_solver.sim, "_B", 1)
+        self.n_links_ = max(1, self._rigid_solver.n_links)
+
+        frames = list(self._aero_frames)
+        kinds = list(getattr(model, "surface_kinds", [])) if model is not None else []
+        if model is not None and len(kinds) != len(frames):
+            raise RuntimeError("Drone model did not expose per-surface kinds.")
+
+        geom = list(self._geom)
+        link_indices = list(self._aero_link_idx)
+        base_param_overrides = dict(getattr(model, "base_param_overrides", {}) or {})
+        noise_params = dict(getattr(model, "noise_params", {}) or {})
+        side = [0 for _ in range(self.L)]
+        slip_code = [0 for _ in range(self.L)]
+        fus_width = 0.0
+        for i, (_, _, c, k) in enumerate(geom):
+            name = frames[i].lower()
+            if "left" in name:
+                side[i] = -1
+            elif "right" in name:
+                side[i] = 1
+            else:
+                side[i] = 0
+
+            if k == 0:
+                slip_code[i] = 0
+                fus_width = float(c)
+            elif k == 2:
+                slip_code[i] = 1
+            elif k == 1 and "prop" in name:
+                slip_code[i] = 2
+            else:
+                slip_code[i] = 3
+
+        return BoundTarget(
+            model=model,
+            B=self._B,
+            L=self.L,
+            frames=frames,
+            kinds=kinds,
+            link_indices=link_indices,
+            geom=geom,
+            base_param_overrides=base_param_overrides,
+            noise_params=noise_params,
+            side=side,
+            slip_code=slip_code,
+            fus_width=fus_width,
+        )
+
+    def _alloc_simple_fields(self, B: int, L: int) -> None:
+        """
+        Phase 2: allocate SimpleDrone-specific Taichi fields.
+        """
+        # Per-link parameter fields
+        self.cd0_link = ti.field(ti.f32, shape=(B, L))
+        self.alpha0_2d_link = ti.field(ti.f32, shape=(B, L))
+        self.cl_alpha_2d_link = ti.field(ti.f32, shape=(B, L))
+        self.alpha_stall_deg_link = ti.field(ti.f32, shape=(B, L))
+        self.m_smooth_link = ti.field(ti.f32, shape=(B, L))
+        self.w_link = ti.field(ti.f32, shape=(B, L))
+        self.cp_start_link = ti.field(ti.f32, shape=(B, L))
+        self.cp_end_link = ti.field(ti.f32, shape=(B, L))
+        self.cg_to_chord_link = ti.field(ti.f32, shape=(B, L))
+        self.re_nom_link = ti.field(ti.f32, shape=(B, L))
+        self.re_a_link = ti.field(ti.f32, shape=(B, L))
+
+        self.k_slip_wing_link = ti.field(ti.f32, shape=(B, L))
+        self.k_slip_tail_link = ti.field(ti.f32, shape=(B, L))
+        self.k_eps_tail_link = ti.field(ti.f32, shape=(B, L))
+        self.k_slip_fus_link = ti.field(ti.f32, shape=(B, L))
+
+        # Debug fields (angles and forces per surface)
+        self.alpha_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.beta_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.lift_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.drag_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.side_force_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        # Per-surface Reynolds number (computed from local flow speed and chord).
+        self.Reynolds = ti.field(ti.f32, shape=(B, L))
+        # Tail/downwash debug (filled only for elevators when _aero_log=True)
+        self.alpha_tail_raw_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.downwash_eps_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.cl_wing_for_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.k_eps_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+
+        # Per-surface constants (area, AR, chord, kind, side, link indices)
+        self.area = ti.field(ti.f16, shape=(L,))
+        self.AR = ti.field(ti.f16, shape=(L,))
+        self.chord = ti.field(ti.f16, shape=(L,))
+        self.kind = ti.field(ti.i16, shape=(L,))
+        self.side = ti.field(ti.i8, shape=(L,))
+        self._link_idx = ti.field(ti.i16, shape=(L,))
+        self.slip_code = ti.field(ti.i8, shape=(L,))
+
+        # Base span per surface (total span used in AR = b^2 / S)
+        self.span = ti.field(ti.f16, shape=(L,))
+        # Fuselage width used for simple wing AR interference correction.
+        self.fus_width = ti.field(ti.f16, shape=())
+
+        # Wing CL accumulator (left/right) and induced velocity at the prop
+        self.cl_wing_b = ti.field(ti.f16, shape=(B, 2))
+        self.v_ind = ti.field(ti.f16, shape=(B,))
+
+    def _init_simple_fields(self, bound: BoundTarget) -> None:
+        """
+        Phase 3: populate per-link parameters and per-surface constants.
+        """
+        def require_param(frame: str, params: dict, key: str) -> float:
+            if key not in params:
+                raise ValueError(f"Surface '{frame}' missing required key '{key}' in aero configuration.")
+            return float(params[key])
+
+        model = bound.model
+        surface_frames = bound.frames
+        surface_kinds = bound.kinds
+
+        for i in range(self.L):
+            p = model.per_surface_params[i]
+            frame = surface_frames[i]
+            kind = surface_kinds[i]
+
+            if kind == SurfaceKind.PROPELLER:
+                cd0_val = alpha0_val = cl_alpha_val = 0.0
+                alpha_stall_val = m_smooth_val = 0.0
+                w_val = 0.0
+                cp_start_val = cp_end_val = 0.0
+                cg_to_chord_val = 0.0
+            elif kind == SurfaceKind.FUSELAGE:
+                cd0_val = require_param(frame, p, "cd0")
+                alpha0_val = cl_alpha_val = 0.0
+                alpha_stall_val = m_smooth_val = 0.0
+                w_val = 0.0
+                cp_start_val = require_param(frame, p, "cp_start")
+                cp_end_val = require_param(frame, p, "cp_end")
+                cg_to_chord_val = require_param(frame, p, "cg_to_chord")
+            else:
+                cd0_val = require_param(frame, p, "cd0")
+                alpha0_val = require_param(frame, p, "alpha0_2d")
+                cl_alpha_val = require_param(frame, p, "cl_alpha_2d")
+                alpha_stall_val = require_param(frame, p, "alpha_stall_deg")
+                m_smooth_val = require_param(frame, p, "m_smooth")
+                w_val = float(p.get("w", 0.0))
+                cp_start_val = require_param(frame, p, "cp_start")
+                cp_end_val = require_param(frame, p, "cp_end")
+                cg_to_chord_val = require_param(frame, p, "cg_to_chord")
+
+            k_slip_wing_val = require_param(frame, p, "k_slip_wing") if kind == SurfaceKind.WING else 0.0
+            k_slip_tail_val = require_param(frame, p, "k_slip_tail") if kind == SurfaceKind.ELEVATOR else 0.0
+            k_eps_tail_val = require_param(frame, p, "k_eps_tail") if kind == SurfaceKind.ELEVATOR else 0.0
+            k_slip_fus_val = require_param(frame, p, "k_slip_fus") if kind == SurfaceKind.FUSELAGE else 0.0
+            re_nom_val = float(p.get("re_nom", 0.0))
+            re_a_val = float(p.get("re_a", 1.0))
+
+            for b in range(self._B):
+                self.cd0_link[b, i] = cd0_val
+                self.alpha0_2d_link[b, i] = alpha0_val
+                self.cl_alpha_2d_link[b, i] = cl_alpha_val
+                self.alpha_stall_deg_link[b, i] = alpha_stall_val
+                self.m_smooth_link[b, i] = m_smooth_val
+                self.w_link[b, i] = w_val
+                self.cp_start_link[b, i] = cp_start_val
+                self.cp_end_link[b, i] = cp_end_val
+                self.cg_to_chord_link[b, i] = cg_to_chord_val
+
+                self.k_slip_wing_link[b, i] = k_slip_wing_val
+                self.k_slip_tail_link[b, i] = k_slip_tail_val
+                self.k_eps_tail_link[b, i] = k_eps_tail_val
+                self.k_slip_fus_link[b, i] = k_slip_fus_val
+                self.re_nom_link[b, i] = re_nom_val
+                self.re_a_link[b, i] = re_a_val
+
+        # Fill per-surface constant fields from _geom
+        for i, (S, AR, c, k) in enumerate(bound.geom):
+            self.area[i] = S
+            self.AR[i] = AR
+            self.chord[i] = c
+            self.kind[i] = k
+            self._link_idx[i] = bound.link_indices[i]
+            # Base span can be derived from S = chord * span.
+            if float(c) > 1e-8:
+                self.span[i] = float(S) / float(c)
+            else:
+                self.span[i] = 0.0
+
+            # Side flag is data: -1 left, +1 right, 0 center; param selectors use this single flag.
+            self.side[i] = bound.side[i]
+
+            # Slipstream code (0=fuselage,1=tail,2=prop wash wing,3=other)
+            self.slip_code[i] = bound.slip_code[i]
+
+        self.fus_width[None] = bound.fus_width
+
+    def _sync_side_profile_caches_from_links(self, bound: BoundTarget) -> None:
+        """
+        Phase 3: sync wing/elevator left/right cache fields from per-link values.
+        """
+        if not bound.kinds:
+            return
+
+        for i, kind in enumerate(bound.kinds):
+            side = bound.side[i]
+            if side == 0:
+                continue
+
+            if kind == SurfaceKind.WING:
+                for name in self._wing_param_names:
+                    link_field = getattr(self, f"{name}_link", None)
+                    if link_field is None:
+                        continue
+                    left_key, right_key = self._wing_side_keys(name)
+                    cache_field = getattr(self, left_key if side < 0 else right_key, None)
+                    if cache_field is None:
+                        continue
+                    for b in range(bound.B):
+                        cache_field[b] = float(link_field[b, i])
+            elif kind == SurfaceKind.ELEVATOR:
+                for name in self._elevator_param_names:
+                    link_field = getattr(self, f"{name}_link", None)
+                    if link_field is None:
+                        continue
+                    left_key, right_key = self._elevator_side_keys(name)
+                    cache_field = getattr(self, left_key if side < 0 else right_key, None)
+                    if cache_field is None:
+                        continue
+                    for b in range(bound.B):
+                        cache_field[b] = float(link_field[b, i])
 
     # ---------------------------------------------------------------------
     # Public API
@@ -105,194 +500,15 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         """
         self._aero_targets.append(entity)
 
-        model = self._resolve_drone_model(urdf_file, drone_model)
-        if model is not None:
-            self._apply_drone_model(model, entity)
-        else:
-            if not self._aero_frames:
-                raise RuntimeError(
-                    "AeroSolver.add_target: `_aero_frames` missing. Provide a DroneAeroModel or URDF."
-                )
-            self._aero_link_idx = [entity.get_link(name).idx for name in self._aero_frames]
+        # Phase 1: bind model and collect metadata
+        bound = self._bind_target_model(entity, urdf_file, drone_model)
 
-        if not self._geom:
-            raise RuntimeError(
-                "AeroSolver.add_target: empty `_geom`. Provide a valid URDF "
-                "before adding the target or pre-populate `self._geom`."
-            )
+        # Phase 2: allocate common + simple-specific fields
+        self._alloc_simple_fields(bound.B, bound.L)
+        self._alloc_common_fields(bound.B, bound.L)
 
-        # Number of aerodynamic surfaces
-        self.L = len(self._geom)
-
-        # Batch size (B) and number of global links
-        self._B = getattr(self._rigid_solver.sim, "_B", 1)
-        self.n_links_ = max(1, self._rigid_solver.n_links)
-
-        # Now that _B and L are known, allocate per-link parameter fields
-        self.cd0_link         = ti.field(ti.f32, shape=(self._B, self.L))
-        self.alpha0_2d_link    = ti.field(ti.f32, shape=(self._B, self.L))
-        self.cl_alpha_2d_link  = ti.field(ti.f32, shape=(self._B, self.L))
-        self.alpha_stall_deg_link = ti.field(ti.f32, shape=(self._B, self.L))
-        self.m_smooth_link     = ti.field(ti.f32, shape=(self._B, self.L))
-        self.cp_start_link     = ti.field(ti.f32, shape=(self._B, self.L))
-        self.cp_end_link       = ti.field(ti.f32, shape=(self._B, self.L))
-        self.cg_to_chord_link  = ti.field(ti.f32, shape=(self._B, self.L))
-        self.re_nom_link       = ti.field(ti.f32, shape=(self._B, self.L))
-        self.re_a_link         = ti.field(ti.f32, shape=(self._B, self.L))
-
-        self.k_slip_wing_link  = ti.field(ti.f32, shape=(self._B, self.L))
-        self.k_slip_tail_link  = ti.field(ti.f32, shape=(self._B, self.L))
-        self.k_eps_tail_link   = ti.field(ti.f32, shape=(self._B, self.L))
-        self.k_slip_fus_link   = ti.field(ti.f32, shape=(self._B, self.L))
-
-        surface_frames = list(model.frames)
-        surface_kinds = list(getattr(model, "surface_kinds", []))
-        if len(surface_kinds) != len(surface_frames):
-            raise RuntimeError("Drone model did not expose per-surface kinds.")
-
-        def require_param(frame: str, params: dict, key: str) -> float:
-            if key not in params:
-                raise ValueError(f"Surface '{frame}' missing required key '{key}' in aero_parameters.yaml.")
-            return float(params[key])
-
-        for i in range(self.L):
-            p = model.per_surface_params[i]
-            frame = surface_frames[i]
-            kind = surface_kinds[i]
-
-            if kind == SurfaceKind.PROPELLER:
-                cd0_val = alpha0_val = cl_alpha_val = 0.0
-                alpha_stall_val = m_smooth_val = 0.0
-                cp_start_val = cp_end_val = 0.0
-                cg_to_chord_val = 0.0
-            elif kind == SurfaceKind.FUSELAGE:
-                cd0_val = require_param(frame, p, "cd0")
-                alpha0_val = cl_alpha_val = 0.0
-                alpha_stall_val = m_smooth_val = 0.0
-                cp_start_val = require_param(frame, p, "cp_start")
-                cp_end_val = require_param(frame, p, "cp_end")
-                cg_to_chord_val = require_param(frame, p, "cg_to_chord")
-            else:
-                cd0_val = require_param(frame, p, "cd0")
-                alpha0_val = require_param(frame, p, "alpha0_2d")
-                cl_alpha_val = require_param(frame, p, "cl_alpha_2d")
-                alpha_stall_val = require_param(frame, p, "alpha_stall_deg")
-                m_smooth_val = require_param(frame, p, "m_smooth")
-                cp_start_val = require_param(frame, p, "cp_start")
-                cp_end_val = require_param(frame, p, "cp_end")
-                cg_to_chord_val = require_param(frame, p, "cg_to_chord")
-
-            k_slip_wing_val = require_param(frame, p, "k_slip_wing") if kind == SurfaceKind.WING else 0.0
-            k_slip_tail_val = require_param(frame, p, "k_slip_tail") if kind == SurfaceKind.ELEVATOR else 0.0
-            k_eps_tail_val = require_param(frame, p, "k_eps_tail") if kind == SurfaceKind.ELEVATOR else 0.0
-            k_slip_fus_val = require_param(frame, p, "k_slip_fus") if kind == SurfaceKind.FUSELAGE else 0.0
-            re_nom_val = float(p.get("re_nom", 0.0))
-            re_a_val = float(p.get("re_a", 1.0))
-
-            for b in range(self._B):
-                self.cd0_link[b, i] = cd0_val
-                self.alpha0_2d_link[b, i] = alpha0_val
-                self.cl_alpha_2d_link[b, i] = cl_alpha_val
-                self.alpha_stall_deg_link[b, i] = alpha_stall_val
-                self.m_smooth_link[b, i] = m_smooth_val
-                self.cp_start_link[b, i] = cp_start_val
-                self.cp_end_link[b, i] = cp_end_val
-                self.cg_to_chord_link[b, i] = cg_to_chord_val
-
-                self.k_slip_wing_link[b, i] = k_slip_wing_val
-                self.k_slip_tail_link[b, i] = k_slip_tail_val
-                self.k_eps_tail_link[b, i] = k_eps_tail_val
-                self.k_slip_fus_link[b, i] = k_slip_fus_val
-                self.re_nom_link[b, i] = re_nom_val
-                self.re_a_link[b, i] = re_a_val
-
-
-        # Taichi fields: forces, application points, throttle
-        self.force_b = ti.Vector.field(3, ti.f32, shape=(self._B, self.n_links_))
-        self.cp_b = ti.Vector.field(3, ti.f32, shape=(self._B, self.n_links_))
-        self._thr_raw = ti.field(ti.f32, shape=(self._B,))
-        self._thr_flt = ti.field(ti.f32, shape=(self._B,))
-        # Per-env sign for prop thrust direction (+1 or -1), set from Python after binding a target.
-        self.prop_thrust_sign = ti.field(ti.f32, shape=(self._B,))
-        for b in range(self._B):
-            self.prop_thrust_sign[b] = 1.0
-        self.B = self._B  # alias used inside kernels
-
-        # Debug fields (angles and forces per surface)
-        self.alpha_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        self.beta_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        self.lift_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        self.drag_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        self.side_force_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        # Per-surface Reynolds number (computed from local flow speed and chord).
-        self.Reynolds = ti.field(ti.f32, shape=(self._B, self.L))
-        # Tail/downwash debug (filled only for elevators when _aero_log=True)
-        self.alpha_tail_raw_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        self.downwash_eps_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        self.cl_wing_for_tail_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-        self.k_eps_tail_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
-
-        # Aerodynamic force center and global CoM per env
-        self._aero_CF_world_b = ti.Vector.field(3, ti.f32, shape=(self._B,))
-        self._CoM_world_b = ti.Vector.field(3, ti.f32, shape=(self._B,))
-
-        # Per-surface constants (area, AR, chord, kind, side, link indices)
-        self.area = ti.field(ti.f16, shape=(self.L,))
-        self.AR = ti.field(ti.f16, shape=(self.L,))
-        self.chord = ti.field(ti.f16, shape=(self.L,))
-        self.kind = ti.field(ti.i16, shape=(self.L,))
-        self.side = ti.field(ti.i8, shape=(self.L,))
-        self._link_idx = ti.field(ti.i16, shape=(self.L,))
-        self.slip_code = ti.field(ti.i8, shape=(self.L,))
-
-        # Base span per surface (total span used in AR = b^2 / S)
-        self.span = ti.field(ti.f16, shape=(self.L,))
-        # Fuselage width used for simple wing AR interference correction.
-        self.fus_width = ti.field(ti.f16, shape=())
-
-        # Wing CL accumulator (left/right) and induced velocity at the prop
-        self.cl_wing_b = ti.field(ti.f16, shape=(self._B, 2))
-        self.v_ind = ti.field(ti.f16, shape=(self._B,))
-        # Torch buffers for zero-copy fetch (filled by _copy_force_cp)
-        self._force_buf = torch.empty((self._B, self.L, 3), device=self._aero_device, dtype=torch.float32)
-        self._cp_buf = torch.empty_like(self._force_buf)
-
-        # Fill per-surface constant fields from _geom
-        fus_width = 0.0
-        for i, (S, AR, c, k) in enumerate(self._geom):
-            self.area[i] = S
-            self.AR[i] = AR
-            self.chord[i] = c
-            self.kind[i] = k
-            self._link_idx[i] = self._aero_link_idx[i]
-            # Base span can be derived from S = chord * span.
-            if float(c) > 1e-8:
-                self.span[i] = float(S) / float(c)
-            else:
-                self.span[i] = 0.0
-            if k == 0:
-                fus_width = float(c)
-
-            # Side flag is data: -1 left, +1 right, 0 center; param selectors use this single flag.
-            name = self._aero_frames[i].lower()
-            if "left" in name:
-                self.side[i] = -1
-            elif "right" in name:
-                self.side[i] = 1
-            else:
-                self.side[i] = 0
-
-            # Slipstream code (0=fuselage,1=tail,2=prop wash wing,3=other)
-            if k == 0:
-                self.slip_code[i] = 0
-            elif k == 2:
-                self.slip_code[i] = 1
-            elif k == 1 and "prop" in name:
-                self.slip_code[i] = 2
-            else:
-                self.slip_code[i] = 3
-
-        self.fus_width[None] = fus_width
+        # Phase 3: populate fields and sync caches
+        self._init_simple_fields(bound)
 
         # Register base parameters as per-env Taichi fields
         for name, val in self._aero_base.items():
@@ -301,6 +517,8 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                 f[b] = float(val)
             self._param[name] = f
             setattr(self, name, f)
+
+        self._sync_side_profile_caches_from_links(bound)
 
         # Cached Torch buffers for parameters queried each step
         self._init_param_buffers()
@@ -325,7 +543,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         if urdf_file is None:
             return None
 
-        return DroneAeroModel(urdf_file)
+        return DroneAeroModel(urdf_file, config_override=SimpleDroneAeroParameters.as_dict())
 
     def _apply_drone_model(self, model: DroneAeroModel, entity: RigidEntity):
         """
@@ -335,6 +553,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self._aero_frames = list(model.frames)
         self._geom = list(model.geom)
         self._aero_base = dict(model.base_params)
+        self._aero_base.setdefault("w", 0.0)
         self._ensure_wing_param_entries()
         self._ensure_elevator_param_entries()
         # Apply any per-link overrides (e.g., left/right wing slip factors)
@@ -354,6 +573,8 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
         if model.base_param_overrides:
             self._aero_base.update(model.base_param_overrides)
+
+        self._randomizable_param_names = list(self._aero_base.keys())
 
         self._aero_link_idx = model.link_indices(entity)
 
@@ -456,7 +677,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
     @ti.func
     def _propeller_pass(self, rigid: ti.template(), b: int):
         # Speed clamp
-        const_V_MAX = 50.0
+        const_V_MAX = 40.0
 
         # Simple first-order low-pass on throttle (cutoff = prop_cutoff_hz)
         ti.cast(0, ti.f32)  # ensure float
@@ -485,7 +706,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                 u * u
                 + 2.0
                 * T_prop
-                / (self.rho[b] * ti.math.pi * (self.prop_radius ** 2))
+                / (self.rho[b] * ti.math.pi * (self.prop_radius * self.prop_radius))
             )
         ) * 0.5
         v_ind_val = ti.math.clamp(v_ind_val, 0.0, const_V_MAX)
@@ -494,7 +715,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
     @ti.func
     def _main_surfaces_pass(self, rigid: ti.template(), b: int, l: int):
         # Speed clamp
-        const_V_MAX = 50.0
+        const_V_MAX = 40.0
         const_V_MIN = 0.1
         const_MU_AIR = 1.81e-5  # dynamic viscosity [kg/(m*s)] for Reynolds estimate
 
@@ -503,18 +724,23 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self.cp_b[b, l] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
         self.Reynolds[b, l] = 0.0
 
-        if self.kind[l] != 2:
+        kind = ti.cast(self.kind[l], ti.i32)
+        if kind != 2:
+            side = ti.cast(self.side[l], ti.i32)
+            slip_code = ti.cast(self.slip_code[l], ti.i32)
+            rho = self.rho[b]
+
             # Air velocity in link body frame
             v_body = self._get_wind_in_body(rigid, self._link_idx[l], b)
 
             # Slipstream effect
             slip = 0.0
-            if self.slip_code[l] == 0:      # fuselage
+            if slip_code == 0:      # fuselage
                 slip = float(self.k_slip_fus[b])
-            elif self.slip_code[l] == 1:    # tail
+            elif slip_code == 1:    # tail
                 slip = float(self.k_slip_tail[b])
-            elif self.slip_code[l] == 2:    # in prop wash
-                slip = float(self._wing_param(self.k_slip_wing, self.k_slip_wing_left, self.k_slip_wing_right, b, self.side[l]))
+            elif slip_code == 2:    # in prop wash
+                slip = float(self._wing_param(self.k_slip_wing, self.k_slip_wing_left, self.k_slip_wing_right, b, side))
 
             # Reduce x-component for induced velocity
             v_body.x -= slip * ti.cast(self.v_ind[b], ti.f32)
@@ -531,29 +757,24 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
             # Reynolds number (per-surface)
             c_ref = ti.max(ti.cast(self.chord[l], ti.f32), 1e-6)
-            self.Reynolds[b, l] = (self.rho[b] * v_mod * c_ref) / const_MU_AIR
+            self.Reynolds[b, l] = (rho * v_mod * c_ref) / const_MU_AIR
 
             # Aero coefficients (lift/drag)
             cl, cd = self._compute_coeff(
-                b, l, AR_eff, alpha, beta, int(self.kind[l]), self.side[l]
+                b, l, AR_eff, alpha, beta, kind, side
             )
 
-            # Trig helpers
-            cosb2 = ti.cos(beta) ** 2
-            cosa2 = ti.cos(alpha) ** 2
-
             # Dynamic pressure * area
-            ti_05 = 0.5
-            qS = ti_05 * self.rho[b] * S_eff * v_mod ** 2
+            v_mod2 = v_mod * v_mod
+            qS = 0.5 * rho * S_eff * v_mod2
             L = qS * cl
             D = qS * cd
-            S = qS * cl  # here sideforce magnitude is tied to CL
 
             # Force in body frame
             Fb = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
             cp = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
 
-            if self.kind[l] == 4:
+            if kind == 4:
                 # Prop: thrust along +z in prop frame
                 Fb = (
                     ti.Vector([0.0, 0.0, 1.0], dt=ti.f32)
@@ -561,15 +782,20 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                     * float(self._thr_flt[b])
                     * self.max_thrust[b]
                 )
-            elif self.kind[l] == 3:
+            elif kind == 3:
                 # Rudder: forces in YZ plane
+                cosa = ti.cos(alpha)
+                cosa2 = cosa * cosa
+                S = L  # sideforce magnitude tied to CL
                 Fb = self._rot_yz(alpha, beta) @ ti.Vector([D * cosa2, S * cosa2, 0.0], dt=ti.f32)
                 cp = ti.cast(self._cp_rudder(rigid, b, alpha, beta, l), ti.f32)
             else:
                 # Fuselage or wing: forces in XZ plane
+                cosb = ti.cos(beta)
+                cosb2 = cosb * cosb
                 Fb = self._rot_yz(alpha, beta) @ ti.Vector([D * cosb2, 0.0, L * cosb2], dt=ti.f32)
-                if self.kind[l] == 1:  # wing
-                    idx = 0 if self.side[l] == 1 else 1
+                if kind == 1:  # wing
+                    idx = 0 if side == 1 else 1
                     self.cl_wing_b[b, idx] = ti.cast(cl, ti.f16)  # store CL for tail
                     cp = ti.cast(self._cp_wing(rigid, b, alpha, beta, l), ti.f32)
                 else:  # fuselage
@@ -597,13 +823,13 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                 self.alpha_dbg[b, l] = ti.cast(alpha, ti.f16)
                 self.beta_dbg[b, l] = ti.cast(beta, ti.f16)
                 self.drag_dbg[b, l] = ti.cast(D, ti.f16)
-                if self.kind[l] != 3:
+                if kind != 3:
                     self.lift_dbg[b, l] = ti.cast(L, ti.f16)
                     self.side_force_dbg[b, l] = ti.cast(0.0, ti.f16)
                 else:
                     self.lift_dbg[b, l] = ti.cast(0.0, ti.f16)
-                    self.side_force_dbg[b, l] = ti.cast(S, ti.f16)
-                if self.kind[l] == 4:
+                    self.side_force_dbg[b, l] = ti.cast(L, ti.f16)
+                if kind == 4:
                     self.drag_dbg[b, l] = ti.cast(self._thr_flt[b], ti.f16)
 
     @ti.func
@@ -613,16 +839,21 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         const_V_MIN = 0.1
         const_MU_AIR = 1.81e-5  # dynamic viscosity [kg/(m*s)] for Reynolds estimate
 
-        if self.kind[l] == 2:
+        kind = ti.cast(self.kind[l], ti.i32)
+        if kind == 2:
+            side = ti.cast(self.side[l], ti.i32)
+            slip_code = ti.cast(self.slip_code[l], ti.i32)
+            rho = self.rho[b]
+
             v_body_tail = self._get_wind_in_body(rigid, self._link_idx[l], b)
 
             slip = 0.0
-            if self.slip_code[l] == 0:
+            if slip_code == 0:
                 slip = float(self.k_slip_fus[b])
-            elif self.slip_code[l] == 1:
-                slip = float(self._elevator_param(self.k_slip_tail, self.k_slip_tail_elevator_left, self.k_slip_tail_elevator_right, b, self.side[l]))
-            elif self.slip_code[l] == 2:
-                slip = float(self._wing_param(self.k_slip_wing, self.k_slip_wing_left, self.k_slip_wing_right, b, self.side[l]))
+            elif slip_code == 1:
+                slip = float(self._elevator_param(self.k_slip_tail, self.k_slip_tail_elevator_left, self.k_slip_tail_elevator_right, b, side))
+            elif slip_code == 2:
+                slip = float(self._wing_param(self.k_slip_wing, self.k_slip_wing_left, self.k_slip_wing_right, b, side))
 
             v_body_tail.x -= slip * ti.cast(self.v_ind[b], ti.f32)
 
@@ -634,26 +865,28 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             betat  = ti.asin(ti.math.clamp(v_body_tail.y / Vt, -1.0, 1.0))
 
             # Mean wing CL for downwash
-            idx = 0 if self.side[l] == 1 else 1
+            idx = 0 if side == 1 else 1
             cl_w_mean = ti.cast(self.cl_wing_b[b, idx], ti.f32)
 
             # Effective tail AoA with downwash
-            k_eps = self._elevator_param(self.k_eps_tail, self.k_eps_tail_elevator_left, self.k_eps_tail_elevator_right, b, self.side[l])
+            k_eps = self._elevator_param(self.k_eps_tail, self.k_eps_tail_elevator_left, self.k_eps_tail_elevator_right, b, side)
             eps = (k_eps * cl_w_mean) / (ti.math.pi * self.AR_wing)
             alpha_eff = alphat - eps
 
             # Reynolds number (per-tail surface)
             c_ref_t = ti.max(ti.cast(self.chord[l], ti.f32), 1e-6)
-            self.Reynolds[b, l] = (self.rho[b] * Vt * c_ref_t) / const_MU_AIR
+            self.Reynolds[b, l] = (rho * Vt * c_ref_t) / const_MU_AIR
             # Tail coefficients (kind=2)
             S_eff_t = self._compute_eff_S(rigid, b, l)
             AR_eff_t = self._compute_eff_AR(rigid, b, l, betat)
-            cl_t, cd_t = self._compute_coeff(b, l, AR_eff_t, alpha_eff, betat, 2, self.side[l])
+            cl_t, cd_t = self._compute_coeff(b, l, AR_eff_t, alpha_eff, betat, 2, side)
 
-            cosb2 = ti.cos(betat) ** 2
+            cosb = ti.cos(betat)
+            cosb2 = cosb * cosb
 
             # Tail forces
-            qS_t = 0.5 * self.rho[b] * S_eff_t * Vt ** 2 * cosb2
+            Vt2 = Vt * Vt
+            qS_t = 0.5 * rho * S_eff_t * Vt2 * cosb2
             L_t = qS_t * cl_t
             D_t = qS_t * cd_t
             Fb_t = self._rot_yz(alpha_eff, betat) @ ti.Vector([D_t, 0.0, L_t], dt=ti.f32)
@@ -765,6 +998,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         cl_alpha = self.cl_alpha_2d_link[b, l]
         alpha0 = self.alpha0_2d_link[b, l]
         smooth = self.m_smooth_link[b, l]
+        w = self.w_link[b, l]
         # For the rudder (kind=3) use beta as effective alpha
         if kind == 3:
             alpha = beta
@@ -786,12 +1020,14 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             cd0 = self._wing_param(self.cd0, self.cd0_wing_left, self.cd0_wing_right, b, side)
             cut = self._wing_param(self.alpha_stall_deg, self.alpha_stall_deg_wing_left, self.alpha_stall_deg_wing_right, b, side) * ti.math.pi / 180.0
             smooth = self._wing_param(self.m_smooth, self.m_smooth_wing_left, self.m_smooth_wing_right, b, side)
+            w = self._wing_param(self.w, self.w_wing_left, self.w_wing_right, b, side)
         elif kind == 2:  # elevator
             cl_alpha = self._elevator_param(self.cl_alpha_2d, self.cl_alpha_2d_elevator_left, self.cl_alpha_2d_elevator_right, b, side)
             alpha0 = self._elevator_param(self.alpha0_2d, self.alpha0_2d_elevator_left, self.alpha0_2d_elevator_right, b, side)
             cd0 = self._elevator_param(self.cd0, self.cd0_elevator_left, self.cd0_elevator_right, b, side)
             cut = self._elevator_param(self.alpha_stall_deg, self.alpha_stall_deg_elevator_left, self.alpha_stall_deg_elevator_right, b, side) * ti.math.pi / 180.0
             smooth = self._elevator_param(self.m_smooth, self.m_smooth_elevator_left, self.m_smooth_elevator_right, b, side)
+            w = self._elevator_param(self.w, self.w_elevator_left, self.w_elevator_right, b, side)
 
         cl_a = cl_alpha * AR / (2.0 + ti.sqrt(AR * AR + 4.0))
 
@@ -820,6 +1056,12 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         cd_st = 2.0 * sa * sa
         cl_st *= f_re
         cd_st *= f_re
+        if (kind == 1) or (kind == 2) or (kind == 3):
+            ar_safe = ti.max(AR, 1e-6)
+            k_cd = 1.0 - 0.41 * (1.0 - ti.exp(-17.0 / ar_safe))  # flat-plate AR correction
+            correction = 1.0 - w * (1.0 - k_cd)  # w scales how much is applied
+            cl_st *= correction
+            cd_st *= correction
 
         # Smooth blend between linear and post-stall using m_smooth as width
         width = smooth * cut_eff

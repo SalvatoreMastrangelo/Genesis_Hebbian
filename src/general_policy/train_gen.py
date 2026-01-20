@@ -13,9 +13,11 @@ Workflow:
 
 import argparse
 import os
+os.environ["GS_PARA_LEVEL"] = "3"
 import pickle
 import random
 import shutil
+import time
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
@@ -233,6 +235,7 @@ def train(
     # ------------------------------------------------------------------ #
     # Environment creation                                               #
     # ------------------------------------------------------------------ #
+    env_init_start = time.perf_counter()
     if use_mixture:
         print(f"[train] Using URDF catalog at: {catalog_path} → mixture mode")
 
@@ -264,6 +267,12 @@ def train(
             eval=False,
             device=device,
         )
+    env_init_elapsed = time.perf_counter() - env_init_start
+    per_env = env_init_elapsed / max(1, num_envs)
+    print(
+        "[train] Env init time: "
+        f"{env_init_elapsed:.3f}s total, {per_env:.6f}s per env (num_envs={num_envs})"
+    )
 
     # ------------------------------------------------------------------ #
     # RSL-RL runner                                                      #

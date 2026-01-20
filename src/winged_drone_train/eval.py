@@ -104,7 +104,7 @@ def _configure_cache_root() -> Path:
 # 1) Roll-out that returns per-env statistics                            #
 # ---------------------------------------------------------------------- #
 @torch.no_grad()
-def run_eval(env, policy, extra_data: bool = False):
+def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 300.0):
     """
     Lightweight rollout for evaluation.
 
@@ -133,6 +133,9 @@ def run_eval(env, policy, extra_data: bool = False):
     t_acc = torch.zeros(B, device=dev)
     dx_acc = torch.zeros(B, device=dev)
     E_acc = torch.zeros(B, device=dev)
+    dx_eff = torch.zeros(B, device=dev)
+    E_eff = torch.zeros(B, device=dev)
+    reached_min = torch.zeros(B, dtype=torch.bool, device=dev)
     final_reason = torch.full((B,), 3, dtype=torch.int8, device=dev)
 
     # reset env and reference x position
@@ -162,6 +165,16 @@ def run_eval(env, policy, extra_data: bool = False):
             P = env.power
             E_acc[alive] += P[alive] * dt
 
+            # effective energy/distance up to minimal_progress
+            still_count = alive & (~reached_min)
+            if still_count.any():
+                E_eff[still_count] += P[still_count] * dt
+                dx_eff[still_count] = dx_acc[still_count]
+                newly_reached = still_count & (dx_acc >= minimal_progress)
+                if newly_reached.any():
+                    reached_min[newly_reached] = True
+                    dx_eff[newly_reached] = minimal_progress
+
             # store traces needed for heatmaps (distance + joint positions)
             base_x = env.base_pos[:, 0] - x0  # Δx for all envs
             jp = env.joint_position.detach().cpu()  # (B, num_joints)
@@ -189,9 +202,13 @@ def run_eval(env, policy, extra_data: bool = False):
 
     # ---- global metrics (drop NaN envs for v_mean / E_tot / v_cmd) -------
     nan_indices = env.nan_envs.to(torch.bool)
+    not_reached = ~reached_min
+    if not_reached.any():
+        dx_eff[not_reached] = dx_acc[not_reached]
+        E_eff[not_reached] = E_acc[not_reached]
 
     v_mean = (dx_acc[~nan_indices] / t_acc[~nan_indices].clamp_min(1e-6)).cpu().numpy()
-    E_tot = (E_acc[~nan_indices] / dx_acc[~nan_indices].clamp_min(1e-6)).cpu().numpy()
+    E_tot = (E_eff[~nan_indices] / dx_eff[~nan_indices].clamp_min(1e-6)).cpu().numpy()
     mg = env.nominal_mass * 9.81
     COT   = E_tot / mg
     v_cmd = env.commands[~nan_indices, 0].detach().cpu().numpy()
@@ -225,6 +242,7 @@ def evaluation(
     vmin: float,
     vmax: float,
     win_frac: float = 0.03,
+    minimal_progress: float = 300.0,
     return_arrays: bool = False,
     custom_policy_path: str | None = None,
     obs_genome: bool | None = False,
@@ -328,6 +346,7 @@ def evaluation(
         env,
         policy,
         extra_data=bool(save_plots),
+        minimal_progress=minimal_progress,
     )
     print(
         f"[evaluation] rollout done | v_mean={len(v_mean)} v_cmd={len(v_cmd)} "
@@ -479,7 +498,7 @@ def evaluation(
                 v_cmd,
                 progress,
                 win_frac=win_frac,
-                minimal_p=300.0,
+                minimal_p=minimal_progress,
                 out=str(total_out),
             )
             print(f"[evaluation] total_plot → {total_out}")
@@ -557,14 +576,7 @@ if __name__ == "__main__":
     gs.init(logging_level="error")
 
     # NOTE: same hard-coded URDF path as in the original script
-    urdf_file = (
-        "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/"
-        "[0.7, 3.5, 0.73, 0.38, 0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, "
-        "2, 2.5, 2, -3].urdf"
-    )
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
-    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 0.25, 2, 2.5, 2, -3].urdf"
+    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
 
 
     command_cfg["min_speed"] = args.vmin
@@ -612,9 +624,11 @@ if __name__ == "__main__":
     )
 
     # Small amount of solver noise, as in the original script
-    env.aero_solver.noise_sigma_mag = 0.03
-    env.aero_solver.noise_sigma_dir = 0.03
+    env.aero_solver.noise_sigma_mag = 0.00
+    env.aero_solver.noise_sigma_dir = 0.00
     env.aero_solver.noise_sigma_param = 0.0
+    env.aero_solver.noise_sigma_cp = 0.0
+
 
     plotter = EvaluationPlotter()
     plotter.plot_forest(env)
@@ -629,7 +643,12 @@ if __name__ == "__main__":
     v_cmd_all = np.linspace(args.vmin, args.vmax, args.envs)
 
     # Single evaluation rollout
-    v_mean, COT, v_cmd, progress, final_reason, traces_all = run_eval(env, policy, extra_data=True)
+    v_mean, COT, v_cmd, progress, final_reason, traces_all = run_eval(
+        env,
+        policy,
+        extra_data=True,
+        minimal_progress=300.0,
+    )
 
     # Reason counts
     n_success = int((final_reason == 0).sum())

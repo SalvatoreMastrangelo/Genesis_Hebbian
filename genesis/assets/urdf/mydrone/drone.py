@@ -1,10 +1,11 @@
+import copy
 import xml.etree.ElementTree as ET
-import yaml
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import math
 import re
+import struct
 from typing import Dict, Iterable, List, Tuple, Optional, Sequence
 import csv
 ############################################################
@@ -88,8 +89,9 @@ class DroneModel:
         SurfaceKind.PROPELLER: (),
     }
 
-    def __init__(self, urdf_path: str):
+    def __init__(self, urdf_path: str, config_override: dict | None = None):
         self.urdf_path = Path(urdf_path)
+        self._config_override = copy.deepcopy(config_override) if config_override is not None else None
 
         self.surfaces: list[AeroSurface] = []
         self.actuators: dict[str, ActuatorInfo] = {}
@@ -103,7 +105,110 @@ class DroneModel:
     def _require_keys(self, section: str, mapping: dict, required: Iterable[str]):
         missing = [k for k in required if k not in mapping]
         if missing:
-            raise ValueError(f"Missing keys {missing} in aero_parameters.yaml section '{section}'")
+            raise ValueError(f"Missing keys {missing} in aero configuration section '{section}'")
+
+    def _name_tokens(self, name: str) -> set[str]:
+        lname = name.lower().replace("propeller", "prop").replace("centre", "center")
+        tokens = re.split(r"[^a-z0-9]+", lname)
+        return {t for t in tokens if t}
+
+    def _extract_kind_token(self, tokens: set[str]) -> str | None:
+        if "prop" in tokens:
+            return "propeller"
+        if "rudder" in tokens or ("tail" in tokens and "vertical" in tokens):
+            return "rudder"
+        if "elevator" in tokens or ("tail" in tokens and "horizontal" in tokens):
+            return "elevator"
+        if "wing" in tokens:
+            return "wing"
+        if "fuselage" in tokens or "fuse" in tokens or "body" in tokens:
+            return "fuselage"
+        return None
+
+    def _extract_side_token(self, tokens: set[str]) -> str | None:
+        if "left" in tokens:
+            return "left"
+        if "right" in tokens:
+            return "right"
+        if "center" in tokens:
+            return "center"
+        return None
+
+    def _match_frame_name(self, target: str, link_names: List[str]) -> str | None:
+        if target in link_names:
+            return target
+
+        target_tokens = self._name_tokens(target)
+        target_kind = self._extract_kind_token(target_tokens)
+        target_side = self._extract_side_token(target_tokens)
+
+        best_score = -1
+        best_names: List[str] = []
+
+        for name in link_names:
+            tokens = self._name_tokens(name)
+            kind = self._extract_kind_token(tokens)
+            if target_kind and kind and kind != target_kind:
+                continue
+            if target_side:
+                cand_side = self._extract_side_token(tokens)
+                if cand_side and cand_side != target_side:
+                    continue
+            score = len(target_tokens & tokens)
+            if target_side and self._extract_side_token(tokens) == target_side:
+                score += 1
+            if score > best_score:
+                best_score = score
+                best_names = [name]
+            elif score == best_score and score > 0:
+                best_names.append(name)
+
+        if best_score <= 0 or not best_names:
+            return None
+        if len(best_names) > 1:
+            raise ValueError(f"Ambiguous frame mapping for '{target}': {best_names}")
+        return best_names[0]
+
+    def _auto_discover_frames(self, root) -> List[str]:
+        frames = []
+        for link in root.findall(".//link"):
+            name = link.get("name", "")
+            lname = name.lower()
+            if lname.startswith("aero_frame_") or lname.startswith("prop_frame_") or lname.startswith("propeller"):
+                frames.append(name)
+        return sorted(frames)
+
+    def _resolve_link_cfg(self, root, link_cfg: dict) -> Tuple[dict, List[str]]:
+        link_names = [link.get("name") for link in root.findall(".//link") if link.get("name")]
+        if not link_cfg:
+            return {}, self._auto_discover_frames(root)
+
+        resolved: dict = {}
+        missing: List[str] = []
+        for cfg_name, cfg in link_cfg.items():
+            if cfg is None:
+                cfg = {}
+            if not isinstance(cfg, dict):
+                raise ValueError(f"Link config for '{cfg_name}' must be a mapping.")
+
+            actual = self._match_frame_name(cfg_name, link_names)
+            if actual is None:
+                missing.append(cfg_name)
+                continue
+            if actual in resolved:
+                if resolved[actual] != cfg:
+                    raise ValueError(
+                        f"Multiple config entries map to '{actual}' with different values: {cfg_name}"
+                    )
+                continue
+            resolved[actual] = dict(cfg)
+
+        if missing:
+            raise ValueError(f"URDF is missing link(s) for: {missing}")
+
+        auto_frames = self._auto_discover_frames(root)
+        frames = list(dict.fromkeys(list(resolved.keys()) + [f for f in auto_frames if f not in resolved]))
+        return resolved, frames
 
 
     ############################################################
@@ -114,29 +219,29 @@ class DroneModel:
         cfg = self._load_yaml()
 
         if not isinstance(cfg, dict):
-            raise ValueError("aero_parameters.yaml must define a mapping at the top level.")
+            raise ValueError("Aero configuration must define a mapping at the top level.")
 
         global_cfg = cfg.get("global")
         type_cfg = cfg.get("types")
-        link_cfg = cfg.get("links")
+        link_cfg = cfg.get("links", {})
         if not isinstance(global_cfg, dict) or not global_cfg:
-            raise ValueError("aero_parameters.yaml must define a non-empty 'global' section.")
+            raise ValueError("Aero configuration must define a non-empty 'global' section.")
         if not isinstance(type_cfg, dict) or not type_cfg:
-            raise ValueError("aero_parameters.yaml must define a non-empty 'types' section.")
-        if not isinstance(link_cfg, dict) or not link_cfg:
-            raise ValueError("aero_parameters.yaml must define a non-empty 'links' section.")
+            raise ValueError("Aero configuration must define a non-empty 'types' section.")
+        if not isinstance(link_cfg, dict):
+            raise ValueError("Aero configuration must define a mapping for the 'links' section.")
 
         self._require_keys("global", global_cfg, self.REQUIRED_GLOBAL_KEYS)
 
         self.global_params = global_cfg
         self.noise_params = cfg.get("noise", {})
 
-        aero_frames = self._discover_aero_frames(root, link_cfg)
+        link_cfg, aero_frames = self._resolve_link_cfg(root, link_cfg)
 
         # Build aerodynamic surfaces
         for frame in aero_frames:
             kind = self._infer_kind(frame, link_cfg)
-            S, AR, chord, span = self._compute_geom(root, frame, kind)
+            S, AR, chord, span = self._compute_geom(root, frame, kind, link_cfg.get(frame, {}))
             params = self._resolve_params(frame, kind, type_cfg, link_cfg)
 
             # --- Seff ratios (relative to S0) ---
@@ -159,7 +264,7 @@ class DroneModel:
         self._wingspan = self._wingspan_from_surfaces(self.surfaces)
         prop_frames = [s.frame_name for s in self.surfaces if s.kind == SurfaceKind.PROPELLER]
         if not prop_frames:
-            raise ValueError("No propeller surface defined in aero_parameters.yaml/URDF.")
+            raise ValueError("No propeller surface defined in aero configuration/URDF.")
         prop_radius = self._extract_prop_radius(root, prop_frames[0])
         slip_factor = prop_radius / self._wingspan
         for surf in self.surfaces:
@@ -181,12 +286,14 @@ class DroneModel:
 
 
     ############################################################
-    # LOAD YAML CONFIG
+    # LOAD AERO CONFIG
     ############################################################
     def _load_yaml(self):
-        yaml_path = self.urdf_path.parent / "aero_parameters.yaml"
-        with open(yaml_path, "r") as f:
-            return yaml.safe_load(f)
+        if self._config_override is not None:
+            return copy.deepcopy(self._config_override)
+        if self._config_override is None:
+            raise ValueError("Aero configuration override is required for DroneModel.")
+        return copy.deepcopy(self._config_override)
 
     def _load_actuator_catalog(self) -> dict[str, dict]:
         """
@@ -226,13 +333,13 @@ class DroneModel:
 
     def _validate_actuator_catalog_usage(self, catalog: dict[str, dict]) -> None:
         """
-        Ensure all actuator names referenced in aero_parameters.yaml exist in actuators.csv
+        Ensure all actuator names referenced in the aero configuration exist in actuators.csv
         and contain the required fields for their type.
         """
         if not self.actuators:
             return
         if not catalog:
-            raise ValueError("actuators.csv is missing/empty but aero_parameters.yaml references actuators.")
+            return
 
         def require(act_name: str, expected_type: str, required_fields: tuple[str, ...], frame: str) -> None:
             row = catalog.get(act_name)
@@ -260,12 +367,12 @@ class DroneModel:
     def _apply_actuator_catalog(self, catalog: dict[str, dict]) -> None:
         """
         Apply actuator catalog rows to AeroSurface params based on the actuator name
-        assigned in aero_parameters.yaml (links: <frame>: actuator: P08).
+        assigned in aero configuration (links: <frame>: actuator: P08).
         """
         if not catalog:
             return
 
-        # frame_name -> actuator_name mapping (already parsed from YAML in _parse_actuators)
+        # frame_name -> actuator_name mapping (already parsed from aero config in _parse_actuators)
         frame_to_act = {}
         for frame, info in self.actuators.items():
             act = getattr(info, "actuator", None)
@@ -311,10 +418,10 @@ class DroneModel:
             if missing:
                 raise ValueError(
                     f"Propeller frame '{surf.frame_name}' missing parameters {missing}. "
-                    "Provide them via aero_parameters.yaml or actuators.csv."
+                    "Provide them via the aero configuration or actuators.csv."
                 )
             return
-        raise ValueError("No propeller surface defined in aero_parameters.yaml/URDF.")
+        raise ValueError("No propeller surface defined in aero configuration/URDF.")
 
     def _norm_none(self, v):
         if v is None:
@@ -324,19 +431,12 @@ class DroneModel:
         return v
 
     ############################################################
-    # FIND AERO FRAMES (from YAML or URDF)
+    # FIND AERO FRAMES (from aero config or URDF)
     ############################################################
     def _discover_aero_frames(self, root, link_cfg):
         if link_cfg:
             return list(link_cfg.keys())
-
-        frames = []
-        for link in root.findall(".//link"):
-            name = link.get("name", "")
-            if name.startswith("aero_frame_") or name.startswith("prop_frame_"):
-                frames.append(name)
-
-        return sorted(frames)
+        return self._auto_discover_frames(root)
 
 
     ############################################################
@@ -344,59 +444,163 @@ class DroneModel:
     ############################################################
     def _infer_kind(self, frame, link_cfg):
         if frame in link_cfg and "type" in link_cfg[frame]:
-            return SurfaceKind(link_cfg[frame]["type"])
+            raw = str(link_cfg[frame]["type"]).strip().lower()
+            aliases = {
+                "prop": "propeller",
+                "propeller": "propeller",
+                "fuse": "fuselage",
+                "body": "fuselage",
+            }
+            raw = aliases.get(raw, raw)
+            try:
+                return SurfaceKind(raw)
+            except Exception as exc:
+                raise ValueError(
+                    f"Invalid surface type '{link_cfg[frame]['type']}' for frame '{frame}'."
+                ) from exc
 
-        name = frame.lower()
-
-        if "fuselage" in name:
+        tokens = self._name_tokens(frame)
+        kind_token = self._extract_kind_token(tokens)
+        if kind_token == "fuselage":
             return SurfaceKind.FUSELAGE
-        if "wing" in name:
+        if kind_token == "wing":
             return SurfaceKind.WING
-        if "elevator" in name:
+        if kind_token == "elevator":
             return SurfaceKind.ELEVATOR
-        if "rudder" in name:
+        if kind_token == "rudder":
             return SurfaceKind.RUDDER
-        if "prop" in name:
+        if kind_token == "propeller":
             return SurfaceKind.PROPELLER
 
         raise ValueError(f"Cannot infer aerodynamic type for frame: {frame}")
 
 
     ############################################################
-    # GEOMETRY EXTRACTION (from URDF boxes)
+    # GEOMETRY EXTRACTION (box/cylinder/mesh)
     ############################################################
-    def _compute_geom(self, root, frame, kind):
-        link = root.find(f".//link[@name='{frame}']")
-        if link is None:
-            raise ValueError(f"URDF missing link for aerodynamic frame '{frame}'.")
+    def _resolve_mesh_path(self, mesh_filename: str) -> Path:
+        if mesh_filename.startswith("package://"):
+            rel = mesh_filename[len("package://") :]
+            parts = rel.split("/", 1)
+            pkg = parts[0]
+            rest = parts[1] if len(parts) == 2 else ""
+            if pkg == self.urdf_path.parent.name and rest:
+                rel_path = rest
+            else:
+                rel_path = rel
+            return self.urdf_path.parent / rel_path
+        path = Path(mesh_filename)
+        if not path.is_absolute():
+            return self.urdf_path.parent / path
+        return path
 
-        box = link.find("./collision/geometry/box")
-        if box is None:
-            box = self._find_parent_collision_box(root, frame)
+    def _stl_bounds(self, mesh_path: Path) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+        data = mesh_path.read_bytes()
+        if len(data) < 84:
+            raise ValueError(f"STL file too small: {mesh_path}")
 
-        sx, sy, sz = map(float, box.get("size").split())
+        tri_count = struct.unpack("<I", data[80:84])[0]
+        expected = 84 + 50 * tri_count
+        min_v = [math.inf, math.inf, math.inf]
+        max_v = [-math.inf, -math.inf, -math.inf]
 
-        chord = sy
-        span = sz
-        area = chord * span
-
-        if kind == SurfaceKind.WING or kind == SurfaceKind.ELEVATOR:
-            AR = (2 * span + 0.1) / chord if area > 0 else 1.0
+        if expected <= len(data):
+            offset = 84
+            for _ in range(tri_count):
+                offset += 12  # normal
+                for _ in range(3):
+                    x, y, z = struct.unpack_from("<3f", data, offset)
+                    offset += 12
+                    min_v[0] = min(min_v[0], x)
+                    min_v[1] = min(min_v[1], y)
+                    min_v[2] = min(min_v[2], z)
+                    max_v[0] = max(max_v[0], x)
+                    max_v[1] = max(max_v[1], y)
+                    max_v[2] = max(max_v[2], z)
+                offset += 2  # attr
         else:
-            AR = span / chord if area > 0 else 1.0
+            text = data.decode("utf-8", errors="ignore")
+            found = False
+            for line in text.splitlines():
+                line = line.strip()
+                if not line.lower().startswith("vertex"):
+                    continue
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                try:
+                    x, y, z = map(float, parts[1:4])
+                except ValueError:
+                    continue
+                found = True
+                min_v[0] = min(min_v[0], x)
+                min_v[1] = min(min_v[1], y)
+                min_v[2] = min(min_v[2], z)
+                max_v[0] = max(max_v[0], x)
+                max_v[1] = max(max_v[1], y)
+                max_v[2] = max(max_v[2], z)
+            if not found:
+                raise ValueError(f"STL file has no vertices: {mesh_path}")
 
-        if kind == SurfaceKind.FUSELAGE:
-            area = math.pi * 0.25 * sx * sy
-        print(f"Computed geom for {frame}: S={area}, chord={chord}, AR={AR}, span={span}")
+        return (min_v[0], min_v[1], min_v[2]), (max_v[0], max_v[1], max_v[2])
 
-        return area, AR, chord, span
+    def _mesh_bounds(self, mesh_filename: str, scale: str | None = None) -> Tuple[float, float, float]:
+        mesh_path = self._resolve_mesh_path(mesh_filename)
+        if not mesh_path.exists():
+            raise FileNotFoundError(f"Mesh file not found: {mesh_path}")
+        if mesh_path.suffix.lower() != ".stl":
+            raise ValueError(f"Unsupported mesh format '{mesh_path.suffix}': {mesh_path}")
+        (min_v, max_v) = self._stl_bounds(mesh_path)
+        sx = max_v[0] - min_v[0]
+        sy = max_v[1] - min_v[1]
+        sz = max_v[2] - min_v[2]
+        if scale:
+            try:
+                svals = [float(v) for v in scale.split()]
+            except ValueError as exc:
+                raise ValueError(f"Invalid mesh scale '{scale}' for {mesh_path}") from exc
+            if len(svals) == 3:
+                sx *= svals[0]
+                sy *= svals[1]
+                sz *= svals[2]
+        return sx, sy, sz
 
-    def _find_parent_collision_box(self, root, child_link: str, max_hops: int = 16):
+    def _extract_geometry_dims(self, link) -> Tuple[float, float, float] | None:
+        if link is None:
+            return None
+        geom = link.find("./collision/geometry")
+        if geom is None:
+            geom = link.find("./visual/geometry")
+        if geom is None:
+            return None
+
+        box = geom.find("box")
+        if box is not None and box.get("size"):
+            return tuple(map(float, box.get("size").split()))
+
+        cyl = geom.find("cylinder")
+        if cyl is not None and cyl.get("radius") and cyl.get("length"):
+            radius = float(cyl.get("radius"))
+            length = float(cyl.get("length"))
+            return (2.0 * radius, 2.0 * radius, length)
+
+        sph = geom.find("sphere")
+        if sph is not None and sph.get("radius"):
+            radius = float(sph.get("radius"))
+            return (2.0 * radius, 2.0 * radius, 2.0 * radius)
+
+        mesh = geom.find("mesh")
+        if mesh is not None and mesh.get("filename"):
+            return self._mesh_bounds(mesh.get("filename"), mesh.get("scale"))
+
+        return None
+
+    def _find_parent_geometry(self, root, child_link: str, max_hops: int = 16) -> Tuple[float, float, float] | None:
         """
         Resolve geometry for an aero frame that is a massless link without collision.
 
         We traverse the kinematic tree upwards (child -> parent joints) until we
-        find a link with a collision box.
+        find a link with collision/visual geometry.
         """
 
         def parent_of(child: str) -> str | None:
@@ -418,14 +622,69 @@ class DroneModel:
             par_link = root.find(f".//link[@name='{par}']")
             if par_link is None:
                 break
-            box = par_link.find("./collision/geometry/box")
-            if box is not None:
-                return box
+            dims = self._extract_geometry_dims(par_link)
+            if dims is not None:
+                return dims
             cur = par
 
-        raise ValueError(
-            f"Aerodynamic frame '{child_link}' has no collision box and no ancestor link with a collision box."
-        )
+        return None
+
+    def _compute_geom(self, root, frame, kind, link_cfg: dict):
+        link = root.find(f".//link[@name='{frame}']")
+        if link is None:
+            raise ValueError(f"URDF missing link for aerodynamic frame '{frame}'.")
+
+        dims = self._extract_geometry_dims(link)
+        if dims is None:
+            dims = self._find_parent_geometry(root, frame)
+
+        def read_override(keys: Sequence[str]) -> float | None:
+            for key in keys:
+                if key in link_cfg:
+                    val = self._norm_none(link_cfg.get(key))
+                    if val is not None:
+                        return float(val)
+            return None
+
+        chord = read_override(("chord",))
+        span = read_override(("span",))
+        area = read_override(("S", "area"))
+        ar = read_override(("AR", "aspect_ratio"))
+
+        if dims is not None:
+            sx, sy, sz = map(float, dims)
+            if chord is None:
+                chord = sy
+            if span is None:
+                span = sz
+            if area is None:
+                area = chord * span if chord is not None and span is not None else None
+
+        if chord is None or span is None:
+            raise ValueError(
+                f"Missing geometry for '{frame}': provide chord/span in config or valid URDF geometry."
+            )
+        if area is None:
+            area = chord * span
+
+        if kind == SurfaceKind.FUSELAGE:
+            if dims is not None and read_override(("S", "area")) is None:
+                area = math.pi * 0.25 * sx * sy
+
+        if ar is None:
+            if kind in (SurfaceKind.WING, SurfaceKind.ELEVATOR):
+                ar = (2 * span + 0.1) / chord if area > 0 else 1.0
+            else:
+                ar = span / chord if area > 0 else 1.0
+
+        if not all(math.isfinite(v) and v > 0.0 for v in (area, chord, span, ar)):
+            raise ValueError(
+                f"Invalid geometry for '{frame}': S={area}, chord={chord}, AR={ar}, span={span}"
+            )
+
+        print(f"Computed geom for {frame}: S={area}, chord={chord}, AR={ar}, span={span}")
+
+        return area, ar, chord, span
 
 
     ############################################################
@@ -438,14 +697,25 @@ class DroneModel:
         type_key = kind.value
         type_params = type_cfg.get(type_key)
         if type_params is None and kind != SurfaceKind.PROPELLER:
-            raise ValueError(f"aero_parameters.yaml missing type configuration for '{type_key}'.")
+            raise ValueError(f"aero configuration missing type configuration for '{type_key}'.")
         if type_params is not None:
             self._require_keys(f"types.{type_key}", type_params, self.REQUIRED_TYPE_KEYS.get(kind, ()))
             p.update(type_params)
 
         if frame in link_cfg:
             for k, v in link_cfg[frame].items():
-                if k not in ("type", "actuator", "actuator_yaw", "actuator_pitch"):
+                if k not in (
+                    "type",
+                    "actuator",
+                    "actuator_yaw",
+                    "actuator_pitch",
+                    "S",
+                    "area",
+                    "AR",
+                    "aspect_ratio",
+                    "chord",
+                    "span",
+                ):
                     p[k] = v
 
         if "re_nom" in p:
@@ -479,7 +749,7 @@ class DroneModel:
             self.actuators[frame] = ActuatorInfo(
                 frame_name=frame,
                 joint_name=joint_name,
-                actuator=actuator_main,     # NEW — directly from YAML
+                actuator=actuator_main,     # NEW — directly from aero config
                 limits=limits,
                 yaw_actuator=actuator_yaw,
                 pitch_actuator=actuator_pitch,
@@ -534,9 +804,23 @@ class DroneModel:
 
         left = [abs(s.span) for s in wings if "left" in s.frame_name.lower()]
         right = [abs(s.span) for s in wings if "right" in s.frame_name.lower()]
+        center = [
+            abs(s.span)
+            for s in wings
+            if any(tok in s.frame_name.lower() for tok in ("center", "centre", "mid", "root"))
+        ]
 
         if left and right:
-            return max(left) + max(right)
+            span = max(left) + max(right)
+            if center:
+                span += max(center)
+            return span
+
+        if center:
+            if left or right:
+                side = max(left or right)
+                return max(center) + 2.0 * side
+            return max(center)
 
         return 2.0 * max(abs(s.span) for s in wings)
 
@@ -562,13 +846,13 @@ class DroneModel:
         if cyl is not None and cyl.get("radius") is not None:
             return float(cyl.get("radius"))
 
-        box = link.find("./collision/geometry/box")
-        if box is not None and box.get("size") is not None:
-            sx, sy, _ = map(float, box.get("size").split())
+        dims = self._extract_geometry_dims(link)
+        if dims is not None:
+            sx, sy, _ = map(float, dims)
             return 0.5 * max(sx, sy)
 
         raise ValueError(
-            f"Unable to extract prop radius: link '{prop_frame}' must define a cylinder radius or a collision box."
+            f"Unable to extract prop radius: link '{prop_frame}' must define cylinder/box/mesh geometry."
         )
 
 
@@ -614,7 +898,7 @@ class DroneAeroModel:
     """
     Adapter that exposes aerodynamic metadata consumed by `AeroSolver`.
 
-    The class parses the URDF + `aero_parameters.yaml` located next to it and
+    The class parses the URDF + provided aero configuration and
     builds:
     - ordered aerodynamic frames,
     - per-surface geometry tuples (S, AR, chord, kind code),
@@ -625,17 +909,17 @@ class DroneAeroModel:
     adapter only maps configuration data into the expected attributes.
     """
 
-    # Default aerodynamic frames (empty: filled from YAML/URDF at runtime).
+    # Default aerodynamic frames (empty: filled from aero config/URDF at runtime).
     AERO_FRAMES: List[str] = []
 
-    # Minimal defaults; real values come from aero_parameters.yaml.
+    # Minimal defaults; real values come from aero configuration.
     DEFAULT_BASE_PARAMS: Dict[str, float] = {}
 
     NOISE_DEFAULTS: Dict[str, float] = {"sigma_mag": 0.0, "sigma_dir": 0.0, "sigma_param": 0.0, "sigma_cp": 0.0}
 
-    def __init__(self, urdf_path: str):
+    def __init__(self, urdf_path: str, config_override: dict | None = None):
         self.urdf_path = str(urdf_path)
-        self._model = DroneModel(urdf_path)
+        self._model = DroneModel(urdf_path, config_override=config_override)
         self._urdf_root = ET.parse(self._model.urdf_path).getroot()
         self._surfaces = self._sorted_surfaces(self._model.surfaces)
         self.surface_kinds: List[SurfaceKind] = [s.kind for s in self._surfaces]
@@ -683,7 +967,7 @@ class DroneAeroModel:
         Compute a minimal-but-safe set of links to keep for the URDF loader.
 
         Includes:
-          - all aerodynamic frames (from aero_parameters.yaml),
+          - all aerodynamic frames (from the aero configuration),
           - the full parent chains for those frames,
           - parent/child links for the requested servo joints and their chains,
           - a fallback 'fuselage' link.
@@ -842,7 +1126,7 @@ class DroneAeroModel:
         return (f"{base}_elevator_left", f"{base}_elevator_right")
 
     def _merge_base_params(self) -> Tuple[Dict[str, float], Dict[str, float], List[Dict[str, float]]]:
-        """Merge YAML config into aero parameters and per-link overrides."""
+        """Merge aero configuration into aero parameters and per-link overrides."""
         cfg = self._model._load_yaml()
         cfg_global = cfg.get("global") or {}
         cfg_types = cfg.get("types") or {}
@@ -850,14 +1134,14 @@ class DroneAeroModel:
         def _ensure(section: str, mapping: Dict[str, float], keys: Iterable[str]) -> None:
             missing = [k for k in keys if k not in mapping]
             if missing:
-                raise ValueError(f"Missing keys {missing} in aero_parameters.yaml section '{section}'")
+                raise ValueError(f"Missing keys {missing} in aero configuration section '{section}'")
 
         _ensure("global", cfg_global, DroneModel.REQUIRED_GLOBAL_KEYS)
 
         def type_params(kind: SurfaceKind) -> Dict[str, float]:
             params = cfg_types.get(kind.value)
             if params is None:
-                raise ValueError(f"aero_parameters.yaml missing type configuration for '{kind.value}'.")
+                raise ValueError(f"aero configuration missing type configuration for '{kind.value}'.")
             _ensure(f"types.{kind.value}", params, DroneModel.REQUIRED_TYPE_KEYS.get(kind, ()))
             return dict(params)
 
@@ -869,7 +1153,7 @@ class DroneAeroModel:
         root = ET.parse(self._model.urdf_path).getroot()
         prop_frame = next((s.frame_name for s in self._surfaces if s.kind == SurfaceKind.PROPELLER), None)
         if prop_frame is None:
-            raise ValueError("No propeller surface defined in aero_parameters.yaml/URDF.")
+            raise ValueError("No propeller surface defined in aero configuration/URDF.")
         slip_factor = self._model._extract_prop_radius(root, prop_frame) / self._model.wingspan
         wing_scaled = dict(wing)
         wing_scaled["k_slip_wing"] = float(wing["k_slip_wing"]) * float(slip_factor)
@@ -892,7 +1176,7 @@ class DroneAeroModel:
 
         for key in ("rho", "force_cap"):
             if key not in p:
-                raise ValueError(f"Missing global aerodynamic constant '{key}' in aero_parameters.yaml.")
+                raise ValueError(f"Missing global aerodynamic constant '{key}' in aero configuration.")
 
         wing_keys = [
             "cl_alpha_2d",
@@ -939,7 +1223,7 @@ class DroneAeroModel:
         per_surface_params: List[Dict[str, float]] = [dict(s.params) for s in self._surfaces]
 
         # Base param overrides: make per-surface resolved params drive the actual solver fields
-        # used by `_wing_param` / `_elevator_param` (so link overrides in YAML take effect).
+        # used by `_wing_param` / `_elevator_param` (so link overrides in aero config take effect).
         overrides: Dict[str, float] = {}
         for surf, prm in zip(self._surfaces, per_surface_params):
             name_l = surf.frame_name.lower()
@@ -987,7 +1271,7 @@ class DroneAeroModel:
         root = ET.parse(self._model.urdf_path).getroot()
         prop_frame = next((s.frame_name for s in self._surfaces if s.kind == SurfaceKind.PROPELLER), None)
         if prop_frame is None:
-            raise ValueError("No propeller surface defined in aero_parameters.yaml/URDF.")
+            raise ValueError("No propeller surface defined in aero configuration/URDF.")
         return self._model._extract_prop_radius(root, prop_frame)
 
     def _parse_genes_from_name(self, name: str) -> Tuple[List[float], Dict[str, float]]:

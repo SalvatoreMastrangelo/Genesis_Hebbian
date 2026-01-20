@@ -204,7 +204,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         #   - noise / randomization of aerodynamic parameters
         "aero_noise": True,
         "aero_noise_sigma0": 0.05,    # base std for mag/dir noise on aero forces
-        "noise_sigma_param": 0.15,
+        "noise_sigma_param": 0.2,
 
     }
 
@@ -242,7 +242,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "angular": -5e-3,
             "crash": -20.0,
             "obstacle": -0.1,
-            "energy": -4e-4,   
+            "energy": -5e-4,   
             "progress": 5e-1,
             "height": -1e-1,
             "success": 0.0,
@@ -294,22 +294,28 @@ def configure_solver_noise(env: WingedDroneEnv, env_cfg: Dict[str, Any]) -> None
     # --- 3) aerodynamic force noise -------------------------------------- #
     sigma0 = float(env_cfg.get("aero_noise_sigma0", 0.0))
     if aero_noise_enabled:
-        # Use the same base sigma for magnitude and direction; this matches the
-        # pattern used in older scripts (0.05 for both).
-        if hasattr(aero_solver, "noise_sigma_mag"):
-            aero_solver.noise_sigma_mag = sigma0
-        if hasattr(aero_solver, "noise_sigma_dir"):
-            aero_solver.noise_sigma_dir = sigma0
-        if hasattr(aero_solver, "noise_sigma_param"):
-            aero_solver.noise_sigma_param = float(env_cfg.get("noise_sigma_param", 0.0))
+        sigma_mag = sigma0
+        sigma_dir = sigma0
+        sigma_param = float(env_cfg.get("noise_sigma_param", 0.0))
     else:
-        # Explicitly disable if attributes exist
+        sigma_mag = 0.0
+        sigma_dir = 0.0
+        sigma_param = 0.0
+
+    if hasattr(env, "set_noise_settings"):
+        env.set_noise_settings(
+            aero_sigma_mag=sigma_mag,
+            aero_sigma_dir=sigma_dir,
+            aero_sigma_param=sigma_param,
+            enable_aero_param_noise=aero_noise_enabled,
+        )
+    else:
         if hasattr(aero_solver, "noise_sigma_mag"):
-            aero_solver.noise_sigma_mag = 0.0
+            aero_solver.noise_sigma_mag = sigma_mag
         if hasattr(aero_solver, "noise_sigma_dir"):
-            aero_solver.noise_sigma_dir = 0.0
+            aero_solver.noise_sigma_dir = sigma_dir
         if hasattr(aero_solver, "noise_sigma_param"):
-            aero_solver.noise_sigma_param = 0.0
+            aero_solver.noise_sigma_param = sigma_param
 
     print(
         f"[configure_solver_noise] Aero noise enabled: {aero_noise_enabled}, "
@@ -478,7 +484,7 @@ def main() -> None:
         pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
     
     urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.497691, 1.88631, 0.646899, 0.327637, 0.339316, 0.223745, 2.64199, 0.10971, 2.67589, 0, 0.25, 2.4373, 3.45352, 2, -1.30368].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.577227, 3.44141, 0.536115, 0.441315, 0.382971, 0.344218, 3.57164, 0.284993, 1.61502, 0, 2.19704, 3.12993, 4, 5, 21].urdf"
     #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
     #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
     # --------------------------------------------------------------------- #

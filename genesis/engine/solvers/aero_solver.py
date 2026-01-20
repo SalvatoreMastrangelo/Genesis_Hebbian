@@ -7,6 +7,7 @@ from .base_solver import Solver
 from genesis.utils import geom as gu
 from genesis.engine.entities import RigidEntity  # for get_link()
 from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
+from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
 
 
 @ti.data_oriented
@@ -217,7 +218,7 @@ class AeroSolver(Solver):
 
         def require_param(frame: str, params: dict, key: str) -> float:
             if key not in params:
-                raise ValueError(f"Surface '{frame}' missing required key '{key}' in aero_parameters.yaml.")
+                raise ValueError(f"Surface '{frame}' missing required key '{key}' in aero configuration.")
             return float(params[key])
 
         for i in range(self.L):
@@ -449,7 +450,7 @@ class AeroSolver(Solver):
         if urdf_file is None:
             return None
 
-        return DroneAeroModel(urdf_file)
+        return DroneAeroModel(urdf_file, config_override=SimpleDroneAeroParameters.as_dict())
 
     def _apply_drone_model(self, model: DroneAeroModel, entity: RigidEntity):
         """

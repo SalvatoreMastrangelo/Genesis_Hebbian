@@ -1,0 +1,671 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="lisparrow">
+  <link
+    name="root_link">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+  </link>
+  <link
+    name="fuselage">
+    <inertial>
+      <origin
+        xyz="-1.9286E-05 -0.15234 0.0025609"
+        rpy="0 0 0" />
+      <mass
+        value="0.06883" />
+      <inertia
+        ixx="0.000122"
+        ixy="6.0985E-09"
+        ixz="-1.2892E-11"
+        iyy="7.7309E-07"
+        iyz="-1.6703E-09"
+        izz="0.00012245" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/fuselage.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/fuselage.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="fixed_joint_base_fuselage"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 -1.5708" />
+    <parent
+      link="root_link" />
+    <child
+      link="fuselage" />
+  </joint>
+  <link
+    name="horizontal_tail">
+    <inertial>
+      <origin
+        xyz="4.0038E-10 0.0014043 0.048505"
+        rpy="0 0 0" />
+      <mass
+        value="0.0052658" />
+      <inertia
+        ixx="5.7281E-07"
+        ixy="-1.9469E-09"
+        ixz="1.242E-15"
+        iyy="3.6693E-06"
+        iyz="5.8959E-08"
+        izz="3.4763E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/horizontal_tail_fixed.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/horizontal_tail_fixed.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="fixed_joint_horizontal_tail"
+    type="fixed">
+    <origin
+      xyz="-2E-05 -0.522 0.00582"
+      rpy="1.5708 0 3.1416" />
+    <parent
+      link="fuselage" />
+    <child
+      link="horizontal_tail" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="elevator">
+    <inertial>
+      <origin
+        xyz="-0.0023041 0.00041984 -0.02627"
+        rpy="0 0 0" />
+      <mass
+        value="0.0017708" />
+      <inertia
+        ixx="4.2864E-07"
+        ixy="-5.0415E-22"
+        ixz="8.167E-22"
+        iyy="5.138E-06"
+        iyz="2.8294E-09"
+        izz="4.7313E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/elevator_hinged.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/elevator_hinged.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="elevator_pitch_joint"
+    type="revolute">
+    <origin
+      xyz="0 0 0"
+      rpy="-0.047733 0 0" />
+    <parent
+      link="horizontal_tail" />
+    <child
+      link="elevator" />
+    <axis
+      xyz="0 0 0" />
+    <limit
+      lower="-0.5"
+      upper="0.5"
+      effort="1"
+      velocity="1" />
+    <dynamics
+      damping="0.2"
+      friction="0.01" />
+  </joint>
+  <link
+    name="aero_frame_elevator">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+  </link>
+  <joint
+    name="fixed_joint_aero_frame_elevator"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0.047733 -1.570807 1.5708" />
+    <parent
+      link="elevator" />
+    <child
+      link="aero_frame_elevator" />
+  </joint>
+  <link
+    name="vertical_tail">
+    <inertial>
+      <origin
+        xyz="0.002 -0.016774 0.025411"
+        rpy="0 0 0" />
+      <mass
+        value="0.0005115" />
+      <inertia
+        ixx="5.7263E-07"
+        ixy="-4.2308E-23"
+        ixz="1.1723E-23"
+        iyy="9.3415E-08"
+        iyz="8.4387E-08"
+        izz="4.8058E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/vertical_tail_fixed.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/vertical_tail_fixed.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="fixed_joint_vertical_tail"
+    type="fixed">
+    <origin
+      xyz="0.001955 -0.525 0.06982"
+      rpy="1.5708 0 3.1416" />
+    <parent
+      link="fuselage" />
+    <child
+      link="vertical_tail" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="rudder">
+    <inertial>
+      <origin
+        xyz="0.0039626 0.0057342 -0.031084"
+        rpy="0 0 0" />
+      <mass
+        value="0.0013112" />
+      <inertia
+        ixx="1.4114E-06"
+        ixy="-2.3477E-10"
+        ixz="-8.767E-10"
+        iyy="7.2647E-07"
+        iyz="2.325E-07"
+        izz="7.0558E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/rudder_hinged.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/rudder_hinged.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rudder_yaw_joint"
+    type="revolute">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="vertical_tail" />
+    <child
+      link="rudder" />
+    <axis
+      xyz="0 0 0" />
+    <limit
+      lower="-0.5"
+      upper="0.5"
+      effort="1"
+      velocity="1" />
+    <dynamics
+      damping="0.2"
+      friction="0.01" />
+  </joint>
+  <link
+    name="aero_frame_rudder">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+  </link>
+  <joint
+    name="fixed_joint_aero_frame_rudder"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0.000000 -1.570807 1.5708" />
+    <parent
+      link="rudder" />
+    <child
+      link="aero_frame_rudder" />
+  </joint>
+  <link
+    name="center_wing">
+    <inertial>
+      <origin
+        xyz="2.1984E-07 -0.0042558 0.04692"
+        rpy="0 0 0" />
+      <mass
+        value="0.032059" />
+      <inertia
+        ixx="2.9381E-05"
+        ixy="9.5308E-09"
+        ixz="3.4142E-11"
+        iyy="7.8263E-05"
+        iyz="3.0697E-08"
+        izz="5.0987E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/root_wing_fixed.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/root_wing_fixed.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="fixed_joint_center_wing"
+    type="fixed">
+    <origin
+      xyz="-2E-05 -0.1375 0.00852"
+      rpy="1.5708 0 0" />
+    <parent
+      link="fuselage" />
+    <child
+      link="center_wing" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="aero_frame_center_wing">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+  </link>
+  <joint
+    name="fixed_joint_aero_frame_center_wing"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="3.141600 -1.570800 -1.5708" />
+    <parent
+      link="center_wing" />
+    <child
+      link="aero_frame_center_wing" />
+  </joint>
+  <link
+    name="left_outer_wing">
+    <inertial>
+      <origin
+        xyz="0.087484 0.0019253 0.077026"
+        rpy="0 0 0" />
+      <mass
+        value="0.0025037" />
+      <inertia
+        ixx="3.9253E-06"
+        ixy="-3.2981E-14"
+        ixz="-1.5734E-06"
+        iyy="7.0782E-06"
+        iyz="-5.9136E-14"
+        izz="3.1596E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/left_outer_wing_hinged.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/left_outer_wing_hinged.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_0_sweep_left_wing"
+    type="revolute">
+    <origin
+      xyz="-0.1385 -0.00035 0.128"
+      rpy="3.1416 1.5708 0" />
+    <parent
+      link="center_wing" />
+    <child
+      link="left_outer_wing" />
+    <axis
+      xyz="0 0 0" />
+    <limit
+      lower="-0.5"
+      upper="0.5"
+      effort="1"
+      velocity="1" />
+    <dynamics
+      damping="0.2"
+      friction="0.01" />
+  </joint>
+  <link
+    name="aero_frame_left_outer_wing">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+  </link>
+  <joint
+    name="fixed_joint_aero_frame_left_outer_wing"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="2.034429 -1.570788 4.2488" />
+    <parent
+      link="left_outer_wing" />
+    <child
+      link="aero_frame_left_outer_wing" />
+  </joint>
+  <link
+    name="right_outer_wing">
+    <inertial>
+      <origin
+        xyz="0.087484 0.0019253 0.077026"
+        rpy="0 0 0" />
+      <mass
+        value="0.0025037" />
+      <inertia
+        ixx="3.9253E-06"
+        ixy="-3.2981E-14"
+        ixz="-1.5734E-06"
+        iyy="7.0782E-06"
+        iyz="-5.9136E-14"
+        izz="3.1596E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/right_outer_wing_hinged.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/right_outer_wing_hinged.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_0_sweep_right_wing"
+    type="revolute">
+    <origin
+      xyz="0.1385 -0.00415 0.128"
+      rpy="0 1.5708 0" />
+    <parent
+      link="center_wing" />
+    <child
+      link="right_outer_wing" />
+    <axis
+      xyz="0 0 0" />
+    <limit
+      lower="-0.5"
+      upper="0.5"
+      effort="1"
+      velocity="1" />
+    <dynamics
+      damping="0.2"
+      friction="0.01" />
+  </joint>
+  <link
+    name="aero_frame_right_outer_wing">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+  </link>
+  <joint
+    name="fixed_joint_aero_frame_right_outer_wing"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="-0.000104 1.570793 0.0072" />
+    <parent
+      link="right_outer_wing" />
+    <child
+      link="aero_frame_right_outer_wing" />
+  </joint>
+  <link
+    name="propeller">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0.0025" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/propeller_fixed.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://lisparrow/meshes/propeller_fixed.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="fixed_joint_propeller"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="1.5708 0 3.1416" />
+    <parent
+      link="fuselage" />
+    <child
+      link="propeller" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+</robot>

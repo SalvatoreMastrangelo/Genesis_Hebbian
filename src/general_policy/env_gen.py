@@ -150,12 +150,19 @@ class Gen_Env:
                 f"[Gen_Env] Building sub-env #{i:02d} with {count_i} envs "
                 f"from URDF '{Path(urdf_i).name}'"
             )
+            if torch.cuda.is_available():
+                free, total = torch.cuda.mem_get_info()
+                print(
+                    f"[GPU] before sub-env #{i:02d} free={free/1e9:.2f}GB "
+                    f"total={total/1e9:.2f}GB alloc={torch.cuda.memory_allocated()/1e9:.2f}GB"
+                )
 
             sub_env_cfg = dict(env_cfg)
             sub_obs_cfg = dict(obs_cfg)
             sub_reward_cfg = dict(reward_cfg)
             sub_command_cfg = dict(command_cfg)
 
+            sub_init_start = time.perf_counter()
             sub = WingedDroneEnv(
                 num_envs=count_i,
                 env_cfg=sub_env_cfg,
@@ -167,10 +174,23 @@ class Gen_Env:
                 eval=self.eval_mode,
                 device=self._torch_device_str,
             )
+            if torch.cuda.is_available():
+                free, total = torch.cuda.mem_get_info()
+                print(
+                    f"[GPU] after sub-env #{i:02d} free={free/1e9:.2f}GB "
+                    f"total={total/1e9:.2f}GB alloc={torch.cuda.memory_allocated()/1e9:.2f}GB"
+                )
 
             configure_solver_noise(sub, env_cfg)
 
             sub.reset()  # ensure buffers exist
+            sub_init_elapsed = time.perf_counter() - sub_init_start
+            per_env = sub_init_elapsed / max(1, count_i)
+            print(
+                f"[Gen_Env] sub-env #{i:02d} init time: "
+                f"{sub_init_elapsed:.3f}s total, {per_env:.6f}s per env "
+                f"(count={count_i}, urdf='{Path(urdf_i).name}')"
+            )
             self._subs.append(sub)
             start = stop
 

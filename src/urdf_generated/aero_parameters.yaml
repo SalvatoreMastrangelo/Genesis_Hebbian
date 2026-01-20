@@ -1,0 +1,106 @@
+############################################################
+# Global aerodynamic parameters (valid for all surfaces)
+############################################################
+global:
+  rho: 1.225               # air density
+  force_cap: 10.0          # safety clamp on total aerodynamic force
+
+
+############################################################
+# Aerodynamic parameters per surface TYPE
+############################################################
+types:
+
+  fuselage:
+    cd0: 0.75
+    k_slip_fus: 0.0
+    cp_start: 0.25
+    cp_end: 0.5
+    cg_to_chord: 0.31
+
+  wing:
+    cl_alpha_2d: 6.283185307179586       # 2π
+    alpha0_2d: -0.05235987755982988      # -3°
+    cd0: 0.05
+    k_slip_wing: 0.1                     # multiplied by prop_radius / wingspan
+    alpha_stall_deg: 10.0
+    m_smooth: 0.2
+    cp_start: 0.25
+    cp_end: 0.5
+    cg_to_chord: 0.31
+    re_nominal: 100000.0
+    a: 1.0
+
+  elevator: #0014
+    cl_alpha_2d: 6.283185307179586
+    alpha0_2d: 0.0
+    cd0: 0.013
+    k_slip_tail: 1.0
+    k_eps_tail: 1.0
+    alpha_stall_deg: 10.0
+    m_smooth: 0.2
+    cp_start: 0.25
+    cp_end: 0.5
+    cg_to_chord: 0.31
+    re_nominal: 50000.0
+    a: 1.0
+
+  rudder: #0014
+    cl_alpha_2d: 6.283185307179586
+    alpha0_2d: 0.0
+    cd0: 0.013
+    alpha_stall_deg: 10.0
+    m_smooth: 0.2
+    cp_start: 0.25
+    cp_end: 0.5
+    cg_to_chord: 0.31
+    re_nominal: 50000.0
+    a: 1.0
+
+############################################################
+# Parameters for each aerodynamic link (override per-link)
+############################################################
+links:
+
+  aero_frame_fuselage:
+    type: fuselage
+    s_folded: 1.0
+
+  aero_frame_left_wing:
+    type: wing
+    actuator_yaw: X10_servo
+    actuator_pitch: X08_servo
+
+  aero_frame_right_wing:
+    type: wing
+    actuator_yaw: X10_servo
+    actuator_pitch: X08_servo
+
+  aero_frame_elevator_left:
+    type: elevator
+    actuator_pitch: X08_servo
+    actuator_yaw: None
+
+  aero_frame_elevator_right:
+    type: elevator
+    actuator_pitch: X08_servo
+    actuator_yaw: None
+
+  aero_frame_rudder:
+    type: rudder
+    actuator_pitch: None
+    actuator_yaw: X08_servo
+
+  prop_frame_fuselage_0:
+    type: propeller
+    actuator: morphing_prop
+
+
+############################################################
+# Aerodynamic noise model
+############################################################
+noise:
+  sigma_mag: 0.05
+  sigma_dir: 0.05
+  sigma_param: 0.0
+  sigma_cp: 0.05

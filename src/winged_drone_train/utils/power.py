@@ -22,7 +22,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 import csv
-import yaml
 
 import torch
 
@@ -319,10 +318,10 @@ class ActuatorDynamics:
 # -----------------------------------------------------------------------------
 # Power consumption model
 # -----------------------------------------------------------------------------
-def _default_catalog_paths() -> tuple[Path, Path]:
+def _default_catalog_path() -> Path:
     base = Path(__file__).resolve().parents[3]
     urdf_dir = base / "genesis" / "assets" / "urdf" / "mydrone"
-    return urdf_dir / "actuators.csv", urdf_dir / "aero_parameters.yaml"
+    return urdf_dir / "actuators.csv"
 
 
 def _clean_name(name: Optional[str]) -> Optional[str]:
@@ -370,14 +369,10 @@ def _read_actuator_catalog(path_str: str) -> dict[str, dict]:
     return catalog
 
 
-@lru_cache(maxsize=8)
-def _read_propeller_actuator_names(path_str: str) -> tuple[str, ...]:
-    path = Path(path_str)
-    if not path.exists():
+def _propeller_actuator_names_from_config(aero_config: Optional[dict]) -> tuple[str, ...]:
+    if not aero_config:
         return ()
-    with path.open("r") as f:
-        data = yaml.safe_load(f) or {}
-    links = data.get("links", {}) or {}
+    links = aero_config.get("links", {}) or {}
     names = []
     for _, info in links.items():
         if not isinstance(info, dict):
@@ -396,7 +391,7 @@ def _default_prop_coeffs(
     n_propellers: int,
     *,
     actuator_catalog_path: Optional[Path] = None,
-    aero_parameters_path: Optional[Path] = None,
+    aero_config: Optional[dict] = None,
     propeller_names: Optional[Sequence[str]] = None,
 ) -> torch.Tensor:
     """Return polynomial coefficients for propeller power as (N, 3) tensor.
@@ -413,12 +408,10 @@ def _default_prop_coeffs(
         names = [_clean_name(n) for n in propeller_names]
         names = [n for n in names if n]
     else:
-        csv_path, yaml_path = _default_catalog_paths()
+        csv_path = _default_catalog_path()
         if actuator_catalog_path is not None:
             csv_path = Path(actuator_catalog_path)
-        if aero_parameters_path is not None:
-            yaml_path = Path(aero_parameters_path)
-        names = list(_read_propeller_actuator_names(str(yaml_path)))
+        names = list(_propeller_actuator_names_from_config(aero_config))
 
     if not names:
         return coeffs
@@ -428,7 +421,7 @@ def _default_prop_coeffs(
     if len(names) > n_propellers:
         names = names[:n_propellers]
 
-    csv_path = actuator_catalog_path or _default_catalog_paths()[0]
+    csv_path = actuator_catalog_path or _default_catalog_path()
     catalog = _read_actuator_catalog(str(csv_path))
     for i, name in enumerate(names):
         row = catalog.get(name)
@@ -477,7 +470,7 @@ def _default_torque_multipliers(
     twist_multiplier: float,
     tail_multiplier: float,
 ) -> torch.Tensor:
-    """Return torque/velocity multipliers for servo power model.
+    """Return transmission ratios for the servo power model (output/actuator).
     """
     if n_servos == 0:
         return torch.empty((0,), device=device, dtype=torch.float32)
@@ -512,7 +505,7 @@ def compute_power_consumption(
     tail_multiplier: float = 2.0,
     prop_coefficients: Optional[torch.Tensor] = None,
     actuator_catalog_path: Optional[str | Path] = None,
-    aero_parameters_path: Optional[str | Path] = None,
+    aero_config: Optional[dict] = None,
     propeller_names: Optional[Sequence[str]] = None,
     servo_power_constants: Optional[torch.Tensor] = None,
     torque_multipliers: Optional[torch.Tensor] = None,
@@ -529,9 +522,9 @@ def compute_power_consumption(
         thrust:
             (B, n_prop) tensor with propeller thrust (e.g. Newtons).
         servo_torque:
-            (B, n_servos) tensor with servo torques.
+            (B, n_servos) tensor with joint/output-side servo torques.
         servo_velocity:
-            (B, n_servos) tensor with servo angular velocities.
+            (B, n_servos) tensor with joint/output-side servo angular velocities.
         drone_name:
             Name of the drone model. Used to select default coefficients
             when prop_coefficients / servo_power_constants are not provided.
@@ -543,8 +536,8 @@ def compute_power_consumption(
             propeller.  If None, a default set is chosen based on `drone_name`.
         actuator_catalog_path:
             Optional path to actuators.csv used to resolve propeller c0/c1/c2.
-        aero_parameters_path:
-            Optional path to aero_parameters.yaml used to map propeller names.
+        aero_config:
+            Optional aero configuration dict used to map propeller actuator names.
         propeller_names:
             Optional list of propeller actuator names to resolve c0/c1/c2.
         servo_power_constants:
@@ -552,7 +545,8 @@ def compute_power_consumption(
             default values are selected based on `drone_name`.
         torque_multipliers:
             Optional (n_servos,) tensor. If None, defaults are chosen based on
-            `drone_name` and the sweep/twist/tail multipliers.
+            `drone_name` and the sweep/twist/tail multipliers. Interpreted as
+            transmission ratios M (output/actuator).
         device:
             Torch device. If None, inferred from `thrust`.
         return_components:
@@ -585,13 +579,16 @@ def compute_power_consumption(
     # ------------------------------------------------------------------
     if prop_coefficients is None:
         csv_path = Path(actuator_catalog_path) if actuator_catalog_path is not None else None
-        yaml_path = Path(aero_parameters_path) if aero_parameters_path is not None else None
+        if aero_config is None:
+            from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
+
+            aero_config = SimpleDroneAeroParameters.as_dict()
         prop_coefficients = _default_prop_coeffs(
             drone_name,
             device,
             n_prop,
             actuator_catalog_path=csv_path,
-            aero_parameters_path=yaml_path,
+            aero_config=aero_config,
             propeller_names=propeller_names,
         )
     else:
@@ -654,9 +651,18 @@ def compute_power_consumption(
 
         multipliers = torque_multipliers.view(1, n_servos)
 
-        # Scale torque/velocity by multipliers as in the original code
-        T = servo_torque / multipliers       # (B, n_servos)
-        V = servo_velocity * multipliers     # (B, n_servos)
+        # Convert joint/output-side values to actuator-side using ratio M:
+        # tau_act = tau_out / M, omega_act = omega_out * M.
+        min_ratio = 1e-3
+        sign = torch.where(
+            multipliers >= 0.0,
+            torch.ones_like(multipliers),
+            -torch.ones_like(multipliers),
+        )
+        safe_multipliers = sign * multipliers.abs().clamp(min=min_ratio)
+
+        T = servo_torque / safe_multipliers   # (B, n_servos)
+        V = servo_velocity * safe_multipliers # (B, n_servos)
 
         # P = (V * T) / (kV * kI) + (R * kV / kI) * T^2
         denom = (kV * kI).clamp(min=1e-6)

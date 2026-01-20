@@ -236,8 +236,9 @@ class ObservationBuilder:
 
         obs_clean = torch.cat(components, dim=1)
         # --------------------------- Add noise ------------------------------
-        obs_actor = obs_clean.clone()
+        obs_actor = obs_clean
         if self.add_noise and self.noise_std:
+            obs_actor = obs_clean.clone()
             std_cfg = self.noise_std
             idx = 0
 

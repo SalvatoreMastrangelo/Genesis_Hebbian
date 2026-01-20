@@ -80,7 +80,7 @@ class Chromosome_Drone:
     # Discrete NACA value sets
     NACA_D1_VALUES = [0, 1, 2, 3, 4]
     NACA_D2_VALUES = [2, 3, 4, 5]
-    NACA_LAST2_VALUES = list(range(8, 23))
+    NACA_LAST2_VALUES = list(range(10, 21))
 
     NACA_GENE_INDICES = (12, 13, 14)
     NACA_VALUES_BY_INDEX = {

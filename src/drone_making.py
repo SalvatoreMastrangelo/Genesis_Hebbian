@@ -34,7 +34,6 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence, Tuple, Union, List, Dict, Optional
-import yaml
 import csv
 
 
@@ -178,6 +177,7 @@ class UrdfMaker:
         genome_or_params: Union[GeometryParams, Sequence[float]],
         *,
         out_dir: Union[str, Path] = "urdf_generated",
+        aero_solver_kind: str = "simple",
     ) -> None:
         """
         Construct a URDF maker.
@@ -192,10 +192,14 @@ class UrdfMaker:
 
         out_dir:
             Directory where the generated URDF will be written.
+        aero_solver_kind:
+            Select which solver aero configuration to use ("simple" or "lisparrow").
         """
         self._raw_genome: List[float] | None = None
         self._actuator_catalog: Dict[Tuple[str, str], Dict[str, str]] = {}
         self._link_actuators: Dict[str, Dict[str, Optional[str]]] = {}
+        self._aero_solver_kind = str(aero_solver_kind).strip().lower()
+        self._aero_config = self._resolve_aero_config(self._aero_solver_kind)
         self._prop_max_thrust: Optional[float] = None
         self._load_actuator_catalog()
         self._load_link_actuators()
@@ -318,16 +322,8 @@ class UrdfMaker:
         return self._clean_actuator_name(name)
 
     def _load_link_actuators(self) -> None:
-        """Load actuator names per aero link from aero_parameters.yaml."""
-        yaml_path = Path(__file__).resolve().parents[2] / "genesis" / "assets" / "urdf" / "mydrone" / "aero_parameters.yaml"
-        links_cfg: Dict[str, Dict] = {}
-        if yaml_path.exists():
-            try:
-                with open(yaml_path, "r") as f:
-                    data = yaml.safe_load(f) or {}
-                    links_cfg = data.get("links", {}) or {}
-            except Exception:
-                links_cfg = {}
+        """Load actuator names per aero link from the solver aero config."""
+        links_cfg: Dict[str, Dict] = self._aero_config.get("links", {}) or {}
 
         link_actuators: Dict[str, Dict[str, Optional[str]]] = {}
         for k, v in links_cfg.items():
@@ -344,6 +340,15 @@ class UrdfMaker:
                     "actuator_pitch": None,
                 }
         self._link_actuators = link_actuators
+
+    @staticmethod
+    def _resolve_aero_config(solver_kind: str) -> dict:
+        from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
+        from genesis.engine.solvers.drones.lisparrow import LisparrowAeroParameters
+        name = (solver_kind or "").strip().lower()
+        if name in ("lisparrow", "cpp", "morphing"):
+            return LisparrowAeroParameters.as_dict()
+        return SimpleDroneAeroParameters.as_dict()
 
     def _actuator_mass(self, name: Optional[str], kind: str, fallback: Optional[float]) -> Optional[float]:
         if not name:

@@ -3,8 +3,8 @@
 #SBATCH --partition=l40s
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
-#SBATCH --cpus-per-gpu=4
-#SBATCH --time=00:10:00
+#SBATCH --cpus-per-gpu=16
+#SBATCH --time=00:50:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 
@@ -26,7 +26,7 @@ EXP_NAME=${EXP_NAME:-foundation-mixture}
 RUN_TAG=${RUN_TAG:-${EXP_NAME}_${SLURM_JOB_ID}}
 NUM_ENVS=${NUM_ENVS:-16384}
 MAX_ITERS=${MAX_ITERS:-4000}
-N_URDF=${N_URDF:-0}
+N_URDF=${N_URDF:-64}
 URDF_SEED=${URDF_SEED:-0}
 
 # ------------------------------------------------------------
