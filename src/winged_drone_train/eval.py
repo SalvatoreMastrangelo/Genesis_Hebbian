@@ -624,10 +624,10 @@ if __name__ == "__main__":
     )
 
     # Small amount of solver noise, as in the original script
-    env.aero_solver.noise_sigma_mag = 0.00
-    env.aero_solver.noise_sigma_dir = 0.00
-    env.aero_solver.noise_sigma_param = 0.0
-    env.aero_solver.noise_sigma_cp = 0.0
+    #env.aero_solver.noise_sigma_mag = 0.00
+    #env.aero_solver.noise_sigma_dir = 0.00
+    #env.aero_solver.noise_sigma_param = 0.0
+    #env.aero_solver.noise_sigma_cp = 0.0
 
 
     plotter = EvaluationPlotter()

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import os
+import shutil
 import time
 import random
 from contextlib import contextmanager
@@ -82,7 +83,7 @@ class GAConfig:
     vmax: float = 18.0              # max commanded speed in evaluation
 
     # --- Fitness shaping / invalid individuals ----------------------------
-    fail_value: float = 1e6         # not used directly, kept for completeness
+    # fail_value removed; fallback uses INVALID_* sentinels
     weights: Tuple[float, float, float] = (1.0, -1.0, 1.0)  # (+vel, -energy, +progress)
 
     # --- Progress threshold (minimal_p) -----------------------------------
@@ -176,6 +177,48 @@ INVALID_E = {-100.0}    # negative energy sentinel (equivalent to +100 before fl
 INVALID_P = {0.0}       # invalid progress / maneuverability
 
 
+def _default_fitness(_: Optional[Dict[str, Any]] = None) -> List[float]:
+    """Return the sentinel fitness values defined by INVALID_* globals."""
+    return [
+        float(min(INVALID_V)),
+        float(min(INVALID_E)),
+        float(min(INVALID_P)),
+    ]
+
+
+def _failure_result(
+    reason: str,
+    cfg: Dict[str, Any],
+    exp_name: Optional[str] = None,
+    train_it: Optional[int] = None,
+) -> Tuple[List[float], Dict[str, Any], Dict[str, np.ndarray]]:
+    """Build a safe fallback result for failed train/eval steps."""
+    ff = _default_fitness(cfg)
+    meta = dict(
+        exp_name=exp_name or "failed",
+        train_it=int(train_it if train_it is not None else cfg.get("TRAIN_ITERS", 0)),
+        max_p=float("nan"),
+        failed=True,
+        fail_reason=reason,
+    )
+    extra = dict(
+        p_s=np.array([]),
+        v_s=np.array([]),
+        E_s=np.array([]),
+    )
+    return ff, meta, extra
+
+
+def _all_finite(vals: Sequence[float]) -> bool:
+    for v in vals:
+        try:
+            if not np.isfinite(float(v)):
+                return False
+        except Exception:
+            return False
+    return True
+
+
 # =============================================================================
 #  TRAIN + EVAL (single GPU, programmatic)
 # =============================================================================
@@ -259,6 +302,15 @@ def _eval_only_custom(
     base_dir = Path(cfg["BASE_DIR"]).expanduser().resolve()
     eval_dir = (Path(cfg["LOGS_DIR"]).expanduser().resolve() / "eval" / exp_name)
 
+    policy_path = Path(policy_path).expanduser().resolve()
+    cfg_src = policy_path.parent / "cfgs.pkl"
+    cfg_dst = Path(cfg["LOG_ROOT"]).expanduser().resolve() / exp_name / "cfgs.pkl"
+    cfg_dst.parent.mkdir(parents=True, exist_ok=True)
+    if not cfg_src.is_file():
+        raise FileNotFoundError(f"cfgs.pkl not found next to policy: {cfg_src}")
+    if not cfg_dst.is_file():
+        shutil.copy2(cfg_src, cfg_dst)
+
     # Usa evaluation ma caricando la policy custom
     with _pushd(base_dir):
         out = evaluation(
@@ -269,6 +321,7 @@ def _eval_only_custom(
             vmin=cfg["VMIN"],
             vmax=cfg["VMAX"],
             return_arrays=return_arrays,
+            obs_genome=None,
             custom_policy_path=policy_path,  # << PATCH IN eval.py
             eval_dir=eval_dir,
         )
@@ -352,9 +405,15 @@ def _train_and_eval_sync(
     parent_exp, parent_ckpt = parent_info
 
     # 1) Map genome to physical parameters and generate URDF
-    phys_genome = Chromosome_Drone.to_physical(genome_norm)
-    urdf_dir = Path(cfg["URDF_DIR"]).expanduser().resolve()
-    urdf_file = Path(UrdfMaker(phys_genome, out_dir=urdf_dir).create_urdf()).resolve()
+    try:
+        phys_genome = Chromosome_Drone.to_physical(genome_norm)
+        urdf_dir = Path(cfg["URDF_DIR"]).expanduser().resolve()
+        urdf_file = Path(UrdfMaker(phys_genome, out_dir=urdf_dir).create_urdf()).resolve()
+    except Exception as exc:
+        reason = f"urdf_generation_failed: {exc}"
+        print(f"[safe_mode] {reason}")
+        return _failure_result(reason, cfg)
+
     exp_name = urdf_file.stem
     if cfg.get("EXP_PREFIX"):
         exp_name = f"{cfg['EXP_PREFIX']}-{exp_name}"
@@ -370,38 +429,84 @@ def _train_and_eval_sync(
     )
 
     # 3) Train policy for this morphology
-    with _pushd(base_dir):
-        training(
-            exp_name=exp_name,
-            urdf_file=urdf_file,
-            num_envs=cfg["TRAIN_ENVS"],
-            max_iterations=train_iters,
-            parent_exp=parent_exp,
-            parent_ckpt=parent_ckpt,
-            device=device,
-        )
+    try:
+        with _pushd(base_dir):
+            training(
+                exp_name=exp_name,
+                urdf_file=urdf_file,
+                num_envs=cfg["TRAIN_ENVS"],
+                max_iterations=train_iters,
+                parent_exp=parent_exp,
+                parent_ckpt=parent_ckpt,
+                device=device,
+            )
+    except Exception as exc:
+        reason = f"training_failed exp={exp_name}: {exc}"
+        print(f"[safe_mode] {reason}")
+        return _failure_result(reason, cfg, exp_name=exp_name, train_it=train_iters)
 
     # 4) Evaluate policy at multiple commanded speeds
     eval_dir = (Path(cfg["LOGS_DIR"]).expanduser().resolve() / "eval" / exp_name)
 
-    with _pushd(base_dir):
-        out = evaluation(
-            exp_name=exp_name,
-            urdf_file=urdf_file,
-            ckpt=train_iters,
-            envs=cfg["EVAL_ENVS"],
-            vmin=cfg["VMIN"],
-            vmax=cfg["VMAX"],
-            return_arrays=return_arrays,
-            eval_dir=eval_dir,
+    try:
+        with _pushd(base_dir):
+            out = evaluation(
+                exp_name=exp_name,
+                urdf_file=urdf_file,
+                ckpt=train_iters,
+                envs=cfg["EVAL_ENVS"],
+                vmin=cfg["VMIN"],
+                vmax=cfg["VMAX"],
+                return_arrays=return_arrays,
+                eval_dir=eval_dir,
+            )
+    except Exception as exc:
+        reason = f"evaluation_failed exp={exp_name}: {exc}"
+        print(f"[safe_mode] {reason}")
+        return _failure_result(reason, cfg, exp_name=exp_name, train_it=train_iters)
+
+    try:
+        if return_arrays:
+            v_dict, e_dict, p_dict, _, extra = out
+            max_p = extra["max_p"]
+        else:
+            v_dict, e_dict, p_dict, _, max_p = out
+            extra = None
+    except Exception as exc:
+        reason = f"eval_output_unpack_failed exp={exp_name}: {exc}"
+        print(f"[safe_mode] {reason}")
+        return _failure_result(reason, cfg, exp_name=exp_name, train_it=train_iters)
+
+    if not _all_finite(
+        [
+            v_dict.get("mean_v"),
+            e_dict.get("mean_E"),
+            p_dict.get("mean_progress"),
+            max_p,
+        ]
+    ):
+        reason = (
+            f"non_finite_metrics exp={exp_name} "
+            f"v={v_dict.get('mean_v')} E={e_dict.get('mean_E')} "
+            f"P={p_dict.get('mean_progress')} max_p={max_p}"
         )
+        print(f"[safe_mode] {reason}")
+        return _failure_result(reason, cfg, exp_name=exp_name, train_it=train_iters)
 
     if return_arrays:
-        v_dict, e_dict, p_dict, _, extra = out
-        max_p = extra["max_p"]
-    else:
-        v_dict, e_dict, p_dict, _, max_p = out
-        extra = None
+        p_s = np.asarray(extra.get("p_s", []))
+        v_s = np.asarray(extra.get("v_s", []))
+        E_s = np.asarray(extra.get("E_s", []))
+        if p_s.size == 0 or v_s.size == 0 or E_s.size == 0:
+            reason = f"empty_eval_arrays exp={exp_name}"
+            print(f"[safe_mode] {reason}")
+            return _failure_result(reason, cfg, exp_name=exp_name, train_it=train_iters)
+        if not (
+            np.isfinite(p_s).all() and np.isfinite(v_s).all() and np.isfinite(E_s).all()
+        ):
+            reason = f"non_finite_eval_arrays exp={exp_name}"
+            print(f"[safe_mode] {reason}")
+            return _failure_result(reason, cfg, exp_name=exp_name, train_it=train_iters)
 
     # 5) Read TensorBoard logs and compute a smoothed reward curve
     tb_log_dir = Path(cfg["LOG_ROOT"]) / exp_name
@@ -897,6 +1002,7 @@ class CodesignDEAP:
             print(f"   ✔ sync-eval ff={ff} max_p={meta['max_p']:.2f}")
 
             indiv._meta_raw = meta
+            indiv._failed = bool(meta.get("failed"))
             indiv.max_p = meta["max_p"]
             indiv.exp_name = meta["exp_name"]
             indiv.train_it = meta["train_it"]
@@ -913,6 +1019,7 @@ class CodesignDEAP:
         print(f"   ✔ sync-train+eval ff={ff} max_p={meta['max_p']:.2f}")
 
         indiv._meta_raw = meta
+        indiv._failed = bool(meta.get("failed"))
         indiv.max_p = meta["max_p"]
         indiv.exp_name = meta["exp_name"]
         indiv.train_it = meta["train_it"]
@@ -979,48 +1086,57 @@ class CodesignDEAP:
         Compute final fitness for an individual, apply the progress threshold,
         and write a row in the DB.
         """
-        if not hasattr(ind, "_p_s"):
-            # Cached individuals or failed evals: nothing to do.
+        if not hasattr(ind, "_p_s") and not getattr(ind, "_failed", False):
+            # Cached individuals or failed evals without payload: nothing to do.
             return
 
-        vel_d, eff_d, prog_d = self._pick_triples(
-            np.asarray(ind._p_s),
-            np.asarray(ind._v_s),
-            np.asarray(ind._E_s),
-            minimal_p,
-        )
-
-        ff_final = (
-            vel_d["mean_v"],
-            -eff_d["mean_E"],
-            prog_d["mean_progress"],
-        )
-
         meta = dict(getattr(ind, "_meta_raw", {}))
-        meta.update(
-            dict(
-                max_p=ind.max_p,
-                minimal_p=minimal_p,
-                vel_v=vel_d["mean_v"],
-                vel_E=-vel_d["mean_E"],
-                vel_P=vel_d["mean_progress"],
-                eff_v=eff_d["mean_v"],
-                eff_E=-eff_d["mean_E"],
-                eff_P=eff_d["mean_progress"],
-                prog_v=prog_d["mean_v"],
-                prog_E=-prog_d["mean_E"],
-                prog_P=prog_d["mean_progress"],
+        meta.update(dict(max_p=getattr(ind, "max_p", np.nan), minimal_p=minimal_p))
+
+        if getattr(ind, "_failed", False):
+            ff_final = tuple(_default_fitness())
+        else:
+            vel_d, eff_d, prog_d = self._pick_triples(
+                np.asarray(ind._p_s),
+                np.asarray(ind._v_s),
+                np.asarray(ind._E_s),
+                minimal_p,
             )
-        )
+
+            ff_final = (
+                vel_d["mean_v"],
+                -eff_d["mean_E"],
+                prog_d["mean_progress"],
+            )
+
+            meta.update(
+                dict(
+                    vel_v=vel_d["mean_v"],
+                    vel_E=-vel_d["mean_E"],
+                    vel_P=vel_d["mean_progress"],
+                    eff_v=eff_d["mean_v"],
+                    eff_E=-eff_d["mean_E"],
+                    eff_P=eff_d["mean_progress"],
+                    prog_v=prog_d["mean_v"],
+                    prog_E=-prog_d["mean_E"],
+                    prog_P=prog_d["mean_progress"],
+                )
+            )
 
         ind.exp_name = meta.get("exp_name", getattr(ind, "exp_name", None))
         ind.train_it = meta.get("train_it", getattr(ind, "train_it", self.cfg.train_iters_new))
 
-        print(
-            f"[finalize] gen={self._gen} chr={list(ind)} "
-            f"vel={vel_d['mean_v']:.2f} effE={eff_d['mean_E']:.2f} "
-            f"prog={prog_d['mean_progress']:.2f}"
-        )
+        if getattr(ind, "_failed", False):
+            print(
+                f"[finalize][failed] gen={self._gen} chr={list(ind)} "
+                f"reason={meta.get('fail_reason', 'unknown')} ff={ff_final}"
+            )
+        else:
+            print(
+                f"[finalize] gen={self._gen} chr={list(ind)} "
+                f"vel={vel_d['mean_v']:.2f} effE={eff_d['mean_E']:.2f} "
+                f"prog={prog_d['mean_progress']:.2f}"
+            )
 
         self.db.insert(list(ind), ff_final, dict(generation=self._gen, **meta))
         ind.fitness.values = ff_final
@@ -1048,21 +1164,29 @@ class CodesignDEAP:
             pend = [ind for ind in population if hasattr(ind, "_pending_future")]
             if pend:
                 print(f"  ⏳ waiting for {len(pend)} Ray jobs…")
-                results = ray.get([ind._pending_future for ind in pend])
-                for ind, (ff, meta, extra) in zip(pend, results):
+                fail_cfg = dict(TRAIN_ITERS=self.cfg.train_iters_new)
+                for ind in pend:
+                    try:
+                        ff, meta, extra = ray.get(ind._pending_future)
+                    except Exception as exc:
+                        reason = f"ray_job_failed: {exc}"
+                        print(f"[safe_mode] {reason}")
+                        ff, meta, extra = _failure_result(reason, fail_cfg)
+
                     ind._meta_raw = meta
-                    ind.max_p = meta["max_p"]
-                    ind.exp_name = meta["exp_name"]
-                    ind.train_it = meta["train_it"]
+                    ind._failed = bool(meta.get("failed"))
+                    ind.max_p = meta.get("max_p", np.nan)
+                    ind.exp_name = meta.get("exp_name", None)
+                    ind.train_it = meta.get("train_it", self.cfg.train_iters_new)
                     if extra:
-                        ind._p_s = extra["p_s"]
-                        ind._v_s = extra["v_s"]
-                        ind._E_s = extra["E_s"]
+                        ind._p_s = extra.get("p_s", np.array([]))
+                        ind._v_s = extra.get("v_s", np.array([]))
+                        ind._E_s = extra.get("E_s", np.array([]))
                     ind.fitness.values = tuple(ff)
                     del ind._pending_future
                     print(
                         f"   ✅ Ray done chr={list(ind)} "
-                        f"ff={ff} max_p={meta['max_p']:.2f}"
+                        f"ff={ff} max_p={ind.max_p:.2f}"
                     )
 
         # 3) minimal_p dynamic/fixed
@@ -1267,6 +1391,12 @@ def main() -> None:
         help="Optional run name (defaults to timestamp).",
     )
     parser.add_argument(
+        "--base_dir",
+        type=str,
+        default=None,
+        help="Root directory for artifacts (defaults to cfg.base_dir).",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda:0",
@@ -1288,6 +1418,8 @@ def main() -> None:
     cfg.gen_policy = args.gen_policy
     cfg.policy_path = args.policy_path
     cfg.run_name = args.run_name
+    if args.base_dir is not None:
+        cfg.base_dir = args.base_dir
     cfg.device = args.device
 
     ga = CodesignDEAP(cfg)

@@ -24,7 +24,7 @@ SRC="$HOME/binding/Genesis-dev"
 # ------------------------------------------------------------
 EXP_NAME=${EXP_NAME:-foundation-mixture}
 RUN_TAG=${RUN_TAG:-${EXP_NAME}_${SLURM_JOB_ID}}
-NUM_ENVS=${NUM_ENVS:-16384}
+NUM_ENVS=${NUM_ENVS:-32768}
 MAX_ITERS=${MAX_ITERS:-4000}
 N_URDF=${N_URDF:-64}
 URDF_SEED=${URDF_SEED:-0}

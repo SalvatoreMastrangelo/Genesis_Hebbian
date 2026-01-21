@@ -305,6 +305,10 @@ def evaluate_single(
     # evaluation() returns:
     #   top_vel, top_eff, top_prog, max_p, extra
     # evaluation always loads from logs/ea/<exp_name>
+    custom_policy_path = None
+    if model_path is not None:
+        custom_policy_path = str(Path(model_path).expanduser().resolve())
+
     top_vel, top_eff, top_prog, max_p, extra = evaluation(
         exp_name=str(exp_name),
         urdf_file=str(urdf_file),
@@ -315,6 +319,7 @@ def evaluate_single(
         return_arrays=True,
         obs_genome=obs_genome,
         save_plots=True,
+        custom_policy_path=custom_policy_path,
         eval_dir=str(eval_dir),
     )
 
@@ -755,6 +760,7 @@ def run_pipeline(
                     vmin=vmin,
                     vmax=vmax,
                     obs_genome=True,
+                    model_path=sc.model_path,
                     eval_dir=EA_ROOT / exp_name / f"eval_{clean_stem}",
                     clean_urdf_stem=clean_stem,
                 )
