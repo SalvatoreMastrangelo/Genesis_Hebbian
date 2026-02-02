@@ -208,7 +208,7 @@
     type="fixed">
     <origin
       xyz="0 0 0"
-      rpy="0.047733 -1.570807 1.5708" />
+      rpy="3.141516 1.523067 1.570720" />
     <parent
       link="elevator" />
     <child
@@ -350,7 +350,7 @@
     type="fixed">
     <origin
       xyz="0 0 0"
-      rpy="0.000000 -1.570807 1.5708" />
+      rpy="0.785399 1.570791 -0.785399" />
     <parent
       link="rudder" />
     <child
@@ -431,7 +431,7 @@
     type="fixed">
     <origin
       xyz="0 0 0"
-      rpy="3.141600 -1.570800 -1.5708" />
+      rpy="0.785399 -1.570791 0.785399" />
     <parent
       link="center_wing" />
     <child
@@ -520,7 +520,7 @@
     type="fixed">
     <origin
       xyz="0 0 0"
-      rpy="2.034429 -1.570788 4.2488" />
+      rpy="1.570804 0.000000 -3.141589" />
     <parent
       link="left_outer_wing" />
     <child
@@ -609,7 +609,7 @@
     type="fixed">
     <origin
       xyz="0 0 0"
-      rpy="-0.000104 1.570793 0.0072" />
+      rpy="-1.570797 0.000000 3.141589" />
     <parent
       link="right_outer_wing" />
     <child

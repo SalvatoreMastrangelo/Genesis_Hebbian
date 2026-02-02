@@ -1,5 +1,8 @@
 import copy
+import csv
+import math
 from dataclasses import dataclass
+from pathlib import Path
 import gstaichi as ti
 
 from genesis.engine.solvers.base_aero_solver import BaseAeroSolver
@@ -643,6 +646,94 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             left_key, right_key = self._elevator_side_keys(name)
             self._aero_base.setdefault(left_key, base_val)
             self._aero_base.setdefault(right_key, base_val)
+
+    # ------------------------------------------------------------------
+    # NACA 4-digit overrides (SimpleDrone only)
+    # ------------------------------------------------------------------
+    def _normalize_naca_code(self, code: str | int | float | None) -> str | None:
+        if code is None:
+            return None
+        s = str(code).strip().upper()
+        if not s:
+            return None
+        if s.startswith("NACA"):
+            s = s[4:].strip()
+        if s.isdigit():
+            return s.zfill(4)
+        return s
+
+    def _find_naca4_csv_path(self) -> Path | None:
+        for parent in Path(__file__).resolve().parents:
+            candidate = parent / "src" / "naca_generation" / "naca4.csv"
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _load_naca4_row(self, naca_code: str, csv_path: Path) -> dict[str, float] | None:
+        try:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if self._normalize_naca_code(row.get("airfoil")) == naca_code:
+                        return {
+                            "slope": float(row["slope"]),
+                            "alpha_stall": float(row["alpha_stall"]),
+                            "alpha0": float(row["alpha0"]),
+                            "cd0": float(row["cd0"]),
+                            "re_nom": float(row["ReNom"]),
+                        }
+        except (OSError, KeyError, ValueError, TypeError):
+            return None
+        return None
+
+    def _set_param_field(self, name: str, value: float) -> None:
+        if not hasattr(self, name):
+            return
+        field = getattr(self, name)
+        if not hasattr(self, "B"):
+            return
+        for b in range(self.B):
+            field[b] = float(value)
+        if hasattr(self, "_aero_base"):
+            self._aero_base[name] = float(value)
+
+    def apply_naca_wing_override(
+        self, naca_code: str | int | float | None, csv_path: str | Path | None = None
+    ) -> None:
+        code = self._normalize_naca_code(naca_code)
+        if not code:
+            return
+        path = Path(csv_path) if csv_path is not None else self._find_naca4_csv_path()
+        if path is None or not path.exists():
+            return
+        entry = self._load_naca4_row(code, path)
+        if entry is None:
+            return
+
+        cl_alpha = entry["slope"] * (180.0 / math.pi)  # per-degree -> per-rad
+        alpha0 = math.radians(entry["alpha0"])
+        alpha_stall = entry["alpha_stall"]
+        cd0 = entry["cd0"]
+
+        overrides = {
+            "cl_alpha_2d": cl_alpha,
+            "alpha0_2d": alpha0,
+            "cd0": cd0,
+            "alpha_stall_deg": alpha_stall,
+        }
+
+        for key, val in overrides.items():
+            self._set_param_field(key, val)
+            left_key, right_key = self._wing_side_keys(key)
+            self._set_param_field(left_key, val)
+            self._set_param_field(right_key, val)
+
+        re_nom = entry.get("re_nom")
+        if re_nom is not None and hasattr(self, "re_nom_link") and hasattr(self, "kind"):
+            for b in range(self.B):
+                for l in range(self.L):
+                    if int(self.kind[l]) == 1:
+                        self.re_nom_link[b, l] = float(re_nom)
 
     # ---------------------------------------------------------------------
     # Taichi kernels / device-side logic
