@@ -603,14 +603,23 @@ class EvaluationPlotter:
         # Max velocity within admissible region (p_ma > minimal_p)
         x_maxvel_zone = None
         y_at_xmax_zone = None
+        y_start_maxvel = None
         if np.isfinite(minimal_p):
             ok = p_ma > minimal_p
             if np.any(ok):
-                x_candidates = x_line[ok]
-                y_candidates = p_ma[ok]
-                idx_loc = int(np.argmax(x_candidates))
-                x_maxvel_zone = float(x_candidates[idx_loc])
-                y_at_xmax_zone = float(y_candidates[idx_loc])
+                idxs_ok = np.where(ok)[0]
+                last_ok = int(idxs_ok[-1])
+                x_maxvel_zone = float(x_line[last_ok])
+                y_at_xmax_zone = float(p_ma[last_ok])
+                y_start_maxvel = y_at_xmax_zone
+                # If the curve drops below the threshold right after, interpolate
+                if last_ok + 1 < len(p_ma) and p_ma[last_ok + 1] <= minimal_p:
+                    x0, x1 = x_line[last_ok], x_line[last_ok + 1]
+                    y0, y1 = p_ma[last_ok], p_ma[last_ok + 1]
+                    if y1 != y0:
+                        t = (minimal_p - y0) / (y1 - y0)
+                        x_maxvel_zone = float(x0 + t * (x1 - x0))
+                        y_start_maxvel = float(minimal_p)
 
         # Min energy (only where progress admissible)
         x_at_emin = None
@@ -766,9 +775,10 @@ class EvaluationPlotter:
             )
 
         # Vertical blue line for max velocity in admissible region
-        if x_maxvel_zone is not None and np.isfinite(y_at_xmax_zone):
-            ax1.axvline(
-                x_maxvel_zone,
+        if x_maxvel_zone is not None and np.isfinite(y_start_maxvel):
+            ax1.plot(
+                [x_maxvel_zone, x_maxvel_zone],
+                [y_start_maxvel, 0.0],
                 ls="--",
                 lw=1.4,
                 color="tab:blue",
@@ -845,15 +855,6 @@ class EvaluationPlotter:
                 color="tab:blue",
                 zorder=Z_LINE,
             )
-            ax2.plot(
-                [x_maxvel_zone],
-                [3.0],
-                marker="s",
-                ms=9,
-                color="tab:blue",
-                zorder=Z_MARK,
-                clip_on=False,
-            )
 
         # Custom point on energy
         if np.isfinite(v_c) and np.isfinite(eff_c):
@@ -899,11 +900,24 @@ class EvaluationPlotter:
                 clip_on=False,
             )
 
-        ax2.set_ylim(0, 2)
+        ax2.set_ylim(0, 1)
         ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
         ax2.set_ylabel("Cost of Transport [J/m]")
         ax2.grid(alpha=0.25)
         ax2.legend(fontsize=9, loc="best")
+
+        # Square marker at x-axis where the max-velocity line meets the axis
+        if x_maxvel_zone is not None:
+            y_axis = ax2.get_ylim()[0]
+            ax2.plot(
+                [x_maxvel_zone],
+                [y_axis],
+                marker="s",
+                ms=9,
+                color="tab:blue",
+                zorder=Z_MARK,
+                clip_on=False,
+            )
 
         plt.tight_layout()
         plt.savefig(out, dpi=150)
@@ -1061,7 +1075,7 @@ class EvaluationPlotter:
                 zorder=12,
             )
 
-        ax2.set_ylim(0, 2)
+        ax2.set_ylim(0, 1)
         ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
         ax2.set_ylabel("Cost of Transport [J/m]")
         ax2.grid(alpha=0.25)

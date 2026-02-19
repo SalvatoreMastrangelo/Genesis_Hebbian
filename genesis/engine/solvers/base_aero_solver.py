@@ -201,6 +201,7 @@ class BaseAeroSolver(Solver):
         # Torch buffers for zero-copy fetch (filled by _copy_force_cp)
         self._force_buf = torch.empty((B, L, 3), device=self._aero_device, dtype=torch.float32)
         self._cp_buf = torch.empty_like(self._force_buf)
+        self._tq_buf = torch.empty_like(self._force_buf)
 
     def _get_params_from_csv(self, csv_file: str):
         """
@@ -299,19 +300,23 @@ class BaseAeroSolver(Solver):
 
         # 2) fetch Fb and cp into persistent torch buffers (link frame)
         self._copy_force_cp(self._force_buf, self._cp_buf)
-        fb = self._force_buf[:, : len(self._aero_link_idx), :]  # (B, L, 3)
-        cp = self._cp_buf[:, : len(self._aero_link_idx), :]     # (B, L, 3)
+        L = len(self._aero_link_idx)
+        fb = self._force_buf[:, :L, :]  # (B, L, 3)
+        cp = self._cp_buf[:, :L, :]     # (B, L, 3)
 
         # 3) prop reaction torque (about prop z-axis, link frame)
-        tq = torch.zeros_like(fb)
+        tq = self._tq_buf[:, :L, :]
+        tq.zero_()
         thrust = fb[:, -1, 2]  # z-component of last surface (prop) in its frame
         tq[:, -1, 2] = -self._kappa_buf * thrust
         # 4) clamp and clean numerical issues
         cap = self._fcap_buf
 
-        fb = torch.nan_to_num(fb).clamp(min=-cap, max=cap)
-        cp = torch.nan_to_num(cp)
-        tq = torch.nan_to_num(tq).clamp(min=-cap, max=cap)
+        torch.nan_to_num_(fb)
+        torch.nan_to_num_(cp)
+        torch.nan_to_num_(tq)
+        fb.clamp_(min=-cap, max=cap)
+        tq.clamp_(min=-cap, max=cap)
 
         # 5) apply forces and torques to Genesis' rigid solver
         self._rigid_solver.apply_links_force_at_point_link_frame(

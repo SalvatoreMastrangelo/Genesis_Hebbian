@@ -33,14 +33,14 @@ class SimpleDroneAeroParameters:
 
     GLOBAL = {
         "rho": 1.225,
-        "force_cap": 10.0,
+        "force_cap": 30.0,
     }
 
     TYPES = {
         "fuselage": {
-            "cd0": 0.75,
+            "cd0": 0.85,
             "k_slip_fus": 0.0,
-            "cp_start": 0.25,
+            "cp_start": 0.0,
             "cp_end": 0.5,
             "cg_to_chord": 0.31,
         },
@@ -127,9 +127,9 @@ class SimpleDroneAeroParameters:
     NOISE = {
         "sigma_mag": 0.05,
         "sigma_dir": 0.05,
-        "sigma_param": 0.2,
+        "sigma_param": 0.15,
         "sigma_cp": 0.05,
-        "mass_shift": 0.2,
+        "mass_shift": 0.15,
         "com_shift": 0.01,
     }
 
@@ -710,17 +710,22 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         if entry is None:
             return
 
-        cl_alpha = entry["slope"] * (180.0 / math.pi)  # per-degree -> per-rad
-        alpha0 = math.radians(entry["alpha0"])
-        alpha_stall = entry["alpha_stall"]
-        cd0 = entry["cd0"]
+        def _entry_to_overrides(row: dict[str, float]) -> tuple[dict[str, float], float | None]:
+            cl_alpha = row["slope"] * (180.0 / math.pi)  # per-degree -> per-rad
+            alpha0 = math.radians(row["alpha0"])
+            alpha_stall = row["alpha_stall"]
+            cd0 = row["cd0"]
+            return (
+                {
+                    "cl_alpha_2d": cl_alpha,
+                    "alpha0_2d": alpha0,
+                    "cd0": cd0,
+                    "alpha_stall_deg": alpha_stall,
+                },
+                row.get("re_nom"),
+            )
 
-        overrides = {
-            "cl_alpha_2d": cl_alpha,
-            "alpha0_2d": alpha0,
-            "cd0": cd0,
-            "alpha_stall_deg": alpha_stall,
-        }
+        overrides, re_nom = _entry_to_overrides(entry)
 
         for key, val in overrides.items():
             self._set_param_field(key, val)
@@ -728,12 +733,39 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             self._set_param_field(left_key, val)
             self._set_param_field(right_key, val)
 
-        re_nom = entry.get("re_nom")
         if re_nom is not None and hasattr(self, "re_nom_link") and hasattr(self, "kind"):
             for b in range(self.B):
                 for l in range(self.L):
                     if int(self.kind[l]) == 1:
                         self.re_nom_link[b, l] = float(re_nom)
+
+        tail_entry = self._load_naca4_row("0216", path)
+        if tail_entry is None:
+            return
+        tail_overrides, tail_re_nom = _entry_to_overrides(tail_entry)
+
+        for key, val in tail_overrides.items():
+            self._set_param_field(key, val)
+            left_key, right_key = self._elevator_side_keys(key)
+            self._set_param_field(left_key, val)
+            self._set_param_field(right_key, val)
+
+        if hasattr(self, "cl_alpha_2d_link") and hasattr(self, "kind"):
+            for b in range(self.B):
+                for l in range(self.L):
+                    k = int(self.kind[l])
+                    if k == 2 or k == 3:
+                        self.cl_alpha_2d_link[b, l] = float(tail_overrides["cl_alpha_2d"])
+                        self.alpha0_2d_link[b, l] = float(tail_overrides["alpha0_2d"])
+                        self.cd0_link[b, l] = float(tail_overrides["cd0"])
+                        self.alpha_stall_deg_link[b, l] = float(tail_overrides["alpha_stall_deg"])
+
+        if tail_re_nom is not None and hasattr(self, "re_nom_link") and hasattr(self, "kind"):
+            for b in range(self.B):
+                for l in range(self.L):
+                    k = int(self.kind[l])
+                    if k == 2 or k == 3:
+                        self.re_nom_link[b, l] = float(tail_re_nom)
 
     # ---------------------------------------------------------------------
     # Taichi kernels / device-side logic
@@ -816,7 +848,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self.Reynolds[b, l] = 0.0
 
         kind = ti.cast(self.kind[l], ti.i32)
-        if kind != 2:
+        if (kind != 2) and (kind != 3):
             side = ti.cast(self.side[l], ti.i32)
             slip_code = ti.cast(self.slip_code[l], ti.i32)
             rho = self.rho[b]
@@ -884,12 +916,13 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                 # Fuselage or wing: forces in XZ plane
                 cosb = ti.cos(beta)
                 cosb2 = cosb * cosb
-                Fb = self._rot_yz(alpha, beta) @ ti.Vector([D * cosb2, 0.0, L * cosb2], dt=ti.f32)
                 if kind == 1:  # wing
+                    Fb = self._rot_yz(alpha, beta) @ ti.Vector([D * cosb2, 0.0, L * cosb2], dt=ti.f32)
                     idx = 0 if side == 1 else 1
                     self.cl_wing_b[b, idx] = ti.cast(cl, ti.f16)  # store CL for tail
                     cp = ti.cast(self._cp_wing(rigid, b, alpha, beta, l), ti.f32)
                 else:  # fuselage
+                    Fb = self._rot_yz(alpha, beta) @ ti.Vector([D, 0.0, L], dt=ti.f32)
                     cp = ti.cast(self._cp_fus(rigid, b, alpha, beta, l), ti.f32)
 
             # ---- Inline noise (no extra pass) ---------------------------------
@@ -931,10 +964,16 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         const_MU_AIR = 1.81e-5  # dynamic viscosity [kg/(m*s)] for Reynolds estimate
 
         kind = ti.cast(self.kind[l], ti.i32)
-        if kind == 2:
+        if (kind == 2) or (kind == 3):
             side = ti.cast(self.side[l], ti.i32)
             slip_code = ti.cast(self.slip_code[l], ti.i32)
             rho = self.rho[b]
+            # Initialize branch-local values so Taichi always sees them as defined.
+            cl_w_mean = 0.0
+            k_eps = 0.0
+            eps = 0.0
+            L_t = 0.0
+            D_t = 0.0
 
             v_body_tail = self._get_wind_in_body(rigid, self._link_idx[l], b)
 
@@ -955,34 +994,52 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             alphat = ti.atan2(v_body_tail.z, v_body_tail.x)
             betat  = ti.asin(ti.math.clamp(v_body_tail.y / Vt, -1.0, 1.0))
 
-            # Mean wing CL for downwash
-            idx = 0 if side == 1 else 1
-            cl_w_mean = ti.cast(self.cl_wing_b[b, idx], ti.f32)
-
-            # Effective tail AoA with downwash
-            k_eps = self._elevator_param(self.k_eps_tail, self.k_eps_tail_elevator_left, self.k_eps_tail_elevator_right, b, side)
-            eps = (k_eps * cl_w_mean) / (ti.math.pi * self.AR_wing)
-            alpha_eff = alphat - eps
-
             # Reynolds number (per-tail surface)
             c_ref_t = ti.max(ti.cast(self.chord[l], ti.f32), 1e-6)
             self.Reynolds[b, l] = (rho * Vt * c_ref_t) / const_MU_AIR
-            # Tail coefficients (kind=2)
+
             S_eff_t = self._compute_eff_S(rigid, b, l)
             AR_eff_t = self._compute_eff_AR(rigid, b, l, betat)
-            cl_t, cd_t = self._compute_coeff(b, l, AR_eff_t, alpha_eff, betat, 2, side)
 
-            cosb = ti.cos(betat)
-            cosb2 = cosb * cosb
+            Fb_t = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+            cp_t = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+            alpha_eff = alphat
 
-            # Tail forces
-            Vt2 = Vt * Vt
-            qS_t = 0.5 * rho * S_eff_t * Vt2 * cosb2
-            L_t = qS_t * cl_t
-            D_t = qS_t * cd_t
-            Fb_t = self._rot_yz(alpha_eff, betat) @ ti.Vector([D_t, 0.0, L_t], dt=ti.f32)
-            # Tail center of pressure
-            cp_t = ti.cast(self._cp_elev(rigid, b, alpha_eff, betat, l), ti.f32)
+            if kind == 2:
+                # Mean wing CL for downwash
+                idx = 0 if side == 1 else 1
+                cl_w_mean = ti.cast(self.cl_wing_b[b, idx], ti.f32)
+
+                # Effective tail AoA with downwash
+                k_eps = self._elevator_param(self.k_eps_tail, self.k_eps_tail_elevator_left, self.k_eps_tail_elevator_right, b, side)
+                eps = (k_eps * cl_w_mean) / (ti.math.pi * self.AR_wing)
+                alpha_eff = alphat - eps
+
+                # Tail coefficients (kind=2)
+                cl_t, cd_t = self._compute_coeff(b, l, AR_eff_t, alpha_eff, betat, 2, side)
+
+                cosb = ti.cos(betat)
+                cosb2 = cosb * cosb
+
+                # Tail forces
+                Vt2 = Vt * Vt
+                qS_t = 0.5 * rho * S_eff_t * Vt2 * cosb2
+                L_t = qS_t * cl_t
+                D_t = qS_t * cd_t
+                Fb_t = self._rot_yz(alpha_eff, betat) @ ti.Vector([D_t, 0.0, L_t], dt=ti.f32)
+                # Tail center of pressure
+                cp_t = ti.cast(self._cp_elev(rigid, b, alpha_eff, betat, l), ti.f32)
+            else:
+                # Rudder (kind=3) handled here without downwash
+                cl_t, cd_t = self._compute_coeff(b, l, AR_eff_t, alphat, betat, 3, side)
+                cosa = ti.cos(alphat)
+                cosa2 = cosa * cosa
+                Vt2 = Vt * Vt
+                qS_t = 0.5 * rho * S_eff_t * Vt2
+                L_t = qS_t * cl_t
+                D_t = qS_t * cd_t
+                Fb_t = self._rot_yz(alphat, betat) @ ti.Vector([D_t * cosa2, L_t * cosa2, 0.0], dt=ti.f32)
+                cp_t = ti.cast(self._cp_rudder(rigid, b, alphat, betat, l), ti.f32)
             # ---- Inline noise also for tail -----------------------------------
             do_noise_t = (self.noise_sigma_mag > 0.0) or (self.noise_sigma_dir > 0.0) or (self.noise_sigma_cp > 0.0)
             if do_noise_t:
@@ -1003,9 +1060,10 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
             if ti.static(self._aero_log):
                 self.alpha_tail_raw_dbg[b, l] = ti.cast(alphat, ti.f16)
-                self.downwash_eps_dbg[b, l] = ti.cast(eps, ti.f16)
-                self.cl_wing_for_tail_dbg[b, l] = ti.cast(cl_w_mean, ti.f16)
-                self.k_eps_tail_dbg[b, l] = ti.cast(k_eps, ti.f16)
+                if kind == 2:
+                    self.downwash_eps_dbg[b, l] = ti.cast(eps, ti.f16)
+                    self.cl_wing_for_tail_dbg[b, l] = ti.cast(cl_w_mean, ti.f16)
+                    self.k_eps_tail_dbg[b, l] = ti.cast(k_eps, ti.f16)
                 self.alpha_dbg[b, l] = ti.cast(alpha_eff, ti.f16)
                 self.beta_dbg[b, l]  = ti.cast(betat, ti.f16)
                 self.lift_dbg[b, l]  = ti.cast(L_t, ti.f16)

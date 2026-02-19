@@ -27,6 +27,7 @@ import os
 os.environ["GS_PARA_LEVEL"] = "3"
 import pickle
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -60,6 +61,31 @@ def _configure_cache_root() -> Path:
     print(f"[train] cache dir set to {cache_root}")
     return cache_root
 
+def _init_genesis_with_retry() -> None:
+    """Initialize Genesis with retry/backoff for transient OS/CUDA errors."""
+    if gs._initialized:
+        return
+    retries = int(os.getenv("GS_INIT_RETRIES", "3") or 3)
+    backoff = float(os.getenv("GS_INIT_BACKOFF", "0.5") or 0.5)
+    last_exc = None
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            gs.init(logging_level="error", backend=gs.gpu)
+            return
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            if (
+                "CUDA_ERROR_OPERATING_SYSTEM" in msg
+                or "Resource temporarily unavailable" in msg
+                or "primary_context_retain" in msg
+            ) and attempt < retries:
+                time.sleep(backoff * (2 ** (attempt - 1)))
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+
 # =============================================================================
 #  TRAINING CONFIGURATION
 # =============================================================================
@@ -86,14 +112,14 @@ def get_train_cfg(exp_name: str, max_iterations: int) -> Dict[str, Any]:
             "normalize_advantage_per_mini_batch": True,
             "class_name": "PPO",
             "clip_param": 0.15,
-            "desired_kl": 0.003,
+            "desired_kl": 0.005,
             "entropy_coef": 0.002,
-            "gamma": 0.997,
-            "lam": 0.97,
+            "gamma": 0.993,
+            "lam": 0.95,
             "learning_rate": 1e-4,
             "max_grad_norm": 0.5,
             "num_learning_epochs": 3,
-            "num_mini_batches": 16,
+            "num_mini_batches": 32,
             "schedule": "adaptive",
             "use_clipped_value_loss": True,
             "value_loss_coef": 0.5,
@@ -106,11 +132,11 @@ def get_train_cfg(exp_name: str, max_iterations: int) -> Dict[str, Any]:
         "policy": {
             "class_name": "ActorCriticTanh",   # our custom policy
             "activation": "elu",
-            "actor_hidden_dims": [32, 32],
-            "critic_hidden_dims": [32, 32],
-            "init_noise_std": 0.5,
+            "actor_hidden_dims": [64, 64],
+            "critic_hidden_dims": [64, 64],
+            "init_noise_std": 0.3,
             "rnn_type": "lstm",
-            "rnn_hidden_size": 32,
+            "rnn_hidden_size": 64,
             "rnn_num_layers": 1,
             "max_servo": 1.0,
             "max_throttle": 1.0,
@@ -162,12 +188,12 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "naca": "3416",
 
         # Termination criteria
-        "termination_if_close_to_ground": 1.0,
+        "termination_if_close_to_ground": 0.1,
         "termination_if_y_greater_than": 50.0,
-        "termination_if_z_greater_than": 30.0,
+        "termination_if_z_greater_than": 50.0,
 
         # Initial base pose
-        "base_init_pos": [-30.0, 0.0, 10.0],
+        "base_init_pos": [-30.0, 0.0, 15.0],
         "base_init_quat": [1.0, 0.0, 0.0, 0.0],
 
         # Episode duration
@@ -204,7 +230,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         #   - noise / randomization of aerodynamic parameters
         "aero_noise": True,
         "aero_noise_sigma0": 0.05,    # base std for mag/dir noise on aero forces
-        "noise_sigma_param": 0.2,
+        "noise_sigma_param": 0.15,
 
     }
 
@@ -238,13 +264,13 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
     # --------------------------------------------------------------------- #
     reward_cfg: Dict[str, Any] = {
         "reward_scales": {
-            "smooth": -2e-2,
+            "smooth": -1e-1,
             "angular": -5e-3,
-            "crash": -20.0,
+            "crash": -10.0,
             "obstacle": -0.1,
-            "energy": -5e-4,   
+            "energy": -2e-3,#-5e-4,   
             "progress": 5e-1,
-            "height": -1e-1,
+            "height": -3e-2, #-1e-1,
             "success": 0.0,
             "cosmetic": -1.0,
             "stability": -0,
@@ -317,12 +343,13 @@ def configure_solver_noise(env: WingedDroneEnv, env_cfg: Dict[str, Any]) -> None
         if hasattr(aero_solver, "noise_sigma_param"):
             aero_solver.noise_sigma_param = sigma_param
 
-    print(
-        f"[configure_solver_noise] Aero noise enabled: {aero_noise_enabled}, "
-        f"sigma_mag: {getattr(aero_solver, 'noise_sigma_mag', 'N/A')}, "
-        f"sigma_dir: {getattr(aero_solver, 'noise_sigma_dir', 'N/A')}, "
-        f"sigma_param: {getattr(aero_solver, 'noise_sigma_param', 'N/A')}"
-    )
+    if env_cfg.get("debug", False):
+        print(
+            f"[configure_solver_noise] Aero noise enabled: {aero_noise_enabled}, "
+            f"sigma_mag: {getattr(aero_solver, 'noise_sigma_mag', 'N/A')}, "
+            f"sigma_dir: {getattr(aero_solver, 'noise_sigma_dir', 'N/A')}, "
+            f"sigma_param: {getattr(aero_solver, 'noise_sigma_param', 'N/A')}"
+        )
 
     # --- 1) mass / inertia randomization --------------------------------- #
     # Mass randomization is handled inside the env via env.robot_randomization
@@ -352,10 +379,7 @@ def training(
     """
     _configure_cache_root()
     # Genesis init
-    gs.init(
-        logging_level="error",
-        backend=gs.gpu,
-    )
+    _init_genesis_with_retry()
 
     # Log directory for evolution runs
     log_dir = Path("logs") / "ea" / exp_name
@@ -365,6 +389,9 @@ def training(
 
     # Build configs
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
+    if obs_cfg.get("add_genome_obs", False):
+        print("[train_single] add_genome_obs enabled in cfg → forcing off for evolution training.")
+        obs_cfg["add_genome_obs"] = False
     train_cfg = get_train_cfg(exp_name, max_iterations)
 
     # Save cfg snapshot
@@ -451,6 +478,10 @@ def main() -> None:
         "--parent_ckpt", type=int, default=None,
         help="Parent checkpoint number for policy inheritance.",
     )
+    parser.add_argument(
+        "--debug", action="store_true", default=False,
+        help="Enable debug prints in the environment.",
+    )
 
     args = parser.parse_args()
 
@@ -475,6 +506,7 @@ def main() -> None:
     #  Build configuration dictionaries                                    #
     # --------------------------------------------------------------------- #
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
+    env_cfg["debug"] = bool(args.debug)
 
     train_cfg = get_train_cfg(args.exp_name, args.max_iterations)
 
@@ -484,8 +516,8 @@ def main() -> None:
         pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
     
     urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.577227, 3.44141, 0.536115, 0.441315, 0.382971, 0.344218, 3.57164, 0.284993, 1.61502, 0, 2.19704, 3.12993, 4, 5, 21].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.651191, 2.23634, 0.488678, 0.363086, 0.372742, 0.264039, 1.8772, 0.198837, 1.20409, -2.91123, 0.25, 2.80622, 2.00658, 2, -3.77787].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, -10, 2, 2.5, 3, 4, 16].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.488441, 2.04645, 0.634358, 0.412812, 0.355771, 0.505386, 2.34147, 0.220355, 1.70431, 1.59352, 2.458, 2.83091, 4, 4, 12].urdf"
     #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #

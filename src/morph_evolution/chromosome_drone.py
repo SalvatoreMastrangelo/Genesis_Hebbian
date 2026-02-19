@@ -119,7 +119,7 @@ class Chromosome_Drone:
         ParamSpec("rudder_aspect_ratio", 1.5, 4.0),
 
         # 9: dihedral (deg) — range stretto: >10° o <−10° causa forti instabilità laterali
-        ParamSpec("dihedral_deg", -0.0, 0.0),
+        ParamSpec("dihedral_deg", -5.0, 5.0),
 
         # 10: sweep multiplier — questi range enormi creano differenze assurde nei limiti del giunto
         ParamSpec("sweep_multiplier", 1.5, 3.5),

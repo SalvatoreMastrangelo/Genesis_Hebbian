@@ -19,7 +19,7 @@ import random
 import shutil
 import time
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import torch
@@ -52,7 +52,12 @@ def _write_catalog_txt(catalog_dir: Path, urdfs: List[Path]) -> None:
     print(f"[catalog] Wrote {len(urdfs)} entries to: {catalog_file}")
 
 
-def build_catalog(catalog_dir: Path, n: int, seed: int = 0) -> List[Path]:
+def build_catalog(
+    catalog_dir: Path,
+    n: int,
+    seed: int = 0,
+    extra_genomes: Optional[Sequence[Sequence[float]]] = None,
+) -> List[Path]:
     """
     Build a catalog of `n` unique URDFs and write `catalog.txt` in `catalog_dir`.
 
@@ -78,6 +83,9 @@ def build_catalog(catalog_dir: Path, n: int, seed: int = 0) -> List[Path]:
     catalog_dir = catalog_dir.expanduser().resolve()
     catalog_dir.mkdir(parents=True, exist_ok=True)
 
+    if not gs._initialized:
+        gs.init(logging_level="error", backend=gs.gpu)
+
     print(f"[catalog] dir={catalog_dir}  n={n}  seed={seed}")
     random.seed(seed)
     np.random.seed(seed)
@@ -101,10 +109,10 @@ def build_catalog(catalog_dir: Path, n: int, seed: int = 0) -> List[Path]:
                 0.73,  # fus_length  (slightly above range, will be clamped)
                 0.38,  # cg_x_ratio
                 0.38,  # attach_x_ratio
-                0.18,  # elevator_span
-                1.30,  # elevator_aspect_ratio
-                0.16,  # rudder_span
-                1.30,  # rudder_aspect_ratio
+                0.5,  # elevator_span
+                4.0,  # elevator_aspect_ratio
+                0.20,  # rudder_span
+                2.00,  # rudder_aspect_ratio
                 0.0,   # dihedral_deg
                 2.0,   # sweep_multiplier
                 2.5,   # twist_multiplier
@@ -133,6 +141,19 @@ def build_catalog(catalog_dir: Path, n: int, seed: int = 0) -> List[Path]:
         step = max(1, n // 20)
         if len(urdfs) % step == 0 or len(urdfs) == n:
             print(f"[catalog]   {len(urdfs)}/{n} URDF generated")
+
+    extra_genomes = extra_genomes or []
+    for genome in extra_genomes:
+        phys_genome = list(genome)
+        if len(phys_genome) != 15:
+            raise ValueError("Expected a 15-value genome sequence.")
+        key = tuple(float(v) for v in phys_genome)
+        if key in seen:
+            continue
+        seen.add(key)
+        path_str = UrdfMaker(phys_genome, out_dir=catalog_dir).create_urdf()
+        urdf_path = Path(path_str).resolve()
+        urdfs.append(urdf_path)
 
     _write_catalog_txt(catalog_dir, urdfs)
     print(f"[catalog] Attempts={attempts}  Duplicates={dupes}  Unique={len(urdfs)}")

@@ -19,8 +19,8 @@
   <link name="fuselage">
     <inertial>
       <origin xyz="-0.2774 0 -0.04" rpy="0 0 0" />
-      <mass value="0.402961" />
-      <inertia ixx="0.00426377" ixy="0" ixz="0" iyy="0.00441255" iyz="0" izz="0.000420845" />
+      <mass value="0.275575" />
+      <inertia ixx="0.00213849" ixy="0" ixz="0" iyy="0.00225981" iyz="0" izz="0.000287597" />
       </inertial>
     <collision name="fuselage_collision_0">
       <origin xyz="-0.365 0 0.00245565348607" rpy="-1.5898372930676048 6.123233995736766e-17 -1.5707963267948968" />
@@ -81,8 +81,8 @@
   <link name="prop_camera_payload">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0.05" />
-      <inertia ixx="4.5e-06" ixy="0" ixz="0" iyy="4.5e-06" iyz="0" izz="4.5e-06" />
+      <mass value="0.03" />
+      <inertia ixx="2.7e-06" ixy="0" ixz="0" iyy="2.7e-06" iyz="0" izz="2.7e-06" />
       </inertial>
     </link>
   <joint name="fixed_joint_prop_camera_payload" type="fixed">
@@ -98,15 +98,15 @@
   <link name="fuselage_right_0">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0.01" />
-      <inertia ixx="3.22642e-07" ixy="0" ixz="0" iyy="3.22642e-07" iyz="0" izz="3.22642e-07" />
+      <mass value="0.005" />
+      <inertia ixx="5.12e-07" ixy="0" ixz="0" iyy="5.12e-07" iyz="0" izz="5.12e-07" />
       </inertial>
     </link>
   <link name="fuselage_right_1">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0.01" />
-      <inertia ixx="3.22642e-07" ixy="0" ixz="0" iyy="3.22642e-07" iyz="0" izz="3.22642e-07" />
+      <mass value="0.005" />
+      <inertia ixx="5.12e-07" ixy="0" ixz="0" iyy="5.12e-07" iyz="0" izz="5.12e-07" />
       </inertial>
     </link>
   <joint name="joint_0_sweep_right_wing" type="revolute">
@@ -152,20 +152,20 @@
   <link name="right_wing">
     <inertial>
       <origin xyz="0 -0.35 0" rpy="0 0 0" />
-      <mass value="0.0502942" />
-      <inertia ixx="0.0013328" ixy="0" ixz="0" iyy="0.00123302" iyz="0" izz="0.0001014" />
+      <mass value="0.060928" />
+      <inertia ixx="0.00161459" ixy="0" ixz="0" iyy="0.00149586" iyz="0" izz="0.000124976" />
       </inertial>
     <visual name="right_wing_visual">
       <origin xyz="0 0 0" rpy="3.141592653589793 3.141592653589793 0" />
       <geometry>
-        <mesh filename="package://meshes/wing0009.stl" scale="0.2 0.7 0.200012" />
+        <mesh filename="package://meshes/wing0009.stl" scale="0.200012 0.7 0.356303" />
         </geometry>
       <material name="red" />
       </visual>
     <collision name="right_wing_collision">
       <origin xyz="0.1 0.35 0" rpy="0 -1.5707963267948966 -1.5707963267948966" />
       <geometry>
-        <box size="0.017962225 0.2 0.7" />
+        <box size="0.032 0.2 0.7" />
         </geometry>
       </collision>
     </link>
@@ -189,15 +189,15 @@
   <link name="fuselage_left_0">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0.01" />
-      <inertia ixx="3.22642e-07" ixy="0" ixz="0" iyy="3.22642e-07" iyz="0" izz="3.22642e-07" />
+      <mass value="0.005" />
+      <inertia ixx="5.12e-07" ixy="0" ixz="0" iyy="5.12e-07" iyz="0" izz="5.12e-07" />
       </inertial>
     </link>
   <link name="fuselage_left_1">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0.01" />
-      <inertia ixx="3.22642e-07" ixy="0" ixz="0" iyy="3.22642e-07" iyz="0" izz="3.22642e-07" />
+      <mass value="0.005" />
+      <inertia ixx="5.12e-07" ixy="0" ixz="0" iyy="5.12e-07" iyz="0" izz="5.12e-07" />
       </inertial>
     </link>
   <joint name="joint_0_sweep_left_wing" type="revolute">
@@ -243,20 +243,20 @@
   <link name="left_wing">
     <inertial>
       <origin xyz="0 0.35 0" rpy="0 0 0" />
-      <mass value="0.0502942" />
-      <inertia ixx="0.0013328" ixy="0" ixz="0" iyy="0.00123302" iyz="0" izz="0.0001014" />
+      <mass value="0.060928" />
+      <inertia ixx="0.00161459" ixy="0" ixz="0" iyy="0.00149586" iyz="0" izz="0.000124976" />
       </inertial>
     <visual name="left_wing_visual">
       <origin xyz="0 0 0" rpy="0 3.141592653589793 0" />
       <geometry>
-        <mesh filename="package://meshes/wing0009.stl" scale="0.2 0.7 0.200012" />
+        <mesh filename="package://meshes/wing0009.stl" scale="0.200012 0.7 0.356303" />
         </geometry>
       <material name="red" />
       </visual>
     <collision name="left_wing_collision">
       <origin xyz="0.1 -0.35 0" rpy="0 -1.5707963267948966 -1.5707963267948966" />
       <geometry>
-        <box size="0.017962225 0.2 0.7" />
+        <box size="0.032 0.2 0.7" />
         </geometry>
       </collision>
     </link>
@@ -295,13 +295,13 @@
   <link name="elevator_hinge">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0.01" />
-      <inertia ixx="0.000125092" ixy="0" ixz="0" iyy="7.90439e-06" iyz="0" izz="0.000132813" />
+      <mass value="0.02" />
+      <inertia ixx="0.0002504" ixy="0" ixz="0" iyy="1.6025e-05" iyz="0" izz="0.000265625" />
       </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://meshes/elevator.stl" scale="0.000625262 0.00166667 0.001" />
+        <mesh filename="package://meshes/elevator.stl" scale="0.000625262 0.00166667 0.00147528" />
         </geometry>
       <material name="grey" />
       </visual>
@@ -314,13 +314,13 @@
   <link name="elevator_left">
     <inertial>
       <origin xyz="0.03875 0 0" rpy="0 0 0" />
-      <mass value="0.00847298" />
-      <inertia ixx="3.30976e-05" ixy="0" ixz="0" iyy="2.65559e-05" iyz="0" izz="6.69737e-06" />
+      <mass value="0.0085" />
+      <inertia ixx="3.32031e-05" ixy="0" ixz="0" iyy="2.67325e-05" iyz="0" izz="6.81063e-06" />
       </inertial>
     <collision>
       <origin xyz="-0.03125 0 0" rpy="0 0 0" />
       <geometry>
-        <box size="0.0135567616 0.125 0.25" />
+        <box size="0.02 0.125 0.25" />
         </geometry>
       </collision>
     </link>
@@ -344,13 +344,13 @@
   <link name="elevator_right">
     <inertial>
       <origin xyz="0.03875 0 0" rpy="0 0 0" />
-      <mass value="0.00847298" />
-      <inertia ixx="3.30976e-05" ixy="0" ixz="0" iyy="2.65559e-05" iyz="0" izz="6.69737e-06" />
+      <mass value="0.0085" />
+      <inertia ixx="3.32031e-05" ixy="0" ixz="0" iyy="2.67325e-05" iyz="0" izz="6.81063e-06" />
       </inertial>
     <collision>
       <origin xyz="-0.03125 0 0" rpy="0 0 0" />
       <geometry>
-        <box size="0.0135567616 0.125 0.25" />
+        <box size="0.02 0.125 0.25" />
         </geometry>
       </collision>
     </link>
@@ -389,19 +389,19 @@
   <link name="rudder">
     <inertial>
       <origin xyz="-0.031 0 -0.08" rpy="0 0 0" />
-      <mass value="0.0054227" />
-      <inertia ixx="1.35568e-05" ixy="0" ixz="0" iyy="1.08952e-05" iyz="0" izz="2.76118e-06" />
+      <mass value="0.004352" />
+      <inertia ixx="1.088e-05" ixy="0" ixz="0" iyy="8.75971e-06" iyz="0" izz="2.23171e-06" />
       </inertial>
     <collision name="rudder_collision_0">
       <origin xyz="-0.025 0 -0.104994470816" rpy="0 0 0" />
       <geometry>
-        <box size="0.0135567616 0.1 0.2" />
+        <box size="0.016 0.1 0.2" />
         </geometry>
       </collision>
     <visual name="rudder_visual_0">
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://meshes/rudder.stl" scale="0.000670449 0.001 0.00122269" />
+        <mesh filename="package://meshes/rudder.stl" scale="0.000670449 0.00118022 0.00122269" />
         </geometry>
       <material name="red" />
       </visual>

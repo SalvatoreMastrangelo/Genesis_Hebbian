@@ -20,8 +20,10 @@ class ActorCriticTanh(ActorCriticRecurrent):
 
     def _inverse_scale(self, act):
         thr, srv = act[..., :1], act[..., 1:]
-        a_thr = thr / self.max_throttle * 2 - 1
-        a_srv = srv / self.max_servo
+        max_thr = self.max_throttle if self.max_throttle > 1e-6 else 1e-6
+        max_srv = self.max_servo if self.max_servo > 1e-6 else 1e-6
+        a_thr = thr / max_thr * 2 - 1
+        a_srv = srv / max_srv
         return torch.cat([a_thr, a_srv], -1).clamp(-0.999999, 0.999999)
 
     # ------------------------------------------------ overrides

@@ -49,7 +49,99 @@ builtins.ActorCriticTanh = ActorCriticTanh
 # ---------------------------------------------------------------------------
 
 SUCCESS_TIME_SEC = 300.0  # required minimum flight time to count as "completed"
-MINIMAL_PROGRESS_M = 300.0
+MINIMAL_PROGRESS_M = 250.0
+
+
+# ---------------------------------------------------------------------------
+# Aero debug helpers
+# ---------------------------------------------------------------------------
+def _disable_all_noise_except_obs(env: WingedDroneEnv) -> None:
+    """Force-disable all noise sources except observation noise."""
+    # Keep observation noise as configured (including depth noise if set).
+
+    # SimpleDrone/Lisparrow config noise (mass/CoM + aero noise params)
+    if isinstance(getattr(env, "_aero_config", None), dict):
+        noise = dict(env._aero_config.get("noise", {}) or {})
+        for key in ("sigma_mag", "sigma_dir", "sigma_param", "sigma_cp", "mass_shift", "com_shift"):
+            if key in noise:
+                noise[key] = 0.0
+        env._aero_config["noise"] = noise
+
+    # Aero solver noise flags and sigmas
+    if hasattr(env, "aero_solver"):
+        if hasattr(env.aero_solver, "_enable_noise"):
+            env.aero_solver._enable_noise = False
+        for key in ("noise_sigma_mag", "noise_sigma_dir", "noise_sigma_param", "noise_sigma_cp"):
+            if hasattr(env.aero_solver, key):
+                setattr(env.aero_solver, key, 0.0)
+
+    # Drone model noise params (if present)
+    if hasattr(env, "drone_model") and hasattr(env.drone_model, "noise_params"):
+        env.drone_model.noise_params = {}
+
+
+def _print_aero_geometry_debug(env: WingedDroneEnv) -> None:
+    """Print aerodynamic surfaces parsed by SimpleDrone (kind/area/chord/span)."""
+    solver = getattr(env, "aero_solver", None)
+    if solver is None:
+        return
+    required = ("kind", "area", "chord", "span")
+    if not all(hasattr(solver, name) for name in required):
+        return
+
+    try:
+        dev = env.device
+        kind = solver.kind.to_torch(device=dev).detach().cpu().numpy()
+        area = solver.area.to_torch(device=dev).detach().cpu().numpy()
+        chord = solver.chord.to_torch(device=dev).detach().cpu().numpy()
+        span = solver.span.to_torch(device=dev).detach().cpu().numpy()
+    except Exception as exc:
+        print(f"[aero-debug] could not read surface fields: {exc}")
+        return
+
+    names = getattr(solver, "_aero_frames", [])
+    kind_name = {0: "fuselage", 1: "wing", 2: "elevator", 3: "rudder", 4: "prop"}
+
+    print("\n[aero-debug] surfaces used by simple_drone:")
+    for i in range(len(kind)):
+        frame = names[i] if i < len(names) else f"link_{i}"
+        k = int(kind[i])
+        print(
+            f"  l={i:02d} frame={frame:>24s} kind={k}({kind_name.get(k, 'unknown')}) "
+            f"S={float(area[i]):.6f} c={float(chord[i]):.6f} b={float(span[i]):.6f}"
+        )
+
+
+def _print_aero_step_debug(env: WingedDroneEnv, step_idx: int) -> None:
+    """Print lift/drag summaries from per-surface debug fields (env 0)."""
+    solver = getattr(env, "aero_solver", None)
+    if solver is None:
+        return
+    required = ("kind", "lift_dbg", "drag_dbg", "Reynolds")
+    if not all(hasattr(solver, name) for name in required):
+        return
+
+    try:
+        dev = env.device
+        kind = solver.kind.to_torch(device=dev).detach().cpu().numpy().astype(np.int32)
+        lift = solver.lift_dbg.to_torch(device=dev)[0, : len(kind)].detach().cpu().numpy().astype(np.float32)
+        drag = solver.drag_dbg.to_torch(device=dev)[0, : len(kind)].detach().cpu().numpy().astype(np.float32)
+        reyn = solver.Reynolds.to_torch(device=dev)[0, : len(kind)].detach().cpu().numpy().astype(np.float32)
+    except Exception as exc:
+        print(f"[aero-debug] could not read per-step debug fields: {exc}")
+        return
+
+    wing = kind == 1
+    elev = kind == 2
+    rudd = kind == 3
+    total_lift = float(np.nansum(lift[wing | elev]))
+    total_drag = float(np.nansum(drag[wing | elev | rudd]))
+    mean_re = float(np.nanmean(reyn[wing | elev | rudd])) if np.any(wing | elev | rudd) else float("nan")
+
+    print(
+        f"[aero-debug][step {step_idx:04d}] "
+        f"L(w+e)={total_lift:.3f} N | D(w+e+r)={total_drag:.3f} N | Re_mean={mean_re:.1f}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +658,8 @@ def run_and_record(env,
                    policy,
                    show_video: bool = False,
                    collect_video: bool = False,
-                   video_cam_path: str = "camera_view.mp4"):
+                   video_cam_path: str = "camera_view.mp4",
+                   debug_aero: bool = True):
     """
     Roll out ONE evaluation episode (usually with num_envs = 1) and:
     - collect trajectory data (positions, velocities, joints, depth)
@@ -618,8 +711,11 @@ def run_and_record(env,
 
     # Reset environment and record initial state
     obs, _ = env.reset()
+    if debug_aero:
+        _print_aero_geometry_debug(env)
     x_init[:] = env.base_pos[:, 0]
     t = torch.zeros(B, device=device)
+    step_idx = 0
 
     # Main rollout loop
     while not done.all():
@@ -666,6 +762,10 @@ def run_and_record(env,
         with torch.no_grad():
             act = policy(obs)
         obs, _, term, _ = env.step(act)
+        step_idx += 1
+
+        if debug_aero and B == 1 and (step_idx <= 10 or step_idx % 50 == 0):
+            _print_aero_step_debug(env, step_idx)
 
         # Reward components for first env (for reward videos)
         if B == 1:
@@ -792,6 +892,8 @@ def run_and_record(env,
     # Print final reason for the first env for convenience in evaluation
     if B >= 1:
         print(f"[eval] final reason env 0: {final_reason[0]}")
+    if debug_aero and B == 1:
+        _print_aero_step_debug(env, step_idx)
 
     stats = dict(
         n_completed_20s=n_completed_20s,
@@ -894,7 +996,7 @@ def main() -> None:
     # Paths: training logs and evaluation outputs
     train_log_dir = os.path.join("logs", args.exp_name)
     # Overwrite log_dir if needed coming from cluster
-    #train_log_dir = f"/home/andrea/tb_logs_kuma/ea/{args.exp_name}"
+    #train_log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2563547/logs/ea/{args.exp_name}"
     eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
 
@@ -907,6 +1009,9 @@ def main() -> None:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
     urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, -10, 2, 2.5, 3, 4, 16].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.488441, 2.04645, 0.634358, 0.412812, 0.355771, 0.505386, 2.34147, 0.220355, 1.70431, 1.59352, 2.458, 2.83091, 4, 4, 12].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
 
     # Build evaluation-specific environment config (do not modify original dict)
     env_cfg_eval = dict(env_cfg)
@@ -918,10 +1023,13 @@ def main() -> None:
             unique_forests_eval=False,
             growing_forest=True,
             episode_length_s=SUCCESS_TIME_SEC,
-            x_upper=500,
-            forest_x_limit=500,
+            x_upper=600,
+            forest_x_limit=600,
             tree_radius=env_cfg.get("tree_radius", 0.75),
-            base_init_pos=env_cfg.get("base_init_pos", [-100.0, 0.0, 10.0]),
+            base_init_pos=env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0]),
+            aero_noise=False,
+            aero_noise_sigma0=0.0,
+            noise_sigma_param=0.0,
         )
     )
     command_cfg["eval_speed"] = args.vtgt
@@ -951,6 +1059,8 @@ def main() -> None:
         eval=True,
         device=str(device),
     )
+    _disable_all_noise_except_obs(env)
+    env.reset()
 
     # Build runner and load policy
     runner_cfg = copy.deepcopy(train_cfg)

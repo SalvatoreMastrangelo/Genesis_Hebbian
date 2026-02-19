@@ -2,11 +2,14 @@ import copy
 from dataclasses import dataclass
 import math
 import gstaichi as ti
+import torch
+import numpy as np
 
 from genesis.engine.solvers.base_aero_solver import BaseAeroSolver
 from genesis.engine.entities import RigidEntity
 from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
 from genesis.utils import geom as gu
+from genesis.utils.geom import transform_by_quat
 
 
 # Numeric codes from DroneAeroModel._build_geom (kept local for Taichi kernels).
@@ -31,6 +34,10 @@ class BoundTarget:
     side: list[int]
     slip_code: list[int]
     fus_width: float
+    surface_params: list[dict]
+    surface_theta_max: list[float]
+    surface_axis_mode: list[int]
+    swept_wing: list[int]
 
 
 class LisparrowAeroDefaults:
@@ -51,8 +58,8 @@ class LisparrowAeroDefaults:
     }
 
     PROP = {
-        "prop_radius": 0.0,
-        "max_thrust": 0.0,
+        "prop_radius": 0.075,
+        "max_thrust": 1.03,
         "prop_cutoff_hz": 30.0,
         "kappa_prop": 0.0,
     }
@@ -63,10 +70,10 @@ class LisparrowAeroDefaults:
     }
 
     EXTENSIONS = {
-        "enable_reynolds": 0.0,
-        "enable_qs_dyn_lift": 0.0,
-        "enable_cos2_beta": 0.0,
-        "use_slip_two_segment_sum": 0.0,
+        "enable_reynolds": 1.0,
+        "enable_qs_dyn_lift": 1.0,
+        "enable_cos2_beta": 1.0,
+        "use_slip_two_segment_sum": 1.0,
         "nu": 1.5e-5,
         "Re_ref": 100000.0,
         "M_Re": 2.5,
@@ -75,8 +82,8 @@ class LisparrowAeroDefaults:
     WING = {
         "M_smooth": 0.2,
         "alpha_stall_wing_deg": 14.0,
-        "cl_alpha_wing_2D": 5.73,
-        "c_d_0_wing": 0.12,
+        "cl_alpha_wing_2D": 2.0 * math.pi,
+        "c_d_0_wing": 0.05,
     }
 
     TAIL = {
@@ -99,16 +106,16 @@ class LisparrowAeroDefaults:
     }
 
     WING_ROOT = {
-        "b_center": 0.0,
-        "b_root_inner": 0.0,
-        "c_root_inner": 0.0,
-        "b_root_outer": 0.0,
-        "c_root_outer": 0.0,
-        "s_one_root": 0.0,
+        "b_center": 0.027,
+        "b_root_inner": 0.247,
+        "c_root_inner": 0.18,
+        "b_root_outer": 0.337,
+        "c_root_outer": 0.15,
+        "s_one_root": 0.0265,
     }
 
     REF_POS = {
-        "pos_cg_x": -0.075,
+        "pos_cg_x": -0.085,
         "pos_ele_le_x": -0.339,
         "pos_ele_le_y": 0.0,
         "pos_ele_le_z": 0.0,
@@ -254,36 +261,48 @@ class LisparrowAeroParameters:
     }
 
     LINKS = {
-        "aero_frame_fuselage": {
+        "fuselage": {
             "type": "fuselage",
             "s_folded": 1.0,
         },
-        "aero_frame_left_wing": {
+        "aero_frame_center_wing": {
+            "type": "wing",
+            "s_folded": 1.0,
+        },
+        "aero_frame_left_outer_wing": {
             "type": "wing",
             "actuator_yaw": "X10_servo",
             "actuator_pitch": "X08_servo",
+            "s_folded_yaw": 0.9,
+            "s_folded_pitch": 1.0,
         },
-        "aero_frame_right_wing": {
+        "aero_frame_right_outer_wing": {
             "type": "wing",
             "actuator_yaw": "X10_servo",
             "actuator_pitch": "X08_servo",
+            "s_folded_yaw": 0.9,
+            "s_folded_pitch": 1.0,
         },
-        "aero_frame_elevator_left": {
+        "aero_frame_elevator": {
             "type": "elevator",
             "actuator_pitch": "X08_servo",
             "actuator_yaw": None,
-        },
-        "aero_frame_elevator_right": {
-            "type": "elevator",
-            "actuator_pitch": "X08_servo",
-            "actuator_yaw": None,
+            "s_folded_pitch": 0.9,
+            # Keep tail authority coherent with dyn_casadi_mod_3D defaults.
+            "S": LisparrowAeroDefaults.TAIL["s_hor_tail"],
+            "chord": LisparrowAeroDefaults.TAIL["c_hor_tail"],
+            "span": LisparrowAeroDefaults.TAIL["b_hor_tail"],
         },
         "aero_frame_rudder": {
             "type": "rudder",
             "actuator_pitch": None,
             "actuator_yaw": "X08_servo",
+            "s_folded_yaw": 1.0,
+            "S": LisparrowAeroDefaults.RUDDER["s_vert_tail"],
+            "chord": LisparrowAeroDefaults.RUDDER["c_vert_tail"],
+            "span": LisparrowAeroDefaults.RUDDER["b_vert_tail"],
         },
-        "prop_frame_fuselage_0": {
+        "propeller": {
             "type": "propeller",
             "actuator": "morphing_prop",
         },
@@ -331,11 +350,26 @@ class LisparrowAeroSolver(BaseAeroSolver):
         self._surface_kinds: list[int] = []
         self._geom_uses_span = False  # Set True if you provide (S, span, chord, kind) manually.
         self._drone_model: DroneAeroModel | None = None
+        self._surface_params: list[dict] = []
+        self._surface_theta_max: list[float] = []
+        self._surface_axis_mode: list[int] = []
+        self._surface_is_swept_wing: list[int] = []
         self._randomizable_param_names = LisparrowAeroDefaults.randomizable_param_names()
         self.noise_sigma_mag = DroneAeroModel.NOISE_DEFAULTS["sigma_mag"]
         self.noise_sigma_dir = DroneAeroModel.NOISE_DEFAULTS["sigma_dir"]
         self.noise_sigma_param = DroneAeroModel.NOISE_DEFAULTS["sigma_param"]
         self.noise_sigma_cp = DroneAeroModel.NOISE_DEFAULTS["sigma_cp"]
+        self.tip_to_tip: float = 0.0
+        self.AR_wing: float = 0.0
+        self.AR_tail: float = 0.0
+        self.S_perp_fus: float = 0.0
+        self.cg_fus_local_x: float = 0.0
+        self.cz_rudder: float = 0.0
+        self.genes: list[float] = []
+        self.genes_dict: dict[str, float] = {}
+        self._verbose_init: bool = False
+        self._verbose_init_done: bool = False
+        self._surf_joint_name: list[str] = []
 
     def add_target(
         self,
@@ -359,6 +393,7 @@ class LisparrowAeroSolver(BaseAeroSolver):
         # Phase 3: populate fields and initialize cached state
         self._init_simple_fields(bound)
         self._map_actuators(entity, bound.model)
+        self._verbose_init_done = False
 
         # Cached Torch buffers for parameters queried each step.
         self._init_param_buffers()
@@ -405,6 +440,10 @@ class LisparrowAeroSolver(BaseAeroSolver):
         side = [0 for _ in range(self.L)]
         slip_code = [0 for _ in range(self.L)]
         fus_width = 0.0
+        surface_params = list(self._surface_params) if self._surface_params else [{} for _ in range(self.L)]
+        surface_theta_max = list(self._surface_theta_max) if self._surface_theta_max else [0.0 for _ in range(self.L)]
+        surface_axis_mode = list(self._surface_axis_mode) if self._surface_axis_mode else [0 for _ in range(self.L)]
+        swept_wing = list(self._surface_is_swept_wing) if self._surface_is_swept_wing else [0 for _ in range(self.L)]
         for i, (_, _, c, k) in enumerate(geom):
             name = frames[i].lower() if i < len(frames) else ""
             if "left" in name:
@@ -437,6 +476,10 @@ class LisparrowAeroSolver(BaseAeroSolver):
             side=side,
             slip_code=slip_code,
             fus_width=fus_width,
+            surface_params=surface_params,
+            surface_theta_max=surface_theta_max,
+            surface_axis_mode=surface_axis_mode,
+            swept_wing=swept_wing,
         )
 
     def _resolve_drone_model(self, urdf_file: str | None, drone_model: DroneAeroModel | None):
@@ -450,15 +493,29 @@ class LisparrowAeroSolver(BaseAeroSolver):
 
     def _apply_drone_model(self, model: DroneAeroModel, entity: RigidEntity):
         self._drone_model = model
+        self.tip_to_tip = float(getattr(model, "tip_to_tip", 0.0))
+        self.AR_wing = float(getattr(model, "AR_wing", 0.0))
+        self.AR_tail = float(getattr(model, "AR_tail", 0.0))
+        self.S_perp_fus = float(getattr(model, "S_perp_fus", 0.0))
+        self.cg_fus_local_x = float(getattr(model, "cg_fus_local_x", 0.0))
+        self.cz_rudder = float(getattr(model, "cz_rudder", 0.0))
+        self.genes = list(getattr(model, "genes", []))
+        self.genes_dict = dict(getattr(model, "genes_dict", {}))
         frames = list(model.frames)
         geom = list(model.geom)
+        per_surface_params = list(getattr(model, "per_surface_params", []) or [])
         surface_kinds = [self._surface_kind_code(k) for k in getattr(model, "surface_kinds", [])]
         link_idx = model.link_indices(entity)
 
         keep = []
         for i, name in enumerate(frames):
             lname = str(name).lower()
-            if lname.startswith("aero_frame_") or lname.startswith("prop_frame_") or lname.startswith("propeller"):
+            if (
+                lname == "fuselage"
+                or lname.startswith("aero_frame_")
+                or lname.startswith("prop_frame_")
+                or lname.startswith("propeller")
+            ):
                 keep.append(i)
 
         if not keep:
@@ -469,6 +526,30 @@ class LisparrowAeroSolver(BaseAeroSolver):
         self._surface_kinds = [surface_kinds[i] for i in keep] if surface_kinds else []
         self._aero_link_idx = [link_idx[i] for i in keep]
         self._geom_uses_span = False  # DroneAeroModel.geom is (S, AR, chord, kind)
+        self._surface_params = [dict(per_surface_params[i]) if i < len(per_surface_params) else {} for i in keep]
+
+        actuator_map = dict(getattr(model, "actuators", {}) or {})
+        self._surface_theta_max = []
+        self._surface_axis_mode = []
+        self._surface_is_swept_wing = []
+        for out_i, frame in enumerate(self._aero_frames):
+            info = actuator_map.get(frame)
+            limits = getattr(info, "limits", None) if info is not None else None
+            theta_max = 0.0
+            if isinstance(limits, (tuple, list)) and len(limits) >= 2:
+                lo = float(limits[0])
+                hi = float(limits[1])
+                if math.isfinite(lo) and math.isfinite(hi):
+                    theta_max = max(abs(lo), abs(hi))
+            self._surface_theta_max.append(theta_max)
+
+            kind_code = int(self._surface_kinds[out_i]) if out_i < len(self._surface_kinds) else K_FUSELAGE
+            axis_mode = self._axis_mode_from_joint(frame, kind_code, info)
+            self._surface_axis_mode.append(axis_mode)
+
+            jname = str(getattr(info, "joint_name", "") or "").lower()
+            is_swept = 1 if (kind_code == K_WING and ("sweep" in jname or "outer" in frame.lower())) else 0
+            self._surface_is_swept_wing.append(is_swept)
 
         if model.noise_params:
             self.noise_sigma_mag = float(model.noise_params.get("sigma_mag", self.noise_sigma_mag))
@@ -494,6 +575,30 @@ class LisparrowAeroSolver(BaseAeroSolver):
                 model.validate_entity(entity, servo_joint_names=valid_names)
 
         self._log_geometry(model)
+
+    @staticmethod
+    def _axis_mode_from_joint(frame: str, kind_code: int, info) -> int:
+        has_yaw = bool(getattr(info, "yaw_actuator", None)) if info is not None else False
+        has_pitch = bool(getattr(info, "pitch_actuator", None)) if info is not None else False
+        if has_yaw and not has_pitch:
+            return 1
+        if has_pitch and not has_yaw:
+            return 2
+
+        jname = str(getattr(info, "joint_name", "") or "").lower()
+        if any(tok in jname for tok in ("yaw", "sweep", "rudder")):
+            return 1
+        if any(tok in jname for tok in ("pitch", "elevator", "twist")):
+            return 2
+
+        lname = frame.lower()
+        if kind_code == K_ELEVATOR or "elevator" in lname:
+            return 2
+        if kind_code == K_RUDDER or "rudder" in lname:
+            return 1
+        if kind_code == K_WING:
+            return 1
+        return 0
 
     def _log_geometry(self, model: DroneAeroModel):
         dims = getattr(model, "debug_dims", {})
@@ -614,11 +719,21 @@ class LisparrowAeroSolver(BaseAeroSolver):
         self.area0 = ti.field(ti.f32, shape=(L,))
         self.span0 = ti.field(ti.f32, shape=(L,))
         self.chord0 = ti.field(ti.f32, shape=(L,))
+        self.seff_ratio_base = ti.field(ti.f32, shape=(L,))
+        self.seff_ratio_yaw = ti.field(ti.f32, shape=(L,))
+        self.seff_ratio_pitch = ti.field(ti.f32, shape=(L,))
+        self.theta_max_link = ti.field(ti.f32, shape=(L,))
+        self.surface_axis_mode = ti.field(ti.i32, shape=(L,))
+        self.swept_wing = ti.field(ti.i32, shape=(L,))
 
-        # Actuator DOF mapping (wing sweep / elevator / rudder).
-        self._surf_dof = ti.field(ti.i32, shape=(L,))
+        # Actuator DOF mapping per surface.
+        self._surf_dof = ti.field(ti.i32, shape=(L,))       # primary DOF (fallback)
+        self._surf_dof_yaw = ti.field(ti.i32, shape=(L,))   # yaw-like DOF (sweep/rudder)
+        self._surf_dof_pitch = ti.field(ti.i32, shape=(L,)) # pitch-like DOF (twist/elevator)
         for i in range(L):
             self._surf_dof[i] = -1
+            self._surf_dof_yaw[i] = -1
+            self._surf_dof_pitch[i] = -1
 
         # Per-surface aerodynamic coefficients (placeholders for future tuning).
         self.cd0_link = ti.field(ti.f32, shape=(B, L))
@@ -647,6 +762,8 @@ class LisparrowAeroSolver(BaseAeroSolver):
         self.downwash_eps_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
         self.cl_wing_for_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
         self.k_eps_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+        self.flow_dbg = ti.Vector.field(3, ti.f32, shape=(B, self.n_links_))
+        self.joint_angle_dbg = ti.field(ti.f32, shape=(B, self.n_links_))
 
     @ti.func
     def _dbg_decompose_force(self, F: ti.template(), v: ti.template()):
@@ -688,6 +805,10 @@ class LisparrowAeroSolver(BaseAeroSolver):
         """
         Phase 3: populate per-surface metadata and initialize cached state.
         """
+        self._surface_params = list(bound.surface_params)
+        self._surface_theta_max = list(bound.surface_theta_max)
+        self._surface_axis_mode = list(bound.surface_axis_mode)
+        self._surface_is_swept_wing = list(bound.swept_wing)
         self._init_surface_metadata()
         self._init_surface_params()
         self._init_prev_states()
@@ -696,6 +817,13 @@ class LisparrowAeroSolver(BaseAeroSolver):
         body_link = self._infer_body_link_idx()
         self.body_link_idx[None] = int(body_link)
 
+        def _clamp01(val, default=1.0):
+            try:
+                v = float(val)
+            except Exception:
+                return float(default)
+            return max(0.0, min(1.0, v))
+
         for i, (s, ar_or_span, chord, k) in enumerate(self._geom):
             span = self._geom_span(s, ar_or_span)
             self.area0[i] = float(s)
@@ -703,6 +831,16 @@ class LisparrowAeroSolver(BaseAeroSolver):
             self.chord0[i] = float(chord)
             self.kind[i] = int(k)
             self._link_idx[i] = int(self._aero_link_idx[i])
+            surf_params = self._surface_params[i] if i < len(self._surface_params) else {}
+            ratio_base = _clamp01(surf_params.get("s_folded", 1.0), 1.0)
+            ratio_yaw = _clamp01(surf_params.get("s_folded_yaw", ratio_base), ratio_base)
+            ratio_pitch = _clamp01(surf_params.get("s_folded_pitch", ratio_base), ratio_base)
+            self.seff_ratio_base[i] = ratio_base
+            self.seff_ratio_yaw[i] = ratio_yaw
+            self.seff_ratio_pitch[i] = ratio_pitch
+            self.theta_max_link[i] = float(self._surface_theta_max[i]) if i < len(self._surface_theta_max) else 0.0
+            self.surface_axis_mode[i] = int(self._surface_axis_mode[i]) if i < len(self._surface_axis_mode) else 0
+            self.swept_wing[i] = int(self._surface_is_swept_wing[i]) if i < len(self._surface_is_swept_wing) else 0
 
             name = self._aero_frames[i].lower() if i < len(self._aero_frames) else ""
             if "left" in name:
@@ -732,25 +870,86 @@ class LisparrowAeroSolver(BaseAeroSolver):
                     self.k_slip_tail_link[b, l] = self.K_slip_tail[b]
 
     def _map_actuators(self, entity: RigidEntity, model: DroneAeroModel | None) -> None:
-        if model is None:
-            return
-        for frame, info in getattr(model, "actuators", {}).items():
-            jname = getattr(info, "joint_name", None)
-            if not jname:
-                continue
+        actuator_map = dict(getattr(model, "actuators", {}) or {}) if model is not None else {}
+        self._surf_joint_name = ["" for _ in range(len(self._aero_frames))]
+
+        def _joint_first_dof(joint_name: str) -> int | None:
             try:
-                j = entity.get_joint(jname)
+                j = entity.get_joint(joint_name)
             except Exception:
-                continue
+                return None
             dofs = getattr(j, "dofs_idx_local", None)
-            if not dofs:
-                continue
-            dof0 = int(dofs[0] if isinstance(dofs, (list, tuple)) else dofs)
-            try:
-                si = self._aero_frames.index(frame)
-            except ValueError:
-                continue
-            self._surf_dof[si] = dof0
+            if dofs is None:
+                return None
+            if isinstance(dofs, (list, tuple)):
+                if len(dofs) == 0:
+                    return None
+                return int(dofs[0])
+            return int(dofs)
+
+        def _axis_from_joint_name(name: str) -> int:
+            lname = str(name).lower()
+            if any(tok in lname for tok in ("yaw", "rudder", "sweep")):
+                return 1
+            if any(tok in lname for tok in ("pitch", "elevator", "twist")):
+                return 2
+            return 0
+
+        def _preferred_motion_joints_for_surface(frame_name: str) -> list[str]:
+            lname = frame_name.lower()
+            if "left_outer_wing" in lname:
+                return ["joint_0_sweep_left_wing"]
+            if "right_outer_wing" in lname:
+                return ["joint_0_sweep_right_wing"]
+            if "elevator" in lname:
+                return ["elevator_pitch_joint"]
+            if "rudder" in lname:
+                return ["rudder_yaw_joint"]
+            return []
+
+        for si, frame in enumerate(self._aero_frames):
+            info = actuator_map.get(frame)
+            candidates: list[str] = []
+            if info is not None:
+                jname = getattr(info, "joint_name", None)
+                if jname:
+                    candidates.append(str(jname))
+            candidates.extend(_preferred_motion_joints_for_surface(frame))
+
+            # Deduplicate preserving order.
+            uniq: list[str] = []
+            seen = set()
+            for name in candidates:
+                if name in seen:
+                    continue
+                seen.add(name)
+                uniq.append(name)
+
+            for jname in uniq:
+                dof = _joint_first_dof(jname)
+                if dof is None:
+                    continue
+                if self._surf_dof[si] < 0:
+                    self._surf_dof[si] = dof
+                    self._surf_joint_name[si] = str(jname)
+                axis = _axis_from_joint_name(jname)
+                if axis == 1 and self._surf_dof_yaw[si] < 0:
+                    self._surf_dof_yaw[si] = dof
+                elif axis == 2 and self._surf_dof_pitch[si] < 0:
+                    self._surf_dof_pitch[si] = dof
+
+            # Final fallback: if axis-specific DOF is missing, use primary.
+            if self._surf_dof_yaw[si] < 0:
+                self._surf_dof_yaw[si] = self._surf_dof[si]
+            if self._surf_dof_pitch[si] < 0:
+                self._surf_dof_pitch[si] = self._surf_dof[si]
+
+    def set_verbose_init(self, enabled: bool = True) -> None:
+        self._verbose_init = bool(enabled)
+        self._verbose_init_done = False
+        if enabled:
+            # Needed to have alpha/beta and decomposed aerodynamic quantities populated.
+            self._aero_log = True
 
     def _infer_body_link_idx(self) -> int:
         for i, (_, _, _, k) in enumerate(self._geom):
@@ -771,6 +970,17 @@ class LisparrowAeroSolver(BaseAeroSolver):
         q = ti.cast(rigid.dofs_state.pos[safe_dof, b], ti.f32)
         angle = ti.select(dof >= 0, q, 0.0)
         return angle
+
+    @ti.func
+    def _read_surface_angle_axis(self, rigid: ti.template(), b: int, l: int, axis_mode: ti.i32) -> ti.f32:
+        dof = self._surf_dof[l]
+        if axis_mode == 1:
+            dof = self._surf_dof_yaw[l]
+        elif axis_mode == 2:
+            dof = self._surf_dof_pitch[l]
+        safe_dof = ti.max(dof, 0)
+        q = ti.cast(rigid.dofs_state.pos[safe_dof, b], ti.f32)
+        return ti.select(dof >= 0, q, 0.0)
 
     @ti.func
     def _omega_body(self, rigid: ti.template(), link_idx: int, b: int) -> ti.types.vector(3, ti.f32):
@@ -798,82 +1008,122 @@ class LisparrowAeroSolver(BaseAeroSolver):
         )
 
     # ------------------------------------------------------------------
-    # Optional extensions: Reynolds degradation, QS dyn lift, cos^2(beta)
+    # Effective surfaces + aero coefficients (aligned with dyn_casadi_mod_3D)
     # ------------------------------------------------------------------
+    @ti.func
+    def _seff_ratio(self, theta: ti.f32, theta_max: ti.f32, ratio_folded: ti.f32) -> ti.f32:
+        ratio_clamped = ti.min(1.0, ti.max(0.0, ratio_folded))
+        t = 0.0
+        if theta_max > 1e-6:
+            t = ti.min(1.0, ti.abs(theta) / theta_max)
+        return 1.0 - t * (1.0 - ratio_clamped)
+
+    @ti.func
+    def _wing_sweep_scales(self, theta: ti.f32) -> ti.types.vector(2, ti.f32):
+        theta_deg = theta * (180.0 / ti.math.pi)
+        b_outer = (-0.0201 * theta_deg * theta_deg + 0.0904 * theta_deg + 165.15) / 1000.0
+        s_outer = (-142.97 * theta_deg + 16290.0) / 1e6
+        span_scale = b_outer / 0.165
+        area_scale = s_outer / 0.016309
+        span_scale = ti.min(2.0, ti.max(0.05, span_scale))
+        area_scale = ti.min(2.0, ti.max(0.05, area_scale))
+        return ti.Vector([area_scale, span_scale], dt=ti.f32)
+
+    @ti.func
+    def _surface_scales(self, rigid: ti.template(), b: int, l: int) -> ti.types.vector(2, ti.f32):
+        theta = self._read_surface_angle(rigid, b, l)
+        theta_yaw = self._read_surface_angle_axis(rigid, b, l, 1)
+        theta_pitch = self._read_surface_angle_axis(rigid, b, l, 2)
+        theta_max = ti.max(0.0, self.theta_max_link[l])
+
+        base_ratio = ti.min(1.0, ti.max(0.0, self.seff_ratio_base[l]))
+        ratio_yaw = ti.min(1.0, ti.max(0.0, self.seff_ratio_yaw[l]))
+        ratio_pitch = ti.min(1.0, ti.max(0.0, self.seff_ratio_pitch[l]))
+
+        fold_ratio = 1.0
+        mode = self.surface_axis_mode[l]
+        if mode == 1:
+            fold_ratio = self._seff_ratio(theta_yaw, theta_max, ratio_yaw)
+        elif mode == 2:
+            fold_ratio = self._seff_ratio(theta_pitch, theta_max, ratio_pitch)
+        elif mode == 3:
+            fold_ratio = self._seff_ratio(theta_yaw, theta_max, ratio_yaw) * self._seff_ratio(theta_pitch, theta_max, ratio_pitch)
+
+        area_scale = base_ratio * fold_ratio
+        span_scale = fold_ratio
+
+        if self.kind[l] == K_WING and self.swept_wing[l] == 1:
+            sweep_scales = self._wing_sweep_scales(theta_yaw)
+            area_scale *= sweep_scales.x
+            span_scale *= sweep_scales.y
+
+        area_scale = ti.max(1e-3, area_scale)
+        span_scale = ti.max(1e-3, span_scale)
+        return ti.Vector([area_scale, span_scale], dt=ti.f32)
+
+    @ti.func
+    def _effective_surface_area(self, rigid: ti.template(), b: int, l: int) -> ti.f32:
+        scales = self._surface_scales(rigid, b, l)
+        return ti.max(1e-6, self.area0[l] * scales.x)
+
+    @ti.func
+    def _effective_surface_span(self, rigid: ti.template(), b: int, l: int) -> ti.f32:
+        scales = self._surface_scales(rigid, b, l)
+        return ti.max(1e-6, self.span0[l] * scales.y)
+
     @ti.func
     def _reynolds_factor(self, b: int, speed: ti.f32, chord: ti.f32) -> ti.f32:
+        nu = ti.max(1e-9, self.nu[b])
+        re_ref = ti.max(1e-6, self.Re_ref[b])
+        Re = speed * chord / nu
         f_re = 1.0
-        if self.enable_reynolds[b] > 0.5:
-            nu = ti.max(1e-9, self.nu[b])
-            re_ref = ti.max(1e-6, self.Re_ref[b])
-            Re = speed * chord / nu
-            if Re < re_ref:
-                ratio = (re_ref - Re) / re_ref
-                f_re = 1.0 - ti.pow(ti.max(0.0, ratio), self.M_Re[b])
-            else:
-                f_re = 1.0
-            f_re = ti.min(1.0, ti.max(0.0, f_re))
-        return f_re
+        if Re < re_ref:
+            ratio = (re_ref - Re) / re_ref
+            f_re = 1.0 - ti.pow(ti.max(0.0, ratio), self.M_Re[b])
+        return ti.min(1.0, ti.max(0.0, f_re))
 
     @ti.func
-    def _qs_dyn_lift_delta(self, b: int, omega_y: ti.f32, chord_ref: ti.f32, speed: ti.f32) -> ti.f32:
-        delta = 0.0
-        if self.enable_qs_dyn_lift[b] > 0.5:
-            vref = ti.max(1e-6, speed)
-            delta = (ti.math.pi * 0.5) * (-omega_y * chord_ref) / vref
-        return delta
+    def _qs_dyn_lift_delta(self, omega_y: ti.f32, chord_ref: ti.f32, speed: ti.f32) -> ti.f32:
+        vref = ti.max(1e-6, speed)
+        return (ti.math.pi * 0.5) * (-omega_y * chord_ref) / vref
 
     @ti.func
-    def _cos2_beta_factor(self, b: int, flow_vel: ti.types.vector(3, ti.f32)) -> ti.f32:
-        factor = 1.0
-        if self.enable_cos2_beta[b] > 0.5:
-            vnorm = flow_vel.norm() + 1e-9
-            sinb = ti.max(-1.0, ti.min(1.0, flow_vel.y / vnorm))
-            beta = ti.asin(sinb)
-            cosb = ti.cos(beta)
-            factor = cosb * cosb
-        return factor
-
-    # ------------------------------------------------------------------
-    # C++ AeroCoefficients
-    # ------------------------------------------------------------------
-    @ti.func
-    def _aero_coeff(self, AR: ti.f32, alpha: ti.f32, alpha_stall: ti.f32, M_smooth: ti.f32,
-                    cl_alpha_2D: ti.f32, c_d_0: ti.f32, delta_cl_lin: ti.f32, f_re: ti.f32):
-
-        # --- NEW: allow signed alpha (SimpleDrone-like) ---
-        alpha_abs = ti.abs(alpha)
-        alpha = self._wrap_pm_90(alpha)
+    def _aero_coeff(
+        self,
+        AR: ti.f32,
+        alpha: ti.f32,
+        alpha_stall: ti.f32,
+        M_smooth: ti.f32,
+        cl_alpha_2D: ti.f32,
+        c_d_0: ti.f32,
+        c_l_dyn_pre_st: ti.f32,
+        f_re: ti.f32,
+        ac_x: ti.f32,
+        geo_x: ti.f32,
+    ):
         k_cd = 1.0 - 0.41 * (1.0 - ti.exp(-17.0 / ti.max(1e-6, AR)))
 
-        # Stall blending weight: depends on |alpha| only
-        w = 0.0
-        if alpha_abs > alpha_stall and alpha_abs < (ti.math.pi - alpha_stall):
-            w = ti.cos(
-                ti.math.pi
-                * ((alpha_abs - alpha_stall) / ((ti.math.pi - alpha_stall) - alpha_stall))
-                - (ti.math.pi * 0.5)
-            )
+        den = ti.max(1e-6, ti.math.pi - 2.0 * alpha_stall)
+        w_pos = ti.cos(ti.math.pi * ((alpha - alpha_stall) / den) - ti.math.pi * 0.5)
+        w_neg = ti.cos(ti.math.pi * ((-alpha - alpha_stall) / den) - ti.math.pi * 0.5)
+        w = (1.0 / (1.0 + ti.exp(-20.0 * (alpha - alpha_stall)))) * w_pos + (
+            1.0 / (1.0 + ti.exp(-20.0 * (-alpha - alpha_stall)))
+        ) * w_neg
 
-        # Lift uses signed alpha; drag uses |alpha|
-        c_l_st = 2.0 * ti.sin(alpha) * ti.cos(alpha) * (1.0 - w * (1.0 - k_cd))
-        sa = ti.sin(alpha_abs)
-        c_d_st = 2.0 * (sa * sa) * (1.0 - w * (1.0 - k_cd))
+        sa = ti.sin(alpha)
+        ca = ti.cos(alpha)
+        c_l_st = f_re * (2.0 * sa * ca * (1.0 - w * (1.0 - k_cd)))
+        c_d_st = 2.0 * f_re * (sa * sa) * (1.0 - w * (1.0 - k_cd))
 
-        # Linear lift branch: signed
-        c_l_lin = (cl_alpha_2D * AR / (2.0 + ti.sqrt(AR * AR + 4.0))) * alpha + delta_cl_lin
+        c_l_lin = f_re * ((cl_alpha_2D * AR) / (2.0 + ti.sqrt(AR * AR + 4.0)) * alpha)
         c_d_quad = c_d_0 + (c_l_lin * c_l_lin) / (ti.math.pi * ti.max(1e-6, AR))
 
-        # Blend based on |alpha|
-        s = self._sigmoid(alpha_abs, alpha_stall, M_smooth)
-        c_l = (1.0 - s) * c_l_lin + s * c_l_st
-        c_d = (1.0 - s) * c_d_quad + s * c_d_st
+        sig = self._sigmoid(alpha, alpha_stall, M_smooth)
+        c_l = (1.0 - sig) * (c_l_lin + c_l_dyn_pre_st) + sig * c_l_st
+        c_d = (1.0 - sig) * c_d_quad + sig * c_d_st
 
-        # Reynolds degradation
-        c_l *= f_re
-        c_d = c_d_0 + (c_d - c_d_0) * f_re
-
-        return c_l, c_d
+        d_x_m = -(ac_x + (2.0 * ti.abs(alpha) / ti.math.pi) * (geo_x - ac_x))
+        return c_l, c_d, d_x_m
 
 
     # ------------------------------------------------------------------
@@ -907,10 +1157,10 @@ class LisparrowAeroSolver(BaseAeroSolver):
     def _wing_properties(self, b: int, theta_sw: ti.f32):
         theta_deg = theta_sw * (180.0 / ti.math.pi)
 
-        b_outer = (-0.0195 * theta_deg * theta_deg + 0.0603 * theta_deg + 165.0) / 1000.0
-        s_outer = (-143.58 * theta_deg + 16309.0) / 1e6
-        ac_x_outer = 0.15 / 6.0
-        cpx_outer = (-0.00359 * theta_deg * theta_deg + 0.754 * theta_deg + 59.04) / 1000.0
+        b_outer = (-0.0201 * theta_deg * theta_deg + 0.0904 * theta_deg + 165.15) / 1000.0
+        s_outer = (-142.97 * theta_deg + 16290.0) / 1e6
+        ac_x_outer = self.c_root_outer[b] / 6.0
+        cpx_outer = ((-0.003 * theta_deg * theta_deg) + 0.7136 * theta_deg + 59.55) / 1000.0
         cpy_outer = (-0.00397 * theta_deg * theta_deg - 0.251 * theta_deg + 62.78) / 1000.0
 
         b_root_outer, s_root, mac_root, cpx_root, cpy_root = self._wing_root_geom(b)
@@ -941,8 +1191,9 @@ class LisparrowAeroSolver(BaseAeroSolver):
         calculate_rot_pt: ti.i32,
     ):
         """
-        WingAeroCenter rewritten for the NEW convention:
+        WingAeroCenter rewritten for the quarter-chord frame convention:
         - returns a point in the LINK frame
+        - frame origin is at 25% chord from LE
         - CP/rot point moves ONLY along local X (chord direction)
         - uses Lisparrow ac_x/cpx behavior, but mapped via chord fractions
         """
@@ -966,228 +1217,117 @@ class LisparrowAeroSolver(BaseAeroSolver):
                 t = ti.min(1.0, ti.max(0.0, t))
                 frac = ac_frac + t * (cp_frac - ac_frac)
 
-        x = -ti.max(1e-6, chord_link) * frac
+        # Convert LE-referenced fraction into quarter-chord-referenced position.
+        x = ti.max(1e-6, chord_link) * (0.25 - frac)
         return ti.Vector([x, 0.0, 0.0], dt=ti.f32)
 
     # ------------------------------------------------------------------
-    # C++ WingForce (no slipstream mixing)
+    # Wing / tail / rudder forces (dyn_casadi_mod_3D-consistent)
     # ------------------------------------------------------------------
     @ti.func
-    def _wing_force(self, b: int, n_s: ti.types.vector(3, ti.f32), flow_vel: ti.types.vector(3, ti.f32),
-                    b_w: ti.f32, s_w: ti.f32, mac_w: ti.f32, chord_ref: ti.f32,
-                    alpha_stall: ti.f32, M_smooth: ti.f32, cl_alpha_2D: ti.f32, c_d_0: ti.f32,
-                    omega_y: ti.f32, activate_dyn_aero: ti.i32):
-        vnorm_raw = flow_vel.norm()
-        vnorm = vnorm_raw + 1e-9
-        n_d = flow_vel / vnorm
+    def _wing_force_with_thrust(
+        self,
+        b: int,
+        flow_free: ti.types.vector(3, ti.f32),
+        flow_slip: ti.types.vector(3, ti.f32),
+        s_w: ti.f32,
+        s_slip: ti.f32,
+        AR: ti.f32,
+        chord_ref: ti.f32,
+        ac_x: ti.f32,
+        geo_x: ti.f32,
+        alpha_stall: ti.f32,
+        M_smooth: ti.f32,
+        cl_alpha_2D: ti.f32,
+        c_d_0: ti.f32,
+        omega_y: ti.f32,
+    ):
+        V = flow_free.norm() + 1e-9
+        V_slip = flow_slip.norm() + 1e-9
 
-        sgn_dir = 1.0
-        if n_s.dot(flow_vel) < 0.0:
-            n_s = -n_s
-            sgn_dir = -1.0
+        # Use aerodynamic sign convention, then fold to [-pi/2, pi/2]
+        # to avoid 180-deg branch flips when local x-axis is inverted.
+        alpha = self._wrap_pm_90(ti.atan2(flow_free.z, -flow_free.x))
+        alpha_slip = self._wrap_pm_90(ti.atan2(flow_slip.z, -flow_slip.x))
+        beta = ti.asin(ti.math.clamp(flow_free.y / V, -1.0, 1.0))
+        beta_slip = ti.asin(ti.math.clamp(flow_slip.y / V_slip, -1.0, 1.0))
 
-        n_l = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
-        if (n_s - n_d).norm() < 1e-10:
-            n_l = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
-        else:
-            n_l = self._cross(self._cross(n_d, n_s), n_d)
-        n_l = n_l / (n_l.norm() + 1e-9)
+        f_re = self._reynolds_factor(b, V, chord_ref)
+        f_re_slip = self._reynolds_factor(b, V_slip, chord_ref)
 
-        alpha = ti.atan2(-flow_vel.z, flow_vel.x)
+        c_l_dyn = self._qs_dyn_lift_delta(omega_y, chord_ref, V)
+        c_l_dyn_slip = self._qs_dyn_lift_delta(omega_y, chord_ref, V_slip)
 
-        AR = (b_w * b_w) / ti.max(1e-6, s_w)
-        f_re = self._reynolds_factor(b, vnorm_raw, mac_w)
-        delta_cl = self._qs_dyn_lift_delta(b, omega_y, chord_ref, vnorm_raw)
+        c_l, c_d, d_x = self._aero_coeff(
+            AR, alpha, alpha_stall, M_smooth, cl_alpha_2D, c_d_0, c_l_dyn, f_re, ac_x, geo_x
+        )
+        c_l_s, c_d_s, d_x_s = self._aero_coeff(
+            AR, alpha_slip, alpha_stall, M_smooth, cl_alpha_2D, c_d_0, c_l_dyn_slip, f_re_slip, ac_x, geo_x
+        )
 
-        c_l, c_d = self._aero_coeff(AR, alpha, alpha_stall, M_smooth, cl_alpha_2D, c_d_0, delta_cl, f_re)
+        S_slip = ti.min(ti.max(0.0, s_slip), ti.max(1e-6, s_w))
+        S_free = ti.max(1e-6, s_w - S_slip)
 
-        eps_downwash = sgn_dir * c_l / (ti.math.pi * ti.max(1e-6, AR))
+        cosb = ti.cos(beta)
+        cosb2 = cosb * cosb
+        cosb_s = ti.cos(beta_slip)
+        cosb2_s = cosb_s * cosb_s
 
-        # Forces use s/2 (per wing half) exactly like C++.
-        vnorm2 = vnorm * vnorm
-        f_l = 0.5 * vnorm2 * (s_w * 0.5) * c_l
-        f_d = 0.5 * vnorm2 * (s_w * 0.5) * c_d
+        q_free = 0.5 * V * V * S_free
+        q_slip = 0.5 * V_slip * V_slip * S_slip
 
-        # Optional cos^2(beta) attenuation (disabled by default).
-        cos2 = self._cos2_beta_factor(b, flow_vel)
-        f_l *= cos2
-        f_d *= cos2
+        # Casadi formulas assume flow entering from -x. If the local frame has
+        # opposite x convention (flow from +x), drag terms must flip sign.
+        sgn_free = ti.select(-flow_free.x >= 0.0, 1.0, -1.0)
+        sgn_slip = ti.select(-flow_slip.x >= 0.0, 1.0, -1.0)
 
-        F = f_l * n_l + f_d * n_d
-        return F, eps_downwash, c_l, c_d
+        fx_free = q_free * cosb2 * (c_l * ti.sin(alpha) - sgn_free * c_d * ti.cos(alpha))
+        fz_free = q_free * cosb2 * (c_l * ti.cos(alpha) + sgn_free * c_d * ti.sin(alpha))
+        fx_slip = q_slip * cosb2_s * (c_l_s * ti.sin(alpha_slip) - sgn_slip * c_d_s * ti.cos(alpha_slip))
+        fz_slip = q_slip * cosb2_s * (c_l_s * ti.cos(alpha_slip) + sgn_slip * c_d_s * ti.sin(alpha_slip))
 
-    # ------------------------------------------------------------------
-    # C++ WingForcewithThrust (slipstream segment mixing)
-    # ------------------------------------------------------------------
+        F = ti.Vector([fx_free + fx_slip, 0.0, fz_free + fz_slip], dt=ti.f32)
+        # d_x terms are LE-referenced; convert to quarter-chord frame.
+        cp_x = (d_x * S_free + d_x_s * S_slip) / ti.max(1e-6, s_w) + 0.25 * chord_ref
+        return F, cp_x, alpha, beta
+
     @ti.func
-    def _wing_force_with_thrust(self, b: int, n_s, flow_vel, flow_vel_slip, flow_rot,
-                                b_w, s_w, mac_w, chord_ref,
-                                s_slip,
-                                alpha_stall, M_smooth, cl_alpha_2D, c_d_0,
-                                omega_y: ti.f32, activate_dyn_aero: ti.i32):
-        flow_vel = flow_vel + flow_rot
-        flow_vel_slip = flow_vel_slip + flow_rot
+    def _hor_tail_force(self, b: int, flow_vel: ti.types.vector(3, ti.f32), s_ref: ti.f32, chord_ref: ti.f32, elevator: ti.f32):
+        V = flow_vel.norm() + 1e-9
+        alpha_raw = self._wrap_pm_90(ti.atan2(flow_vel.z, -flow_vel.x))
+        alpha_eff = self.k_alpha_elev[b] * elevator + alpha_raw
 
-        denom = ti.max(1e-6, (s_w * 0.5))
-        flow_vel_avg = (flow_vel * (denom - s_slip) + flow_vel_slip * s_slip) / denom
-
-        vnorm_raw = flow_vel.norm()
-        vnorm = vnorm_raw + 1e-9
-        n_d = flow_vel / vnorm
-
-        sgn_dir = 1.0
-        if n_s.dot(flow_vel) < 0.0:
-            n_s = -n_s
-            sgn_dir = -1.0
-        n_l = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
-        if (n_s - n_d).norm() < 1e-10:
-            n_l = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
-        else:
-            n_l = self._cross(self._cross(n_d, n_s), n_d)
-        n_l = n_l / (n_l.norm() + 1e-9)
-
-        AR = (b_w * b_w) / ti.max(1e-6, s_w)
-
-        alpha      = ti.atan2(-flow_vel.z,      flow_vel.x)
-        alpha_slip = ti.atan2(-flow_vel_slip.z, flow_vel_slip.x)
-
-        vnorm_slip_raw = flow_vel_slip.norm()
-        vnorm_slip = vnorm_slip_raw + 1e-9
-        beta = ti.atan2(flow_vel.y, flow_vel.x)
-        beta_slip = ti.atan2(flow_vel_slip.y, flow_vel_slip.x)
-
-        f_re = self._reynolds_factor(b, vnorm_raw, mac_w)
-        f_re_slip = self._reynolds_factor(b, vnorm_slip_raw, mac_w)
-        delta_cl = self._qs_dyn_lift_delta(b, omega_y, chord_ref, vnorm_raw)
-        delta_cl_slip = self._qs_dyn_lift_delta(b, omega_y, chord_ref, vnorm_slip_raw)
-
-        c_l, c_d = self._aero_coeff(AR, alpha, alpha_stall, M_smooth, cl_alpha_2D, c_d_0, delta_cl, f_re)
-        c_l_s, c_d_s = self._aero_coeff(AR, alpha_slip, alpha_stall, M_smooth, cl_alpha_2D, c_d_0, delta_cl_slip, f_re_slip)
-
-        eps_downwash = 0.0  # Exact match to C++ (downwash disabled for slipstream branch).
-        F_out = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
-        c_l_avg = 0.0
-        c_d_avg = 0.0
-        # Optional two-segment sum: free + slip forces using free-flow directions.
-        if self.use_slip_two_segment_sum[b] > 0.5:
-            vnorm2 = vnorm * vnorm
-            vnorm_slip2 = vnorm_slip * vnorm_slip
-            cos2 = self._cos2_beta_factor(b, flow_vel)
-            cos2_slip = self._cos2_beta_factor(b, flow_vel_slip)
-
-            f_l_free = 0.5 * vnorm2 * (denom - s_slip) * c_l * cos2
-            f_d_free = 0.5 * vnorm2 * (denom - s_slip) * c_d * cos2
-            f_l_slip = 0.5 * vnorm_slip2 * s_slip * c_l_s * cos2_slip
-            f_d_slip = 0.5 * vnorm_slip2 * s_slip * c_d_s * cos2_slip
-
-            f_l = f_l_free + f_l_slip
-            f_d = f_d_free + f_d_slip
-            F_out = f_l * n_l + f_d * n_d
-
-            vavg_raw = flow_vel_avg.norm()
-            vavg2 = vavg_raw * vavg_raw
-            den = vavg2 * denom + 1e-9
-            c_l_avg = f_l / (0.5 * den)
-            c_d_avg = f_d / (0.5 * den)
-        else:
-
-            # Weighted average like C++.
-            vnorm2 = vnorm_raw * vnorm_raw
-            vnorm_slip2 = vnorm_slip_raw * vnorm_slip_raw
-            cosb = ti.cos(beta)
-            cosb2 = cosb * cosb
-            cosb_slip = ti.cos(beta_slip)
-            cosb_slip2 = cosb_slip * cosb_slip
-            num = ti.Vector([
-                c_l * (vnorm2 * cosb2 * (denom - s_slip)) +
-                c_l_s * (vnorm_slip2 * cosb_slip2 * (s_slip)),
-                c_d * (vnorm2 * cosb2 * (denom - s_slip)) +
-                c_d_s * (vnorm_slip2 * cosb_slip2 * (s_slip)),
-                0.0
-            ], dt=ti.f32)
-            vavg_raw = flow_vel_avg.norm()
-            vavg2 = vavg_raw * vavg_raw
-            den = vavg2 * denom + 1e-9
-            c_l_avg = num.x / den
-            c_d_avg = num.y / den
-
-            vavg = vavg_raw + 1e-9
-            vavg2 = vavg * vavg
-            f_l = 0.5 * vavg2 * denom * c_l_avg
-            f_d = 0.5 * vavg2 * denom * c_d_avg
-
-            # Optional cos^2(beta) attenuation using average flow when enabled.
-            cos2_avg = self._cos2_beta_factor(b, flow_vel_avg)
-            f_l *= cos2_avg
-            f_d *= cos2_avg
-
-            F_out = f_l * n_l + f_d * n_d
-        return F_out, eps_downwash, c_l_avg, c_d_avg
-
-    # ------------------------------------------------------------------
-    # C++ HorTailForce (flat plate) + VertTailForce (flat plate)
-    # ------------------------------------------------------------------
-    @ti.func
-    def _hor_tail_force(self, b: int, n_s, flow_vel, s, chord_ref, alpha_ele_eff, c_d_0):
-        vnorm_raw = flow_vel.norm()
-        vnorm = vnorm_raw + 1e-9
-        n_d = flow_vel / vnorm
-        if n_s.dot(flow_vel) < 0.0:
-            n_s = -n_s
-        n_l = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
-        if (n_s - n_d).norm() < 1e-10:
-            n_l = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
-        else:
-            n_l = self._cross(self._cross(n_d, n_s), n_d)
-        n_l = n_l / (n_l.norm() + 1e-9)
-
-        alpha = ti.atan2(-flow_vel.z, flow_vel.x) + alpha_ele_eff
-
-        sa = ti.sin(alpha)
-        ca = ti.cos(alpha)
+        sa = ti.sin(alpha_eff)
+        ca = ti.cos(alpha_eff)
         c_l = 2.0 * sa * ca
-        c_d = c_d_0 + 2.0 * (sa * sa)
+        c_d = self.c_d_0_tail[b] + 2.0 * (sa * sa)
 
-        # Optional Reynolds degradation (tail uses chord length as reference).
-        f_re = self._reynolds_factor(b, vnorm_raw, chord_ref)
-        c_l *= f_re
-        c_d = c_d_0 + (c_d - c_d_0) * f_re
-
-        vnorm2 = vnorm * vnorm
-        f_l = 0.5 * vnorm2 * s * c_l
-        f_d = 0.5 * vnorm2 * s * c_d
-        return f_l * n_l + f_d * n_d
+        q = 0.5 * V * V * s_ref
+        sgn = ti.select(-flow_vel.x >= 0.0, 1.0, -1.0)
+        fx = q * (c_l * ti.sin(alpha_eff) - sgn * c_d * ti.cos(alpha_eff))
+        fz = q * (c_l * ti.cos(alpha_eff) + sgn * c_d * ti.sin(alpha_eff))
+        # Quarter-chord frame: zero at low AoA, aft shift with |alpha|.
+        cp_x = -(2.0 * ti.abs(alpha_eff) / ti.math.pi) * (0.25 * chord_ref)
+        return ti.Vector([fx, 0.0, fz], dt=ti.f32), cp_x, alpha_raw, alpha_eff
 
     @ti.func
-    def _vert_tail_force(self, b: int, n_s, flow_vel, s, chord_ref, alpha_rud_eff):
-        vnorm_raw = flow_vel.norm()
-        vnorm = vnorm_raw + 1e-9
-        n_d = flow_vel / vnorm
-        if n_s.dot(flow_vel) < 0.0:
-            n_s = -n_s
-        n_l = ti.Vector([1.0, 0.0, 0.0], dt=ti.f32)
-        if (n_s - n_d).norm() < 1e-10:
-            n_l = ti.Vector([0.0, 1.0, 0.0], dt=ti.f32)
-        else:
-            n_l = self._cross(self._cross(n_d, n_s), n_d)
-        n_l = n_l / (n_l.norm() + 1e-9)
+    def _vert_tail_force(self, b: int, flow_vel: ti.types.vector(3, ti.f32), s_ref: ti.f32, chord_ref: ti.f32, rudder: ti.f32):
+        V = flow_vel.norm() + 1e-9
+        alpha_raw = ti.asin(ti.math.clamp(flow_vel.y / V, -1.0, 1.0))
+        alpha_eff = -(self.k_alpha_rudder[b] * rudder) + alpha_raw
 
-        beta = ti.atan2(flow_vel.y, flow_vel.x) + alpha_rud_eff
+        sa = ti.sin(alpha_eff)
+        ca = ti.cos(alpha_eff)
+        c_l = 2.0 * sa * ca
+        c_d = 2.0 * (sa * sa)
 
-        sb = ti.sin(beta)
-        cb = ti.cos(beta)
-        c_l = 2.0 * sb * cb
-        c_d = 2.0 * (sb * sb)
-
-        # Optional Reynolds degradation (no cd0 baseline for vertical tail).
-        f_re = self._reynolds_factor(b, vnorm_raw, chord_ref)
-        c_l *= f_re
-        c_d *= f_re
-
-        vnorm2 = vnorm * vnorm
-        f_l = 0.5 * vnorm2 * s * c_l
-        f_d = 0.5 * vnorm2 * s * c_d
-        return f_l * n_l + f_d * n_d
+        q = 0.5 * V * V * s_ref
+        sgn = ti.select(-flow_vel.x >= 0.0, 1.0, -1.0)
+        fx = q * (c_l * ti.sin(alpha_eff) - sgn * c_d * ti.cos(alpha_eff))
+        fy = q * (c_l * ti.cos(alpha_eff) + sgn * c_d * ti.sin(alpha_eff))
+        # Quarter-chord frame: zero at low AoA, aft shift with |alpha|.
+        cp_x = -(2.0 * ti.abs(alpha_eff) / ti.math.pi) * (0.25 * chord_ref)
+        return ti.Vector([fx, fy, 0.0], dt=ti.f32), cp_x, alpha_raw, alpha_eff
 
     @ti.kernel
     def _init_prev_states(self):
@@ -1214,10 +1354,11 @@ class LisparrowAeroSolver(BaseAeroSolver):
                 self.k_eps_tail_dbg[b, l] = ti.cast(0.0, ti.f16)
             self.force_b[b, l] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
             self.cp_b[b, l] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+            self.flow_dbg[b, l] = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
+            self.joint_angle_dbg[b, l] = 0.0
 
         for b in range(self.B):
             base_link = self.body_link_idx[None]
-            omega = self._omega_body(rigid, base_link, b)
 
             # Airflow in body frame; by convention flow = -body velocity.
             flow_base = self._get_wind_in_body(rigid, base_link, b)
@@ -1236,22 +1377,14 @@ class LisparrowAeroSolver(BaseAeroSolver):
             R_prop = ti.max(1e-6, self.prop_radius[b])
             rho = ti.max(1e-6, self.rho[b])
 
-            # C++ prop induced wake velocity.
+            # Propeller-induced wake velocity (aligned with dyn_casadi_mod_3D).
             disc = u * u + (2.0 * ti.abs(thrust)) / (rho * ti.math.pi * (R_prop * R_prop))
             prop_flow_ind_wake = (-u + ti.sqrt(disc)) * 0.5
-
-            # Dynamic aero is disabled by default in the C++ implementation.
-            activate_dyn_aero = 0
+            v_slip_wing = self.K_slip_wing[b] * prop_flow_ind_wake
+            v_slip_tail = self.K_slip_tail[b] * prop_flow_ind_wake
 
             # Precompute stall radians.
             alpha_stall_wing = (self.alpha_stall_wing_deg[b] * ti.math.pi) / 180.0
-
-            # Root constants.
-            c_root_inner = self.c_root_inner[b]
-            s_slip = R_prop * c_root_inner
-
-            eps_left = 0.0
-            eps_right = 0.0
 
             for l in range(self.L):
                 k = self.kind[l]
@@ -1260,59 +1393,53 @@ class LisparrowAeroSolver(BaseAeroSolver):
                 # Wind in THIS surface's link body frame (mydrone convention).
                 flow_link = self._get_wind_in_body(rigid, link_idx, b)
                 omega_link = self._omega_body(rigid, link_idx, b)
+                self.flow_dbg[b, l] = flow_link
+                self.joint_angle_dbg[b, l] = self._read_surface_angle(rigid, b, l)
                 # ===== WINGS =====
                 if k == K_WING:
-                    theta = self._read_surface_angle(rigid, b, l)
-                    b_w, s_w, mac_w, ac_x, cpx, cpy = self._wing_properties(b, theta)
-                    # QS dyn lift chord reference: use 4*ac_x when available, else mac_w.
-                    chord_ref = ti.select(ac_x > 1e-6, 4.0 * ac_x, mac_w)
-                    chord_ref = ti.max(1e-6, chord_ref)
-                    chord_link = ti.max(1e-6, self.chord0[l])
+                    S_eff = self._effective_surface_area(rigid, b, l)
+                    span_eff = self._effective_surface_span(rigid, b, l)
+                    chord_eff = ti.max(1e-6, self.chord0[l])
+                    AR_eff = (span_eff * span_eff) / ti.max(1e-6, S_eff)
+                    ac_x = 0.25 * chord_eff
+                    geo_x = 0.50 * chord_eff
+                    chord_ref = chord_eff
                     omega_y = omega_link.y
-                    pos_rot_link = self._wing_aero_center_linkframe(
-                        flow_link, chord_link, chord_ref,
-                        ac_x, cpx, alpha_stall_wing, 1
-                    )
+
+                    pos_rot_link = ti.Vector([-ac_x, 0.0, 0.0], dt=ti.f32)
                     flow_rot = -self._cross(omega_link, pos_rot_link)
-                    use_slip = 1
-                    F = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
-                    eps = 0.0
-                    cl_avg = 0.0
-                    cd_avg = 0.0
-                    if use_slip == 1:
-                        flow_slip = flow_link + ti.Vector([-prop_flow_ind_wake, 0.0, 0.0], dt=ti.f32)
-                        F, eps, cl_avg, cd_avg = self._wing_force_with_thrust(
-                            b,
-                            ti.Vector([0.0, 0.0, 1.0], dt=ti.f32),
-                            flow_link, flow_slip, flow_rot,
-                            b_w, s_w, mac_w, chord_ref, s_slip,
-                            alpha_stall_wing, self.M_smooth[b], self.cl_alpha_wing_2D[b], self.c_d_0_wing[b],
-                            omega_y, activate_dyn_aero
-                        )
-                    else:
-                        F, eps, cl_avg, cd_avg = self._wing_force(
-                            b,
-                            ti.Vector([0.0, 0.0, 1.0], dt=ti.f32),
-                            flow_link + flow_rot,
-                            b_w, s_w, mac_w, chord_ref,
-                            alpha_stall_wing, self.M_smooth[b], self.cl_alpha_wing_2D[b], self.c_d_0_wing[b],
-                            omega_y, activate_dyn_aero
-                        )
+                    flow_free = flow_link + flow_rot
+                    flow_slip = flow_free + ti.Vector([-v_slip_wing, 0.0, 0.0], dt=ti.f32)
 
-                    # Multiply by rho to match C++.
-                    F *= rho
-                    flow_avg = flow_link
-                    if use_slip == 1:
-                        flow_slip = flow_link + ti.Vector([-prop_flow_ind_wake, 0.0, 0.0], dt=ti.f32)
-                        denom = ti.max(1e-6, (s_w * 0.5))
-                        flow_avg = (flow_link * (denom - s_slip) + flow_slip * s_slip) / denom
-                    else:
-                        flow_avg = flow_link
-
-                    pos_force = self._wing_aero_center_linkframe(
-                        flow_avg + flow_rot, chord_link, chord_ref,
-                        ac_x, cpx, alpha_stall_wing, 0
+                    s_slip = ti.min(S_eff, R_prop * self.c_root_inner[b])
+                    F, cp_x, alpha_dbg_w, beta_dbg_w = self._wing_force_with_thrust(
+                        b,
+                        flow_free,
+                        flow_slip,
+                        S_eff,
+                        s_slip,
+                        AR_eff,
+                        chord_ref,
+                        ac_x,
+                        geo_x,
+                        alpha_stall_wing,
+                        self.M_smooth[b],
+                        self.cl_alpha_wing_2D[b],
+                        self.c_d_0_wing[b],
+                        omega_y,
                     )
+
+                    F *= rho
+                    # Outer wings: use Lisparrow fit outer semi-span b_outer(theta),
+                    # not URDF span metadata, to place CP at panel mid-span.
+                    # At theta=0, b_outer ~= 0.165 m -> cp_y ~= +/-0.0825 m.
+                    cp_y = 0.0
+                    if self.side[l] != 0:
+                        theta_yaw = self._read_surface_angle_axis(rigid, b, l, 1)
+                        sweep_scales = self._wing_sweep_scales(theta_yaw)
+                        b_outer_eff = 0.165 * sweep_scales.y
+                        cp_y = 0.5 * b_outer_eff * ti.cast(self.side[l], ti.f32)
+                    pos_force = ti.Vector([cp_x, cp_y, 0.0], dt=ti.f32)
 
                     cap = self.force_cap[b]
                     F *= ti.min(1.0, cap / (F.norm() + 1e-9))
@@ -1321,64 +1448,30 @@ class LisparrowAeroSolver(BaseAeroSolver):
                     self.cp_b[b, l] = pos_force
 
                     if ti.static(self._aero_log):
-                        # Use the same flow used to place the aero center (average flow + rotation)
-                        v_dbg = flow_avg + flow_rot
-                        alpha_dbg = ti.atan2(v_dbg.z, v_dbg.x)
-                        vmod = v_dbg.norm() + 1e-9
-                        beta_dbg = ti.asin(ti.math.clamp(v_dbg.y / vmod, -1.0, 1.0))
+                        v_dbg = flow_free
                         drag, lift, side = self._dbg_decompose_force(F, v_dbg)
-                        self.alpha_dbg[b, l] = ti.cast(alpha_dbg, ti.f16)
-                        self.beta_dbg[b, l] = ti.cast(beta_dbg, ti.f16)
+                        self.alpha_dbg[b, l] = ti.cast(alpha_dbg_w, ti.f16)
+                        self.beta_dbg[b, l] = ti.cast(beta_dbg_w, ti.f16)
                         self.drag_dbg[b, l] = ti.cast(drag, ti.f16)
                         self.lift_dbg[b, l] = ti.cast(lift, ti.f16)
                         self.side_force_dbg[b, l] = ti.cast(side, ti.f16)
 
-                    if self.side[l] == +1:
-                        eps_left = eps
-                    elif self.side[l] == -1:
-                        eps_right = eps
-
-                    # Print velocity, forces, alpha, beta and euler angles and cp for debugging
-                    print("Wing Debug - B:", b, "L:", l, "Vel:", flow_link, "F:", F, "Alpha:", self.alpha_dbg[b, l], "Beta:", self.beta_dbg[b, l], "CP:", pos_force)
-
                 # ===== ELEVATOR / HORIZONTAL TAIL =====
                 elif k == K_ELEVATOR:
-                    elevator = self._read_surface_angle(rigid, b, l)
+                    elevator = self._read_surface_angle_axis(rigid, b, l, 2)
 
-                    c_ele = self.c_ele[b]
-                    c_hor = self.c_hor_tail[b]
-                    s_hor = self.s_hor_tail[b]
-                    b_hor = self.b_hor_tail[b]
-
-                    c_eff = ti.sqrt(c_ele * c_ele + (c_hor - c_ele) ** 2 + 2.0 * c_ele * (c_hor - c_ele) * ti.cos(elevator))
-                    ang_eff = self.k_alpha_elev[b] * elevator
-
-                    dir_ele = ti.Vector([-ti.sin(ang_eff), 0.0, ti.cos(ang_eff)], dt=ti.f32)
-
-                    # Apply force in LINK frame at a CP that moves only along local X.
-                    chord_link = ti.max(1e-6, self.chord0[l])
-                    # Use the same CP logic as wings: quarter-chord pre-stall → half-chord near 90deg.
-                    # (if you want, we can expose cp_start/cp_end as params later)
-                    ac_x_cpp = 0.25 * chord_link
-                    cpx_cpp = 0.50 * chord_link
-                    chord_ref = chord_link
-                    alpha_stall_tail = (self.alpha_stall_tail_deg[b] * ti.math.pi) / 180.0
-                    pos_ele = self._wing_aero_center_linkframe(
-                        flow_link, chord_link, chord_ref, ac_x_cpp, cpx_cpp, alpha_stall_tail, 0
-                    )
-
-                    flow_rot_ele = -self._cross(omega_link, pos_ele)
-
+                    chord_eff = ti.max(1e-6, self.chord0[l])
+                    S_eff = self._effective_surface_area(rigid, b, l)
+                    pos_rot_ele = ti.Vector([-0.25 * chord_eff, 0.0, 0.0], dt=ti.f32)
+                    flow_rot_ele = -self._cross(omega_link, pos_rot_ele)
                     flow_downwash = ti.Vector([0.0, 0.0, 0.0], dt=ti.f32)
-                    if u > 0.0:
-                        flow_downwash.z = ti.tan(eps_left + eps_right) * u
+                    flow_ele = flow_link + flow_rot_ele + flow_downwash + ti.Vector([-v_slip_tail, 0.0, 0.0], dt=ti.f32)
 
-                    F_ele = self._hor_tail_force(
-                        b,
-                        dir_ele, flow_link + flow_rot_ele + flow_downwash,
-                        s_hor, c_hor, ang_eff, self.c_d_0_tail[b]
+                    F_ele, cp_x_ele, alpha_raw_ele, alpha_eff_ele = self._hor_tail_force(
+                        b, flow_ele, S_eff, chord_eff, elevator
                     )
                     F_ele *= rho
+                    pos_ele = ti.Vector([cp_x_ele, 0.0, 0.0], dt=ti.f32)
 
                     cap = self.force_cap[b]
                     F_ele *= ti.min(1.0, cap / (F_ele.norm() + 1e-9))
@@ -1387,53 +1480,32 @@ class LisparrowAeroSolver(BaseAeroSolver):
                     self.cp_b[b, l] = pos_ele
 
                     if ti.static(self._aero_log):
-                        v_dbg = flow_link + flow_rot_ele + flow_downwash
-                        alpha_raw = ti.atan2((flow_link + flow_rot_ele).z, (flow_link + flow_rot_ele).x)
-                        alpha_eff = ti.atan2(v_dbg.z, v_dbg.x)
+                        v_dbg = flow_ele
                         vmod = v_dbg.norm() + 1e-9
                         beta_dbg = ti.asin(ti.math.clamp(v_dbg.y / vmod, -1.0, 1.0))
                         drag, lift, side = self._dbg_decompose_force(F_ele, v_dbg)
-                        self.alpha_tail_raw_dbg[b, l] = ti.cast(alpha_raw, ti.f16)
-                        # eps/downwash scalars might exist in your code; if you have them, store them.
-                        # If not, keep 0 (already initialized above).
-                        self.alpha_dbg[b, l] = ti.cast(alpha_eff, ti.f16)
+                        self.alpha_tail_raw_dbg[b, l] = ti.cast(alpha_raw_ele, ti.f16)
+                        self.alpha_dbg[b, l] = ti.cast(alpha_eff_ele, ti.f16)
                         self.beta_dbg[b, l] = ti.cast(beta_dbg, ti.f16)
                         self.drag_dbg[b, l] = ti.cast(drag, ti.f16)
                         self.lift_dbg[b, l] = ti.cast(lift, ti.f16)
                         self.side_force_dbg[b, l] = ti.cast(side, ti.f16)
-                    # Print velocity, forces, alpha, beta and euler angles and cp for debugging
-                    print("Wing Debug - B:", b, "L:", l, "Vel:", flow_link, "F:", F_ele, "Alpha:", self.alpha_dbg[b, l], "Beta:", self.beta_dbg[b, l], "CP:", pos_ele)
 
                 # ===== RUDDER / VERTICAL TAIL =====
                 elif k == K_RUDDER:
-                    rudder = self._read_surface_angle(rigid, b, l)
+                    rudder = self._read_surface_angle_axis(rigid, b, l, 1)
 
-                    c_rud = self.c_rud[b]
-                    c_vert = self.c_vert_tail[b]
-                    s_vert = self.s_vert_tail[b]
-                    b_vert = self.b_vert_tail[b]
+                    chord_eff = ti.max(1e-6, self.chord0[l])
+                    S_eff = self._effective_surface_area(rigid, b, l)
+                    pos_rot_rud = ti.Vector([-0.25 * chord_eff, 0.0, 0.0], dt=ti.f32)
+                    flow_rot_rud = -self._cross(omega_link, pos_rot_rud)
+                    flow_rud = flow_link + flow_rot_rud + ti.Vector([-v_slip_tail, 0.0, 0.0], dt=ti.f32)
 
-                    c_eff = ti.sqrt(c_rud * c_rud + (c_vert - c_rud) ** 2 + 2.0 * c_rud * (c_vert - c_rud) * ti.cos(rudder))
-                    ang_eff = self.k_alpha_rudder[b] * rudder
-
-                    dir_rud = ti.Vector([-ti.sin(ang_eff), -ti.cos(ang_eff), 0.0], dt=ti.f32)
-
-                    chord_link = ti.max(1e-6, self.chord0[l])
-                    ac_x_cpp = 0.25 * chord_link
-                    cpx_cpp = 0.50 * chord_link
-                    chord_ref = chord_link
-                    alpha_stall_tail = (self.alpha_stall_tail_deg[b] * ti.math.pi) / 180.0
-                    pos_rud = self._wing_aero_center_linkframe(
-                        flow_link, chord_link, chord_ref, ac_x_cpp, cpx_cpp, alpha_stall_tail, 0
-                    )
-                    flow_rot_rud = -self._cross(omega_link, pos_rud)
-
-                    F_rud = self._vert_tail_force(
-                        b,
-                        dir_rud, flow_link + flow_rot_rud,
-                        s_vert, c_vert, ang_eff
+                    F_rud, cp_x_rud, alpha_raw_rud, alpha_eff_rud = self._vert_tail_force(
+                        b, flow_rud, S_eff, chord_eff, rudder
                     )
                     F_rud *= rho
+                    pos_rud = ti.Vector([cp_x_rud, 0.0, 0.0], dt=ti.f32)
 
                     cap = self.force_cap[b]
                     F_rud *= ti.min(1.0, cap / (F_rud.norm() + 1e-9))
@@ -1442,18 +1514,16 @@ class LisparrowAeroSolver(BaseAeroSolver):
                     self.cp_b[b, l] = pos_rud
 
                     if ti.static(self._aero_log):
-                        v_dbg = flow_link + flow_rot_rud
-                        alpha_dbg = ti.atan2(v_dbg.z, v_dbg.x)
+                        v_dbg = flow_rud
                         vmod = v_dbg.norm() + 1e-9
                         beta_dbg = ti.asin(ti.math.clamp(v_dbg.y / vmod, -1.0, 1.0))
                         drag, lift, side = self._dbg_decompose_force(F_rud, v_dbg)
-                        self.alpha_dbg[b, l] = ti.cast(alpha_dbg, ti.f16)
+                        self.alpha_tail_raw_dbg[b, l] = ti.cast(alpha_raw_rud, ti.f16)
+                        self.alpha_dbg[b, l] = ti.cast(alpha_eff_rud, ti.f16)
                         self.beta_dbg[b, l] = ti.cast(beta_dbg, ti.f16)
                         self.drag_dbg[b, l] = ti.cast(drag, ti.f16)
                         self.lift_dbg[b, l] = ti.cast(lift, ti.f16)
                         self.side_force_dbg[b, l] = ti.cast(side, ti.f16)
-                    # Print velocity, forces, alpha, beta and euler angles and cp for debugging
-                    print("Wing Debug - B:", b, "L:", l, "Vel:", flow_link, "F:", F_rud, "Alpha:", self.alpha_dbg[b, l], "Beta:", self.beta_dbg[b, l], "CP:", pos_rud)
 
                 # ===== PROPELLER (thrust only) =====
                 elif k == K_PROPELLER:
@@ -1482,6 +1552,58 @@ class LisparrowAeroSolver(BaseAeroSolver):
             # Store previous flow if dynamic aero is enabled later.
             self.flow_prev[b] = flow_base
             self.alpha_dot_prev[b] = 0.0
+
+    def _aero_step(self):
+        super()._aero_step()
+        if self._verbose_init and (not self._verbose_init_done):
+            self._print_verbose_init_report()
+            self._verbose_init_done = True
+
+    def _print_verbose_init_report(self) -> None:
+        if not self._aero_targets:
+            return
+        if self.L <= 0:
+            return
+        entity = self._aero_targets[0]
+        L = len(self._aero_frames)
+        fb = self.force_b.to_torch(device=self._aero_device)[0, :L, :].detach().cpu().numpy()
+        cp = self.cp_b.to_torch(device=self._aero_device)[0, :L, :].detach().cpu().numpy()
+        alpha = self.alpha_dbg.to_torch(device=self._aero_device)[0, :L].detach().cpu().numpy()
+        beta = self.beta_dbg.to_torch(device=self._aero_device)[0, :L].detach().cpu().numpy()
+        flow = self.flow_dbg.to_torch(device=self._aero_device)[0, :L, :].detach().cpu().numpy()
+        joint_q = self.joint_angle_dbg.to_torch(device=self._aero_device)[0, :L].detach().cpu().numpy()
+
+        print("\n--- Lisparrow Verbose Init (env=0) ---")
+        for i, name in enumerate(self._aero_frames):
+            link = entity.get_link(name)
+            pos_world_t = link.get_pos(envs_idx=0)
+            quat_world_t = link.get_quat(envs_idx=0)
+            pos_world = pos_world_t.detach().cpu().numpy()
+            quat_world = quat_world_t.detach().cpu().numpy()
+            if pos_world.ndim > 1:
+                pos_world = pos_world[0]
+            if quat_world.ndim > 1:
+                quat_world = quat_world[0]
+            cp_local = cp[i].astype(np.float32)
+            cp_world = pos_world + transform_by_quat(
+                torch.from_numpy(cp_local[None, :]),
+                torch.from_numpy(quat_world.astype(np.float32)[None, :]),
+            )[0].detach().cpu().numpy()
+
+            f_local = fb[i]
+            fmag = float(np.linalg.norm(f_local))
+            jname = self._surf_joint_name[i] if i < len(self._surf_joint_name) else ""
+            jinfo = f"{jname}={joint_q[i]:+.4f} rad" if jname else "none"
+            print(
+                f"[InitVerbose] link={name} | joint={jinfo} | "
+                f"pos_w=({pos_world[0]:+.4f},{pos_world[1]:+.4f},{pos_world[2]:+.4f}) | "
+                f"cp_l=({cp_local[0]:+.4f},{cp_local[1]:+.4f},{cp_local[2]:+.4f}) | "
+                f"cp_w=({cp_world[0]:+.4f},{cp_world[1]:+.4f},{cp_world[2]:+.4f}) | "
+                f"F_l=({f_local[0]:+.4f},{f_local[1]:+.4f},{f_local[2]:+.4f}) | |F|={fmag:.4f} N | "
+                f"alpha={float(alpha[i]):+.4f} rad | beta={float(beta[i]):+.4f} rad | "
+                f"flow_l=({flow[i,0]:+.4f},{flow[i,1]:+.4f},{flow[i,2]:+.4f})"
+            )
+        print("--- End Lisparrow Verbose Init ---\n")
 
 
 

@@ -30,6 +30,7 @@ so the geometry can be reconstructed or traced back later.
 """
 
 import math
+import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,7 +68,7 @@ class GeometryParams:
     density_scale: float = 1.0      # scales all structural densities
     dihedral_deg: float = 0.0       # wing dihedral angle [deg]
     prop_radius: float = 0.10       # propeller radius [m]
-    hinge_le_ratio: float = 0.14    # hinge line position as fraction of chord
+    hinge_le_ratio: float = 0.25    # hinge line position as fraction of chord
     sweep_multi: float = 1.0        # sweep joint multiplier (range scaling)
     twist_multi: float = 1.0        # twist joint multiplier (range scaling)
     cl_alpha_2d: float = 2.0        # 2D lift curve slope (scaled internally)
@@ -120,14 +121,16 @@ class UrdfMaker:
     # "Mass model" densities (kg/m³) and constants
     # ------------------------------------------------------------------
     _RHO_FUS_STRUCT = 20.0
-    _FUS_FIXED_MASS = 0.250              # e.g. battery, avionics, etc.
+    _FUS_SHELL_THICKNESS = 0.02  # [m] shell thickness
+    _FUS_FIXED_MASS = 0.200              # e.g. battery, avionics, etc.
     _BATTERY_SIZE   = (0.10, 0.05, 0.05) # box for inertia (10×5×5 cm)
 
     _RHO_WING = 20.0
     _RHO_ELEV = 20.0
     _RHO_RUDD = 20.0
     _RHO_PROP = 500.0
-    _PROP_CAMERA_MASS = 0.05
+    _PROP_CAMERA_MASS = 0.03
+    _WING_FOAM_FILL = 0.68
 
     # Lever arms as fraction of chord (from LE reference frame)
     _CG_RATIO   = 0.31
@@ -139,7 +142,7 @@ class UrdfMaker:
     _SHRINK  = 1.0
 
     # Root offsets and fixed RPYs (legacy values kept)
-    _MASS_INTER     = 0.01
+    _MASS_INTER     = 0.005
     _ROOT_Y_OFFSET  = 0.05
 
     _RPY_FUSE_COLL = "-1.5898372930676048 6.123233995736766e-17 -1.5707963267948968"
@@ -199,8 +202,9 @@ class UrdfMaker:
         self._actuator_catalog: Dict[Tuple[str, str], Dict[str, str]] = {}
         self._link_actuators: Dict[str, Dict[str, Optional[str]]] = {}
         self._aero_solver_kind = str(aero_solver_kind).strip().lower()
-        self._aero_config = self._resolve_aero_config(self._aero_solver_kind)
+        self._aero_config = self._resolve_aero_config(self._aero_solver_kind, out_dir)
         self._prop_max_thrust: Optional[float] = None
+        self._wing_thickness: float = self._REF["tw"]
         self._load_actuator_catalog()
         self._load_link_actuators()
 
@@ -235,6 +239,7 @@ class UrdfMaker:
             wing_chord     = wing_span / max(wing_AR, 1e-6)
             elevator_chord = elev_span / max(elev_AR, 1e-6)
             rudder_chord   = rudd_span / max(rudd_AR, 1e-6)
+            wing_thickness = max(naca_last2, 0.0) / 100.0 * wing_chord
 
             fus_cg_x      = -cg_ratio * fus_length
             wing_attach_x = -attach_ratio * fus_length
@@ -269,6 +274,8 @@ class UrdfMaker:
                 alpha0_2d=alpha0_2d_rad,
             )
             self._raw_genome = seq
+            if wing_thickness > 0.0:
+                self._wing_thickness = wing_thickness
 
         # Store resolved parameters and derived scalars
         self.p = prm
@@ -342,7 +349,43 @@ class UrdfMaker:
         self._link_actuators = link_actuators
 
     @staticmethod
-    def _resolve_aero_config(solver_kind: str) -> dict:
+    def _resolve_aero_config(
+        solver_kind: str,
+        out_dir: Union[str, Path, None] = None,
+    ) -> dict:
+        # Prefer a local YAML to avoid importing heavy Genesis/MuJoCo stack.
+        candidates: List[Path] = []
+        env_path = os.getenv("AERO_CONFIG_PATH", "").strip()
+        if env_path:
+            candidates.append(Path(env_path))
+        if out_dir:
+            candidates.append(Path(out_dir) / "aero_parameters.yaml")
+        repo_default = (
+            Path(__file__).resolve().parents[2]
+            / "genesis"
+            / "assets"
+            / "urdf"
+            / "mydrone"
+            / "aero_parameters.yaml"
+        )
+        candidates.append(repo_default)
+
+        try:
+            import yaml as _yaml  # type: ignore
+        except Exception:
+            _yaml = None
+
+        if _yaml is not None:
+            for path in candidates:
+                try:
+                    if path.is_file():
+                        with open(path, "r") as f:
+                            cfg = _yaml.safe_load(f)
+                        if isinstance(cfg, dict):
+                            return cfg
+                except Exception:
+                    pass
+
         from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
         from genesis.engine.solvers.drones.lisparrow import LisparrowAeroParameters
         name = (solver_kind or "").strip().lower()
@@ -628,6 +671,13 @@ class UrdfMaker:
             sz = ref_scale[2] * span_cur  / max(span_ref,  1e-9)   # span   → Z
             return f"{sx:.6g} {sy:.6g} {sz:.6g}"
 
+        # Wing visual mesh orientation: chord on X, span on Y, thickness on Z.
+        if what == "wing":
+            sx = ref_scale[0] * chord_cur / max(chord_ref, 1e-9)  # chord     → X
+            sy = ref_scale[1] * span_cur  / max(span_ref,  1e-9)  # span      → Y
+            sz = ref_scale[2] * thk_cur   / max(thk_ref,   1e-9)  # thickness → Z
+            return f"{sx:.6g} {sy:.6g} {sz:.6g}"
+
         sx = ref_scale[0] * thk_cur   / max(thk_ref,   1e-9)  # thickness → X
         sy = ref_scale[1] * span_cur  / max(span_ref,  1e-9)  # span      → Y
         sz = ref_scale[2] * chord_cur / max(chord_ref, 1e-9)  # chord     → Z
@@ -709,12 +759,21 @@ class UrdfMaker:
         """Create fuselage link, its inertial model, collision and visual."""
         p = self.p
 
-        # Box approximation of fuselage geometry
+        # Box dims for URDF geometry; mass uses a cylindrical cross-section.
         box = (self._REF["tfus"], self._REF["hfus"], p.fus_length)
-        volume = math.prod(box)
+        t = self._FUS_SHELL_THICKNESS  # 1 cm
+        D_out, H_out, L = box  # outer diameters + length
+
+        # Inner diameters (clamp to avoid negative)
+        D_in = max(D_out - 2.0 * t, 1e-6)
+        H_in = max(H_out - 2.0 * t, 1e-6)
+
+        A_out = math.pi * 0.25 * D_out * H_out
+        A_in  = math.pi * 0.25 * D_in  * H_in
+        volume_shell = (A_out - A_in) * L
 
         # Mass model: structural shell + fixed payload (battery, avionics, etc.)
-        m_shell = volume * self._RHO_FUS_STRUCT * self.S
+        m_shell = volume_shell * self._RHO_FUS_STRUCT * self.S
         m_batt  = self._FUS_FIXED_MASS
         m_total = m_shell + m_batt
 
@@ -848,13 +907,13 @@ class UrdfMaker:
     def _wings(self, robot: ET.Element) -> None:
         """Create both left and right wing assemblies with joints and aero frames."""
         p = self.p
-        thickness = self._REF["tw"]
+        thickness = self._wing_thickness
         left_yaw_act = self._get_link_actuator("aero_frame_left_wing", "actuator_yaw")
         left_pitch_act = self._get_link_actuator("aero_frame_left_wing", "actuator_pitch")
         right_yaw_act = self._get_link_actuator("aero_frame_right_wing", "actuator_yaw")
         right_pitch_act = self._get_link_actuator("aero_frame_right_wing", "actuator_pitch")
 
-        rho = self._RHO_WING * self.S
+        rho = self._RHO_WING * self.S * self._WING_FOAM_FILL
         chord = p.wing_chord
         span_total = p.wing_span  # per-side span
 
@@ -1086,14 +1145,14 @@ class UrdfMaker:
     def _elevator(self, robot: ET.Element) -> None:
         """Create elevator joint, links, aero frames and collision geometry."""
         p = self.p
-        thickness = self._REF["tc"]
+        thickness = 0.16 * p.elevator_chord
 
         # Elevator treated as a horizontal wing: chord → X, span → Y, thickness → Z
         box_full = (p.elevator_chord, p.elevator_span, thickness)
         span_half = p.elevator_span / 2.0
         box_half = (thickness, p.elevator_chord, span_half)
 
-        rho = self._RHO_ELEV * self.S
+        rho = self._RHO_ELEV * self.S * self._WING_FOAM_FILL
         m_half = math.prod(box_half) * rho
         I_half = self._I_box(m_half, *box_half)
 
@@ -1136,12 +1195,12 @@ class UrdfMaker:
         # Hinge link (structural intermediate)
         hinge_link = ET.SubElement(robot, "link", name="elevator_hinge")
         I_hinge = self._I_box(
-            self._MASS_INTER,
+            self._MASS_INTER * 4,
             p.elevator_chord,
             p.elevator_span,
             thickness,
         )
-        self._add_inertial(hinge_link, (0.0, 0.0, 0.0), self._MASS_INTER, I_hinge)
+        self._add_inertial(hinge_link, (0.0, 0.0, 0.0), self._MASS_INTER * 4, I_hinge)
 
         # Whole elevator visual mesh (for convenience)
         vis_h = ET.SubElement(hinge_link, "visual")
@@ -1151,7 +1210,7 @@ class UrdfMaker:
             "mesh",
             filename="package://meshes/elevator.stl",
         )
-        mesh_h.set("scale", self._scale("elevator", (self._REF["tc"], p.elevator_chord, p.elevator_span)))
+        mesh_h.set("scale", self._scale("elevator", (thickness, p.elevator_chord, p.elevator_span)))
         ET.SubElement(vis_h, "material", name="grey")
 
         # Left and right elevator halves
@@ -1195,12 +1254,12 @@ class UrdfMaker:
         p = self.p
         chord = p.rudder_chord
         span = p.rudder_span
-        thickness = self._REF["tc"]
+        thickness = 0.16 * chord
 
         # Rudder geometry is aligned like a vertical wing:
         #   X → chord (longitudinal), Y → thickness, Z → span (height)
         box_geom = (thickness, chord, span)
-        mass_rudder = math.prod(box_geom) * self._RHO_RUDD * self.S
+        mass_rudder = math.prod(box_geom) * self._RHO_RUDD * self.S * self._WING_FOAM_FILL
         I_rudder = self._I_box(mass_rudder, *box_geom)
         rudder_yaw_act = self._get_link_actuator("aero_frame_rudder", "actuator_yaw")
 
@@ -1356,9 +1415,10 @@ class UrdfMaker:
 
 if __name__ == "__main__":
     # Simple genome examples (values chosen for sanity, not performance)
-    genome1 = [0.5, 2.5, 0.46, 0.45, 0.4, 0.3, 1.75, 0.2, 1.0, 0.0, 3.0, 3.5, 3, 4, 16]
+    genome1 = [0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4.0, 0.2, 2.0, -10, 2.0, 2.5, 3, 4, 16]
     genome2 = [0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4.0, 0.2, 2.0, 0, 2.0, 2.5, 3, 4, 16]
+    genome3 = [0.488441, 2.04645, 0.634358, 0.412812, 0.355771, 0.505386, 2.34147, 0.220355, 1.70431, 1.59352, 2.458, 2.83091, 4, 4, 12]
 
-    for genome in (genome1, genome2):
+    for genome in (genome1, genome2, genome3):
         path = UrdfMaker(genome).create_urdf()
         print("URDF written to:", path)

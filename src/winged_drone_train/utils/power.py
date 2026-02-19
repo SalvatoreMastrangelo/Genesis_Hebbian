@@ -31,10 +31,16 @@ import torch
 # -----------------------------------------------------------------------------
 
 
+def _as_tensor_on(x, device: torch.device) -> torch.Tensor:
+    if torch.is_tensor(x):
+        return x.to(device=device, dtype=torch.float32)
+    return torch.as_tensor(x, dtype=torch.float32, device=device)
+
+
 def scale_and_clamp_actions(
     raw_actions: torch.Tensor,
     throttle_limit: Tuple[float, float],
-    joint_limits: Tuple[Sequence[float], Sequence[float]],
+    joint_limits: Tuple[Sequence[float] | torch.Tensor, Sequence[float] | torch.Tensor],
 ) -> torch.Tensor:
     """Scale and clamp normalized actions to physical actuator ranges.
 
@@ -65,8 +71,8 @@ def scale_and_clamp_actions(
     min_thr, max_thr = float(throttle_limit[0]), float(throttle_limit[1])
 
     mins, maxs = joint_limits
-    joint_min = torch.as_tensor(mins, dtype=torch.float32, device=raw_actions.device)
-    joint_max = torch.as_tensor(maxs, dtype=torch.float32, device=raw_actions.device)
+    joint_min = _as_tensor_on(mins, raw_actions.device)
+    joint_max = _as_tensor_on(maxs, raw_actions.device)
     if joint_min.numel() != A - 1 or joint_max.numel() != A - 1:
         raise ValueError(
             f"joint_limits must have length A-1={A-1}, "
@@ -256,7 +262,7 @@ class ActuatorDynamics:
         scaled = scale_and_clamp_actions(
             raw_actions,
             throttle_limit=(self.throttle_min, self.throttle_max),
-            joint_limits=(self.joint_limits_min.tolist(), self.joint_limits_max.tolist()),
+            joint_limits=(self.joint_limits_min, self.joint_limits_max),
         )
 
         # 2) Apply latency model if enabled

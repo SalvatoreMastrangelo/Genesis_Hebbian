@@ -45,6 +45,7 @@ DRONE_CONFIGS = {
         "debug_links": ["fuselage", "left_wing", "right_wing", "elevator_hinge", "rudder"],
         "fallback_servo_gains": None,
         "aero_solver_kind": None,
+        "tail_command_signs": (1.0, 1.0),  # (elevator, rudder)
     },
     "lisparrow": {
         "urdf_path": LISPARROW_URDF,
@@ -60,6 +61,9 @@ DRONE_CONFIGS = {
         ],
         "fallback_servo_gains": (20.0, 2.0),
         "aero_solver_kind": "lisparrow",
+        # Lisparrow joints are mounted with opposite sign vs keyboard semantics.
+        # q=up elevator, a=left rudder.
+        "tail_command_signs": (-1.0, -1.0),  # (elevator, rudder)
     },
 }
 
@@ -219,6 +223,83 @@ def _print_controls(layout: ServoLayout) -> None:
     print("ESC     - Quit\n")
 
 
+def _first_local_dof_idx(joint_obj) -> int | None:
+    idx = getattr(joint_obj, "dofs_idx_local", None)
+    if idx is None:
+        idx = getattr(joint_obj, "dof_idx_local", None)
+    if idx is None:
+        return None
+    if isinstance(idx, (list, tuple, np.ndarray)):
+        if len(idx) == 0:
+            return None
+        return int(idx[0])
+    return int(idx)
+
+
+def _joint_first_dof(drone, joint_name: str | None) -> int | None:
+    if not joint_name:
+        return None
+    try:
+        j = drone.get_joint(joint_name)
+    except Exception:
+        return None
+    return _first_local_dof_idx(j)
+
+
+def _extract_solver_dof_vector(aero_solver, attr_name: str) -> list[int] | None:
+    vec = getattr(aero_solver, attr_name, None)
+    if vec is None:
+        return None
+    if isinstance(vec, (list, tuple)):
+        return [int(v) for v in vec]
+    if isinstance(vec, np.ndarray):
+        return [int(v) for v in vec.reshape(-1)]
+    try:
+        if hasattr(vec, "to_numpy"):
+            arr = vec.to_numpy()
+            return [int(v) for v in np.asarray(arr).reshape(-1)]
+    except Exception:
+        return None
+    return None
+
+
+def _log_aero_surface_joint_mapping(drone, drone_model, aero_solver) -> None:
+    frames = list(getattr(aero_solver, "_aero_frames", []) or [])
+    if not frames and drone_model is not None:
+        frames = list(getattr(drone_model, "frames", []) or [])
+    if not frames:
+        print("[AERO MAP] no aerodynamic surfaces found.")
+        return
+
+    act_map = dict(getattr(drone_model, "actuators", {}) or {}) if drone_model is not None else {}
+    surf_dof = _extract_solver_dof_vector(aero_solver, "_surf_dof")
+    surf_dof_yaw = _extract_solver_dof_vector(aero_solver, "_surf_dof_yaw")
+    surf_dof_pitch = _extract_solver_dof_vector(aero_solver, "_surf_dof_pitch")
+
+    print("\n--- Aero surface -> joint/DOF mapping ---")
+    print("frame | model_joint:model_dof | solver_primary/yaw/pitch")
+    for i, frame in enumerate(frames):
+        info = act_map.get(frame)
+        model_joint = getattr(info, "joint_name", None) if info is not None else None
+        model_dof = _joint_first_dof(drone, model_joint)
+
+        s_main = surf_dof[i] if surf_dof is not None and i < len(surf_dof) else None
+        s_yaw = surf_dof_yaw[i] if surf_dof_yaw is not None and i < len(surf_dof_yaw) else None
+        s_pitch = surf_dof_pitch[i] if surf_dof_pitch is not None and i < len(surf_dof_pitch) else None
+
+        model_joint_str = str(model_joint) if model_joint else "-"
+        model_dof_str = str(model_dof) if model_dof is not None else "-"
+        s_main_str = str(s_main) if s_main is not None else "-"
+        s_yaw_str = str(s_yaw) if s_yaw is not None else "-"
+        s_pitch_str = str(s_pitch) if s_pitch is not None else "-"
+
+        print(
+            f"{frame:30s} | {model_joint_str:24s}:{model_dof_str:>3s} | "
+            f"{s_main_str:>3s}/{s_yaw_str:>3s}/{s_pitch_str:>3s}"
+        )
+    print("--- end aero mapping ---\n")
+
+
 class DroneController:
     """
     High-level keyboard controller for the winged drone.
@@ -230,10 +311,10 @@ class DroneController:
         * apply_joint_commands(dt): integrate keys → servo DOF targets
     """
 
-    def __init__(self, layout: ServoLayout):
+    def __init__(self, layout: ServoLayout, tail_command_signs: tuple[float, float] = (1.0, 1.0)):
         # Initial spawn state for the drone
         self.init_pos = np.array([0.0, 0.0, 20.0], dtype=np.float32)
-        self.init_vel = np.array([10.0, 0.0, 0.0], dtype=np.float32)
+        self.init_vel = np.array([10.0, 0.0, -1.0], dtype=np.float32)
         self.init_euler = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.init_ang_vel = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.init_joint_velocity = np.zeros(0, dtype=np.float32)
@@ -265,6 +346,8 @@ class DroneController:
         self._twist_rate_sym = 0.2
         self._twist_rate_asym = 0.02
         self._tail_rate = 0.2
+        self._elevator_sign = float(tail_command_signs[0])
+        self._rudder_sign = float(tail_command_signs[1])
 
         # Filled from URDF in main() (no defaults).
         self._servo_limits: Optional[np.ndarray] = None
@@ -419,18 +502,18 @@ class DroneController:
         # Elevator (q/e)
         if self._key_q in self.pressed_keys:
             if ele is not None:
-                self.servo_cmd[ele] += self._tail_rate * dt
+                self.servo_cmd[ele] += self._elevator_sign * self._tail_rate * dt
         if self._key_e in self.pressed_keys:
             if ele is not None:
-                self.servo_cmd[ele] -= self._tail_rate * dt
+                self.servo_cmd[ele] -= self._elevator_sign * self._tail_rate * dt
 
         # Rudder (a/d)
         if self._key_a in self.pressed_keys:
             if rud is not None:
-                self.servo_cmd[rud] += self._tail_rate * dt
+                self.servo_cmd[rud] += self._rudder_sign * self._tail_rate * dt
         if self._key_d in self.pressed_keys:
             if rud is not None:
-                self.servo_cmd[rud] -= self._tail_rate * dt
+                self.servo_cmd[rud] -= self._rudder_sign * self._tail_rate * dt
 
         # Clamp joint targets to safe range
         if self._servo_limits is None:
@@ -698,6 +781,8 @@ class DroneModel:
         downwash_eps = None
         cl_wing_tail = None
         k_eps_tail = None
+        flow_l = None
+        joint_angle = None
         if hasattr(self.aero_solver, "alpha_tail_raw_dbg"):
             alpha_tail_raw = self.aero_solver.alpha_tail_raw_dbg.to_torch(device=self._aero_device)[0, :L]
         if hasattr(self.aero_solver, "downwash_eps_dbg"):
@@ -706,6 +791,10 @@ class DroneModel:
             cl_wing_tail = self.aero_solver.cl_wing_for_tail_dbg.to_torch(device=self._aero_device)[0, :L]
         if hasattr(self.aero_solver, "k_eps_tail_dbg"):
             k_eps_tail = self.aero_solver.k_eps_tail_dbg.to_torch(device=self._aero_device)[0, :L]
+        if hasattr(self.aero_solver, "flow_dbg"):
+            flow_l = self.aero_solver.flow_dbg.to_torch(device=self._aero_device)[0, :L, :]
+        if hasattr(self.aero_solver, "joint_angle_dbg"):
+            joint_angle = self.aero_solver.joint_angle_dbg.to_torch(device=self._aero_device)[0, :L]
 
         return (
             fb.detach().cpu().numpy(),
@@ -719,6 +808,8 @@ class DroneModel:
             None if downwash_eps is None else downwash_eps.detach().cpu().numpy(),
             None if cl_wing_tail is None else cl_wing_tail.detach().cpu().numpy(),
             None if k_eps_tail is None else k_eps_tail.detach().cpu().numpy(),
+            None if flow_l is None else flow_l.detach().cpu().numpy(),
+            None if joint_angle is None else joint_angle.detach().cpu().numpy(),
         )
 
     # ---------------------------- Debug step ------------------------------
@@ -748,6 +839,8 @@ class DroneModel:
             downwash_eps_np,
             cl_wing_tail_np,
             k_eps_tail_np,
+            flow_l_np,
+            joint_angle_np,
         ) = tensors
 
         # Clear old arrows so we redraw fresh ones every frame
@@ -1023,6 +1116,34 @@ class DroneModel:
                     f"{extra}"
                 )
 
+                # Lisparrow-specific periodic verbose (same cadence as other stats).
+                if (
+                    self.aero_solver is not None
+                    and self.aero_solver.__class__.__name__ == "LisparrowAeroSolver"
+                ):
+                    flow_txt = "n/a"
+                    if flow_l_np is not None:
+                        fl = flow_l_np[idx]
+                        flow_txt = f"({fl[0]:+.4f},{fl[1]:+.4f},{fl[2]:+.4f})"
+                    joint_txt = "none"
+                    if (
+                        joint_angle_np is not None
+                        and hasattr(self.aero_solver, "_surf_joint_name")
+                    ):
+                        jnames = getattr(self.aero_solver, "_surf_joint_name", [])
+                        jn = jnames[idx] if idx < len(jnames) else ""
+                        if jn:
+                            joint_txt = f"{jn}={float(joint_angle_np[idx]):+.4f} rad"
+                    fmag_local = float(np.linalg.norm(f_local))
+                    print(
+                        f"[LisparrowVerbose] link={name} | joint={joint_txt} | "
+                        f"cp_l=({cp_local[0]:+.4f},{cp_local[1]:+.4f},{cp_local[2]:+.4f}) | "
+                        f"cp_w=({cp_world[0]:+.4f},{cp_world[1]:+.4f},{cp_world[2]:+.4f}) | "
+                        f"F_l=({f_local[0]:+.4f},{f_local[1]:+.4f},{f_local[2]:+.4f}) | "
+                        f"|F|={fmag_local:.4f} N | alpha={alpha_deg:+.2f} deg | "
+                        f"beta={beta_deg:+.2f} deg | flow_l={flow_txt}"
+                    )
+
     def print_joint_positions(self, drone, joint_names: List[str]):
         do_print = (self._step_counter % self._print_every_n_steps) == 0
         if not do_print:
@@ -1072,7 +1193,7 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
     last_time = time.time()
 
     while controller.running:
-        time.sleep(2.5)
+        time.sleep(0.2)
         now = time.time()
         dt = now - last_time
         last_time = now
@@ -1114,13 +1235,16 @@ def main():
         raise FileNotFoundError(f"URDF not found: {urdf_path}")
 
     # Initialize Genesis (GPU backend if available)
-    gs.init(backend=gs.gpu)
+    gs.init(backend=gs.cpu)
 
     solver_kind = config.get("aero_solver_kind") or AERO_SOLVER_KIND
     _configure_aero_solver(str(solver_kind))
 
     layout = _resolve_servo_layout(urdf_path, config.get("servo_joint_names"))
-    controller = DroneController(layout)
+    controller = DroneController(
+        layout,
+        tail_command_signs=tuple(config.get("tail_command_signs", (1.0, 1.0))),
+    )
     servo_joint_names = controller.servo_joint_names
 
     # Scene
@@ -1241,6 +1365,10 @@ def main():
 
     # Register drone in AeroSolver AFTER build (batch size known)
     scene.sim.aero_solver.add_target(drone, drone_model=drone_model)
+    if hasattr(scene.sim.aero_solver, "set_verbose_init"):
+        # We print detailed Lisparrow lines periodically from DroneModel.debug_step.
+        scene.sim.aero_solver.set_verbose_init(False)
+    _log_aero_surface_joint_mapping(drone, drone_model, scene.sim.aero_solver)
     # Per-run NACA override (does not touch the aero config).
     if NACA and hasattr(scene.sim.aero_solver, "apply_naca_wing_override"):
         scene.sim.aero_solver.apply_naca_wing_override(NACA)

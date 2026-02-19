@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import os
-os.environ["GS_PARA_LEVEL"] = "2"
+os.environ["GS_PARA_LEVEL"] = "3"
 import copy
 import math
 import pickle
@@ -104,7 +104,7 @@ def _configure_cache_root() -> Path:
 # 1) Roll-out that returns per-env statistics                            #
 # ---------------------------------------------------------------------- #
 @torch.no_grad()
-def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 300.0):
+def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 250.0):
     """
     Lightweight rollout for evaluation.
 
@@ -131,8 +131,10 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 30
 
     done = torch.zeros(B, dtype=torch.bool, device=dev)
     t_acc = torch.zeros(B, device=dev)
+    t_eff = torch.zeros(B, device=dev)
     dx_acc = torch.zeros(B, device=dev)
     E_acc = torch.zeros(B, device=dev)
+    reward_acc = torch.zeros(B, device=dev)
     dx_eff = torch.zeros(B, device=dev)
     E_eff = torch.zeros(B, device=dev)
     reached_min = torch.zeros(B, dtype=torch.bool, device=dev)
@@ -164,10 +166,12 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 30
             dx_acc[alive] = env.base_pos[alive, 0] - x0[alive]
             P = env.power
             E_acc[alive] += P[alive] * dt
+            reward_acc[alive] += env.rew_buf[alive]
 
             # effective energy/distance up to minimal_progress
             still_count = alive & (~reached_min)
             if still_count.any():
+                t_eff[still_count] += dt
                 E_eff[still_count] += P[still_count] * dt
                 dx_eff[still_count] = dx_acc[still_count]
                 newly_reached = still_count & (dx_acc >= minimal_progress)
@@ -195,6 +199,8 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 30
                 final_reason[j] = 2
             elif getattr(env, "pre_angle_limit", None) is not None and env.pre_angle_limit[j]:
                 final_reason[j] = 3
+            elif getattr(env, "pre_success", None) is not None and env.pre_success[j]:
+                final_reason[j] = 0
             else:
                 final_reason[j] = 4
 
@@ -206,14 +212,17 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 30
     if not_reached.any():
         dx_eff[not_reached] = dx_acc[not_reached]
         E_eff[not_reached] = E_acc[not_reached]
+        t_eff[not_reached] = t_acc[not_reached]
 
-    v_mean = (dx_acc[~nan_indices] / t_acc[~nan_indices].clamp_min(1e-6)).cpu().numpy()
+    v_mean = (dx_eff[~nan_indices] / t_eff[~nan_indices].clamp_min(1e-6)).cpu().numpy()
     E_tot = (E_eff[~nan_indices] / dx_eff[~nan_indices].clamp_min(1e-6)).cpu().numpy()
     mg = env.nominal_mass * 9.81
     COT   = E_tot / mg
     v_cmd = env.commands[~nan_indices, 0].detach().cpu().numpy()
     progress = dx_acc.cpu().numpy()
     final_reason = final_reason.cpu().numpy()
+    reward_total = reward_acc.cpu().numpy()
+    reward_total[nan_indices.cpu().numpy()] = np.nan
 
     # ---- compact traces into numpy arrays ---------------------------------
     num_joints = env.joint_position.shape[1]
@@ -228,7 +237,7 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 30
             else:
                 traces_all["j_pos"][i] = np.empty((0, num_joints), dtype=float)
 
-    return v_mean, COT, v_cmd, progress, final_reason, traces_all
+    return v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total
 
 
 # ---------------------------------------------------------------------- #
@@ -241,10 +250,11 @@ def evaluation(
     envs: int,
     vmin: float,
     vmax: float,
-    win_frac: float = 0.03,
-    minimal_progress: float = 300.0,
+    win_frac: float = 0.05,
+    minimal_progress: float = 250.0,
     return_arrays: bool = False,
     custom_policy_path: str | None = None,
+    cfg_path: str | Path | None = None,
     obs_genome: bool | None = False,
     save_plots: bool = True,
     eval_dir: str | Path | None = None,
@@ -265,20 +275,43 @@ def evaluation(
         - final_reward: average final training reward (from TensorBoard)
         - steps90_pct:  percentage of training steps needed to reach
                         ~90% of the final reward (smoothed).
+        - eval_reward_mean: mean reward accumulated during evaluation episodes.
 
     If `return_arrays` is True, the `extra` dict additionally contains
-    raw arrays:
-        "p_s": MA(progress), "v_s": v_cmd, "E_s": E_tot
+    aligned arrays on the v_cmd axis (same as plots):
+        "p_s": MA(progress), "v_s": MA(v_mean), "E_s": MA(energy)
     """
-    gpu_id = os.getenv("CUDA_VISIBLE_DEVICES", "0").split(",")[0]
-    device = f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu"
+    # Use cuda:0 inside Ray workers (CUDA_VISIBLE_DEVICES is already remapped).
+    eval_device = os.getenv("EVAL_DEVICE", "").strip()
+    if eval_device:
+        device = eval_device
+    elif torch.cuda.is_available():
+        device = "cuda:0"
+    else:
+        device = "cpu"
 
     _configure_cache_root()
-    gs.init(logging_level="error", backend=gs.gpu)
+    if not gs._initialized:
+        gs.init(logging_level="error", backend=gs.gpu)
 
     log_dir = (Path("logs") / "ea" / exp_name).expanduser().resolve()
     log_dir_str = str(log_dir)
-    cfg_path = log_dir / "cfgs.pkl"
+    cfg_path_resolved: Path | None = None
+    if cfg_path is not None:
+        candidate = Path(cfg_path).expanduser()
+        if candidate.is_dir():
+            candidate = candidate / "cfgs.pkl"
+        if candidate.is_file():
+            cfg_path_resolved = candidate.resolve()
+        else:
+            print(
+                f"[evaluation][warn] cfgs.pkl not found at {candidate}; "
+                f"falling back to {log_dir / 'cfgs.pkl'}"
+            )
+    if cfg_path_resolved is None:
+        cfg_path_resolved = log_dir / "cfgs.pkl"
+    cfg_path = cfg_path_resolved
+    log_dir_str = str(cfg_path.parent)
     urdf_path = Path(urdf_file).expanduser()
     clean_stem = safe_urdf_stem(urdf_path)
 
@@ -308,11 +341,13 @@ def evaluation(
         dict(
             visualize_camera=False,
             visualize_target=False,
-            max_visualize_FPS=15,
+            max_visualize_FPS=25,
             unique_forests_eval=True,
             growing_forest=True,
-            x_upper=1000,
+            x_upper=600,
+            forest_x_limit=600,
             tree_radius=0.75,
+            base_init_pos=[-50.0, 0.0, 10.0],
         )
     )
 
@@ -342,7 +377,7 @@ def evaluation(
     env.aero_solver._aero_log = False
 
     # Use traces when saving plots to enable heatmaps.
-    v_mean, COT, v_cmd, progress, final_reason, traces_all = run_eval(
+    v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total = run_eval(
         env,
         policy,
         extra_data=bool(save_plots),
@@ -418,19 +453,22 @@ def evaluation(
         if total_steps > 0:
             steps90_pct = (steps_to_90 / float(total_steps)) * 100.0
 
+    eval_reward_mean = float(np.nanmean(reward_total)) if reward_total.size else float("nan")
+    if not np.isfinite(eval_reward_mean):
+        eval_reward_mean = 0.0
+
     # ---------------- Peak extraction from evaluation ------------------ #
     v_cmd_m, v_mean_m = v_cmd, v_mean
     E_tot_m, prog_m = COT, progress
 
-    # Smoothed curves over mean velocity
-    x_s, p_s, _ = EvaluationPlotter.moving_avg(v_mean_m, prog_m, win_frac)
+    # Smoothed curves aligned to v_cmd (same axis used in plots)
+    _, v_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, v_mean_m, win_frac)
+    _, p_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, prog_m, win_frac)
+    _, E_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, E_tot_m, win_frac)
     idx_p = int(np.argmax(p_s)) if len(p_s) else 0
     max_p = float(p_s[idx_p]) if len(p_s) else 0.0
 
     idxs = np.arange(len(p_s))
-
-    x_cv, v_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, v_mean_m, win_frac)
-    x_e, E_s, _ = EvaluationPlotter.moving_avg(v_mean_m, E_tot_m, win_frac)
 
     prog_sel = p_s[idxs]
     vel_sel = v_s[idxs]
@@ -529,18 +567,18 @@ def evaluation(
         "max_p": max_p,
         "final_reward": final_reward,
         "steps90_pct": steps90_pct,
+        "eval_reward_mean": eval_reward_mean,
         "eval_dir": str(eval_dir_path) if eval_dir_path else "",
         "clean_urdf_stem": clean_stem,
         "plot_paths": plot_paths,
     }
     if return_arrays:
-        # For compatibility with previous behaviour, we keep these
-        # as the raw arrays used inside the evaluation.
+        # Return arrays aligned on v_cmd so pick_triples matches plot logic.
         extra.update(
             {
                 "p_s": p_s,
-                "v_s": v_cmd_m,
-                "E_s": E_tot_m,
+                "v_s": v_s,
+                "E_s": E_s,
             }
         )
 
@@ -557,16 +595,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--exp_name", default="drone-forest")
     parser.add_argument("--ckpt", type=int, default=300)
-    parser.add_argument("--envs", type=int, default=4096)
+    parser.add_argument("--envs", type=int, default=8192)
     parser.add_argument("--vmin", type=float, default=6.0)
-    parser.add_argument("--vmax", type=float, default=24.0)
+    parser.add_argument("--vmax", type=float, default=30.0)
     parser.add_argument("--gpu", default="cuda")
     args = parser.parse_args()
 
     # ---------------- Load configs ------------------------------------- #
     log_dir = f"logs/{args.exp_name}"
     # Overwrite log_dir if needed coming from cluster
-    #log_dir = f"/home/andrea/tb_logs_kuma/ea/{args.exp_name}"
+    #log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2563577/logs/ea/{args.exp_name}"
     with open(os.path.join(log_dir, "cfgs.pkl"), "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
@@ -577,7 +615,8 @@ if __name__ == "__main__":
 
     # NOTE: same hard-coded URDF path as in the original script
     urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
-
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, -10, 2, 2.5, 3, 4, 16].urdf"
+    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.488441, 2.04645, 0.634358, 0.412812, 0.355771, 0.505386, 2.34147, 0.220355, 1.70431, 1.59352, 2.458, 2.83091, 4, 4, 12].urdf"
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax
@@ -604,8 +643,8 @@ if __name__ == "__main__":
             max_visualize_FPS=25,
             unique_forests_eval=True,
             growing_forest=True,
-            x_upper=500,
-            forest_x_limit=500,
+            x_upper=600,
+            forest_x_limit=600,
             tree_radius=0.75,
             base_init_pos=[-50.0, 0.0, 10.0],
         )
@@ -623,13 +662,6 @@ if __name__ == "__main__":
         device=args.gpu,
     )
 
-    # Small amount of solver noise, as in the original script
-    #env.aero_solver.noise_sigma_mag = 0.00
-    #env.aero_solver.noise_sigma_dir = 0.00
-    #env.aero_solver.noise_sigma_param = 0.0
-    #env.aero_solver.noise_sigma_cp = 0.0
-
-
     plotter = EvaluationPlotter()
     plotter.plot_forest(env)
 
@@ -643,12 +675,15 @@ if __name__ == "__main__":
     v_cmd_all = np.linspace(args.vmin, args.vmax, args.envs)
 
     # Single evaluation rollout
-    v_mean, COT, v_cmd, progress, final_reason, traces_all = run_eval(
+    v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total = run_eval(
         env,
         policy,
         extra_data=True,
-        minimal_progress=300.0,
+        minimal_progress=250.0,
     )
+    eval_reward_mean = float(np.nanmean(reward_total)) if reward_total.size else float("nan")
+    if not np.isfinite(eval_reward_mean):
+        eval_reward_mean = 0.0
 
     # Reason counts
     n_success = int((final_reason == 0).sum())
@@ -668,7 +703,7 @@ if __name__ == "__main__":
     x_s, p_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, prog_m, win_frac)
     idx_p = int(np.argmax(p_s)) if len(p_s) else 0
     max_p = float(p_s[idx_p]) if len(p_s) else 0.0
-    minimum = 300
+    minimum = 250
 
     if max_p > minimum:
         idxs = np.where(p_s >= minimum)[0]
@@ -710,7 +745,8 @@ if __name__ == "__main__":
         "\n►  Max velocity: "
         f"{top_vel['mean_v']:.2f} m/s   |  "
         f"COT: {top_eff['mean_E']:.2f} J/Nm   |  "
-        f"Progress: {top_prog['mean_progress']:.2f} m"
+        f"Progress: {top_prog['mean_progress']:.2f} m   |  "
+        f"Eval reward mean: {eval_reward_mean:.3f}"
     )
 
     # Plots in eval log dir
@@ -748,7 +784,7 @@ if __name__ == "__main__":
         v_cmd,
         progress,
         win_frac=win_frac,
-        minimal_p=300.0,  # same value as original script
+        minimal_p=250.0,  # same value as original script
         out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_total_plot.png",
     )
 
@@ -758,6 +794,6 @@ if __name__ == "__main__":
         v_cmd,
         progress,
         win_frac=win_frac,
-        minimal_p=300.0,
+        minimal_p=250.0,
         out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_total_plot_points_instead_of_ma.png",
     )

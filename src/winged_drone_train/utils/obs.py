@@ -206,8 +206,9 @@ class ObservationBuilder:
         # -------------------------- Depth features --------------------------
         depth_feat_actor = None
         if self.include_depth and depth_actor is not None:
+            max_depth = max(1e-6, self.scaling.max_depth)
             # Map [0, max_depth] -> [0, 1] with 1 = very close, 0 = no obstacle.
-            depth_feat_actor = 1.0 - depth_actor / self.scaling.max_depth
+            depth_feat_actor = 1.0 - depth_actor / max_depth
 
         # ---------------------- Last action features ------------------------
         if last_actions.shape[1] != self.num_actions:
@@ -220,7 +221,8 @@ class ObservationBuilder:
         if self.num_actions > 1:
             last_jnts_raw = last_actions[:, 1:]
             # Normalise by the configured maximum joint range
-            last_jnts = last_jnts_raw / self.joint_limits_max.unsqueeze(0)
+            joint_limits_max = self.joint_limits_max.clamp(min=1e-6).unsqueeze(0)
+            last_jnts = last_jnts_raw / joint_limits_max
         else:
             last_jnts = torch.empty((B, 0), device=device)
 
@@ -264,7 +266,8 @@ class ObservationBuilder:
             if depth_feat_actor is not None:
                 depth_dim = depth_feat_actor.shape[1]
                 if std_cfg.get("depth", 0.0) > 0.0:
-                    noise = torch.randn((B, depth_dim), device=device) * (std_cfg["depth"] * depth_actor / self.scaling.max_depth)
+                    max_depth = max(1e-6, self.scaling.max_depth)
+                    noise = torch.randn((B, depth_dim), device=device) * (std_cfg["depth"] * depth_actor / max_depth)
                     obs_actor[:, idx : idx + depth_dim] += noise
                 idx += depth_dim
 

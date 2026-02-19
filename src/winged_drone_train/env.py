@@ -286,6 +286,7 @@ class WingedDroneEnv:
         self.env_cfg = dict(env_cfg)
         self.obs_cfg = dict(obs_cfg)
         self.reward_cfg = dict(reward_cfg)
+        self.debug = bool(self.env_cfg.get("debug", False))
 
         self.growing_forest = self.env_cfg.get("growing_forest", True)
         self.unique_forests_eval = self.env_cfg.get("unique_forests_eval", True)
@@ -300,14 +301,11 @@ class WingedDroneEnv:
         # For evaluation we enforce a deterministic, fixed latency
         if self.evaluation:
             self.action_latency_min = 0
-            self.action_latency_max = 0
+            self.action_latency_max = 1
             self.action_latency_random_per_step = False
 
         if self.action_latency_max < self.action_latency_min:
             self.action_latency_max = self.action_latency_min
-
-        # Target height (used in height reward) is fixed, not commanded
-        self.target_height = float(self.env_cfg.get("target_height", 3.0))
 
         # Time step setup: control at 25 Hz, physics at 100 Hz
         control_hz = 25
@@ -323,12 +321,6 @@ class WingedDroneEnv:
         self.max_episode_length_per_env = torch.full(
             (self.num_envs,), self.max_episode_length, device=self.device, dtype=torch.long
         )
-
-        # Crash angle limits (can be overridden at runtime)
-        if self.evaluation:
-            self.set_angle_limit(self.env_cfg.get("eval_angle_limit_deg", 90.0))
-        else:
-            self.set_angle_limit(self.env_cfg.get("default_angle_limit_deg", 90.0))
 
         if urdf_file is None:
             env_urdf = self.env_cfg.get("urdf_file")
@@ -406,6 +398,9 @@ class WingedDroneEnv:
             dtype=torch.float32,
         )
 
+        # Target height (used in height reward) is fixed, not commanded
+        self.target_height = 6 #base_init_pos[2].item()
+
         self.base_init_pos = base_init_pos
         self.base_init_quat = base_init_quat
         self.inv_base_init_quat = inv_quat(base_init_quat)
@@ -455,6 +450,9 @@ class WingedDroneEnv:
             device=self.device,
             dtype=torch.long,
         )
+        self.cylinders_xy: Optional[torch.Tensor] = None
+        if self.cylinders_array is not None:
+            self.cylinders_xy = self.cylinders_array[self.forest_ids, :, :2]
 
         # Optional visualization of trees (only for eval; training stays lean)
         if self.num_envs == 1:
@@ -553,6 +551,23 @@ class WingedDroneEnv:
         self.num_servos = len(self.servo_dof_indices)
         self.num_actions = self.THROTTLE_SIZE + self.num_servos
         self.throttle_limit: Tuple[float, float] = (0.0, 1.0)
+        self._power_prop_coeffs = power_utils._default_prop_coeffs(
+            self.drone_name,
+            self.device,
+            1,
+            aero_config=self._aero_config,
+        )
+        self._power_servo_constants = power_utils._default_servo_power_constants(
+            self.drone_name, self.device, self.num_servos
+        )
+        self._power_torque_multipliers = power_utils._default_torque_multipliers(
+            self.drone_name,
+            self.device,
+            self.num_servos,
+            sweep_multiplier=2.0,
+            twist_multiplier=2.5,
+            tail_multiplier=2.0,
+        )
 
         self.drone_model.validate_entity(
             self.drone,
@@ -932,26 +947,24 @@ class WingedDroneEnv:
             self.commands[env_ids, 0] = v_eval
         elif self.evaluation and self.num_envs > 1:
             v_min = float(self.command_cfg.get("min_speed", 8.0))
-            v_max = float(self.command_cfg.get("max_speed", 16.0))
+            v_max = float(self.command_cfg.get("max_speed", 30.0))
             # linearly spaced speeds for all eval envs
             speeds = torch.linspace(v_min, v_max, self.num_envs, device=self.device)
             self.commands[env_ids, 0] = speeds[env_ids]
         else:
             v_min = float(self.command_cfg.get("min_speed", 6.0))
-            v_max = float(self.command_cfg.get("max_speed", 24.0))
+            v_max = float(self.command_cfg.get("max_speed", 30.0))
             u = torch.rand((env_ids.numel(),), device=self.device)
             self.commands[env_ids, 0] = v_min + (v_max - v_min) * u
 
-    # ---------------------------------------------------------------------- #
-    # Crash limits                                                           #
-    # ---------------------------------------------------------------------- #
-    def set_angle_limit(self, limit_deg: float) -> None:
-        """Set symmetric angle limits in roll/pitch/yaw used for crash detection."""
-        self.curr_limit = float(limit_deg)
-        r = math.radians(limit_deg)
-        self.roll_limit_rad = r
-        self.pitch_limit_rad = r
-        self.yaw_limit_rad = r
+    def _update_cylinders_xy(self, env_ids: torch.Tensor) -> None:
+        """Refresh cached cylinder XY positions for the selected environments."""
+        if self.cylinders_array is None:
+            return
+        if self.cylinders_xy is None or self.cylinders_xy.shape[0] != self.num_envs:
+            self.cylinders_xy = self.cylinders_array[self.forest_ids, :, :2]
+            return
+        self.cylinders_xy[env_ids] = self.cylinders_array[self.forest_ids[env_ids], :, :2]
 
     # ---------------------------------------------------------------------- #
     # Step function                                                          #
@@ -968,9 +981,30 @@ class WingedDroneEnv:
             obs_buf, rew_buf, reset_buf, extras
         """
         # ------------------------- Actions -------------------------------- #
+        self.nan_envs.fill_(0)
         actions = actions.to(self.device)
+        if not torch.isfinite(actions).all():
+            bad = ~torch.isfinite(actions).all(dim=1)
+            if bad.any():
+                self.nan_envs[bad] = 1
+                actions = actions.clone()
+                actions[bad] = 0.0
         # ActuatorDynamics handles clamping, scaling and latency
         servo_targets, throttle = self.actuator.process_actions(actions)
+        if not torch.isfinite(servo_targets).all():
+            bad = ~torch.isfinite(servo_targets).all(dim=1)
+            if bad.any():
+                self.nan_envs[bad] = 1
+                servo_targets = servo_targets.clone()
+                servo_targets[bad] = 0.0
+        if not torch.isfinite(throttle).all():
+            bad = ~torch.isfinite(throttle)
+            if throttle.dim() > 1:
+                bad = bad.any(dim=1)
+            if bad.any():
+                self.nan_envs[bad] = 1
+                throttle = throttle.clone()
+                throttle[bad] = 0.0
 
         # Store applied (scaled + delayed) actions
         self.last_actions.copy_(self.actions)
@@ -983,7 +1017,7 @@ class WingedDroneEnv:
         self.aero_solver.set_throttle(throttle)
 
         # Print everything about the state for debugging
-        if self.num_envs == 1:
+        if self.debug and self.num_envs == 1:
             print(f"Step: {self.episode_length_buf[0].cpu().numpy()}")
             print(f"Pos: {self.base_pos[0].cpu().numpy()}")
             print(f"Euler: {self.base_euler[0].cpu().numpy()}")
@@ -997,7 +1031,6 @@ class WingedDroneEnv:
         self.scene.step()
 
         # NaN check (simulation instability)
-        self.nan_envs.fill_(0)
         dofs_pos = self.drone.get_dofs_position()
         if not torch.isfinite(dofs_pos).all():
             nan_idx = torch.isnan(dofs_pos).any(dim=1).nonzero(as_tuple=False).flatten()
@@ -1013,17 +1046,38 @@ class WingedDroneEnv:
         self.base_pos[:] = dofs_pos[:, :3]
         self.base_quat[:] = self.drone.get_quat()
         self.base_euler[:] = quat_to_xyz(self.base_quat, rpy=True, degrees=False)
+        if not torch.isfinite(self.base_quat).all():
+            bad = ~torch.isfinite(self.base_quat).all(dim=1)
+            self.nan_envs[bad] = 1
+        if not torch.isfinite(self.base_euler).all():
+            bad = ~torch.isfinite(self.base_euler).all(dim=1)
+            self.nan_envs[bad] = 1
 
         # Joint state
         if self.num_servos > 0:
             self.joint_position[:] = dofs_pos[:, self.servo_dof_indices]
             self.joint_velocity[:] = self.drone.get_dofs_velocity()[:, self.servo_dof_indices]
             self.torque[:] = self.drone.get_dofs_control_force(self.servo_dof_indices)
+            if not torch.isfinite(self.joint_position).all():
+                bad = ~torch.isfinite(self.joint_position).all(dim=1)
+                self.nan_envs[bad] = 1
+            if not torch.isfinite(self.joint_velocity).all():
+                bad = ~torch.isfinite(self.joint_velocity).all(dim=1)
+                self.nan_envs[bad] = 1
+            if not torch.isfinite(self.torque).all():
+                bad = ~torch.isfinite(self.torque).all(dim=1)
+                self.nan_envs[bad] = 1
 
         # Velocities (world/body)
         inv_base = inv_quat(self.base_quat)
         self.base_lin_vel[:] = self.rigid_solver.get_dofs_velocity()[:, :3]
         self.base_ang_vel[:] = transform_by_quat(self.drone.get_ang(), inv_base)
+        if not torch.isfinite(self.base_lin_vel).all():
+            bad = ~torch.isfinite(self.base_lin_vel).all(dim=1)
+            self.nan_envs[bad] = 1
+        if not torch.isfinite(self.base_ang_vel).all():
+            bad = ~torch.isfinite(self.base_ang_vel).all(dim=1)
+            self.nan_envs[bad] = 1
 
         if self.evaluation:
             self.alpha = self.aero_solver.alpha_dbg.to_torch(device=self.device)[0,0]
@@ -1051,14 +1105,21 @@ class WingedDroneEnv:
 
         self.wall_crash_condition = (
             (torch.abs(self.base_pos[:, 1]) > self.env_cfg.get("termination_if_y_greater_than", 100.0))
-            | (self.base_pos[:, 2] < self.env_cfg.get("termination_if_close_to_ground", 1.0))
+            | (self.base_pos[:, 2] < self.env_cfg.get("termination_if_close_to_ground", 0.1))
         )
-
-        self.angle_limit_condition = (
-            (torch.abs(self.base_euler[:, 0]) > getattr(self, "roll_limit_rad", math.radians(80.0)))
-            | (torch.abs(self.base_euler[:, 1]) > getattr(self, "pitch_limit_rad", math.radians(80.0)))
-            | (torch.abs(self.base_euler[:, 2]) > getattr(self, "yaw_limit_rad", math.radians(80.0)))
-        )
+        if not self.evaluation:
+            self.angle_limit_condition = (
+                (torch.abs(self.base_euler[:, 0]) > math.radians(90.0))
+                | (torch.abs(self.base_euler[:, 1]) > math.radians(90.0))
+                | (torch.abs(self.base_euler[:, 2]) > math.radians(90.0))
+            )
+        else:
+            # During evaluation, be more lenient on angle limits to allow for aggressive maneuvers.
+            self.angle_limit_condition = (
+                (torch.abs(self.base_euler[:, 0]) > math.radians(100.0))
+                | (torch.abs(self.base_euler[:, 1]) > math.radians(90.0))
+                | (torch.abs(self.base_euler[:, 2]) > math.radians(90.0))
+            )
 
         self.reset_buf = (
             (self.episode_length_buf >= self.max_episode_length_per_env)
@@ -1086,8 +1147,8 @@ class WingedDroneEnv:
         self.extras["time_outs"] = self._time_outs
 
         # ------------------------- Depth sensing --------------------------- #
-        cyl_xy = None
-        if self.cylinders_array is not None:
+        cyl_xy = self.cylinders_xy
+        if cyl_xy is None and self.cylinders_array is not None:
             # cylinders_array: (F, T, 3) → (B, T, 2) via forest_ids
             cyl_xy = self.cylinders_array[self.forest_ids, :, :2]
 
@@ -1097,6 +1158,9 @@ class WingedDroneEnv:
             cyl_xy_b=cyl_xy,
             noise_std=float(self.obs_cfg.get("depth_noise_std", 0.0)),
         )
+        if self.depth is not None and not torch.isfinite(self.depth).all():
+            bad = ~torch.isfinite(self.depth).all(dim=1)
+            self.nan_envs[bad] = 1
         self.power = self.power_consumption()
 
         # ------------------------- Rewards -------------------------------- #
@@ -1110,6 +1174,12 @@ class WingedDroneEnv:
                 self.episode_sums[name] += rew_comp
                 self.last_reward_components[:, i] = rew_comp
             self.last_reward_total[:] = self.rew_buf
+        if not torch.isfinite(self.rew_buf).all():
+            bad = ~torch.isfinite(self.rew_buf)
+            self.nan_envs[bad] = 1
+        if not torch.isfinite(self.last_reward_components).all():
+            bad = ~torch.isfinite(self.last_reward_components).all(dim=1)
+            self.nan_envs[bad] = 1
 
         # ------------------------- Observations ---------------------------- #
         depth_actor = self.depth if self.include_depth else None
@@ -1125,6 +1195,23 @@ class WingedDroneEnv:
 
         self.obs_buf.copy_(obs_actor)
         self.privileged_obs_buf.copy_(obs_critic)
+        if not torch.isfinite(self.obs_buf).all():
+            bad = ~torch.isfinite(self.obs_buf).all(dim=1)
+            self.nan_envs[bad] = 1
+        if not torch.isfinite(self.privileged_obs_buf).all():
+            bad = ~torch.isfinite(self.privileged_obs_buf).all(dim=1)
+            self.nan_envs[bad] = 1
+
+        # If any env produced NaNs, force safe outputs and trigger reset.
+        nan_mask = self.nan_envs.to(torch.bool)
+        if nan_mask.any():
+            self.rew_buf[nan_mask] = 0.0
+            self.last_reward_components[nan_mask] = 0.0
+            self.last_reward_total[nan_mask] = 0.0
+            self.obs_buf[nan_mask] = 0.0
+            self.privileged_obs_buf[nan_mask] = 0.0
+            self.reset_buf |= nan_mask
+            self.pre_nan[nan_mask] = True
 
         self.extras.setdefault("observations", {})
         self.extras["observations"]["critic"] = self.privileged_obs_buf
@@ -1164,6 +1251,7 @@ class WingedDroneEnv:
             dtype=torch.long,
         )
         self.forest_ids[env_ids] = new_ids
+        self._update_cylinders_xy(env_ids)
 
         # Log episode statistics for finished episodes
         self.extras["episode"] = {}
@@ -1206,7 +1294,7 @@ class WingedDroneEnv:
         self.joint_velocity[env_ids] = torch.zeros((len(env_ids), self.num_servos), device=self.device)
         self.torque[env_ids] = torch.zeros((len(env_ids), self.num_servos), device=self.device)
 
-        self.base_lin_vel[env_ids] = torch.tensor([10.0, 0.0, 0.0], device=self.device).repeat(n, 1)
+        self.base_lin_vel[env_ids] = torch.tensor([15.0, 0.0, 0.0], device=self.device).repeat(n, 1)
         self.base_ang_vel[env_ids] = torch.tensor([0.0, 0.0, 0.0], device=self.device).repeat(n, 1)
 
         # Training: inject randomness in initial pose and speed
@@ -1216,10 +1304,10 @@ class WingedDroneEnv:
             # Lateral position
             self.base_pos[env_ids, 1] += torch.rand(n, device=self.device) * 80.0 - 40.0
             # Altitude
-            self.base_pos[env_ids, 2] += torch.rand(n, device=self.device) * 8.0 - 4.0
+            self.base_pos[env_ids, 2] += torch.rand(n, device=self.device) * 20.0 - 10.0
 
             # Forward speed 
-            self.base_lin_vel[env_ids, 0] = torch.rand(n, device=self.device) * 18.0 + 6.0
+            self.base_lin_vel[env_ids, 0] = torch.rand(n, device=self.device) * 24.0 + 6.0
             # Lateral speed
             self.base_lin_vel[env_ids, 1] = torch.clamp(
                 torch.randn(n, device=self.device) * 1.5, min=-6.0, max=6.0
@@ -1233,14 +1321,14 @@ class WingedDroneEnv:
             self.base_euler[env_ids, 2] = torch.atan2(self.base_lin_vel[env_ids, 1], self.base_lin_vel[env_ids, 0])
 
             # Small attitude perturbations
-            self.base_euler[env_ids, 0] += torch.clamp(torch.randn(n, device=self.device) * 0.04, min=-0.2, max=0.2)
-            self.base_euler[env_ids, 1] += torch.clamp(torch.randn(n, device=self.device) * 0.04, min=-0.2, max=0.2)
-            self.base_euler[env_ids, 2] += torch.clamp(torch.randn(n, device=self.device) * 0.04, min=-0.2, max=0.2)
+            self.base_euler[env_ids, 0] += torch.clamp(torch.randn(n, device=self.device) * 0.2, min=-0.8, max=0.8)
+            self.base_euler[env_ids, 1] += torch.clamp(torch.randn(n, device=self.device) * 0.05, min=-0.2, max=0.2)
+            self.base_euler[env_ids, 2] += torch.clamp(torch.randn(n, device=self.device) * 0.05, min=-0.2, max=0.2)
 
             # Joint positions noise
             self.joint_position[env_ids] += torch.clamp(torch.randn(
                 (n, self.num_servos), device=self.device
-            ) * 0.004, min=-0.02, max=0.02)
+            ) * 0.01, min=-0.04, max=0.04)
 
         # Apply quaternion back from Euler
         self.base_quat[env_ids] = xyz_to_quat(self.base_euler[env_ids], degrees=False)
@@ -1319,12 +1407,39 @@ class WingedDroneEnv:
         """
         self.thrust_log = self.extract_thrust().unsqueeze(1)  # (B, 1)
 
+        prop_coeffs = self._power_prop_coeffs
+        if prop_coeffs is None or prop_coeffs.shape[0] != self.thrust_log.shape[1]:
+            prop_coeffs = power_utils._default_prop_coeffs(
+                self.drone_name,
+                self.device,
+                self.thrust_log.shape[1],
+                aero_config=self._aero_config,
+            )
+        servo_constants = self._power_servo_constants
+        if servo_constants is None or servo_constants.shape[0] != self.num_servos:
+            servo_constants = power_utils._default_servo_power_constants(
+                self.drone_name, self.device, self.num_servos
+            )
+        torque_multipliers = self._power_torque_multipliers
+        if torque_multipliers is None or torque_multipliers.shape[0] != self.num_servos:
+            torque_multipliers = power_utils._default_torque_multipliers(
+                self.drone_name,
+                self.device,
+                self.num_servos,
+                sweep_multiplier=2.0,
+                twist_multiplier=2.5,
+                tail_multiplier=2.0,
+            )
+
         total_power = power_utils.compute_power_consumption(
             thrust=self.thrust_log,
             servo_torque=self.torque,
             servo_velocity=self.joint_velocity,
             drone_name=self.drone_name,
             aero_config=self._aero_config,
+            prop_coefficients=prop_coeffs,
+            servo_power_constants=servo_constants,
+            torque_multipliers=torque_multipliers,
             device=self.device,
         )
         return total_power
@@ -1379,7 +1494,9 @@ class WingedDroneEnv:
         half_span = self.span / 2.0
         r_tree = float(self.env_cfg.get("tree_radius", 1.0)) + tol
 
-        cyl_xy = self.cylinders_array[self.forest_ids, :, :2]  # (B, T, 2)
+        cyl_xy = self.cylinders_xy
+        if cyl_xy is None:
+            cyl_xy = self.cylinders_array[self.forest_ids, :, :2]  # (B, T, 2)
         drone_xy = self.base_pos[:, :2].unsqueeze(1)           # (B, 1, 2)
         diff = cyl_xy - drone_xy                               # (B, T, 2)
 
@@ -1433,9 +1550,9 @@ class WingedDroneEnv:
     def _reward_energy(self) -> torch.Tensor:
         """Penalize energy consumption (higher power -> lower reward)."""
         energy = self.power
-        return energy / (10.0 * self.dt)
+        return energy
 
-    def _reward_progress(self, sigma: float = 0.2) -> torch.Tensor:
+    def _reward_progress(self, sigma: float = 0.25) -> torch.Tensor:
         """
         Reward for forward speed tracking.
 
