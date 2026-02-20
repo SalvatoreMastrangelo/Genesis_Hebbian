@@ -88,7 +88,7 @@ class GAConfig:
     train_envs: int = 32768           # number of envs during training
     eval_envs: int = 8192            # number of envs during evaluation
     vmin: float = 6.0               # min commanded speed in evaluation
-    vmax: float = 24.0              # max commanded speed in evaluation
+    vmax: float = 30.0              # max commanded speed in evaluation
 
     # --- Fitness shaping / invalid individuals ----------------------------
     # fail_value removed; fallback uses INVALID_* sentinels
