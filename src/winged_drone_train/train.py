@@ -29,14 +29,15 @@ import pickle
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import genesis as gs
-import torch
 
 from rsl_rl.runners import OnPolicyRunner
-from winged_drone_train.utils.eval_plotter import EvaluationPlotter
-from winged_drone_train.utils.A2C_modified import ActorCriticTanh
+from winged_drone_train.analysis.eval_plotter import EvaluationPlotter
+from winged_drone_train.rl.A2C_modified import ActorCriticTanh
+from winged_drone_train.rl.logging import RLTrainingLogger
+from winged_drone_train.defaults import default_mydrone_urdf_path
 from winged_drone_train.env import WingedDroneEnv
 
 import builtins
@@ -112,17 +113,17 @@ def get_train_cfg(exp_name: str, max_iterations: int) -> Dict[str, Any]:
             "normalize_advantage_per_mini_batch": True,
             "class_name": "PPO",
             "clip_param": 0.15,
-            "desired_kl": 0.005,
+            "desired_kl": 0.006, #0.005
             "entropy_coef": 0.002,
-            "gamma": 0.993,
-            "lam": 0.95,
-            "learning_rate": 1e-4,
+            "gamma": 0.99,
+            "lam": 0.9,
+            "learning_rate": 1e-4, #1e-4,5e-5
             "max_grad_norm": 0.5,
-            "num_learning_epochs": 3,
+            "num_learning_epochs": 2,
             "num_mini_batches": 32,
             "schedule": "adaptive",
             "use_clipped_value_loss": True,
-            "value_loss_coef": 0.5,
+            "value_loss_coef": 0.3,
         },
 
         # Additional RSL-RL plumbing (kept minimal)
@@ -358,7 +359,47 @@ def configure_solver_noise(env: WingedDroneEnv, env_cfg: Dict[str, Any]) -> None
     # by a solver extension that also perturbs inertias.
 
 
-from typing import Optional
+def _write_cfg_snapshot(
+    cfg_path: Path,
+    env_cfg: Dict[str, Any],
+    obs_cfg: Dict[str, Any],
+    reward_cfg: Dict[str, Any],
+    command_cfg: Dict[str, Any],
+    train_cfg: Dict[str, Any],
+) -> None:
+    """Persist the full config tuple used for the run."""
+    with cfg_path.open("wb") as f:
+        pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
+
+
+def _build_runner(
+    env: WingedDroneEnv,
+    train_cfg: Dict[str, Any],
+    log_dir: Path,
+    device: str,
+) -> OnPolicyRunner:
+    """Create a configured RSL-RL runner."""
+    return OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
+
+
+def _maybe_load_parent_checkpoint(
+    runner: OnPolicyRunner,
+    parent_exp: Optional[str],
+    parent_ckpt: Optional[int],
+    parent_root: Path,
+    tag: str,
+) -> None:
+    """Optionally warm-start a runner from a parent experiment checkpoint."""
+    if parent_exp is None or parent_ckpt is None:
+        return
+    parent_dir = parent_root / parent_exp
+    ckpt_path = parent_dir / f"model_{parent_ckpt}.pt"
+    if ckpt_path.is_file():
+        print(f"[{tag}] Inheriting weights from {ckpt_path}")
+        runner.load(str(ckpt_path))
+    else:
+        print(f"[{tag}] ⚠ checkpoint {ckpt_path} not found – starting from scratch.")
+
 
 def training(
     exp_name: str,
@@ -396,11 +437,7 @@ def training(
 
     # Save cfg snapshot
     cfg_path = log_dir / "cfgs.pkl"
-    with cfg_path.open("wb") as f:
-        pickle.dump(
-            [env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg],
-            f,
-        )
+    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg)
 
     # Environment
     env = WingedDroneEnv(
@@ -417,19 +454,14 @@ def training(
 
     configure_solver_noise(env, env_cfg)
 
-    runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
-
-    # Optional inheritance
-    if parent_exp is not None and parent_ckpt is not None:
-        parent_dir = Path("logs") / "ea" / parent_exp
-        ckpt_path = parent_dir / f"model_{parent_ckpt}.pt"
-        if ckpt_path.is_file():
-            print(f"[train_single] Inheriting weights from {ckpt_path}")
-            runner.load(str(ckpt_path))
-        else:
-            print(
-                f"[train_single] ⚠ checkpoint {ckpt_path} not found – starting from scratch."
-            )
+    runner = _build_runner(env, train_cfg, log_dir, device=device)
+    _maybe_load_parent_checkpoint(
+        runner,
+        parent_exp=parent_exp,
+        parent_ckpt=parent_ckpt,
+        parent_root=Path("logs") / "ea",
+        tag="train_single",
+    )
 
     runner.learn(
         num_learning_iterations=max_iterations,
@@ -512,13 +544,9 @@ def main() -> None:
 
     # Snapshot of all configurations for reproducibility
     cfg_path = log_dir / "cfgs.pkl"
-    with cfg_path.open("wb") as f:
-        pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
+    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg)
     
-    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, -10, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.488441, 2.04645, 0.634358, 0.412812, 0.355771, 0.505386, 2.34147, 0.220355, 1.70431, 1.59352, 2.458, 2.83091, 4, 4, 12].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
+    urdf_file = str(default_mydrone_urdf_path())
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #
@@ -542,26 +570,27 @@ def main() -> None:
     # --------------------------------------------------------------------- #
     #  Runner setup                                                        #
     # --------------------------------------------------------------------- #
-    runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
-
-    # Optional policy inheritance (warm start from another experiment)
-    if args.parent_exp is not None and args.parent_ckpt is not None:
-        parent_dir = Path("logs") / args.parent_exp
-        ckpt_path = parent_dir / f"model_{args.parent_ckpt}.pt"
-
-        if ckpt_path.is_file():
-            print(f"[train] Inheriting weights from {ckpt_path}")
-            runner.load(str(ckpt_path))
-        else:
-            print(f"[train] ⚠ checkpoint {ckpt_path} not found – starting from scratch.")
+    runner = _build_runner(env, train_cfg, log_dir, device=gs.device)
+    _maybe_load_parent_checkpoint(
+        runner,
+        parent_exp=args.parent_exp,
+        parent_ckpt=args.parent_ckpt,
+        parent_root=Path("logs"),
+        tag="train",
+    )
 
     # --------------------------------------------------------------------- #
     #  Training loop                                                       #
     # --------------------------------------------------------------------- #
-    runner.learn(
-        num_learning_iterations=args.max_iterations,
-        init_at_random_ep_len=False,
-    )
+    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir)
+    rl_logger.attach()
+    try:
+        runner.learn(
+            num_learning_iterations=args.max_iterations,
+            init_at_random_ep_len=False,
+        )
+    finally:
+        rl_logger.close()
 
 
 if __name__ == "__main__":

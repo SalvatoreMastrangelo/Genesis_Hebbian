@@ -7,7 +7,7 @@ import gstaichi as ti
 
 from genesis.engine.solvers.base_aero_solver import BaseAeroSolver
 from genesis.engine.entities import RigidEntity  # for get_link()
-from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
+from genesis.assets.urdf.aero_model import DroneAeroModel, SurfaceKind
 
 
 @dataclass
@@ -261,11 +261,12 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         link_indices = list(self._aero_link_idx)
         base_param_overrides = dict(getattr(model, "base_param_overrides", {}) or {})
         noise_params = dict(getattr(model, "noise_params", {}) or {})
+        lower_frames = [frame.lower() for frame in frames]
         side = [0 for _ in range(self.L)]
         slip_code = [0 for _ in range(self.L)]
         fus_width = 0.0
         for i, (_, _, c, k) in enumerate(geom):
-            name = frames[i].lower()
+            name = lower_frames[i]
             if "left" in name:
                 side[i] = -1
             elif "right" in name:
@@ -342,6 +343,8 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self.side = ti.field(ti.i8, shape=(L,))
         self._link_idx = ti.field(ti.i16, shape=(L,))
         self.slip_code = ti.field(ti.i8, shape=(L,))
+        # Cached link index for the propeller (last aerodynamic surface).
+        self._prop_link_idx = ti.field(ti.i16, shape=())
 
         # Base span per surface (total span used in AR = b^2 / S)
         self.span = ti.field(ti.f16, shape=(L,))
@@ -440,6 +443,9 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             self.slip_code[i] = bound.slip_code[i]
 
         self.fus_width[None] = bound.fus_width
+        if self.L > 0:
+            # Last aerodynamic surface is the propeller by construction.
+            self._prop_link_idx[None] = bound.link_indices[self.L - 1]
 
     def _sync_side_profile_caches_from_links(self, bound: BoundTarget) -> None:
         """
@@ -573,9 +579,6 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self.genes = model.genes
         self.genes_dict = model.genes_dict
         self._surface_kinds = list(getattr(model, "surface_kinds", []))
-
-        if model.base_param_overrides:
-            self._aero_base.update(model.base_param_overrides)
 
         self._randomizable_param_names = list(self._aero_base.keys())
 
@@ -803,7 +806,6 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         const_V_MAX = 40.0
 
         # Simple first-order low-pass on throttle (cutoff = prop_cutoff_hz)
-        ti.cast(0, ti.f32)  # ensure float
         alpha_lpf = self._substep_dt / (
             self._substep_dt
             + 1.0 / (2.0 * ti.math.pi * self.prop_cutoff_hz[b])
@@ -814,7 +816,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
         # Max thrust and prop inflow speed
         T_prop = float(self._thr_flt[b]) * self.max_thrust[b]
-        prop_idx = self._link_idx[self.L - 1]  # last surface is the prop
+        prop_idx = self._prop_link_idx[None]
 
         # Air velocity in prop frame (body frame)
         v_body_prop = self._get_wind_in_body(rigid, prop_idx, b)
@@ -929,7 +931,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             do_noise = (self.noise_sigma_mag > 0.0) or (self.noise_sigma_dir > 0.0) or (self.noise_sigma_cp > 0.0)
             if do_noise:
                 Fb, cp = self._apply_noise(
-                    Fb, cp, l, alpha, beta, int(self.kind[l]),
+                    Fb, cp, l, alpha, beta, kind,
                     self.noise_sigma_mag, self.noise_sigma_dir, self.noise_sigma_cp,
                 )
 

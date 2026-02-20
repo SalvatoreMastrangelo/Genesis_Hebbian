@@ -5,7 +5,7 @@ import gstaichi as ti
 from .base_solver import Solver
 from genesis.utils import geom as gu
 from genesis.engine.entities import RigidEntity  # for get_link()
-from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
+from genesis.assets.urdf.aero_model import DroneAeroModel, SurfaceKind
 
 
 @ti.data_oriented

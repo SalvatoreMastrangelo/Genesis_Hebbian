@@ -37,8 +37,14 @@ import genesis as gs
 from rsl_rl.runners import OnPolicyRunner
 
 # Local imports: environment + policy
-from env import WingedDroneEnv
-from winged_drone_train.utils.A2C_modified import ActorCriticTanh  # same as in train.py
+try:
+    from winged_drone_train.env import WingedDroneEnv
+    from winged_drone_train.defaults import default_mydrone_urdf_path
+except ModuleNotFoundError:
+    # Backward-compatible path when running this file directly.
+    from env import WingedDroneEnv  # type: ignore
+    from defaults import default_mydrone_urdf_path  # type: ignore
+from winged_drone_train.rl.A2C_modified import ActorCriticTanh  # same as in train.py
 
 import builtins
 # Make the custom policy class discoverable by name ("ActorCriticTanh")
@@ -1008,10 +1014,7 @@ def main() -> None:
     with open(cfg_path, "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
-    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, -10, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.488441, 2.04645, 0.634358, 0.412812, 0.355771, 0.505386, 2.34147, 0.220355, 1.70431, 1.59352, 2.458, 2.83091, 4, 4, 12].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.476139, 1.57076, 0.699786, 0.455631, 0.474002, 0.345724, 2.59832, 0.146148, 2.56106, -7.63451, 0.25, 1.78671, 3.38934, 2, -2.92669].urdf"
+    urdf_file = str(default_mydrone_urdf_path())
 
     # Build evaluation-specific environment config (do not modify original dict)
     env_cfg_eval = dict(env_cfg)

@@ -24,7 +24,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from winged_drone_train.utils.A2C_modified import ActorCriticTanh
+from winged_drone_train.rl.A2C_modified import ActorCriticTanh
+from winged_drone_train.defaults import default_mydrone_urdf_path
 import builtins
 
 builtins.ActorCriticTanh = ActorCriticTanh  # for model loading
@@ -34,7 +35,7 @@ from winged_drone_train.env import WingedDroneEnv
 from rsl_rl.runners import OnPolicyRunner
 from tensorboard.backend.event_processing import event_accumulator
 
-from winged_drone_train.utils.eval_plotter import EvaluationPlotter
+from winged_drone_train.analysis.eval_plotter import EvaluationPlotter
 
 # ---------------------------------------------------------------------- #
 #  Helpers                                                              #
@@ -98,6 +99,92 @@ def _configure_cache_root() -> Path:
     os.environ["MPLCONFIGDIR"] = str(mpl_dir)
     print(f"[evaluation] cache dir set to {cache_root}")
     return cache_root
+
+
+def _apply_eval_env_overrides(env_cfg: Dict[str, Any]) -> None:
+    """Apply the standard evaluation-only environment overrides in place."""
+    env_cfg.update(
+        dict(
+            visualize_camera=False,
+            visualize_target=False,
+            max_visualize_FPS=25,
+            unique_forests_eval=True,
+            growing_forest=True,
+            x_upper=600,
+            forest_x_limit=600,
+            tree_radius=0.75,
+            base_init_pos=[-50.0, 0.0, 10.0],
+        )
+    )
+
+
+def _extract_tb_reward_metrics(log_dir: str | Path, ckpt: int) -> Tuple[float, float]:
+    """
+    Extract final reward and steps-to-90% from TensorBoard scalar logs.
+
+    Returns:
+        (final_reward, steps90_pct)
+    """
+    final_reward = 0.0
+    steps90_pct = 0.0
+    try:
+        ea = event_accumulator.EventAccumulator(str(log_dir))
+        ea.Reload()
+        scalar_tags = ea.Tags().get("scalars", [])
+        reward_tags = [tag for tag in scalar_tags if tag.startswith("rew_")]
+    except Exception as exc:
+        print(f"[evaluation][warn] skipping TensorBoard metrics: {exc}")
+        reward_tags = []
+
+    if reward_tags:
+        total_steps = ckpt
+        final_window = max(1, math.ceil(0.05 * total_steps))
+
+        max_step = max(e.step for e in ea.Scalars(reward_tags[0]))
+        start_step = max_step - final_window + 1
+
+        total_rewards = []
+        for step in range(start_step, max_step + 1):
+            values = [
+                e.value
+                for tag in reward_tags
+                for e in ea.Scalars(tag)
+                if e.step == step
+            ]
+            if values:
+                total_rewards.append(sum(values))
+        if total_rewards:
+            final_reward = sum(total_rewards) / float(len(total_rewards))
+
+        # Build series of total reward per step
+        steps_count = max_step + 1
+        reward_series = [0.0] * steps_count
+        for tag in reward_tags:
+            for event in ea.Scalars(tag):
+                reward_series[event.step] += event.value
+
+        window = max(1, math.ceil(0.03 * total_steps))
+        smooth = [0.0] * steps_count
+        cum_sum = 0.0
+        for i in range(steps_count):
+            cum_sum += reward_series[i]
+            if i < window:
+                smooth[i] = cum_sum / float(i + 1)
+            else:
+                cum_sum -= reward_series[i - window]
+                smooth[i] = cum_sum / float(window)
+
+        threshold = 0.9 * final_reward
+        steps_to_90 = 0
+        for i, val in enumerate(smooth):
+            if val >= threshold:
+                steps_to_90 = i + 1
+                break
+
+        if total_steps > 0:
+            steps90_pct = (steps_to_90 / float(total_steps)) * 100.0
+
+    return final_reward, steps90_pct
 
 
 # ---------------------------------------------------------------------- #
@@ -179,14 +266,14 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
                     reached_min[newly_reached] = True
                     dx_eff[newly_reached] = minimal_progress
 
-            # store traces needed for heatmaps (distance + joint positions)
-            base_x = env.base_pos[:, 0] - x0  # Δx for all envs
-            jp = env.joint_position.detach().cpu()  # (B, num_joints)
+            # Store traces only when downstream heatmaps are requested.
+            if extra_data:
+                base_x = env.base_pos[:, 0] - x0  # Δx for all envs
+                jp = env.joint_position.detach().cpu()  # (B, num_joints)
 
-            alive_ids = alive.nonzero(as_tuple=False).flatten()
-            for idx in alive_ids.tolist():
-                s_val = base_x[idx].item()
-                if extra_data:
+                alive_ids = alive.nonzero(as_tuple=False).flatten()
+                for idx in alive_ids.tolist():
+                    s_val = base_x[idx].item()
                     traces_all["s"][idx].append(s_val)
                     traces_all["j_pos"][idx].append(jp[idx].numpy())
 
@@ -337,19 +424,7 @@ def evaluation(
         obs_cfg_eval["add_genome_obs"] = bool(obs_genome)
 
     # Evaluation-specific environment tweaks
-    env_cfg.update(
-        dict(
-            visualize_camera=False,
-            visualize_target=False,
-            max_visualize_FPS=25,
-            unique_forests_eval=True,
-            growing_forest=True,
-            x_upper=600,
-            forest_x_limit=600,
-            tree_radius=0.75,
-            base_init_pos=[-50.0, 0.0, 10.0],
-        )
-    )
+    _apply_eval_env_overrides(env_cfg)
 
     env = WingedDroneEnv(
         num_envs=envs,
@@ -391,67 +466,7 @@ def evaluation(
     gs.destroy()
 
     # ---------------- TensorBoard training metrics --------------------- #
-    final_reward = 0.0
-    steps90_pct = 0.0
-
-    final_reward = 0.0
-    steps90_pct = 0.0
-    try:
-        ea = event_accumulator.EventAccumulator(log_dir_str)
-        ea.Reload()
-        scalar_tags = ea.Tags().get("scalars", [])
-        reward_tags = [tag for tag in scalar_tags if tag.startswith("rew_")]
-    except Exception as exc:
-        print(f"[evaluation][warn] skipping TensorBoard metrics: {exc}")
-        reward_tags = []
-
-    if reward_tags:
-        total_steps = ckpt
-        final_window = max(1, math.ceil(0.05 * total_steps))
-
-        max_step = max(e.step for e in ea.Scalars(reward_tags[0]))
-        start_step = max_step - final_window + 1
-
-        total_rewards = []
-        for step in range(start_step, max_step + 1):
-            values = [
-                e.value
-                for tag in reward_tags
-                for e in ea.Scalars(tag)
-                if e.step == step
-            ]
-            if values:
-                total_rewards.append(sum(values))
-        if total_rewards:
-            final_reward = sum(total_rewards) / float(len(total_rewards))
-
-        # Build series of total reward per step
-        steps_count = max_step + 1
-        reward_series = [0.0] * steps_count
-        for tag in reward_tags:
-            for event in ea.Scalars(tag):
-                reward_series[event.step] += event.value
-
-        window = max(1, math.ceil(0.03 * total_steps))
-        smooth = [0.0] * steps_count
-        cum_sum = 0.0
-        for i in range(steps_count):
-            cum_sum += reward_series[i]
-            if i < window:
-                smooth[i] = cum_sum / float(i + 1)
-            else:
-                cum_sum -= reward_series[i - window]
-                smooth[i] = cum_sum / float(window)
-
-        threshold = 0.9 * final_reward
-        steps_to_90 = 0
-        for i, val in enumerate(smooth):
-            if val >= threshold:
-                steps_to_90 = i + 1
-                break
-
-        if total_steps > 0:
-            steps90_pct = (steps_to_90 / float(total_steps)) * 100.0
+    final_reward, steps90_pct = _extract_tb_reward_metrics(log_dir_str, ckpt)
 
     eval_reward_mean = float(np.nanmean(reward_total)) if reward_total.size else float("nan")
     if not np.isfinite(eval_reward_mean):
@@ -613,10 +628,7 @@ if __name__ == "__main__":
 
     gs.init(logging_level="error")
 
-    # NOTE: same hard-coded URDF path as in the original script
-    urdf_file = "/home/andrea/Documents/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, -10, 2, 2.5, 3, 4, 16].urdf"
-    #urdf_file = "/home/andrea/Documents/Genesis/src/urdf_generated/[0.488441, 2.04645, 0.634358, 0.412812, 0.355771, 0.505386, 2.34147, 0.220355, 1.70431, 1.59352, 2.458, 2.83091, 4, 4, 12].urdf"
+    urdf_file = str(default_mydrone_urdf_path())
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax
@@ -636,19 +648,7 @@ if __name__ == "__main__":
     print(command_cfg)
 
     # Evaluation-specific environment settings
-    env_cfg.update(
-        dict(
-            visualize_camera=False,
-            visualize_target=False,
-            max_visualize_FPS=25,
-            unique_forests_eval=True,
-            growing_forest=True,
-            x_upper=600,
-            forest_x_limit=600,
-            tree_radius=0.75,
-            base_init_pos=[-50.0, 0.0, 10.0],
-        )
-    )
+    _apply_eval_env_overrides(env_cfg)
 
     env = WingedDroneEnv(
         num_envs=args.envs,

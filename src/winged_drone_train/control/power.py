@@ -25,6 +25,8 @@ import csv
 
 import torch
 
+from winged_drone_train.defaults import default_mydrone_urdf_dir
+
 
 # -----------------------------------------------------------------------------
 # Action scaling utilities
@@ -193,11 +195,16 @@ class ActuatorDynamics:
             self._action_buffer = torch.zeros(
                 (self.num_envs, K, self.num_actions), device=self.device, dtype=torch.float32
             )
+            # Circular-buffer head index (latest action position).
+            self._buffer_head = 0
+            self._env_index = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
             self._current_latency = torch.zeros(
                 (self.num_envs,), device=self.device, dtype=torch.long
             )
         else:
             self._action_buffer = None
+            self._buffer_head = 0
+            self._env_index = None
             self._current_latency = None
 
         # Noise parameters
@@ -267,9 +274,10 @@ class ActuatorDynamics:
 
         # 2) Apply latency model if enabled
         if self.simulate_latency and self._action_buffer is not None:
-            # Shift FIFO buffer and insert current commands at the front
-            self._action_buffer[:, 1:] = self._action_buffer[:, :-1].clone()
-            self._action_buffer[:, 0, :] = scaled
+            # Circular FIFO update: avoid per-step full-buffer clone/shift.
+            K = self._action_buffer.shape[1]
+            self._buffer_head = (self._buffer_head - 1) % K
+            self._action_buffer[:, self._buffer_head, :] = scaled
 
             if self.random_latency_per_step and self.latency_max > 0:
                 self._current_latency = torch.randint(
@@ -280,8 +288,8 @@ class ActuatorDynamics:
                     dtype=torch.long,
                 )
 
-            idx = self._current_latency.view(-1, 1, 1).expand(-1, 1, self.num_actions)
-            applied_actions = torch.gather(self._action_buffer, dim=1, index=idx).squeeze(1)
+            idx = (self._buffer_head + self._current_latency) % K
+            applied_actions = self._action_buffer[self._env_index, idx, :]
         else:
             applied_actions = scaled
 
@@ -318,16 +326,18 @@ class ActuatorDynamics:
 
         This is mainly useful for debugging or logging.
         """
-        return self._action_buffer, self._current_latency
+        if self._action_buffer is None:
+            return None, self._current_latency
+        # Expose a logical FIFO view with newest command at index 0.
+        view = torch.roll(self._action_buffer, shifts=-self._buffer_head, dims=1)
+        return view, self._current_latency
 
 
 # -----------------------------------------------------------------------------
 # Power consumption model
 # -----------------------------------------------------------------------------
 def _default_catalog_path() -> Path:
-    base = Path(__file__).resolve().parents[3]
-    urdf_dir = base / "genesis" / "assets" / "urdf" / "mydrone"
-    return urdf_dir / "actuators.csv"
+    return default_mydrone_urdf_dir() / "actuators.csv"
 
 
 def _clean_name(name: Optional[str]) -> Optional[str]:
@@ -438,7 +448,9 @@ def _default_prop_coeffs(
         c2 = row.get("c2")
         if c0 is None or c1 is None or c2 is None:
             continue
-        coeffs[i] = torch.tensor([c0, c1, c2], device=device, dtype=torch.float32)
+        coeffs[i, 0] = c0
+        coeffs[i, 1] = c1
+        coeffs[i, 2] = c2
 
     return coeffs
 
@@ -614,7 +626,8 @@ def compute_power_consumption(
     c1 = prop_coefficients[:, 1].view(1, n_prop)
     c2 = prop_coefficients[:, 2].view(1, n_prop)
 
-    cp_each = c0 + c1 * thrust + c2 * thrust ** 2  # (B, n_prop)
+    thrust_sq = thrust * thrust
+    cp_each = c0 + c1 * thrust + c2 * thrust_sq  # (B, n_prop)
     cp_each = torch.clamp(cp_each, min=0.0)
     prop_power = cp_each.sum(dim=1)  # (B,)
 
@@ -672,7 +685,8 @@ def compute_power_consumption(
 
         # P = (V * T) / (kV * kI) + (R * kV / kI) * T^2
         denom = (kV * kI).clamp(min=1e-6)
-        P = (V * T) / denom + (R_const * kV / kI.clamp(min=1e-6)) * T ** 2
+        T_sq = T * T
+        P = (V * T) / denom + (R_const * kV / kI.clamp(min=1e-6)) * T_sq
         P = torch.clamp(P, min=0.0)  # no negative power
 
         servo_power = P.sum(dim=1)  # (B,)

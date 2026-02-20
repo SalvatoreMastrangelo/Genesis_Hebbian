@@ -92,8 +92,8 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   fi
   cp -a \"\${SRC_URDF_DIR}/meshes/.\" /workspace/out/urdf_generated/meshes/
 
-  # Aero config + model files required next to the URDFs
-  for fname in aero_parameters.yaml actuators.csv drone.py; do
+  # Aero config files required next to the URDFs
+  for fname in aero_parameters.yaml actuators.csv; do
     if [ ! -f \"\${SRC_AERO_DIR}/\${fname}\" ]; then
       echo \"[ERROR] Missing \${SRC_AERO_DIR}/\${fname}\"
       exit 1

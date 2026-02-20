@@ -199,7 +199,7 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
     exit 1
   fi
   cp -a \"\${SRC_URDF_DIR}/meshes/.\" \"\${URDF_DIR}/meshes/\"
-  for fname in aero_parameters.yaml actuators.csv drone.py; do
+  for fname in aero_parameters.yaml actuators.csv; do
     if [ ! -f \"\${SRC_AERO_DIR}/\${fname}\" ]; then
       echo \"[ERROR] Missing \${SRC_AERO_DIR}/\${fname}\"
       exit 1

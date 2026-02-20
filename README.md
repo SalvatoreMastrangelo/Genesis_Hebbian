@@ -62,7 +62,7 @@ Inside `_aero_step()` the solver:
 **Where the aero data comes from:**
 
 - **URDF geometry**: link names (`aero_frame_*`, `prop_frame_*`) and mesh/box dimensions are parsed to compute area, chord, span, and aspect ratio.  
-  (Parsed by `DroneAeroModel` in `genesis/assets/urdf/mydrone/drone.py`.)
+  (Parsed by `DroneAeroModel` from `genesis/assets/urdf/aero_model.py`, implemented in `genesis/assets/urdf/common/drone_model.py`.)
 - **Aero parameters**: base parameters and per-surface parameters are loaded from the solver’s inline config  
   (`SimpleDroneAeroParameters` or `LisparrowAeroParameters`) and merged with the URDF-derived geometry.
 - **Actuators**: `actuators.csv` next to the URDF provides thrust limits and servo gains; prop parameters (max thrust, kappa, cutoff) are read here.

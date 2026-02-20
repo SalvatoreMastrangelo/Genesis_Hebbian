@@ -306,6 +306,68 @@ class Gen_Env:
         # Fallback: all URDFs in the folder
         return sorted(str(p) for p in base_dir.glob("*.urdf"))
 
+    def _new_extras(self) -> Dict:
+        """Allocate a fresh extras dict with the standard fields."""
+        return {
+            "observations": {},
+            "time_outs": torch.zeros(
+                (self.num_envs,), device=self.device, dtype=torch.float32
+            ),
+        }
+
+    def _store_critic_obs(self, critic_obs: Optional[torch.Tensor], sl: slice) -> None:
+        """Store critic observations for a sub-slice into `self.extras`."""
+        if critic_obs is None:
+            return
+        self.extras["observations"].setdefault(
+            "critic",
+            torch.zeros(
+                (self.num_envs, critic_obs.shape[1]),
+                device=self.device,
+                dtype=critic_obs.dtype,
+            ),
+        )
+        self.extras["observations"]["critic"][sl] = critic_obs.to(self.device)
+
+    def _copy_reset_from_sub(
+        self,
+        sub: WingedDroneEnv,
+        sl: slice,
+        obs: torch.Tensor,
+        info: Dict,
+    ) -> None:
+        """Copy reset outputs from a sub-env into unified buffers."""
+        self.obs_buf[sl] = obs.to(self.device)
+        self.episode_length_buf[sl] = sub.episode_length_buf.to(self.device)
+
+        critic_obs = info.get("observations", {}).get("critic")
+        self._store_critic_obs(critic_obs, sl)
+
+        if "time_outs" in info:
+            self.extras["time_outs"][sl] = info["time_outs"].to(self.device).float()
+
+    def _copy_step_from_sub(
+        self,
+        sub: WingedDroneEnv,
+        sl: slice,
+        obs_sub: torch.Tensor,
+        rew_sub: torch.Tensor,
+        done_sub: torch.Tensor,
+        info_sub: Dict,
+    ) -> None:
+        """Copy step outputs from a sub-env into unified buffers."""
+        self.obs_buf[sl] = obs_sub.to(self.device)
+        self.rew_buf[sl] = rew_sub.to(self.device)
+        self.reset_buf[sl] = done_sub.to(self.device)
+        self.episode_length_buf[sl] = sub.episode_length_buf.to(self.device)
+
+        critic_obs = info_sub.get("observations", {}).get("critic")
+        self._store_critic_obs(critic_obs, sl)
+
+        time_outs = info_sub.get("time_outs")
+        if time_outs is not None:
+            self.extras["time_outs"][sl] = time_outs.to(self.device).float()
+
     # ------------------------------------------------------------------ #
     # Debug utilities                                                    #
     # ------------------------------------------------------------------ #
@@ -388,32 +450,11 @@ class Gen_Env:
         """
         Reset all sub-environments and return initial observations and extras.
         """
-        self.extras = {
-            "observations": {},
-            "time_outs": torch.zeros(
-                (self.num_envs,), device=self.device, dtype=torch.float32
-            ),
-        }
+        self.extras = self._new_extras()
 
         for sub, sl in zip(self._subs, self._slices):
             obs, info = sub.reset()
-            self.obs_buf[sl] = obs.to(self.device)
-            self.episode_length_buf[sl] = sub.episode_length_buf.to(self.device)
-
-            critic_obs = info.get("observations", {}).get("critic")
-            if critic_obs is not None:
-                self.extras["observations"].setdefault(
-                    "critic",
-                    torch.zeros(
-                        (self.num_envs, critic_obs.shape[1]),
-                        device=self.device,
-                        dtype=critic_obs.dtype,
-                    ),
-                )
-                self.extras["observations"]["critic"][sl] = critic_obs.to(self.device)
-
-            if "time_outs" in info:
-                self.extras["time_outs"][sl] = info["time_outs"].to(self.device).float()
+            self._copy_reset_from_sub(sub, sl, obs, info)
 
         self.reset_buf.fill_(1)
         self._t = 0
@@ -436,38 +477,13 @@ class Gen_Env:
 
         actions = actions.to(self.device)
 
-        self.extras = {
-            "observations": {},
-            "time_outs": torch.zeros(
-                (self.num_envs,), device=self.device, dtype=torch.float32
-            ),
-        }
+        self.extras = self._new_extras()
 
         episodes_list: List[Tuple[Dict, int]] = []
 
         for sub, sl in zip(self._subs, self._slices):
             obs_sub, rew_sub, done_sub, info_sub = sub.step(actions[sl])
-
-            self.obs_buf[sl] = obs_sub.to(self.device)
-            self.rew_buf[sl] = rew_sub.to(self.device)
-            self.reset_buf[sl] = done_sub.to(self.device)
-            self.episode_length_buf[sl] = sub.episode_length_buf.to(self.device)
-
-            critic_obs = info_sub.get("observations", {}).get("critic")
-            if critic_obs is not None:
-                self.extras["observations"].setdefault(
-                    "critic",
-                    torch.zeros(
-                        (self.num_envs, critic_obs.shape[1]),
-                        device=self.device,
-                        dtype=critic_obs.dtype,
-                    ),
-                )
-                self.extras["observations"]["critic"][sl] = critic_obs.to(self.device)
-
-            time_outs = info_sub.get("time_outs")
-            if time_outs is not None:
-                self.extras["time_outs"][sl] = time_outs.to(self.device).float()
+            self._copy_step_from_sub(sub, sl, obs_sub, rew_sub, done_sub, info_sub)
 
             ep = info_sub.get("episode")
             if ep:

@@ -17,7 +17,11 @@ from genesis.utils.geom import (
     transform_by_quat,
     quat_to_xyz,
 )
-from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
+from genesis.assets.urdf.aero_model import DroneAeroModel, SurfaceKind
+from winged_drone_train.aero_profile import (
+    configure_runtime_aero_solver,
+    resolve_aero_config,
+)
 import sys
 
 # -------- Redirect ONLY print() output to file --------
@@ -69,24 +73,11 @@ DRONE_CONFIGS = {
 
 
 def _resolve_aero_config(solver_kind: str) -> dict:
-    from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
-    from genesis.engine.solvers.drones.lisparrow import LisparrowAeroParameters
-    name = (solver_kind or "").strip().lower()
-    if name in ("lisparrow", "cpp", "morphing"):
-        return LisparrowAeroParameters.as_dict()
-    return SimpleDroneAeroParameters.as_dict()
+    return resolve_aero_config(solver_kind)
 
 
 def _configure_aero_solver(solver_kind: str) -> None:
-    name = (solver_kind or "").strip().lower()
-    if name not in ("lisparrow", "cpp", "morphing"):
-        return
-    from genesis.engine.solvers.drones.lisparrow import LisparrowAeroSolver
-    import genesis.engine.simulator as gs_sim
-    import genesis.engine.solvers as gs_solvers
-
-    gs_sim.AeroSolver = LisparrowAeroSolver
-    gs_solvers.AeroSolver = LisparrowAeroSolver
+    configure_runtime_aero_solver(solver_kind)
 
 
 def _load_joint_position_limits_from_urdf(urdf_path: str, joint_names: List[str]) -> np.ndarray:

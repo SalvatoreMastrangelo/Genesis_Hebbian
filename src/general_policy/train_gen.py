@@ -15,153 +15,40 @@ import argparse
 import os
 os.environ["GS_PARA_LEVEL"] = "3"
 import pickle
-import random
 import shutil
 import time
 from pathlib import Path
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Optional
 
-import numpy as np
 import torch
 import genesis as gs
 from rsl_rl.runners import OnPolicyRunner
 
 from winged_drone_train.train import get_cfgs, get_train_cfg
 from winged_drone_train.env import WingedDroneEnv
-from env_gen import Gen_Env
-
-from drone_making import UrdfMaker
-from morph_evolution.chromosome_drone import Chromosome_Drone
+from general_policy.env_gen import Gen_Env
+from general_policy.catalog import build_catalog
 
 
 # --------------------------------------------------------------------------- #
 # Catalog helpers                                                             #
 # --------------------------------------------------------------------------- #
-def _write_catalog_txt(catalog_dir: Path, urdfs: List[Path]) -> None:
+def _resolve_catalog_path(catalog_dir: Optional[str], n_urdf: Optional[int]) -> Optional[Path]:
     """
-    Write `catalog.txt` listing all URDF filenames in `catalog_dir`.
-
-    We store only filenames (not absolute paths) so that the catalog is
-    portable. `Gen_Env` will resolve them relative to `catalog_dir`.
+    Resolve the catalog directory with the same precedence used by `train`.
     """
-    catalog_dir.mkdir(parents=True, exist_ok=True)
-    catalog_file = catalog_dir / "catalog.txt"
-
-    lines = [p.name for p in urdfs]
-    catalog_file.write_text("\n".join(lines))
-    print(f"[catalog] Wrote {len(urdfs)} entries to: {catalog_file}")
-
-
-def build_catalog(
-    catalog_dir: Path,
-    n: int,
-    seed: int = 0,
-    extra_genomes: Optional[Sequence[Sequence[float]]] = None,
-) -> List[Path]:
-    """
-    Build a catalog of `n` unique URDFs and write `catalog.txt` in `catalog_dir`.
-
-    Uses:
-      - Chromosome_Drone: normalized continuous genome generator in [0, 1]^D
-      - Chromosome_Drone.to_physical: mapping genome -> physical parameters
-      - UrdfMaker:       physical parameters -> URDF file
-
-    A fixed "reasonable" baseline morphology is used for the first URDF,
-    then additional morphologies are sampled randomly from the continuous
-    design space.
-
-    Parameters
-    ----------
-    catalog_dir:
-        Directory where URDFs and `catalog.txt` will be written.
-    n:
-        Target number of URDFs to generate.
-    seed:
-        Random seed for reproducible catalog generation
-        (affects both `random` and `numpy.random`).
-    """
-    catalog_dir = catalog_dir.expanduser().resolve()
-    catalog_dir.mkdir(parents=True, exist_ok=True)
-
-    if not gs._initialized:
-        gs.init(logging_level="error", backend=gs.gpu)
-
-    print(f"[catalog] dir={catalog_dir}  n={n}  seed={seed}")
-    random.seed(seed)
-    np.random.seed(seed)
-
-    seen: Set[Tuple[float, ...]] = set()
-    urdfs: List[Path] = []
-
-    max_attempts = max(n * 25, 200)
-    attempts = 0
-    dupes = 0
-
-    while len(urdfs) < n and attempts < max_attempts:
-        attempts += 1
-
-        if len(urdfs) == 0:
-            # A known "reasonable" baseline morphology expressed directly
-            # in physical parameter space.
-            baseline_phys = [
-                0.70,  # wing_span
-                3.50,  # wing_aspect_ratio
-                0.73,  # fus_length  (slightly above range, will be clamped)
-                0.38,  # cg_x_ratio
-                0.38,  # attach_x_ratio
-                0.5,  # elevator_span
-                4.0,  # elevator_aspect_ratio
-                0.20,  # rudder_span
-                2.00,  # rudder_aspect_ratio
-                0.0,   # dihedral_deg
-                2.0,   # sweep_multiplier
-                2.5,   # twist_multiplier
-                3.0,   # naca_d1
-                4.0,   # naca_d2
-                16.0,  # naca_last2
-            ]
-            phys_genome = baseline_phys
+    resolved_dir = catalog_dir
+    if resolved_dir is None:
+        env_val = os.getenv("URDF_CATALOG_DIR", "")
+        if env_val:
+            resolved_dir = env_val
+        elif n_urdf and n_urdf > 0:
+            resolved_dir = "urdf_generated"
         else:
-            # Sample a random genome in [0, 1]^D and map to physical space.
-            genome_norm = Chromosome_Drone.random_genome()
-            phys_genome = Chromosome_Drone.to_physical(genome_norm)
+            resolved_dir = ""
 
-        # Use the physical genome as uniqueness key (URDF geometry).
-        key = tuple(float(v) for v in phys_genome)
-        if key in seen:
-            dupes += 1
-            continue
-        seen.add(key)
+    return Path(resolved_dir).expanduser() if resolved_dir else None
 
-        # Build URDF from physical parameters.
-        path_str = UrdfMaker(phys_genome, out_dir=catalog_dir).create_urdf()
-        urdf_path = Path(path_str).resolve()
-        urdfs.append(urdf_path)
-
-        step = max(1, n // 20)
-        if len(urdfs) % step == 0 or len(urdfs) == n:
-            print(f"[catalog]   {len(urdfs)}/{n} URDF generated")
-
-    extra_genomes = extra_genomes or []
-    for genome in extra_genomes:
-        phys_genome = list(genome)
-        if len(phys_genome) != 15:
-            raise ValueError("Expected a 15-value genome sequence.")
-        key = tuple(float(v) for v in phys_genome)
-        if key in seen:
-            continue
-        seen.add(key)
-        path_str = UrdfMaker(phys_genome, out_dir=catalog_dir).create_urdf()
-        urdf_path = Path(path_str).resolve()
-        urdfs.append(urdf_path)
-
-    _write_catalog_txt(catalog_dir, urdfs)
-    print(f"[catalog] Attempts={attempts}  Duplicates={dupes}  Unique={len(urdfs)}")
-
-    if len(urdfs) < n:
-        print(f"[catalog] WARNING: generated only {len(urdfs)}/{n} URDFs.")
-
-    return urdfs
 
 # --------------------------------------------------------------------------- #
 # Training                                                                   #
@@ -230,16 +117,7 @@ def train(
     # ------------------------------------------------------------------ #
     # Catalog resolution + optional building                             #
     # ------------------------------------------------------------------ #
-    if catalog_dir is None:
-        env_val = os.getenv("URDF_CATALOG_DIR", "")
-        if env_val:
-            catalog_dir = env_val
-        elif n_urdf and n_urdf > 0:
-            catalog_dir = "urdf_generated"
-        else:
-            catalog_dir = ""
-
-    catalog_path = Path(catalog_dir).expanduser() if catalog_dir else None
+    catalog_path = _resolve_catalog_path(catalog_dir, n_urdf)
 
     # If requested, (re)build catalog first
     if n_urdf is not None and n_urdf > 0:

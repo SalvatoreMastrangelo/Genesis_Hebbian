@@ -386,12 +386,9 @@ class UrdfMaker:
                 except Exception:
                     pass
 
-        from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
-        from genesis.engine.solvers.drones.lisparrow import LisparrowAeroParameters
-        name = (solver_kind or "").strip().lower()
-        if name in ("lisparrow", "cpp", "morphing"):
-            return LisparrowAeroParameters.as_dict()
-        return SimpleDroneAeroParameters.as_dict()
+        from winged_drone_train.aero_profile import resolve_aero_config
+
+        return resolve_aero_config(solver_kind)
 
     def _actuator_mass(self, name: Optional[str], kind: str, fallback: Optional[float]) -> Optional[float]:
         if not name:

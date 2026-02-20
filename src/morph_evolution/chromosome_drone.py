@@ -91,25 +91,25 @@ class Chromosome_Drone:
 
     # List of ParamSpec for each gene in the *physical* genome.
     PARAMS: List[ParamSpec] = [
-        # 0: wing_span (m) — range molto ridotto per mantenere S e AR stabili
+        # 0: wing_span (m) — intentionally narrow to keep wing area/AR stable
         ParamSpec("wing_span", 0.45, 0.75),
 
-        # 1: wing_aspect_ratio (span / chord) — AR molto diverse = drag molto diverso
+        # 1: wing_aspect_ratio (span / chord) — large AR spread implies large drag spread
         ParamSpec("wing_aspect_ratio", 1.5, 5.0),
 
-        # 2: fuselage_length (m) — se varia troppo cambia il lever arm e lo static margin
+        # 2: fuselage_length (m) — large variation shifts lever arm and static margin
         ParamSpec("fus_length", 0.45, 0.75),
 
-        # 3: fuselage CG ratio (x_cg / fus_length) — se varia troppo il drone diventa ingovernabile
+        # 3: fuselage CG ratio (x_cg / fus_length) — excessive variation can make control unstable
         ParamSpec("cg_x_ratio", 0.30, 0.50),
 
-        # 4: wing attach ratio — variazione moderata OK, variazione ampia = instabilità
+        # 4: wing attach ratio — moderate variation is acceptable; large spread hurts stability
         ParamSpec("attach_x_ratio", 0.30, 0.50),
 
-        # 5: elevator span (m) — se troppo piccolo manca autorità, se troppo grande lo destabilizza
+        # 5: elevator span (m) — too small reduces authority, too large can destabilize
         ParamSpec("elevator_span", 0.2, 0.6),
 
-        # 6: elevator aspect ratio — OK range stretto
+        # 6: elevator aspect ratio — kept narrow by design
         ParamSpec("elevator_aspect_ratio", 1.5, 4.0),
 
         # 7: rudder span (m)
@@ -118,10 +118,10 @@ class Chromosome_Drone:
         # 8: rudder aspect ratio
         ParamSpec("rudder_aspect_ratio", 1.5, 4.0),
 
-        # 9: dihedral (deg) — range stretto: >10° o <−10° causa forti instabilità laterali
-        ParamSpec("dihedral_deg", -5.0, 5.0),
+        # 9: dihedral (deg) — narrow range to avoid strong lateral instabilities
+        ParamSpec("dihedral_deg", -4.0, 4.0),
 
-        # 10: sweep multiplier — questi range enormi creano differenze assurde nei limiti del giunto
+        # 10: sweep multiplier — constrained to avoid extreme joint-limit discrepancies
         ParamSpec("sweep_multiplier", 1.5, 3.5),
 
         # 11: twist multiplier
@@ -145,6 +145,15 @@ class Chromosome_Drone:
     def num_genes(cls) -> int:
         """Return the dimensionality of the genome."""
         return len(cls.PARAMS)
+
+    @classmethod
+    def _validate_len(cls, values: Sequence[float], label: str) -> None:
+        """Ensure an input sequence has exactly `num_genes()` elements."""
+        if len(values) != cls.num_genes():
+            raise ValueError(
+                f"Expected {label} of length {cls.num_genes()}, "
+                f"got {len(values)}."
+            )
 
     # ------------------------------------------------------------------ #
     # Mapping between normalized genome and physical parameters          #
@@ -216,11 +225,7 @@ class Chromosome_Drone:
         list[float]
             Physical parameter vector compatible with `UrdfMaker`.
         """
-        if len(genome_norm) != cls.num_genes():
-            raise ValueError(
-                f"Expected genome of length {cls.num_genes()}, "
-                f"got {len(genome_norm)}."
-            )
+        cls._validate_len(genome_norm, "genome")
 
         phys: List[float] = []
         for i, (g, spec) in enumerate(zip(genome_norm, cls.PARAMS)):
@@ -251,11 +256,7 @@ class Chromosome_Drone:
         list[float]
             Normalized genome in [0, 1]^D.
         """
-        if len(phys) != cls.num_genes():
-            raise ValueError(
-                f"Expected physical vector of length {cls.num_genes()}, "
-                f"got {len(phys)}."
-            )
+        cls._validate_len(phys, "physical vector")
 
         genome: List[float] = []
         for i, (v, spec) in enumerate(zip(phys, cls.PARAMS)):

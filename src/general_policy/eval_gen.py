@@ -9,9 +9,8 @@ High-level workflow
 -------------------
 1. Build or load a catalog of URDF files (drone morphologies).
 2. For each *baseline* checkpoint (foundation policy):
-   - Stage the checkpoint and its ``cfgs.pkl`` snapshot under
-     ``logs/ea/<baseline_exp>/`` so that :func:`eval.evaluation`
-     can load it.
+   - Resolve checkpoint and config paths so :func:`eval.evaluation`
+     can load the baseline model in read-only mode.
 3. For each URDF in the catalog:
    a) Evaluate each baseline checkpoint with :func:`eval.evaluation`.
    b) Train one or more *per-URDF* policies using
@@ -55,8 +54,9 @@ import genesis as gs
 from filelock import FileLock
 from tensorboard.backend.event_processing import event_accumulator
 
+from winged_drone_train.defaults import STANDARD_MYDRONE_GENOME
 from winged_drone_train.eval import evaluation, safe_urdf_stem
-from train_gen import build_catalog
+from general_policy.catalog import build_catalog
 from drone_making import UrdfMaker
 
 
@@ -107,23 +107,7 @@ def get_eval_root(exp_name: str) -> Path:
 INVALID_ENERGY = 100
 # Minimal progress below which speed/energy are set to sentinel in CSV
 MINIMAL_PROGRESS_CSV = 250.0
-DEFAULT_EXTRA_GENOME = [
-    0.70,  # wing_span
-    3.50,  # wing_aspect_ratio
-    0.73,  # fus_length
-    0.38,  # cg_x_ratio
-    0.38,  # attach_x_ratio
-    0.50,  # elevator_span
-    4.00,  # elevator_aspect_ratio
-    0.20,  # rudder_span
-    2.00,  # rudder_aspect_ratio
-    0.0,   # dihedral_deg
-    2.0,   # sweep_multiplier
-    2.5,   # twist_multiplier
-    3.0,   # naca_d1
-    4.0,   # naca_d2
-    16.0,  # naca_last2
-]
+DEFAULT_EXTRA_GENOME = list(STANDARD_MYDRONE_GENOME)
 
 
 # =============================================================================
@@ -324,22 +308,22 @@ def list_urdfs_from_nsga(nsga_csv: Path, catalog_dir: Path) -> List[Path]:
 
 def parse_urdf_params(urdf_path: Path) -> List[float]:
     """
-    Estrae l'array di parametri dal nome del file URDF.
-    Esempio nome:
+    Extract the parameter array from a URDF filename.
+    Example:
         [0.7, 3.5, 0.73, ... , -3].urdf
-    Restituisce una lista di float.
+    Returns a list of floats.
     """
-    stem = urdf_path.stem  # es: "[0.7, 3.5, 0.73, ...]"
-    # rimuove parentesi quadre
+    stem = urdf_path.stem  # e.g. "[0.7, 3.5, 0.73, ...]"
+    # Strip surrounding brackets.
     clean = stem.strip("[]")
-    # separa per virgole
+    # Split by comma.
     parts = clean.split(",")
-    # converte in float
+    # Convert each token to float if possible.
     out = []
     for x in parts:
         try:
             out.append(float(x))
-        except:
+        except ValueError:
             pass
     return out
 
@@ -375,8 +359,10 @@ class StagedCheckpoint:
 
 def stage_baseline_checkpoint(exp_name: str, model_path: Path, cfg_dir: Optional[Path]):
     """
-    No-op: we no longer stage or copy anything.
-    We simply infer the checkpoint index from the filename.
+    Read-only baseline resolver.
+
+    No files are copied or staged; we only infer the checkpoint index from
+    the filename and keep source paths for downstream evaluation.
     """
     model_path = model_path.expanduser().resolve()
     if not model_path.is_file():
@@ -1633,7 +1619,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--foundation-exp",
         type=str,
         required=False,
-        help="Experiment ID della foundation policy (logs/ea/<id>/)."
+        help="Experiment ID of the foundation policy (logs/ea/<id>/)."
     )
     parser.add_argument(
         "--eval-baselines",

@@ -49,7 +49,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 # Project imports (adapt to your package layout)
 from drone_making import UrdfMaker
-from chromosome_drone import Chromosome_Drone
+from morph_evolution.chromosome_drone import Chromosome_Drone
+from winged_drone_train.defaults import default_mydrone_urdf_dir
 from winged_drone_train.train import training
 from winged_drone_train.eval import evaluation
 
@@ -205,6 +206,34 @@ def _default_fitness(_: Optional[Dict[str, Any]] = None) -> List[float]:
     ]
 
 
+def _build_run_meta(
+    *,
+    exp_name: str,
+    train_it: int,
+    max_p: float,
+    eval_reward_mean: float,
+    train_repetition: Optional[int] = None,
+    rep_exp_names: Optional[str] = None,
+    failed: bool = False,
+    fail_reason: str = "",
+) -> Dict[str, Any]:
+    """Build common metadata fields for train/eval bookkeeping."""
+    meta: Dict[str, Any] = dict(
+        exp_name=exp_name,
+        train_it=int(train_it),
+        max_p=max_p,
+        eval_reward_mean=eval_reward_mean,
+    )
+    if train_repetition is not None:
+        meta["train_repetition"] = int(train_repetition)
+    if rep_exp_names is not None:
+        meta["rep_exp_names"] = rep_exp_names
+    if failed:
+        meta["failed"] = True
+        meta["fail_reason"] = fail_reason
+    return meta
+
+
 def _failure_result(
     reason: str,
     cfg: Dict[str, Any],
@@ -213,7 +242,7 @@ def _failure_result(
 ) -> Tuple[List[float], Dict[str, Any], Dict[str, np.ndarray]]:
     """Build a safe fallback result for failed train/eval steps."""
     ff = _default_fitness(cfg)
-    meta = dict(
+    meta = _build_run_meta(
         exp_name=exp_name or "failed",
         train_it=int(train_it if train_it is not None else cfg.get("TRAIN_ITERS", 0)),
         train_repetition=int(cfg.get("TRAIN_REPETITION", 1)),
@@ -361,16 +390,19 @@ def _should_init_gs_for_urdf(urdf_dir: Path) -> bool:
     if env_path:
         candidates.append(Path(env_path))
     candidates.append(urdf_dir / "aero_parameters.yaml")
-    repo_default = (
-        Path(__file__).resolve().parents[2]
-        / "genesis"
-        / "assets"
-        / "urdf"
-        / "mydrone"
-        / "aero_parameters.yaml"
-    )
+    repo_default = default_mydrone_urdf_dir() / "aero_parameters.yaml"
     candidates.append(repo_default)
     return not any(p.is_file() for p in candidates)
+
+
+def _resolve_urdf_dir(default_dir: str | Path) -> Path:
+    """
+    Resolve URDF output directory, honoring `URDF_DIR` environment override.
+    """
+    env_urdf_dir = os.getenv("URDF_DIR", "").strip()
+    if env_urdf_dir:
+        return Path(env_urdf_dir).expanduser().resolve()
+    return Path(default_dir).expanduser().resolve()
 
 
 def _create_urdf_with_retry(
@@ -410,7 +442,7 @@ def _create_urdf_with_retry(
                         if src_meshes.is_dir():
                             dst_meshes.mkdir(parents=True, exist_ok=True)
                             shutil.copytree(src_meshes, dst_meshes, dirs_exist_ok=True)
-                        for fname in ("aero_parameters.yaml", "actuators.csv", "drone.py"):
+                        for fname in ("aero_parameters.yaml", "actuators.csv"):
                             src_f = urdf_dir / fname
                             if src_f.is_file():
                                 shutil.copy2(src_f, mirror_dir / fname)
@@ -520,12 +552,7 @@ def _eval_only_custom(
     _log_worker_context("eval_only", cfg)
     try:
         phys_genome = Chromosome_Drone.to_physical(genome_norm)
-        env_urdf_dir = os.getenv("URDF_DIR", "").strip()
-        urdf_dir = (
-            Path(env_urdf_dir).expanduser().resolve()
-            if env_urdf_dir
-            else Path(cfg["URDF_DIR"]).expanduser().resolve()
-        )
+        urdf_dir = _resolve_urdf_dir(cfg["URDF_DIR"])
         urdf_file = _create_urdf_with_retry(phys_genome, urdf_dir)
     except Exception as exc:
         traceback.print_exc()
@@ -566,7 +593,7 @@ def _eval_only_custom(
         f"cfgs={'copied' if copied_cfg else 'reuse'} eval_dir={eval_dir}"
     )
 
-    # Usa evaluation ma caricando la policy custom
+    # Run evaluation while loading the provided custom policy.
     with _pushd(base_dir):
         print(
             "[eval_only] running evaluation "
@@ -575,13 +602,13 @@ def _eval_only_custom(
         out = evaluation(
             exp_name=exp_name,
             urdf_file=urdf_file,
-            ckpt=None,  # Ignorato
+            ckpt=None,  # ignored when custom_policy_path is provided
             envs=cfg["EVAL_ENVS"],
             vmin=cfg["VMIN"],
             vmax=cfg["VMAX"],
             return_arrays=return_arrays,
             obs_genome=None,
-            custom_policy_path=policy_path,  # << PATCH IN eval.py
+            custom_policy_path=policy_path,
             eval_dir=eval_dir,
         )
 
@@ -605,12 +632,14 @@ def _eval_only_custom(
         prog_v=p_dict["mean_v"],
         prog_E=-p_dict["mean_E"],
         prog_P=p_dict["mean_progress"],
-        train_it=0,
-        train_repetition=1,
-        exp_name=exp_name,
-        rep_exp_names=exp_name,
-        max_p=max_p,
-        eval_reward_mean=eval_reward_mean,
+        **_build_run_meta(
+            exp_name=exp_name,
+            train_it=0,
+            train_repetition=1,
+            rep_exp_names=exp_name,
+            max_p=max_p,
+            eval_reward_mean=eval_reward_mean,
+        ),
         # reward curve zerata
         **{f"rew_{i*10}pct": 0.0 for i in range(1, 11)},
         final_reward=0.0,
@@ -676,12 +705,7 @@ def _train_and_eval_sync(
         _log_mem("train_eval:start")
         _log_worker_context("train_and_eval", cfg)
         phys_genome = Chromosome_Drone.to_physical(genome_norm)
-        env_urdf_dir = os.getenv("URDF_DIR", "").strip()
-        urdf_dir = (
-            Path(env_urdf_dir).expanduser().resolve()
-            if env_urdf_dir
-            else Path(cfg["URDF_DIR"]).expanduser().resolve()
-        )
+        urdf_dir = _resolve_urdf_dir(cfg["URDF_DIR"])
         urdf_file = _create_urdf_with_retry(phys_genome, urdf_dir)
     except Exception as exc:
         traceback.print_exc()
@@ -822,10 +846,12 @@ def _train_and_eval_sync(
             prog_v=p_dict["mean_v"],
             prog_E=-p_dict["mean_E"],
             prog_P=p_dict["mean_progress"],
-            train_it=train_iters,
-            exp_name=run_exp_name,
-            max_p=max_p,
-            eval_reward_mean=eval_reward_mean,
+            **_build_run_meta(
+                exp_name=run_exp_name,
+                train_it=train_iters,
+                max_p=max_p,
+                eval_reward_mean=eval_reward_mean,
+            ),
             **reward_curve,
         )
 
@@ -1493,8 +1519,7 @@ class CodesignDEAP:
             getattr(indiv, "parent_exp", None),
             getattr(indiv, "parent_ckpt", None),
         )
-        env_urdf_dir = os.getenv("URDF_DIR", "").strip()
-        urdf_dir = Path(env_urdf_dir).expanduser().resolve() if env_urdf_dir else self.urdf_dir
+        urdf_dir = _resolve_urdf_dir(self.urdf_dir)
         cfg = dict(
             TRAIN_ITERS=self.cfg.train_iters_new,
             TRAIN_ITERS_INHERIT=self.cfg.train_iters_inherit,

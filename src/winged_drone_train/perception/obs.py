@@ -83,6 +83,7 @@ class ObservationBuilder:
         else:
             # Fallback: assume last actions already in [-1,1]
             self.joint_limits_max = torch.ones(self.num_actions - 1, device=self.device)
+        self._joint_limits_max_safe = self.joint_limits_max.clamp(min=1e-6).unsqueeze(0)
 
         # Configuration and noise
         cfg = {} if obs_cfg is None else dict(obs_cfg)
@@ -98,6 +99,14 @@ class ObservationBuilder:
             command_speed_scale=float(scaling_cfg.get("command_speed_scale", 25.0)),
             max_depth=float(scaling_cfg.get("max_depth", 30.0)),
         )
+        self._inv_altitude_scale = 1.0 / max(1e-6, self.scaling.altitude_scale)
+        self._inv_vel_scale = (
+            1.0 / max(1e-6, self.scaling.vel_scale[0]),
+            1.0 / max(1e-6, self.scaling.vel_scale[1]),
+            1.0 / max(1e-6, self.scaling.vel_scale[2]),
+        )
+        self._inv_command_speed_scale = 1.0 / max(1e-6, self.scaling.command_speed_scale)
+        self._inv_max_depth = 1.0 / max(1e-6, self.scaling.max_depth)
 
         # Genome configuration ------------------------------------------------
         self.add_genome_obs = bool(add_genome_obs)
@@ -105,6 +114,7 @@ class ObservationBuilder:
         self.genome_dim: Optional[int] = None
         self.genome_min: Optional[torch.Tensor] = None
         self.genome_max: Optional[torch.Tensor] = None
+        self._genome_denom: Optional[torch.Tensor] = None
 
         if self.add_genome_obs:
             if genome_vec is not None:
@@ -125,6 +135,7 @@ class ObservationBuilder:
                     raise ValueError("Genome min/max length does not match genome dimension.")
                 self.genome_min = torch.from_numpy(min_arr).to(self.device).unsqueeze(0)  # (1, G)
                 self.genome_max = torch.from_numpy(max_arr).to(self.device).unsqueeze(0)  # (1, G)
+                self._genome_denom = (self.genome_max - self.genome_min).clamp(min=1e-6)
 
         # ------------------------------------------------------------------
         # Precompute observation dimensions
@@ -192,23 +203,22 @@ class ObservationBuilder:
         # ----------------------- Base kinematic features --------------------
         # Altitude (z) normalised around a reference height
         z = base_pos[:, 2:3]
-        z_norm = (z - self.scaling.altitude_center) / max(1e-6, self.scaling.altitude_scale)
+        z_norm = (z - self.scaling.altitude_center) * self._inv_altitude_scale
 
         quat = base_quat  # (B, 4)
 
         vx = base_lin_vel[:, 0:1]
         vy = base_lin_vel[:, 1:2]
         vz = base_lin_vel[:, 2:3]
-        vx_norm = vx / max(1e-6, self.scaling.vel_scale[0])
-        vy_norm = vy / max(1e-6, self.scaling.vel_scale[1])
-        vz_norm = vz / max(1e-6, self.scaling.vel_scale[2])
+        vx_norm = vx * self._inv_vel_scale[0]
+        vy_norm = vy * self._inv_vel_scale[1]
+        vz_norm = vz * self._inv_vel_scale[2]
 
         # -------------------------- Depth features --------------------------
         depth_feat_actor = None
         if self.include_depth and depth_actor is not None:
-            max_depth = max(1e-6, self.scaling.max_depth)
             # Map [0, max_depth] -> [0, 1] with 1 = very close, 0 = no obstacle.
-            depth_feat_actor = 1.0 - depth_actor / max_depth
+            depth_feat_actor = 1.0 - depth_actor * self._inv_max_depth
 
         # ---------------------- Last action features ------------------------
         if last_actions.shape[1] != self.num_actions:
@@ -221,14 +231,13 @@ class ObservationBuilder:
         if self.num_actions > 1:
             last_jnts_raw = last_actions[:, 1:]
             # Normalise by the configured maximum joint range
-            joint_limits_max = self.joint_limits_max.clamp(min=1e-6).unsqueeze(0)
-            last_jnts = last_jnts_raw / joint_limits_max
+            last_jnts = last_jnts_raw / self._joint_limits_max_safe
         else:
             last_jnts = torch.empty((B, 0), device=device)
 
         # ------------------------ Command features --------------------------
         v_tgt = commands[:, 0].unsqueeze(1)
-        v_tgt_norm = v_tgt / max(1e-6, self.scaling.command_speed_scale)
+        v_tgt_norm = v_tgt * self._inv_command_speed_scale
 
         # ---------------------- Assemble clean features ---------------------
         components = [z_norm, quat, vx_norm, vy_norm, vz_norm]
@@ -266,8 +275,9 @@ class ObservationBuilder:
             if depth_feat_actor is not None:
                 depth_dim = depth_feat_actor.shape[1]
                 if std_cfg.get("depth", 0.0) > 0.0:
-                    max_depth = max(1e-6, self.scaling.max_depth)
-                    noise = torch.randn((B, depth_dim), device=device) * (std_cfg["depth"] * depth_actor / max_depth)
+                    noise = torch.randn((B, depth_dim), device=device) * (
+                        std_cfg["depth"] * depth_actor * self._inv_max_depth
+                    )
                     obs_actor[:, idx : idx + depth_dim] += noise
                 idx += depth_dim
 
@@ -303,7 +313,10 @@ class ObservationBuilder:
 
             if self.genome_min is not None and self.genome_max is not None:
                 # Normalise to roughly [0, 1]
-                denom = (self.genome_max - self.genome_min).clamp(min=1e-6)
+                denom = self._genome_denom
+                if denom is None:
+                    denom = (self.genome_max - self.genome_min).clamp(min=1e-6)
+                    self._genome_denom = denom
                 genome_norm = (genome - self.genome_min) / denom
             else:
                 genome_norm = genome

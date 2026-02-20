@@ -7,7 +7,7 @@ import numpy as np
 
 from genesis.engine.solvers.base_aero_solver import BaseAeroSolver
 from genesis.engine.entities import RigidEntity
-from genesis.assets.urdf.mydrone.drone import DroneAeroModel, SurfaceKind
+from genesis.assets.urdf.aero_model import DroneAeroModel, SurfaceKind
 from genesis.utils import geom as gu
 from genesis.utils.geom import transform_by_quat
 
