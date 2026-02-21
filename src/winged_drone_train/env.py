@@ -986,8 +986,9 @@ class WingedDroneEnv:
         finite = torch.isfinite(tensor)
         if tensor.dim() <= 1:
             return ~finite
-        reduce_dims = tuple(range(1, tensor.dim()))
-        return ~finite.all(dim=reduce_dims)
+        # Reduce all non-batch dimensions via flattening for broad torch compatibility.
+        finite_per_row = finite.reshape(finite.shape[0], -1).all(dim=1)
+        return ~finite_per_row
 
     def _flag_nonfinite_rows(self, tensor: torch.Tensor) -> torch.Tensor:
         """Mark non-finite rows in `self.nan_envs` and return the row mask."""
