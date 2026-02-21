@@ -249,10 +249,10 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         # Per-feature noise standard deviations.
         # The keys are understood by the current ObservationBuilder / helper functions.
         "noise_std": {
-            "z": 0.05,         # altitude
-            "quat": 0.05,      # orientation
-            "vel": 0.05,       # linear velocity
-            "depth": 0.20,     # depth readings
+            "z": 0.01,         # altitude
+            "quat": 0.01,      # orientation
+            "vel": 0.02,       # linear velocity
+            "depth": 0.05,     # depth readings
             "last_thr": 0.0,
             "last_jnts": 0.0,
             "v_tgt": 0.0,
