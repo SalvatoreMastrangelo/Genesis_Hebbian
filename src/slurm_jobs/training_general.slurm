@@ -2,8 +2,9 @@
 #SBATCH --job-name=gen_train
 #SBATCH --partition=l40s
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
-#SBATCH --cpus-per-gpu=16
+#SBATCH --ntasks=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
 #SBATCH --time=00:50:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err

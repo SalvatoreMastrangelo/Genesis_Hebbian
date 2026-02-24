@@ -1,10 +1,11 @@
 #!/bin/bash -l
 #SBATCH --job-name=gen_eval
 #SBATCH --partition=l40s
-#SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
-#SBATCH --cpus-per-gpu=8
-#SBATCH --time=4:00:00
+#SBATCH --nodes=2
+#SBATCH --ntasks=1
+#SBATCH --gpus=10
+#SBATCH --cpus-per-task=80
+#SBATCH --time=15:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 
@@ -47,7 +48,7 @@ RAY_TMPDIR=${RAY_TMPDIR:-}
 RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=${RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO:-0}
 WORKER_START_JITTER=${WORKER_START_JITTER:-2}
 
-N_URDF=${N_URDF:-1}
+N_URDF=${N_URDF:-10}
 URDF_SEED=${URDF_SEED:-1}
 MODEL_CKPT=${MODEL_CKPT:-2000}
 NSGA_CSV=${NSGA_CSV:-}

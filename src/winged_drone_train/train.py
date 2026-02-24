@@ -271,7 +271,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "obstacle": -0.1,
             "energy": -2e-3,#-5e-4,   
             "progress": 5e-1,
-            "height": -3e-2, #-1e-1,
+            "height": -5e-3, #-1e-2,
             "success": 0.0,
             "cosmetic": -1.0,
             "stability": -0,

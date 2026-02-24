@@ -412,7 +412,7 @@ class WingedDroneEnv:
         )
 
         # Target height (used in height reward) is fixed, not commanded
-        self.target_height = 6
+        self.target_height = 10
 
         self.base_init_pos = base_init_pos
         self.base_init_quat = base_init_quat

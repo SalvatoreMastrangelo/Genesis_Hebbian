@@ -2,9 +2,9 @@
 #SBATCH --job-name=nsga
 #SBATCH --partition=l40s
 #SBATCH --nodes=5
-#SBATCH --gpus-per-node=8
-#SBATCH --cpus-per-gpu=8
-#SBATCH --time=1:00:00
+#SBATCH --ntasks=1
+#SBATCH --gpus=40
+#SBATCH --cpus-per-task=80
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 
