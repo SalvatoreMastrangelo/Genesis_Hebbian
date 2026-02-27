@@ -107,6 +107,7 @@ class ObservationBuilder:
         )
         self._inv_command_speed_scale = 1.0 / max(1e-6, self.scaling.command_speed_scale)
         self._inv_max_depth = 1.0 / max(1e-6, self.scaling.max_depth)
+        self._noise_scratch: Optional[torch.Tensor] = None
 
         # Genome configuration ------------------------------------------------
         self.add_genome_obs = bool(add_genome_obs)
@@ -188,15 +189,21 @@ class ObservationBuilder:
             A tuple ``(obs_actor, obs_critic)``.
         """
         device = self.device
-        base_pos = base_pos.to(device)
-        base_quat = base_quat.to(device)
-        base_lin_vel = base_lin_vel.to(device)
-        last_actions = last_actions.to(device)
-        commands = commands.to(device)
+        if base_pos.device != device:
+            base_pos = base_pos.to(device)
+        if base_quat.device != device:
+            base_quat = base_quat.to(device)
+        if base_lin_vel.device != device:
+            base_lin_vel = base_lin_vel.to(device)
+        if last_actions.device != device:
+            last_actions = last_actions.to(device)
+        if commands.device != device:
+            commands = commands.to(device)
         if depth_actor is not None:
-            depth_actor = depth_actor.to(device)
+            if depth_actor.device != device:
+                depth_actor = depth_actor.to(device)
         if genome_vec is not None:
-            self.genome_vec = genome_vec.to(device)
+            self.genome_vec = genome_vec if genome_vec.device == device else genome_vec.to(device)
 
         B = base_pos.shape[0]
 
@@ -252,22 +259,29 @@ class ObservationBuilder:
             obs_actor = obs_clean.clone()
             std_cfg = self.noise_std
             idx = 0
+            noise_buf = self._get_noise_scratch(B, obs_clean.shape[1], device)
 
             # z_norm
             if std_cfg.get("z", 0.0) > 0.0:
-                noise = torch.randn((B, 1), device=device) * std_cfg["z"]
+                noise = noise_buf[:, :1]
+                noise.normal_()
+                noise *= std_cfg["z"]
                 obs_actor[:, idx : idx + 1] += noise
             idx += 1
 
             # quat (4)
             if std_cfg.get("quat", 0.0) > 0.0:
-                noise = torch.randn((B, 4), device=device) * std_cfg["quat"]
+                noise = noise_buf[:, :4]
+                noise.normal_()
+                noise *= std_cfg["quat"]
                 obs_actor[:, idx : idx + 4] += noise
             idx += 4
 
             # vel (3)
             if std_cfg.get("vel", 0.0) > 0.0:
-                noise = torch.randn((B, 3), device=device) * std_cfg["vel"]
+                noise = noise_buf[:, :3]
+                noise.normal_()
+                noise *= std_cfg["vel"]
                 obs_actor[:, idx : idx + 3] += noise
             idx += 3
 
@@ -275,22 +289,26 @@ class ObservationBuilder:
             if depth_feat_actor is not None:
                 depth_dim = depth_feat_actor.shape[1]
                 if std_cfg.get("depth", 0.0) > 0.0:
-                    noise = torch.randn((B, depth_dim), device=device) * (
-                        std_cfg["depth"] * depth_actor * self._inv_max_depth
-                    )
+                    noise = noise_buf[:, :depth_dim]
+                    noise.normal_()
+                    noise *= (std_cfg["depth"] * depth_actor * self._inv_max_depth)
                     obs_actor[:, idx : idx + depth_dim] += noise
                 idx += depth_dim
 
             # last actions (throttle + joints)
             if std_cfg.get("last_actions", 0.0) > 0.0:
                 dim_la = self.num_actions
-                noise = torch.randn((B, dim_la), device=device) * std_cfg["last_actions"]
+                noise = noise_buf[:, :dim_la]
+                noise.normal_()
+                noise *= std_cfg["last_actions"]
                 obs_actor[:, idx : idx + dim_la] += noise
             idx += self.num_actions
 
             # command speed
             if std_cfg.get("command", 0.0) > 0.0:
-                noise = torch.randn((B, 1), device=device) * std_cfg["command"]
+                noise = noise_buf[:, :1]
+                noise.normal_()
+                noise *= std_cfg["command"]
                 obs_actor[:, idx : idx + 1] += noise
             idx += 1
 
@@ -301,7 +319,9 @@ class ObservationBuilder:
         if self.add_genome_obs:
             if self.genome_vec is None:
                 raise RuntimeError("add_genome_obs=True but no genome_vec has been provided.")
-            genome = self.genome_vec.to(device)
+            genome = self.genome_vec
+            if genome.device != device:
+                genome = genome.to(device)
             if genome.shape[0] != B:
                 # Broadcast single genome vector to all environments if needed.
                 if genome.shape[0] == 1:
@@ -347,3 +367,13 @@ class ObservationBuilder:
             print(f" genome: {obs_actor[0, idx:idx+self.genome_dim].cpu().numpy()}")
             '''
         return obs_actor, obs_critic
+
+    def _get_noise_scratch(self, B: int, D: int, device: torch.device) -> torch.Tensor:
+        if (
+            self._noise_scratch is None
+            or self._noise_scratch.shape[0] != B
+            or self._noise_scratch.shape[1] < D
+            or self._noise_scratch.device != device
+        ):
+            self._noise_scratch = torch.empty((B, D), device=device, dtype=torch.float32)
+        return self._noise_scratch
