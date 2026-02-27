@@ -183,7 +183,6 @@ class Gen_Env:
 
             configure_solver_noise(sub, env_cfg)
 
-            sub.reset()  # ensure buffers exist
             sub_init_elapsed = time.perf_counter() - sub_init_start
             per_env = sub_init_elapsed / max(1, count_i)
             print(
@@ -192,6 +191,9 @@ class Gen_Env:
                 f"(count={count_i}, urdf='{Path(urdf_i).name}')"
             )
             self._subs.append(sub)
+            if torch.cuda.is_available():
+                # Keep allocator pressure lower during multi-sub-env construction.
+                torch.cuda.empty_cache()
             start = stop
 
         print(
@@ -244,7 +246,8 @@ class Gen_Env:
             (B,), device=self.device, dtype=ep_dtype
         )
 
-        # Extras dictionary, RSL-RL-style
+        # Extras dictionary, RSL-RL-style. Keep persistent buffers to avoid
+        # per-step GPU allocations.
         self.extras: Dict = {
             "observations": {"critic": self.privileged_obs_buf},
             "time_outs": torch.zeros((B,), device=self.device, dtype=torch.float32),
@@ -306,28 +309,19 @@ class Gen_Env:
         # Fallback: all URDFs in the folder
         return sorted(str(p) for p in base_dir.glob("*.urdf"))
 
-    def _new_extras(self) -> Dict:
-        """Allocate a fresh extras dict with the standard fields."""
-        return {
-            "observations": {},
-            "time_outs": torch.zeros(
-                (self.num_envs,), device=self.device, dtype=torch.float32
-            ),
-        }
+    def _prepare_extras_for_step(self) -> None:
+        """Reset reusable extras buffers before reset/step aggregation."""
+        self.extras["time_outs"].zero_()
+        if "episode" in self.extras:
+            del self.extras["episode"]
 
     def _store_critic_obs(self, critic_obs: Optional[torch.Tensor], sl: slice) -> None:
         """Store critic observations for a sub-slice into `self.extras`."""
+        critic_buf = self.extras["observations"]["critic"]
         if critic_obs is None:
+            critic_buf[sl].zero_()
             return
-        self.extras["observations"].setdefault(
-            "critic",
-            torch.zeros(
-                (self.num_envs, critic_obs.shape[1]),
-                device=self.device,
-                dtype=critic_obs.dtype,
-            ),
-        )
-        self.extras["observations"]["critic"][sl] = critic_obs.to(self.device)
+        critic_buf[sl] = critic_obs.to(self.device)
 
     def _copy_reset_from_sub(
         self,
@@ -345,6 +339,8 @@ class Gen_Env:
 
         if "time_outs" in info:
             self.extras["time_outs"][sl] = info["time_outs"].to(self.device).float()
+        else:
+            self.extras["time_outs"][sl].zero_()
 
     def _copy_step_from_sub(
         self,
@@ -367,6 +363,8 @@ class Gen_Env:
         time_outs = info_sub.get("time_outs")
         if time_outs is not None:
             self.extras["time_outs"][sl] = time_outs.to(self.device).float()
+        else:
+            self.extras["time_outs"][sl].zero_()
 
     # ------------------------------------------------------------------ #
     # Debug utilities                                                    #
@@ -450,7 +448,7 @@ class Gen_Env:
         """
         Reset all sub-environments and return initial observations and extras.
         """
-        self.extras = self._new_extras()
+        self._prepare_extras_for_step()
 
         for sub, sl in zip(self._subs, self._slices):
             obs, info = sub.reset()
@@ -477,7 +475,7 @@ class Gen_Env:
 
         actions = actions.to(self.device)
 
-        self.extras = self._new_extras()
+        self._prepare_extras_for_step()
 
         episodes_list: List[Tuple[Dict, int]] = []
 

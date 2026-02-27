@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -19,6 +20,7 @@ class RLTrainingLogger:
         self.alg = getattr(self.runner, "alg", None)
         self.original_update = getattr(self.alg, "update", None) if self.alg is not None else None
         self.update_step = {"i": 0}
+        self.cuda_mem_log_every = max(1, int(os.getenv("PPO_CUDA_MEM_LOG_EVERY", "5") or 5))
 
         self.internal_capture: Dict[str, Any] = {
             "enabled": False,
@@ -263,6 +265,23 @@ class RLTrainingLogger:
                     val = self._to_float(getattr(self.alg, attr))
                     if val is not None:
                         stats[tag] = val
+        except Exception:
+            return stats
+        return stats
+
+    def _collect_cuda_mem_stats(self) -> Dict[str, float]:
+        stats: Dict[str, float] = {}
+        try:
+            if not torch.cuda.is_available():
+                return stats
+            alloc = float(torch.cuda.memory_allocated() / (1024.0 ** 3))
+            reserved = float(torch.cuda.memory_reserved() / (1024.0 ** 3))
+            max_alloc = float(torch.cuda.max_memory_allocated() / (1024.0 ** 3))
+            stats["CUDA/memory_allocated_gb"] = alloc
+            stats["CUDA/memory_reserved_gb"] = reserved
+            stats["CUDA/max_memory_allocated_gb"] = max_alloc
+            if reserved > 1e-9:
+                stats["CUDA/alloc_reserved_ratio"] = alloc / reserved
         except Exception:
             return stats
         return stats
@@ -652,6 +671,15 @@ class RLTrainingLogger:
                 console_metrics["early_stop"] = opt_stats.get("PPO/early_stop_count")
                 console_metrics["skipped"] = opt_stats.get("PPO/update_skipped")
 
+                if torch.cuda.is_available() and (step % self.cuda_mem_log_every == 0):
+                    cuda_stats = self._collect_cuda_mem_stats()
+                    for tag, val in cuda_stats.items():
+                        self._safe_add_scalar(tag, val, step)
+                    console_metrics["cuda_alloc_gb"] = cuda_stats.get("CUDA/memory_allocated_gb")
+                    console_metrics["cuda_reserved_gb"] = cuda_stats.get("CUDA/memory_reserved_gb")
+                    console_metrics["cuda_max_alloc_gb"] = cuda_stats.get("CUDA/max_memory_allocated_gb")
+                    console_metrics["cuda_alloc_res"] = cuda_stats.get("CUDA/alloc_reserved_ratio")
+
                 for k in list(console_metrics.keys()):
                     console_metrics[k] = self._to_float(console_metrics.get(k))
 
@@ -672,7 +700,11 @@ class RLTrainingLogger:
                     f"grad={self._fmt_metric(console_metrics.get('grad'))} "
                     f"lr={self._fmt_metric(console_metrics.get('lr'))} "
                     f"early_stop={self._fmt_metric(console_metrics.get('early_stop'))} "
-                    f"skipped={self._fmt_metric(console_metrics.get('skipped'))}"
+                    f"skipped={self._fmt_metric(console_metrics.get('skipped'))} "
+                    f"cuda_alloc_gb={self._fmt_metric(console_metrics.get('cuda_alloc_gb'))} "
+                    f"cuda_reserved_gb={self._fmt_metric(console_metrics.get('cuda_reserved_gb'))} "
+                    f"cuda_max_alloc_gb={self._fmt_metric(console_metrics.get('cuda_max_alloc_gb'))} "
+                    f"cuda_alloc_res={self._fmt_metric(console_metrics.get('cuda_alloc_res'))}"
                 )
             except Exception:
                 pass

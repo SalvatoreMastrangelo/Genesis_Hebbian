@@ -237,16 +237,23 @@ class WingedDroneEnv:
         sigma_com = float(noise_cfg.get("com_shift", 0.0))
 
         n = env_ids.numel()
+        if n == 0:
+            return
         n_links = int(self.drone.n_links)
 
-        mass_shift = torch.zeros((n, n_links), device=self.device, dtype=torch.float32)
+        mass_shift = self._mass_shift_scratch[:n]
+        mass_shift.zero_()
         if sigma_mass > 0.0:
-            mass_shift = torch.randn((n, n_links), device=self.device) * (sigma_mass * self._link_masses.view(1, -1))
+            mass_shift.normal_()
+            mass_shift *= sigma_mass
+            mass_shift *= self._link_masses.view(1, n_links)
         self.drone.set_mass_shift(mass_shift, envs_idx=env_ids)
 
-        com_shift = torch.zeros((n, n_links, 3), device=self.device, dtype=torch.float32)
+        com_shift = self._com_shift_scratch[:n]
+        com_shift.zero_()
         if sigma_com > 0.0:
-            com_shift = torch.randn((n, n_links, 3), device=self.device) * sigma_com
+            com_shift.normal_()
+            com_shift *= sigma_com
         self.drone.set_COM_shift(com_shift, envs_idx=env_ids)
 
 
@@ -601,6 +608,13 @@ class WingedDroneEnv:
             device=self.device,
             dtype=torch.float32,
         )
+        n_links = int(self.drone.n_links)
+        self._mass_shift_scratch = torch.empty(
+            (self.num_envs, n_links), device=self.device, dtype=torch.float32
+        )
+        self._com_shift_scratch = torch.empty(
+            (self.num_envs, n_links, 3), device=self.device, dtype=torch.float32
+        )
 
         print(f"[WingedDroneEnv] Created with {self.num_envs} envs, drone '{self.drone_name}'")
         print(f"  - Action space size: {self.num_actions} (throttle + {self.num_servos} servos)")
@@ -742,10 +756,21 @@ class WingedDroneEnv:
         self._reset_lin_vel = torch.tensor([15.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
         self._reset_ang_vel = torch.tensor([0.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
         self._rec_cam_lookat_offset = torch.tensor([1.5, 0.0, 0.0], device=self.device, dtype=torch.float32)
+        # Scratch random buffers reused in reset/randomization paths.
+        self._rand_scalar_scratch = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._rand_servo_scratch = torch.empty((self.num_envs, self.num_servos), device=self.device, dtype=torch.float32)
+        self._randint_scratch = torch.empty((self.num_envs,), device=self.device, dtype=torch.long)
 
         self.joint_position = torch.zeros((self.num_envs, self.num_servos), device=self.device)
         self.joint_velocity = torch.zeros((self.num_envs, self.num_servos), device=self.device)
         self.torque = torch.zeros((self.num_envs, self.num_servos), device=self.device)
+        # Scratch buffers reused on reset to avoid per-reset `torch.cat` allocations.
+        self._reset_pos_scratch = torch.empty(
+            (self.num_envs, 6 + self.num_servos), device=self.device, dtype=torch.float32
+        )
+        self._reset_vel_scratch = torch.empty(
+            (self.num_envs, 6 + self.num_servos), device=self.device, dtype=torch.float32
+        )
 
         # Action buffers (normalized space, [-1, 1])
         self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
@@ -759,6 +784,9 @@ class WingedDroneEnv:
         self.alpha = torch.zeros((self.num_envs, 1), device=self.device)
         self.beta = torch.zeros((self.num_envs, 1), device=self.device)
         self.d_cf_com_body = torch.zeros((self.num_envs, 3), device=self.device)
+        self._thr_flt_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._max_thr_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._thrust_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
 
         if self.evaluation: 
             self.aero_solver._aero_log = True
@@ -967,7 +995,8 @@ class WingedDroneEnv:
         else:
             v_min = float(self.command_cfg.get("min_speed", 6.0))
             v_max = float(self.command_cfg.get("max_speed", 30.0))
-            u = torch.rand((env_ids.numel(),), device=self.device)
+            u = self._rand_scalar_scratch[: env_ids.numel()]
+            u.uniform_(0.0, 1.0)
             self.commands[env_ids, 0] = v_min + (v_max - v_min) * u
 
     def _update_cylinders_xy(self, env_ids: torch.Tensor) -> None:
@@ -1099,7 +1128,8 @@ class WingedDroneEnv:
         """
         # ------------------------- Actions -------------------------------- #
         self.nan_envs.fill_(0)
-        actions = actions.to(self.device)
+        if actions.device != self.device:
+            actions = actions.to(self.device)
         actions = self._sanitize_nonfinite_rows(actions, fill_value=0.0)
         # ActuatorDynamics handles clamping, scaling and latency
         servo_targets, throttle = self.actuator.process_actions(actions)
@@ -1158,8 +1188,14 @@ class WingedDroneEnv:
         self._flag_nonfinite_rows(self.base_ang_vel)
 
         if self.evaluation:
-            self.alpha = self.aero_solver.alpha_dbg.to_torch(device=self.device)[0,0]
-            self.beta = self.aero_solver.beta_dbg.to_torch(device=self.device)[0,0]
+            a0 = getattr(self.aero_solver, "_alpha_dbg0_buf", None)
+            b0 = getattr(self.aero_solver, "_beta_dbg0_buf", None)
+            if torch.is_tensor(a0) and torch.is_tensor(b0) and a0.numel() > 0 and b0.numel() > 0:
+                self.alpha = a0[0]
+                self.beta = b0[0]
+            else:
+                self.alpha = self.aero_solver.alpha_dbg.to_torch(device=self.device)[0, 0]
+                self.beta = self.aero_solver.beta_dbg.to_torch(device=self.device)[0, 0]
 
         # ------------------------- IMU readings --------------------------- #
         '''
@@ -1247,36 +1283,44 @@ class WingedDroneEnv:
     # ---------------------------------------------------------------------- #
     def _randomize_reset_state(self, env_ids: torch.Tensor, n: int) -> None:
         """Apply training-time randomization to reset pose/velocity/joints."""
+        r = self._rand_scalar_scratch[:n]
+
         # Longitudinal position
-        self.base_pos[env_ids, 0] += torch.rand(n, device=self.device) * 30.0 - 15.0
+        r.uniform_(0.0, 1.0)
+        self.base_pos[env_ids, 0] += r * 30.0 - 15.0
         # Lateral position
-        self.base_pos[env_ids, 1] += torch.rand(n, device=self.device) * 80.0 - 40.0
+        r.uniform_(0.0, 1.0)
+        self.base_pos[env_ids, 1] += r * 80.0 - 40.0
         # Altitude
-        self.base_pos[env_ids, 2] += torch.rand(n, device=self.device) * 20.0 - 10.0
+        r.uniform_(0.0, 1.0)
+        self.base_pos[env_ids, 2] += r * 20.0 - 10.0
 
         # Forward speed
-        self.base_lin_vel[env_ids, 0] = torch.rand(n, device=self.device) * 24.0 + 6.0
+        r.uniform_(0.0, 1.0)
+        self.base_lin_vel[env_ids, 0] = r * 24.0 + 6.0
         # Lateral speed
-        self.base_lin_vel[env_ids, 1] = torch.clamp(
-            torch.randn(n, device=self.device) * 1.5, min=-6.0, max=6.0
-        )
+        r.normal_()
+        self.base_lin_vel[env_ids, 1] = torch.clamp(r * 1.5, min=-6.0, max=6.0)
         # Vertical speed
-        self.base_lin_vel[env_ids, 2] = torch.clamp(
-            torch.randn(n, device=self.device) * 1.5, min=-6.0, max=6.0
-        )
+        r.normal_()
+        self.base_lin_vel[env_ids, 2] = torch.clamp(r * 1.5, min=-6.0, max=6.0)
 
         self.base_euler[env_ids, 1] = torch.atan2(-self.base_lin_vel[env_ids, 2], self.base_lin_vel[env_ids, 0])
         self.base_euler[env_ids, 2] = torch.atan2(self.base_lin_vel[env_ids, 1], self.base_lin_vel[env_ids, 0])
 
         # Small attitude perturbations
-        self.base_euler[env_ids, 0] += torch.clamp(torch.randn(n, device=self.device) * 0.2, min=-0.8, max=0.8)
-        self.base_euler[env_ids, 1] += torch.clamp(torch.randn(n, device=self.device) * 0.05, min=-0.2, max=0.2)
-        self.base_euler[env_ids, 2] += torch.clamp(torch.randn(n, device=self.device) * 0.05, min=-0.2, max=0.2)
+        r.normal_()
+        self.base_euler[env_ids, 0] += torch.clamp(r * 0.2, min=-0.8, max=0.8)
+        r.normal_()
+        self.base_euler[env_ids, 1] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
+        r.normal_()
+        self.base_euler[env_ids, 2] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
 
         # Joint positions noise
-        self.joint_position[env_ids] += torch.clamp(torch.randn(
-            (n, self.num_servos), device=self.device
-        ) * 0.01, min=-0.04, max=0.04)
+        if self.num_servos > 0:
+            rs = self._rand_servo_scratch[:n]
+            rs.normal_()
+            self.joint_position[env_ids] += torch.clamp(rs * 0.01, min=-0.04, max=0.04)
 
     # ---------------------------------------------------------------------- #
     # Reset                                                                 #
@@ -1290,13 +1334,8 @@ class WingedDroneEnv:
 
         # Resample command (target speed) and forest layout
         self._resample_commands(env_ids)
-        new_ids = torch.randint(
-            low=0,
-            high=self.cylinders_array.shape[0],
-            size=(env_ids.numel(),),
-            device=self.device,
-            dtype=torch.long,
-        )
+        new_ids = self._randint_scratch[: env_ids.numel()]
+        new_ids.random_(0, self.cylinders_array.shape[0])
         self.forest_ids[env_ids] = new_ids
         self._update_cylinders_xy(env_ids)
 
@@ -1349,15 +1388,15 @@ class WingedDroneEnv:
         # Apply quaternion back from Euler
         self.base_quat[env_ids] = xyz_to_quat(self.base_euler[env_ids], degrees=False)
 
-        # Apply to rigid solver
-        initial_pos = torch.cat(
-            (self.base_pos[env_ids], self.base_euler[env_ids], self.joint_position[env_ids]),
-            dim=1,
-        )
-        initial_vel = torch.cat(
-            (self.base_lin_vel[env_ids], self.base_ang_vel[env_ids], self.joint_velocity[env_ids]),
-            dim=1,
-        )
+        # Apply to rigid solver (same values as previous cat-based path).
+        initial_pos = self._reset_pos_scratch[:n]
+        initial_vel = self._reset_vel_scratch[:n]
+        initial_pos[:, :3] = self.base_pos[env_ids]
+        initial_pos[:, 3:6] = self.base_euler[env_ids]
+        initial_pos[:, 6:] = self.joint_position[env_ids]
+        initial_vel[:, :3] = self.base_lin_vel[env_ids]
+        initial_vel[:, 3:6] = self.base_ang_vel[env_ids]
+        initial_vel[:, 6:] = self.joint_velocity[env_ids]
 
         self.rigid_solver.set_dofs_position(initial_pos, envs_idx=env_ids)
         self.rigid_solver.set_dofs_velocity(initial_vel, envs_idx=env_ids)
@@ -1478,17 +1517,21 @@ class WingedDroneEnv:
         if not hasattr(self.aero_solver, "_thr_flt"):
             raise RuntimeError("AeroSolver._thr_flt not found (did you call add_target?).")
 
-        # Convert Taichi fields to Torch tensors on the correct device
-        thr_flt = self.aero_solver._thr_flt.to_torch(device=self.device)     # (B,)
-        max_thr = self.aero_solver.max_thrust.to_torch(device=self.device)   # (B,)
-
-        # Elementwise multiplication → actual thrust (in Newtons)
-        thrust_N = thr_flt * max_thr
+        # Fast path: reuse solver-side cached thrust buffer (updated every aero step).
+        cached_thrust = getattr(self.aero_solver, "_thrust_n_buf", None)
+        if torch.is_tensor(cached_thrust) and cached_thrust.shape[0] == self.num_envs:
+            self._thrust_buf.copy_(cached_thrust)
+        else:
+            # Fallback for solver variants that do not expose cached thrust.
+            self._thr_flt_buf.copy_(self.aero_solver._thr_flt.to_torch(device=self.device))
+            self._max_thr_buf.copy_(self.aero_solver.max_thrust.to_torch(device=self.device))
+            self._thrust_buf.copy_(self._thr_flt_buf)
+            self._thrust_buf.mul_(self._max_thr_buf)
 
         # Optional: clamp NaNs or negatives
-        torch.nan_to_num_(thrust_N, nan=0.0, posinf=0.0, neginf=0.0)
-        thrust_N.clamp_(min=0.0)
-        return thrust_N
+        torch.nan_to_num_(self._thrust_buf, nan=0.0, posinf=0.0, neginf=0.0)
+        self._thrust_buf.clamp_(min=0.0)
+        return self._thrust_buf
 
     # ---------------------------------------------------------------------- #
     # Convenience getters                                                    #

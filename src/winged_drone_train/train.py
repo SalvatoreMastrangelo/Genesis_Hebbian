@@ -149,7 +149,7 @@ def get_train_cfg(exp_name: str, max_iterations: int) -> Dict[str, Any]:
             "checkpoint": -1,
             "experiment_name": exp_name,
             "load_run": -1,
-            "log_interval": 1,
+            "log_interval": 10,
             "max_iterations": max_iterations,
             "policy_class_name": "ActorCriticTanh",
             "record_interval": -1,
@@ -231,7 +231,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         #   - noise / randomization of aerodynamic parameters
         "aero_noise": True,
         "aero_noise_sigma0": 0.05,    # base std for mag/dir noise on aero forces
-        "noise_sigma_param": 0.15,
+        "noise_sigma_param": 0.1,
 
     }
 

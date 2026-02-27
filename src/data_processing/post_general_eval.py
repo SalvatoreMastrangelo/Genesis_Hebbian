@@ -12,9 +12,11 @@ from matplotlib.ticker import MultipleLocator
 
 class URDFHistogramPlotter:
     PROGRESS_NORM = 650.0
+    SPEED_NORM = 30.0
     REWARD_NORM = 500.0
     MINIMAL_PROGRESS_M = 250.0
-    STEPS_REWARD_TARGET = 0.95
+    STEPS_REWARD_TARGET = 0.9
+    STEPS_REWARD_OFFSET = 5.0
     MAX_GENERAL_POLICIES = 6
     BIX3_URDF_STEM = (
         0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4.0, 0.2, 2.0, 0.0, 2.0, 2.5, 3.0, 4.0, 16.0
@@ -37,6 +39,59 @@ class URDFHistogramPlotter:
         self.general_policy_count = self._infer_policy_count("baseline")
         self.trained_policy_count = self._infer_policy_count("trained")
         self.general_policy_idx = general_policy_idx
+        self._load_eval_normalization_scales()
+
+    def _load_eval_normalization_scales(self):
+        """Load normalization constants from evaluation/env source files."""
+        root = Path(__file__).resolve().parents[1]
+        eval_path = root / "winged_drone_train" / "eval.py"
+        env_path = root / "winged_drone_train" / "env.py"
+
+        progress_norm = float(self.PROGRESS_NORM)
+        speed_norm = float(self.SPEED_NORM)
+
+        if eval_path.exists():
+            try:
+                txt = eval_path.read_text(encoding="utf-8")
+                x_upper_match = re.search(r"\bx_upper\s*=\s*([-+]?\d*\.?\d+)", txt)
+                base_x_match = re.search(
+                    r"\bbase_init_pos\s*=\s*\[\s*([-+]?\d*\.?\d+)",
+                    txt,
+                )
+                if x_upper_match:
+                    x_upper = float(x_upper_match.group(1))
+                    if base_x_match:
+                        base_x = float(base_x_match.group(1))
+                        candidate = x_upper - base_x
+                        if np.isfinite(candidate) and candidate > 0:
+                            progress_norm = candidate
+                    elif np.isfinite(x_upper) and x_upper > 0:
+                        progress_norm = x_upper
+            except OSError:
+                pass
+
+        if env_path.exists():
+            try:
+                txt = env_path.read_text(encoding="utf-8")
+                max_speed_matches = re.findall(
+                    r'get\("max_speed",\s*([-+]?\d*\.?\d+)\)',
+                    txt,
+                )
+                if max_speed_matches:
+                    speeds = np.asarray([float(v) for v in max_speed_matches], dtype=float)
+                    speeds = speeds[np.isfinite(speeds) & (speeds > 0)]
+                    if len(speeds) > 0:
+                        speed_norm = float(np.max(speeds))
+            except OSError:
+                pass
+
+        self.PROGRESS_NORM = float(progress_norm)
+        self.SPEED_NORM = float(speed_norm)
+        print(
+            "[INFO] Normalization scales loaded: "
+            f"progress={self.PROGRESS_NORM:.3f} m, "
+            f"max_speed={self.SPEED_NORM:.3f} m/s"
+        )
 
     def _row_kind_mask(self, df, kind):
         if "row_kind" not in df.columns:
@@ -275,6 +330,7 @@ class URDFHistogramPlotter:
             except (TypeError, ValueError):
                 values.append(np.nan)
         values = np.asarray(values, dtype=float)
+        values = values + float(self.STEPS_REWARD_OFFSET)
 
         valid = np.isfinite(values)
         if not valid.any():
@@ -437,17 +493,123 @@ class URDFHistogramPlotter:
         print(f"  SP: {sp_pass_count}/{len(self.df)}")
         print("===============================================\n")
 
-    def _compute_gp_delta_vs_trained(self, metric_order=None):
-        """Compute per-URDF relative deviation used by plot_mean_delta_vs_sp.
+    def _print_gp_selected_below_threshold_details(self, general_policy_idx=None):
+        """Print metrics for URDFs where selected GP progress is below threshold."""
+        if len(self.df) == 0:
+            print("[WARN] No URDFs available for below-threshold report.")
+            return
 
-        Formula per URDF:
-            (GP - mean(SP_valid_repetitions)) / mean(SP_valid_repetitions)
+        gp_idx = self._resolve_policy_index(
+            general_policy_idx if general_policy_idx is not None else self.general_policy_idx,
+            self.general_policy_count,
+            "General",
+        )
+        threshold = self._minimal_progress_threshold_norm()
+        metric_order = ["prog", "speed", "cot", "reward", "steps90"]
+
+        def _sp_mean(metrics, metric):
+            vals = np.asarray(metrics["trained"][metric], dtype=float)
+            mask = self._is_valid_metric(metric, vals)
+            valid_vals = vals[mask]
+            if len(valid_vals) == 0:
+                return np.nan
+            return float(np.mean(valid_vals))
+
+        def _fmt_metric(metric, gp_val_norm, sp_val_norm):
+            if metric == "prog":
+                gp_raw = gp_val_norm * self.PROGRESS_NORM if np.isfinite(gp_val_norm) else np.nan
+                sp_raw = sp_val_norm * self.PROGRESS_NORM if np.isfinite(sp_val_norm) else np.nan
+                return (
+                    f"GP={gp_raw:.2f} m ({gp_val_norm:.4f}), "
+                    f"SPmean={sp_raw:.2f} m ({sp_val_norm:.4f})"
+                )
+            if metric == "reward":
+                gp_raw = gp_val_norm * self.REWARD_NORM if np.isfinite(gp_val_norm) else np.nan
+                sp_raw = sp_val_norm * self.REWARD_NORM if np.isfinite(sp_val_norm) else np.nan
+                return (
+                    f"GP={gp_raw:.2f} ({gp_val_norm:.4f}), "
+                    f"SPmean={sp_raw:.2f} ({sp_val_norm:.4f})"
+                )
+
+        rows = []
+        for urdf_idx, (_, row) in enumerate(self.df.iterrows(), start=1):
+            metrics = self._process_row(row, general_policy_idx=gp_idx)
+            gp_selected = metrics["baseline_selected"]
+            gp_prog = float(gp_selected["prog"])
+            if np.isfinite(gp_prog) and gp_prog > threshold:
+                continue
+
+            summary = {"urdf_idx": urdf_idx, "metrics": {}}
+            for metric in metric_order:
+                gp_val = float(gp_selected[metric])
+                sp_val = _sp_mean(metrics, metric)
+                summary["metrics"][metric] = (gp_val, sp_val)
+            rows.append(summary)
+
+        print(
+            f"\n=== URDFs below minimal progress threshold for selected GP{gp_idx} "
+            f"({self.MINIMAL_PROGRESS_M:.1f} m) ==="
+        )
+        if len(rows) == 0:
+            print("  None")
+            print("===============================================================\n")
+            return
+
+        for item in rows:
+            urdf_idx = item["urdf_idx"]
+            gp_prog, sp_prog = item["metrics"]["prog"]
+            print(
+                f"  URDF {urdf_idx:02d}: "
+                f"{_fmt_metric('prog', gp_prog, sp_prog)}"
+            )
+            print(f"    reward: {_fmt_metric('reward', *item['metrics']['reward'])}")
+        print("===============================================================\n")
+
+    def _compute_mean_delta_ratio(self, numerators, denominators):
+        """Compute aggregated deviation as sum(num) / sum(den)."""
+        num = np.asarray(numerators, dtype=float)
+        den = np.asarray(denominators, dtype=float)
+        mask = np.isfinite(num) & np.isfinite(den) & (den > 0)
+        if not mask.any():
+            return np.nan
+        den_sum = float(np.sum(den[mask]))
+        if not np.isfinite(den_sum) or den_sum <= 0:
+            return np.nan
+        return float(np.sum(num[mask]) / den_sum)
+
+    def _compute_weighted_delta_std(self, ratios, weights):
+        """Compute weighted std of ratios with weights equal to SP means."""
+        r = np.asarray(ratios, dtype=float)
+        w = np.asarray(weights, dtype=float)
+        mask = np.isfinite(r) & np.isfinite(w) & (w > 0)
+        if not mask.any():
+            return np.nan
+        r = r[mask]
+        w = w[mask]
+        w_sum = float(np.sum(w))
+        if not np.isfinite(w_sum) or w_sum <= 0:
+            return np.nan
+        mu = float(np.sum(w * r) / w_sum)
+        var = float(np.sum(w * (r - mu) ** 2) / w_sum)
+        if not np.isfinite(var) or var < 0:
+            return np.nan
+        return float(np.sqrt(var))
+
+    def _compute_gp_delta_vs_trained(self, metric_order=None):
+        """Compute GP-vs-SP deviations used by mean-delta plots.
+
+        For each metric and policy, stores:
+          - ratios per URDF: (GP - SP_mean_urdf) / SP_mean_urdf
+          - numerators per URDF: (GP - SP_mean_urdf)
+          - denominators per URDF: SP_mean_urdf
         """
         if metric_order is None:
             metric_order = ["speed", "cot", "prog", "reward", "steps90"]
 
         gp_count = max(1, self.general_policy_count)
         gp_delta_vals = {m: [[] for _ in range(gp_count)] for m in metric_order}
+        gp_delta_num = {m: [[] for _ in range(gp_count)] for m in metric_order}
+        gp_delta_den = {m: [[] for _ in range(gp_count)] for m in metric_order}
 
         for _, row in self.df.iterrows():
             metrics = self._process_row(row)
@@ -471,9 +633,17 @@ class URDFHistogramPlotter:
                         continue
                     val = gp_vals[pi]
                     if np.isfinite(val) and val > 0:
-                        gp_delta_vals[m][pi].append((val - tr_mean_urdf) / tr_mean_urdf)
+                        numerator = float(val - tr_mean_urdf)
+                        denominator = float(tr_mean_urdf)
+                        gp_delta_vals[m][pi].append(numerator / denominator)
+                        gp_delta_num[m][pi].append(numerator)
+                        gp_delta_den[m][pi].append(denominator)
 
-        return gp_delta_vals
+        return {
+            "ratios": gp_delta_vals,
+            "numerators": gp_delta_num,
+            "denominators": gp_delta_den,
+        }
 
     def _print_delta4_vs_steps90_correlation(self, general_policy_idx=None):
         """Print correlation between GP-vs-SP deviation (4 metrics) and SP steps90."""
@@ -821,14 +991,14 @@ class URDFHistogramPlotter:
 
         metrics = {
             "baseline_all": {
-                "speed": gp_speed / 24,
+                "speed": gp_speed / self.SPEED_NORM,
                 "cot": self._normalize_cot(gp_cot) / 1,
                 "prog": gp_prog / self.PROGRESS_NORM,
                 "reward": gp_reward / self.REWARD_NORM,
                 "steps90": gp_steps90,
             },
             "trained": {
-                "speed": tr_speed / 24,
+                "speed": tr_speed / self.SPEED_NORM,
                 "cot": self._normalize_cot(tr_cot) / 1,
                 "prog": tr_prog / self.PROGRESS_NORM,
                 "reward": tr_reward / self.REWARD_NORM,
@@ -973,18 +1143,28 @@ class URDFHistogramPlotter:
             "Deviation formula per URDF: "
             "delta% = 100 * (GP_selected - mean(SP_valid_repetitions)) / mean(SP_valid_repetitions)"
         )
-        print("Reported value: mean(delta%) over valid URDFs; std over valid URDFs.")
+        print(
+            "Reported mean value: 100 * sum(GP_selected - mean(SP_valid_repetitions)) / "
+            "sum(mean(SP_valid_repetitions)); std over per-URDF delta% values."
+        )
         delta_metric_order = ["speed", "cot", "prog", "reward", "steps90"]
-        gp_delta_vals = self._compute_gp_delta_vs_trained(metric_order=delta_metric_order)
+        gp_delta_data = self._compute_gp_delta_vs_trained(metric_order=delta_metric_order)
+        gp_delta_vals = gp_delta_data["ratios"]
+        gp_delta_num = gp_delta_data["numerators"]
+        gp_delta_den = gp_delta_data["denominators"]
         gp_print_idx = max(0, gp_idx - 1)
         for m in delta_metric_order:
             vals = gp_delta_vals[m][gp_print_idx] if gp_print_idx < len(gp_delta_vals[m]) else []
+            nums = gp_delta_num[m][gp_print_idx] if gp_print_idx < len(gp_delta_num[m]) else []
+            dens = gp_delta_den[m][gp_print_idx] if gp_print_idx < len(gp_delta_den[m]) else []
             if len(vals) == 0:
                 mean_pct = 0.0
                 std_pct = 0.0
             else:
-                mean_pct = float(np.mean(vals) * 100.0)
-                std_pct = float((np.std(vals) if len(vals) > 1 else 0.0) * 100.0)
+                mean_val = self._compute_mean_delta_ratio(nums, dens)
+                mean_pct = float(mean_val * 100.0) if np.isfinite(mean_val) else 0.0
+                std_val = self._compute_weighted_delta_std(vals, dens)
+                std_pct = float(std_val * 100.0) if np.isfinite(std_val) else 0.0
             print(
                 f"{m.upper():>8}: delta = {mean_pct:+.2f}% "
                 f"(std = {std_pct:.2f}%, n = {len(vals)})"
@@ -992,6 +1172,7 @@ class URDFHistogramPlotter:
         print("===============================================================\n")
         self._print_delta4_vs_steps90_correlation(general_policy_idx=gp_idx)
         self._print_minimal_threshold_counts()
+        self._print_gp_selected_below_threshold_details(general_policy_idx=gp_idx)
 
 
 
@@ -1743,18 +1924,32 @@ class URDFHistogramPlotter:
         bar_spacing = 0.12
         offsets = (np.arange(gp_count + 1) - gp_count / 2) * bar_spacing
 
-        gp_delta_vals = self._compute_gp_delta_vs_trained(metric_order=metric_order)
+        gp_delta_data = self._compute_gp_delta_vs_trained(metric_order=metric_order)
+        gp_delta_vals = gp_delta_data["ratios"]
+        gp_delta_num = gp_delta_data["numerators"]
+        gp_delta_den = gp_delta_data["denominators"]
 
         gp_delta_mean = {
             m: [
-                (np.mean(gp_delta_vals[m][pi]) if len(gp_delta_vals[m][pi]) else 0)
+                (
+                    self._compute_mean_delta_ratio(gp_delta_num[m][pi], gp_delta_den[m][pi])
+                    if len(gp_delta_vals[m][pi])
+                    else 0
+                )
                 for pi in range(gp_count)
             ]
             for m in metric_order
         }
         gp_delta_std = {
             m: [
-                (np.std(gp_delta_vals[m][pi]) if len(gp_delta_vals[m][pi]) > 1 else 0)
+                (
+                    self._compute_weighted_delta_std(
+                        gp_delta_vals[m][pi],
+                        gp_delta_den[m][pi],
+                    )
+                    if len(gp_delta_vals[m][pi]) > 1
+                    else 0
+                )
                 for pi in range(gp_count)
             ]
             for m in metric_order
@@ -1854,6 +2049,7 @@ class URDFHistogramPlotter:
         rew_cols = [c for _, c in pct_cols]
         steps_with_zero = np.concatenate(([0.0], steps))
         reward_matrix = rep_df[rew_cols].to_numpy(dtype=float)
+        reward_matrix = reward_matrix + float(self.STEPS_REWARD_OFFSET)
         reward_matrix = np.concatenate(
             [np.zeros((reward_matrix.shape[0], 1), dtype=float), reward_matrix],
             axis=1,
@@ -1893,6 +2089,7 @@ class URDFHistogramPlotter:
             curves = []
             for rep_i, rep_row in enumerate(rep_rows, start=1):
                 y = np.array([rep_row.get(c, np.nan) for c in rew_cols], dtype=float)
+                y = y + float(self.STEPS_REWARD_OFFSET)
                 y = np.concatenate(([0.0], y))
                 if not np.isfinite(y).any():
                     continue
@@ -1933,7 +2130,7 @@ class URDFHistogramPlotter:
                 )
 
             ax.set_xlabel("Training steps (% of total)")
-            ax.set_ylabel("Reward")
+            ax.set_ylabel(f"Reward (+{self.STEPS_REWARD_OFFSET:.1f} offset)")
             ax.set_title(f"URDF {row_idx} — Reward evolution across repetitions")
             ax.grid(alpha=0.3, linestyle="--")
             ax.set_xlim(float(np.min(steps_with_zero)), float(np.max(steps_with_zero)))
@@ -2057,7 +2254,7 @@ class URDFHistogramPlotter:
         fig.text(
             0.5,
             0.01,
-            "Note: only |r| >= 0.25 is annotated (lower values are not shown).",
+            "Note: only |r| >= 0.20 is annotated (lower values are not shown).",
             ha="center",
             va="bottom",
             fontsize=7,
@@ -2067,7 +2264,7 @@ class URDFHistogramPlotter:
         if n_genes <= 25:
             for i in range(n_genes):
                 for j in range(len(metric_order)):
-                    if np.isfinite(corr[i, j]) and abs(corr[i, j]) >= 0.25:
+                    if np.isfinite(corr[i, j]) and abs(corr[i, j]) >= 0.20:
                         ax.text(j, i, f"{corr[i, j]:.2f}", ha="center", va="center", fontsize=8)
 
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -2163,7 +2360,7 @@ class URDFHistogramPlotter:
         fig.text(
             0.5,
             0.01,
-            "Note: only |r| >= 0.25 is annotated (lower values are not shown).",
+            "Note: only |r| >= 0.20 is annotated (lower values are not shown).",
             ha="center",
             va="bottom",
             fontsize=7,
@@ -2173,7 +2370,7 @@ class URDFHistogramPlotter:
         if n_genes <= 25:
             for i in range(n_genes):
                 for j in range(len(metric_order)):
-                    if np.isfinite(corr[i, j]) and abs(corr[i, j]) >= 0.25:
+                    if np.isfinite(corr[i, j]) and abs(corr[i, j]) >= 0.20:
                         ax.text(j, i, f"{corr[i, j]:.2f}", ha="center", va="center", fontsize=8)
 
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -2273,7 +2470,7 @@ class URDFHistogramPlotter:
         fig.text(
             0.5,
             0.01,
-            "Note: only |r| >= 0.25 is annotated (lower values are not shown).",
+            "Note: only |r| >= 0.20 is annotated (lower values are not shown).",
             ha="center",
             va="bottom",
             fontsize=7,
@@ -2283,13 +2480,312 @@ class URDFHistogramPlotter:
         if n_genes <= 25:
             for i in range(n_genes):
                 for j in range(len(metric_order)):
-                    if np.isfinite(corr[i, j]) and abs(corr[i, j]) >= 0.25:
+                    if np.isfinite(corr[i, j]) and abs(corr[i, j]) >= 0.20:
                         ax.text(j, i, f"{corr[i, j]:.2f}", ha="center", va="center", fontsize=8)
 
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("Pearson r")
 
         plt.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        if show:
+            plt.show()
+        plt.close(fig)
+
+    def plot_policy_reward_metric_correlation(
+        self,
+        save_path=None,
+        show=False,
+    ):
+        """Correlation between reward and core metrics across URDFs for each policy."""
+        metric_order = ["prog", "speed", "cot"]
+        metric_names = {
+            "prog": "Progress",
+            "speed": "Speed",
+            "cot": "CoT",
+        }
+
+        policy_series = []
+
+        for pi in range(1, self.general_policy_count + 1):
+            x_by_metric = {m: [] for m in metric_order}
+            y_reward = []
+            for _, row in self.df.iterrows():
+                metrics = self._process_row(row)
+                gp_all = metrics["baseline_all"]
+                reward_vals = np.asarray(gp_all["reward"], dtype=float)
+                if pi - 1 >= len(reward_vals):
+                    continue
+                reward_val = float(reward_vals[pi - 1])
+                reward_valid = self._is_valid_metric(
+                    "reward",
+                    np.asarray([reward_val], dtype=float),
+                )[0]
+                if not reward_valid:
+                    continue
+
+                candidate = {}
+                ok = True
+                for m in metric_order:
+                    vals = np.asarray(gp_all[m], dtype=float)
+                    if pi - 1 >= len(vals):
+                        ok = False
+                        break
+                    val = float(vals[pi - 1])
+                    valid = self._is_valid_metric(m, np.asarray([val], dtype=float))[0]
+                    if not valid:
+                        ok = False
+                        break
+                    candidate[m] = val
+
+                if not ok:
+                    continue
+
+                for m in metric_order:
+                    x_by_metric[m].append(candidate[m])
+                y_reward.append(reward_val)
+
+            policy_series.append((f"GP{pi}", x_by_metric, y_reward))
+
+        x_by_metric = {m: [] for m in metric_order}
+        y_reward = []
+        for _, row in self.df.iterrows():
+            metrics = self._process_row(row)
+            sp_all = metrics["trained"]
+
+            reward_vals = np.asarray(sp_all["reward"], dtype=float)
+            reward_mask = self._is_valid_metric("reward", reward_vals)
+            reward_valid = reward_vals[reward_mask]
+            if len(reward_valid) == 0:
+                continue
+            reward_val = float(np.mean(reward_valid))
+
+            candidate = {}
+            ok = True
+            for m in metric_order:
+                vals = np.asarray(sp_all[m], dtype=float)
+                mask = self._is_valid_metric(m, vals)
+                valid = vals[mask]
+                if len(valid) == 0:
+                    ok = False
+                    break
+                candidate[m] = float(np.mean(valid))
+
+            if not ok:
+                continue
+
+            for m in metric_order:
+                x_by_metric[m].append(candidate[m])
+            y_reward.append(reward_val)
+
+        policy_series.append(("SP mean", x_by_metric, y_reward))
+
+        if not policy_series:
+            print("[WARN] No valid data found for policy reward-metric correlation plot.")
+            return
+
+        corr = np.full((len(policy_series), len(metric_order)), np.nan, dtype=float)
+        counts = np.zeros((len(policy_series), len(metric_order)), dtype=int)
+
+        for ri, (_, x_by_metric, y_reward) in enumerate(policy_series):
+            y = np.asarray(y_reward, dtype=float)
+            for ci, metric in enumerate(metric_order):
+                x = np.asarray(x_by_metric[metric], dtype=float)
+                mask = np.isfinite(x) & np.isfinite(y)
+                n = int(mask.sum())
+                counts[ri, ci] = n
+                if n < 2:
+                    continue
+                if np.isclose(np.std(x[mask]), 0.0) or np.isclose(np.std(y[mask]), 0.0):
+                    continue
+                corr[ri, ci] = float(np.corrcoef(x[mask], y[mask])[0, 1])
+
+        fig_h = max(4.8, 0.45 * len(policy_series))
+        fig, ax = plt.subplots(figsize=(7.8, fig_h))
+        im = ax.imshow(corr, vmin=-1.0, vmax=1.0, cmap="coolwarm", aspect="auto")
+
+        ax.set_xticks(range(len(metric_order)))
+        ax.set_xticklabels([metric_names[m] for m in metric_order], rotation=0)
+        ax.set_yticks(range(len(policy_series)))
+        ax.set_yticklabels([name for name, _, _ in policy_series])
+        ax.set_xlabel("Metric")
+        ax.set_ylabel("Policy")
+        ax.set_title(
+            "Correlation across URDFs: Evaluation Reward vs Metric per Policy",
+            fontsize=12,
+        )
+
+        for ri in range(len(policy_series)):
+            for ci in range(len(metric_order)):
+                val = corr[ri, ci]
+                n = counts[ri, ci]
+                if np.isfinite(val):
+                    txt = f"{val:.2f}\n(n={n})"
+                else:
+                    txt = f"nan\n(n={n})"
+                ax.text(ci, ri, txt, ha="center", va="center", fontsize=7)
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Pearson r")
+
+        plt.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        if show:
+            plt.show()
+        plt.close(fig)
+
+    def plot_selected_gp_sp_mean_reward_metric_correlation(
+        self,
+        general_policy_idx=None,
+        save_path=None,
+        show=False,
+    ):
+        """Reward-vs-metric correlation across URDFs for selected GP and SP mean.
+
+        Uses only URDFs where both selected GP and SP mean progress are above the
+        minimal progress threshold.
+        """
+        gp_idx = self._resolve_policy_index(
+            general_policy_idx if general_policy_idx is not None else self.general_policy_idx,
+            self.general_policy_count,
+            "General",
+        )
+        threshold = self._minimal_progress_threshold_norm()
+        metric_order = ["prog", "speed", "cot"]
+        metric_names = {
+            "prog": "Progress",
+            "speed": "Speed",
+            "cot": "CoT",
+        }
+
+        gp_x_by_metric = {m: [] for m in metric_order}
+        gp_y_reward = []
+        sp_x_by_metric = {m: [] for m in metric_order}
+        sp_y_reward = []
+
+        for _, row in self.df.iterrows():
+            metrics = self._process_row(row, general_policy_idx=gp_idx)
+            gp_selected = metrics["baseline_selected"]
+            sp_all = metrics["trained"]
+
+            gp_prog = float(gp_selected["prog"])
+            if not np.isfinite(gp_prog) or gp_prog <= threshold:
+                continue
+
+            sp_prog_vals = np.asarray(sp_all["prog"], dtype=float)
+            sp_prog_mask = self._is_valid_metric("prog", sp_prog_vals)
+            sp_prog_valid = sp_prog_vals[sp_prog_mask]
+            if len(sp_prog_valid) == 0:
+                continue
+            sp_prog_mean = float(np.mean(sp_prog_valid))
+            if not np.isfinite(sp_prog_mean) or sp_prog_mean <= threshold:
+                continue
+
+            gp_candidate = {}
+            gp_ok = True
+            for m in metric_order:
+                val = float(gp_selected[m])
+                valid = self._is_valid_metric(m, np.asarray([val], dtype=float))[0]
+                if not valid:
+                    gp_ok = False
+                    break
+                gp_candidate[m] = val
+            gp_reward = float(gp_selected["reward"])
+            gp_reward_valid = self._is_valid_metric(
+                "reward",
+                np.asarray([gp_reward], dtype=float),
+            )[0]
+            if not gp_ok or not gp_reward_valid:
+                continue
+
+            sp_candidate = {}
+            sp_ok = True
+            for m in metric_order:
+                vals = np.asarray(sp_all[m], dtype=float)
+                mask = self._is_valid_metric(m, vals)
+                valid_vals = vals[mask]
+                if len(valid_vals) == 0:
+                    sp_ok = False
+                    break
+                sp_candidate[m] = float(np.mean(valid_vals))
+            sp_reward_vals = np.asarray(sp_all["reward"], dtype=float)
+            sp_reward_mask = self._is_valid_metric("reward", sp_reward_vals)
+            sp_reward_valid_vals = sp_reward_vals[sp_reward_mask]
+            if len(sp_reward_valid_vals) == 0 or not sp_ok:
+                continue
+            sp_reward = float(np.mean(sp_reward_valid_vals))
+
+            for m in metric_order:
+                gp_x_by_metric[m].append(gp_candidate[m])
+                sp_x_by_metric[m].append(sp_candidate[m])
+            gp_y_reward.append(gp_reward)
+            sp_y_reward.append(sp_reward)
+
+        policy_series = [
+            (f"GP{gp_idx} selected", gp_x_by_metric, gp_y_reward),
+            ("SP mean", sp_x_by_metric, sp_y_reward),
+        ]
+
+        corr = np.full((len(policy_series), len(metric_order)), np.nan, dtype=float)
+        counts = np.zeros((len(policy_series), len(metric_order)), dtype=int)
+
+        for ri, (_, x_by_metric, y_reward) in enumerate(policy_series):
+            y = np.asarray(y_reward, dtype=float)
+            for ci, metric in enumerate(metric_order):
+                x = np.asarray(x_by_metric[metric], dtype=float)
+                mask = np.isfinite(x) & np.isfinite(y)
+                n = int(mask.sum())
+                counts[ri, ci] = n
+                if n < 2:
+                    continue
+                if np.isclose(np.std(x[mask]), 0.0) or np.isclose(np.std(y[mask]), 0.0):
+                    continue
+                corr[ri, ci] = float(np.corrcoef(x[mask], y[mask])[0, 1])
+
+        fig, ax = plt.subplots(figsize=(7.8, 4.8))
+        im = ax.imshow(corr, vmin=-1.0, vmax=1.0, cmap="coolwarm", aspect="auto")
+
+        ax.set_xticks(range(len(metric_order)))
+        ax.set_xticklabels([metric_names[m] for m in metric_order], rotation=0)
+        ax.set_yticks(range(len(policy_series)))
+        ax.set_yticklabels([name for name, _, _ in policy_series])
+        ax.set_xlabel("Metric")
+        ax.set_ylabel("Policy")
+        ax.set_title(
+            f"Correlation across URDFs (filtered): GP{gp_idx} selected vs SP mean",
+            fontsize=12,
+        )
+
+        for ri in range(len(policy_series)):
+            for ci in range(len(metric_order)):
+                val = corr[ri, ci]
+                n = counts[ri, ci]
+                if np.isfinite(val):
+                    txt = f"{val:.2f}\n(n={n})"
+                else:
+                    txt = f"nan\n(n={n})"
+                ax.text(ci, ri, txt, ha="center", va="center", fontsize=8)
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Pearson r")
+        fig.text(
+            0.5,
+            0.01,
+            (
+                "Included URDFs: only those with Progress above minimal threshold "
+                f"for both GP{gp_idx} and SP mean."
+            ),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#555555",
+        )
+
+        plt.tight_layout(rect=(0, 0.04, 1, 1))
 
         if save_path is not None:
             fig.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -2311,7 +2807,7 @@ class URDFHistogramPlotter:
             ("reward", "Evaluation Reward"),
         ]
 
-        pairs = {m: {"x": [], "y": []} for m, _ in metrics_to_plot}
+        pairs = {m: {"x": [], "y": [], "num": [], "den": []} for m, _ in metrics_to_plot}
 
         for _, row in self.df.iterrows():
             metrics = self._process_row(row, general_policy_idx=gp_idx)
@@ -2324,12 +2820,6 @@ class URDFHistogramPlotter:
                 continue
             sp_prog_mean = float(np.mean(sp_prog_valid))
 
-            # Keep only drones above minimal progress in both selected GP and SP.
-            if not np.isfinite(gp_prog) or gp_prog <= threshold:
-                continue
-            if not np.isfinite(sp_prog_mean) or sp_prog_mean <= threshold:
-                continue
-
             sp_steps_vals = np.asarray(metrics["trained"]["steps90"], dtype=float)
             sp_steps_mask = self._is_valid_metric("steps90", sp_steps_vals)
             sp_steps_valid = sp_steps_vals[sp_steps_mask]
@@ -2340,8 +2830,17 @@ class URDFHistogramPlotter:
                 continue
 
             for m, _ in metrics_to_plot:
+                use_minimal_progress_filter = m in ("speed", "cot")
+                if use_minimal_progress_filter:
+                    # Keep threshold filtering only for speed/CoT plots.
+                    if not np.isfinite(gp_prog) or gp_prog <= threshold:
+                        continue
+                    if not np.isfinite(sp_prog_mean) or sp_prog_mean <= threshold:
+                        continue
+
                 gp_val = float(metrics["baseline_selected"][m])
-                if not np.isfinite(gp_val) or gp_val <= 0:
+                gp_valid = self._is_valid_metric(m, np.asarray([gp_val], dtype=float))[0]
+                if not gp_valid:
                     continue
 
                 sp_vals = np.asarray(metrics["trained"][m], dtype=float)
@@ -2350,12 +2849,14 @@ class URDFHistogramPlotter:
                 if len(sp_valid) == 0:
                     continue
                 sp_mean = float(np.mean(sp_valid))
-                if not np.isfinite(sp_mean) or sp_mean <= 0:
+                if not np.isfinite(sp_mean) or np.isclose(sp_mean, 0.0):
                     continue
 
                 perf_diff_pct = (gp_val - sp_mean) / sp_mean * 100.0
                 pairs[m]["x"].append(sp_steps_mean)
                 pairs[m]["y"].append(perf_diff_pct)
+                pairs[m]["num"].append(gp_val - sp_mean)
+                pairs[m]["den"].append(sp_mean)
 
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
@@ -2370,7 +2871,14 @@ class URDFHistogramPlotter:
 
             for version in versions:
                 fig, ax = plt.subplots(figsize=(8.8, 4.8))
+                use_minimal_progress_filter = m in ("speed", "cot")
                 if len(x) > 0:
+                    if use_minimal_progress_filter:
+                        point_label = (
+                            f"Valid drones (GP{gp_idx} & SP above minimal progress)"
+                        )
+                    else:
+                        point_label = "All valid drones"
                     ax.scatter(
                         x,
                         y,
@@ -2378,7 +2886,7 @@ class URDFHistogramPlotter:
                         alpha=0.85,
                         edgecolor="black",
                         linewidth=0.4,
-                        label=f"Valid drones (GP{gp_idx} & SP above minimal progress)",
+                        label=point_label,
                     )
                 else:
                     ax.text(
@@ -2423,20 +2931,32 @@ class URDFHistogramPlotter:
                     if ymin < ymax:
                         ax.set_ylim(ymin, ymax)
                     if version == "with_fit_mean":
-                        mean_perf_diff = float(np.nanmean(y))
-                        ax.axhline(
-                            mean_perf_diff,
-                            color="#2ca02c",
-                            linestyle="--",
-                            linewidth=1.8,
-                            label=f"Mean performance difference: {mean_perf_diff:+.2f}%",
+                        mean_perf_diff = self._compute_mean_delta_ratio(
+                            pairs[m]["num"],
+                            pairs[m]["den"],
                         )
+                        if np.isfinite(mean_perf_diff):
+                            mean_perf_diff_pct = float(mean_perf_diff * 100.0)
+                            ax.axhline(
+                                mean_perf_diff_pct,
+                                color="#2ca02c",
+                                linestyle="--",
+                                linewidth=1.8,
+                                label=(
+                                    "Mean performance difference "
+                                    f"(sum delta / sum SP): {mean_perf_diff_pct:+.2f}%"
+                                ),
+                            )
                 if len(x) > 0:
                     ax.legend(fontsize=8, loc="best")
                 fig.text(
                     0.5,
                     0.002,
-                    f"Included drones: only those above minimal progress in both GP{gp_idx} and SP.",
+                    (
+                        f"Included drones: only those above minimal progress in both GP{gp_idx} and SP."
+                        if use_minimal_progress_filter
+                        else "Included drones: all valid drones (no minimal progress filter)."
+                    ),
                     ha="center",
                     va="bottom",
                     fontsize=8,
@@ -2461,7 +2981,7 @@ class URDFHistogramPlotter:
 if __name__ == "__main__":
     csv_path = "/home/andrea/Documents/Genesis/src/data_processing/evaluation_results.csv"  # Replace with your real CSV path
     plotter = URDFHistogramPlotter(csv_path)
-    requested_general_policy_idx = 1
+    requested_general_policy_idx = 6
     general_policy_idx = plotter._resolve_policy_index(
         requested_general_policy_idx,
         plotter.general_policy_count,
@@ -2505,6 +3025,18 @@ if __name__ == "__main__":
     plotter.plot_genome_general_policy_correlation(
         general_policy_idx=general_policy_idx,
         save_path=os.path.join(save_dir, f"genome_general_policy_correlation_gp{general_policy_idx}.png"),
+        show=False,
+    )
+    plotter.plot_policy_reward_metric_correlation(
+        save_path=os.path.join(save_dir, "policy_reward_metric_correlation.png"),
+        show=False,
+    )
+    plotter.plot_selected_gp_sp_mean_reward_metric_correlation(
+        general_policy_idx=general_policy_idx,
+        save_path=os.path.join(
+            save_dir,
+            f"gp{general_policy_idx}_selected_vs_sp_mean_reward_metric_correlation.png",
+        ),
         show=False,
     )
     plotter.plot_gp1_sp_mismatch_vs_sp_steps(

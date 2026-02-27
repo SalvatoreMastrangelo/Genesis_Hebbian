@@ -26,6 +26,7 @@ from rsl_rl.runners import OnPolicyRunner
 
 from winged_drone_train.train import get_cfgs, get_train_cfg
 from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.rl.logging import RLTrainingLogger
 from general_policy.env_gen import Gen_Env
 from general_policy.catalog import build_catalog
 
@@ -177,10 +178,15 @@ def train(
     # RSL-RL runner                                                      #
     # ------------------------------------------------------------------ #
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
-    runner.learn(
-        num_learning_iterations=max_iterations,
-        init_at_random_ep_len=True,
-    )
+    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir)
+    rl_logger.attach()
+    try:
+        runner.learn(
+            num_learning_iterations=max_iterations,
+            init_at_random_ep_len=True,
+        )
+    finally:
+        rl_logger.close()
 
     # ------------------------------------------------------------------ #
     # Clean up Genesis                                                   #

@@ -206,6 +206,11 @@ class ActuatorDynamics:
             self._buffer_head = 0
             self._env_index = None
             self._current_latency = None
+        self._latency_rand_scratch = torch.empty((self.num_envs,), device=self.device, dtype=torch.long)
+        self._servo_noise_scratch = torch.empty(
+            (self.num_envs, max(0, self.num_actions - 1)), device=self.device, dtype=torch.float32
+        )
+        self._thr_noise_scratch = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
 
         # Noise parameters
         self.throttle_noise_std = float(throttle_noise_std)
@@ -228,12 +233,8 @@ class ActuatorDynamics:
 
         if not self.random_latency_per_step and self.latency_max > 0:
             # Fixed latency sampled once per episode
-            rand_delays = torch.randint(
-                low=self.latency_min,
-                high=self.latency_max + 1,
-                size=(env_indices.numel(),),
-                device=self.device,
-            )
+            rand_delays = self._latency_rand_scratch[: env_indices.numel()]
+            rand_delays.random_(self.latency_min, self.latency_max + 1)
             self._current_latency[env_indices] = rand_delays
         else:
             # Will be overwritten at the next step if random per step.
@@ -263,7 +264,8 @@ class ActuatorDynamics:
                 f"Second dimension of raw_actions must be num_actions={self.num_actions}, got {A}."
             )
 
-        raw_actions = raw_actions.to(self.device)
+        if raw_actions.device != self.device:
+            raw_actions = raw_actions.to(self.device)
 
         # 1) Scale and clamp to physical limits
         scaled = scale_and_clamp_actions(
@@ -280,13 +282,7 @@ class ActuatorDynamics:
             self._action_buffer[:, self._buffer_head, :] = scaled
 
             if self.random_latency_per_step and self.latency_max > 0:
-                self._current_latency = torch.randint(
-                    low=self.latency_min,
-                    high=self.latency_max + 1,
-                    size=(self.num_envs,),
-                    device=self.device,
-                    dtype=torch.long,
-                )
+                self._current_latency.random_(self.latency_min, self.latency_max + 1)
 
             idx = (self._buffer_head + self._current_latency) % K
             applied_actions = self._action_buffer[self._env_index, idx, :]
@@ -302,7 +298,9 @@ class ActuatorDynamics:
 
         # 4) Add optional actuator noise
         if self.servo_noise_std > 0.0 and servo_out.numel() > 0:
-            servo_noise = torch.randn_like(servo_out) * self.servo_noise_std
+            servo_noise = self._servo_noise_scratch[:B, : servo_out.shape[1]]
+            servo_noise.normal_()
+            servo_noise *= self.servo_noise_std
             servo_out = servo_out + servo_noise
             servo_out = torch.max(
                 torch.min(servo_out, self.joint_limits_max.unsqueeze(0)),
@@ -310,7 +308,9 @@ class ActuatorDynamics:
             )
 
         if self.throttle_noise_std > 0.0:
-            thr_noise = torch.randn_like(throttle_out) * self.throttle_noise_std
+            thr_noise = self._thr_noise_scratch[:B]
+            thr_noise.normal_()
+            thr_noise *= self.throttle_noise_std
             throttle_out = (throttle_out + thr_noise).clamp(
                 min=self.throttle_min,
                 max=self.throttle_max,
@@ -585,9 +585,12 @@ def compute_power_consumption(
         raise ValueError("servo_torque and servo_velocity must have the same shape.")
 
     device = torch.device(device) if device is not None else thrust.device
-    thrust = thrust.to(device)
-    servo_torque = servo_torque.to(device)
-    servo_velocity = servo_velocity.to(device)
+    if thrust.device != device:
+        thrust = thrust.to(device)
+    if servo_torque.device != device:
+        servo_torque = servo_torque.to(device)
+    if servo_velocity.device != device:
+        servo_velocity = servo_velocity.to(device)
 
     B, n_prop = thrust.shape
     _, n_servos = servo_torque.shape
@@ -610,7 +613,8 @@ def compute_power_consumption(
             propeller_names=propeller_names,
         )
     else:
-        prop_coefficients = prop_coefficients.to(device)
+        if prop_coefficients.device != device:
+            prop_coefficients = prop_coefficients.to(device)
         if prop_coefficients.ndim != 2 or prop_coefficients.shape[1] != 3:
             raise ValueError("prop_coefficients must have shape (N, 3).")
 
@@ -642,7 +646,8 @@ def compute_power_consumption(
                 drone_name, device, n_servos
             )
         else:
-            servo_power_constants = servo_power_constants.to(device)
+            if servo_power_constants.device != device:
+                servo_power_constants = servo_power_constants.to(device)
             if servo_power_constants.shape != (n_servos, 3):
                 raise ValueError(
                     f"servo_power_constants must have shape (n_servos, 3), got {servo_power_constants.shape}."
@@ -658,7 +663,8 @@ def compute_power_consumption(
                 tail_multiplier=tail_multiplier,
             )
         else:
-            torque_multipliers = torque_multipliers.to(device)
+            if torque_multipliers.device != device:
+                torque_multipliers = torque_multipliers.to(device)
             if torque_multipliers.shape != (n_servos,):
                 raise ValueError(
                     f"torque_multipliers must have shape (n_servos,), got {torque_multipliers.shape}."

@@ -73,10 +73,18 @@ class DepthSolver:
         self.roll_f = None    # (B,)
         self.yaw_f = None     # (B,)
         self.cyl_f = None     # (B, max(T,1)) of vec2
+        # Torch staging buffers reused across steps to reduce allocation churn.
+        self._pos_x_t = None
+        self._pos_y_t = None
+        self._roll_t = None
+        self._yaw_t = None
+        self._cyl_t = None
+        self._noise_t = None
 
         # Output field (B, S), allocated per B
         self._B_alloc = 0
         self.depth = None
+        self._depth_t = None
 
     # ------------------------------------------------------------------ #
     # Public API                                                         #
@@ -99,24 +107,33 @@ class DepthSolver:
 
         self._ensure_buffers(B)
         self._ensure_input_buffers(B, T)
+        self._ensure_torch_staging(B, T)
 
-        # Upload inputs (one device sync per step)
-        pos_x = base_pos[:, 0].contiguous().to(self._torch_device, dtype=torch.float32)
-        pos_y = base_pos[:, 1].contiguous().to(self._torch_device, dtype=torch.float32)
-        roll  = base_euler[:, 0].contiguous().to(self._torch_device, dtype=torch.float32)
-        yaw   = base_euler[:, 2].contiguous().to(self._torch_device, dtype=torch.float32)
+        # Upload inputs via reusable staging buffers.
+        self._copy_column_to_staging(self._pos_x_t, base_pos, 0)
+        self._copy_column_to_staging(self._pos_y_t, base_pos, 1)
+        self._copy_column_to_staging(self._roll_t, base_euler, 0)
+        self._copy_column_to_staging(self._yaw_t, base_euler, 2)
 
-        self.pos_x_f.from_torch(pos_x)
-        self.pos_y_f.from_torch(pos_y)
-        self.roll_f.from_torch(roll)
-        self.yaw_f.from_torch(yaw)
+        self.pos_x_f.from_torch(self._pos_x_t)
+        self.pos_y_f.from_torch(self._pos_y_t)
+        self.roll_f.from_torch(self._roll_t)
+        self.yaw_f.from_torch(self._yaw_t)
 
         if T > 0:
             if cyl_xy_b.ndim != 3 or cyl_xy_b.shape[0] != B or cyl_xy_b.shape[2] != 2:
                 raise ValueError("cyl_xy_b must be (B, T, 2)")
-            self.cyl_f.from_torch(
-                cyl_xy_b.contiguous().to(self._torch_device, dtype=torch.float32)
-            )
+            if (
+                cyl_xy_b.device == self._torch_device
+                and cyl_xy_b.dtype == torch.float32
+                and cyl_xy_b.is_contiguous()
+            ):
+                self._cyl_t.copy_(cyl_xy_b)
+            else:
+                self._cyl_t.copy_(
+                    cyl_xy_b.contiguous().to(self._torch_device, dtype=torch.float32)
+                )
+            self.cyl_f.from_torch(self._cyl_t)
         self.T_f[None] = int(T)
 
         # Clear and compute
@@ -124,12 +141,13 @@ class DepthSolver:
         self._kernel_depth()
 
         depth = self.depth.to_torch(device=str(self._torch_device))
+        self._depth_t.copy_(depth)
+        depth = self._depth_t
         if noise_std > 0.0:
-            depth = torch.clamp(
-                depth + noise_std * torch.randn_like(depth, device=depth.device),
-                min=0.0,
-                max=float(self.max_distance[None]),
-            )
+            self._ensure_noise_buffer(B)
+            self._noise_t.normal_()
+            depth.add_(self._noise_t, alpha=float(noise_std))
+            depth.clamp_(min=0.0, max=float(self.max_distance[None]))
         return depth
 
     # ------------------------------------------------------------------ #
@@ -152,6 +170,7 @@ class DepthSolver:
         if self.depth is not None and self._B_alloc == B:
             return
         self.depth = ti.field(dtype=ti.f32, shape=(B, self.S))
+        self._depth_t = torch.empty((B, self.S), device=self._torch_device, dtype=torch.float32)
         self._B_alloc = B
 
     def _ensure_input_buffers(self, B: int, T: int) -> None:
@@ -171,6 +190,29 @@ class DepthSolver:
         TT = max(T, 1)  # keep a valid shape when no trees
         if (self.cyl_f is None) or (self.cyl_f.shape[0] != B) or (self.cyl_f.shape[1] != TT):
             self.cyl_f = ti.Vector.field(2, dtype=ti.f32, shape=(B, TT))
+
+    def _ensure_torch_staging(self, B: int, T: int) -> None:
+        """Allocate torch staging buffers for current (B, T)."""
+        if self._pos_x_t is None or self._pos_x_t.shape[0] != B:
+            self._pos_x_t = torch.empty((B,), device=self._torch_device, dtype=torch.float32)
+            self._pos_y_t = torch.empty((B,), device=self._torch_device, dtype=torch.float32)
+            self._roll_t = torch.empty((B,), device=self._torch_device, dtype=torch.float32)
+            self._yaw_t = torch.empty((B,), device=self._torch_device, dtype=torch.float32)
+        TT = max(T, 1)
+        if self._cyl_t is None or self._cyl_t.shape[0] != B or self._cyl_t.shape[1] != TT:
+            self._cyl_t = torch.empty((B, TT, 2), device=self._torch_device, dtype=torch.float32)
+
+    def _copy_column_to_staging(self, dst: torch.Tensor, src2d: torch.Tensor, col: int) -> None:
+        """Copy one column from a (B, C) tensor to reusable staging buffer."""
+        col_view = src2d[:, col]
+        if col_view.device == self._torch_device and col_view.dtype == torch.float32:
+            dst.copy_(col_view)
+        else:
+            dst.copy_(col_view.to(self._torch_device, dtype=torch.float32))
+
+    def _ensure_noise_buffer(self, B: int) -> None:
+        if self._noise_t is None or self._noise_t.shape != (B, self.S):
+            self._noise_t = torch.empty((B, self.S), device=self._torch_device, dtype=torch.float32)
 
     # ------------------------------------------------------------------ #
     # Kernels (no arguments; iterate over field shapes)                  #

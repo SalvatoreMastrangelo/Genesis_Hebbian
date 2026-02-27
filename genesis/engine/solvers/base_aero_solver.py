@@ -202,6 +202,13 @@ class BaseAeroSolver(Solver):
         self._force_buf = torch.empty((B, L, 3), device=self._aero_device, dtype=torch.float32)
         self._cp_buf = torch.empty_like(self._force_buf)
         self._tq_buf = torch.empty_like(self._force_buf)
+        # Cached propeller state/thrust in torch, refreshed each aero step.
+        self._thr_flt_buf = torch.empty((B,), device=self._aero_device, dtype=torch.float32)
+        self._max_thrust_buf = torch.empty((B,), device=self._aero_device, dtype=torch.float32)
+        self._thrust_n_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
+        # Optional eval/debug cache: alpha/beta of first aero surface per env.
+        self._alpha_dbg0_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
+        self._beta_dbg0_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
 
     def _get_params_from_csv(self, csv_file: str):
         """
@@ -304,6 +311,19 @@ class BaseAeroSolver(Solver):
         fb = self._force_buf[:, :L, :]  # (B, L, 3)
         cp = self._cp_buf[:, :L, :]     # (B, L, 3)
 
+        # Refresh filtered throttle and max_thrust directly from Taichi fields,
+        # then cache thrust in Newtons for consumers in `src/`.
+        if hasattr(self, "max_thrust"):
+            self._copy_prop_state(self._thr_flt_buf, self._max_thrust_buf)
+            self._thrust_n_buf.copy_(self._thr_flt_buf)
+            self._thrust_n_buf.mul_(self._max_thrust_buf)
+            torch.nan_to_num_(self._thrust_n_buf, nan=0.0, posinf=0.0, neginf=0.0)
+            self._thrust_n_buf.clamp_(min=0.0)
+        if hasattr(self, "alpha_dbg") and hasattr(self, "beta_dbg"):
+            self._copy_alpha_beta0(self._alpha_dbg0_buf, self._beta_dbg0_buf)
+            torch.nan_to_num_(self._alpha_dbg0_buf, nan=0.0, posinf=0.0, neginf=0.0)
+            torch.nan_to_num_(self._beta_dbg0_buf, nan=0.0, posinf=0.0, neginf=0.0)
+
         # 3) prop reaction torque (about prop z-axis, link frame)
         tq = self._tq_buf[:, :L, :]
         tq.zero_()
@@ -344,6 +364,26 @@ class BaseAeroSolver(Solver):
             out_cp[b, l, 0] = self.cp_b[b, l][0]
             out_cp[b, l, 1] = self.cp_b[b, l][1]
             out_cp[b, l, 2] = self.cp_b[b, l][2]
+
+    @ti.kernel
+    def _copy_prop_state(
+        self,
+        out_thr_flt: ti.types.ndarray(dtype=ti.f32, ndim=1),
+        out_max_thr: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    ):
+        for b in range(self.B):
+            out_thr_flt[b] = self._thr_flt[b]
+            out_max_thr[b] = self.max_thrust[b]
+
+    @ti.kernel
+    def _copy_alpha_beta0(
+        self,
+        out_alpha0: ti.types.ndarray(dtype=ti.f32, ndim=1),
+        out_beta0: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    ):
+        for b in range(self.B):
+            out_alpha0[b] = ti.cast(self.alpha_dbg[b, 0], ti.f32)
+            out_beta0[b] = ti.cast(self.beta_dbg[b, 0], ti.f32)
 
     # ---------------------------------------------------------------------
     # Taichi kernels / device-side logic (generic helpers)
