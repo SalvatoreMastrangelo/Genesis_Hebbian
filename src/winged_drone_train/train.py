@@ -256,7 +256,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "last_thr": 0.0,
             "last_jnts": 0.0,
             "v_tgt": 0.0,
-            "genome": 0.05,
+            "genome": 0.1,
         },
     }
 

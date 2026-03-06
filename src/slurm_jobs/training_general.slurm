@@ -4,10 +4,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=1
-#SBATCH --cpus-per-task=16
-#SBATCH --time=00:50:00
+#SBATCH --cpus-per-task=8
+#SBATCH --time=25:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
+#SBATCH --exclude=kl001
 
 set -euo pipefail
 
@@ -27,7 +28,7 @@ EXP_NAME=${EXP_NAME:-foundation-mixture}
 RUN_TAG=${RUN_TAG:-${EXP_NAME}_${SLURM_JOB_ID}}
 NUM_ENVS=${NUM_ENVS:-32768}
 MAX_ITERS=${MAX_ITERS:-4000}
-N_URDF=${N_URDF:-64}
+N_URDF=${N_URDF:-50}
 URDF_SEED=${URDF_SEED:-0}
 
 # ------------------------------------------------------------
@@ -83,6 +84,11 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
 
   mkdir -p /workspace/out/logs /workspace/out/urdf_generated /workspace/out/.cache
   cd /workspace/out
+
+  # Runtime placement debug (node + GPU)
+  echo \"[RUNTIME] Node: \$(hostname)\"
+  echo \"[RUNTIME] CUDA_VISIBLE_DEVICES: \${CUDA_VISIBLE_DEVICES:-<unset>}\"
+  nvidia-smi -L || true
 
   # Ensure meshes exist for generated URDFs (required by package://meshes)
   SRC_URDF_DIR=/workspace/bind/src/urdf_generated

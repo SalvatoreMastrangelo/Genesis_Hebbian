@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH --job-name=gen_eval
 #SBATCH --partition=l40s
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=10
-#SBATCH --cpus-per-task=80
-#SBATCH --time=15:00:00
+#SBATCH --gpus-per-node=5
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=4:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 
@@ -17,7 +17,6 @@ if ! ulimit -u 65535; then
 fi
 ulimit -n 65535 || true
 export RAY_DISABLE_METRICS=1
-
 # ------------------------------------------------------------
 # Paths on SCITAS
 # ------------------------------------------------------------
@@ -30,27 +29,27 @@ SRC="$HOME/binding/Genesis-dev"
 FOUNDATION_EXP=${FOUNDATION_EXP:-}
 EVAL_EXP=${EVAL_EXP:-eval_general_${SLURM_JOB_ID}}
 RUN_TAG=${RUN_TAG:-${EVAL_EXP}}
-EVAL_BASELINES=${EVAL_BASELINES:-0}
+EVAL_BASELINES=${EVAL_BASELINES:-1}
 
 EVAL_ENVS=${EVAL_ENVS:-8192}
 VMIN=${VMIN:-6.0}
 VMAX=${VMAX:-30.0}
 
 TRAIN_ENVS=${TRAIN_ENVS:-32768}
-TRAIN_ITERS=${TRAIN_ITERS:-800}
-TRAIN_REPEATS=${TRAIN_REPEATS:-5}
+TRAIN_ITERS=${TRAIN_ITERS:-700}
+TRAIN_REPEATS=${TRAIN_REPEATS:-0}
 DEVICE=${DEVICE:-cuda}
 GA_PARALLEL=${GA_PARALLEL:-auto}
-RAY_LOG_TO_DRIVER=${RAY_LOG_TO_DRIVER:-1}
+RAY_LOG_TO_DRIVER=${RAY_LOG_TO_DRIVER:-0}
 RAY_ADDRESS=${RAY_ADDRESS:-}
 RAY_MAX_CALLS=${RAY_MAX_CALLS:-0}
 RAY_TMPDIR=${RAY_TMPDIR:-}
 RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=${RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO:-0}
 WORKER_START_JITTER=${WORKER_START_JITTER:-2}
 
-N_URDF=${N_URDF:-10}
+N_URDF=${N_URDF:-50}
 URDF_SEED=${URDF_SEED:-1}
-MODEL_CKPT=${MODEL_CKPT:-2000}
+MODEL_CKPT=${MODEL_CKPT:-2100}
 NSGA_CSV=${NSGA_CSV:-}
 
 # Optional: provide baseline logs dir explicitly or via FOUNDATION_RUN_DIR
@@ -65,12 +64,12 @@ MODEL_PATH4=${MODEL_PATH4:-}
 MODEL_PATH5=${MODEL_PATH5:-}
 MODEL_PATH6=${MODEL_PATH6:-}
 
-DEFAULT_MODEL_CLUSTER_1="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2502403/logs/ea/foundation-mixture/model_2000.pt"
-DEFAULT_MODEL_CLUSTER_2="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2502405/logs/ea/foundation-mixture/model_2000.pt"
-DEFAULT_MODEL_CLUSTER_3="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2502407/logs/ea/foundation-mixture/model_2000.pt"
-DEFAULT_MODEL_CLUSTER_4="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2502410/logs/ea/foundation-mixture/model_2000.pt"
-DEFAULT_MODEL_CLUSTER_5="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2502412/logs/ea/foundation-mixture/model_2000.pt"
-DEFAULT_MODEL_CLUSTER_6="/home/avicari/binding/genesis_runs/training_general/CHANGE_ME_CLUSTER_6/logs/ea/foundation-mixture/model_2000.pt"
+DEFAULT_MODEL_CLUSTER_1="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2590413/logs/ea/foundation-mixture/model_2100.pt"
+DEFAULT_MODEL_CLUSTER_2="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2590414/logs/ea/foundation-mixture/model_2100.pt"
+DEFAULT_MODEL_CLUSTER_3="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2590415/logs/ea/foundation-mixture/model_2100.pt"
+DEFAULT_MODEL_CLUSTER_4="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2579212/logs/ea/foundation-mixture/model_1600.pt"
+DEFAULT_MODEL_CLUSTER_5="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2579233/logs/ea/foundation-mixture/model_1600.pt"
+DEFAULT_MODEL_CLUSTER_6="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2579207/logs/ea/foundation-mixture/model_1600.pt"
 
 if [ -z "${MODEL_PATH1}" ]; then MODEL_PATH1="${DEFAULT_MODEL_CLUSTER_1}"; fi
 if [ -z "${MODEL_PATH2}" ]; then MODEL_PATH2="${DEFAULT_MODEL_CLUSTER_2}"; fi
@@ -330,7 +329,7 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
   export GSTAICHI_CACHE_DIR=\${NODE_TMP_DIR}/gstaichi
   export MPLCONFIGDIR=\${NODE_TMP_DIR}/mpl
   export GA_PARALLEL=${GA_PARALLEL}
-  export RAY_LOG_TO_DRIVER=0
+  export RAY_LOG_TO_DRIVER=${RAY_LOG_TO_DRIVER}
   export RAY_ADDRESS=\"${RAY_HEAD_ADDR}\"
   export RAY_MAX_CALLS=${RAY_MAX_CALLS}
   export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=${RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO}
@@ -403,9 +402,9 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
     if [ -n \"${MODEL_PATH1:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path1 /workspace/out/models/m1/${MODEL_BASE1}\"; fi
     if [ -n \"${MODEL_PATH2:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path2 /workspace/out/models/m2/${MODEL_BASE2}\"; fi
     if [ -n \"${MODEL_PATH3:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path3 /workspace/out/models/m3/${MODEL_BASE3}\"; fi
-    if [ -n \"${MODEL_PATH4:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path4 /workspace/out/models/m4/${MODEL_BASE4}\"; fi
-    if [ -n \"${MODEL_PATH5:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path5 /workspace/out/models/m5/${MODEL_BASE5}\"; fi
-    if [ -n \"${MODEL_PATH6:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path6 /workspace/out/models/m6/${MODEL_BASE6}\"; fi
+    #if [ -n \"${MODEL_PATH4:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path4 /workspace/out/models/m4/${MODEL_BASE4}\"; fi
+    #if [ -n \"${MODEL_PATH5:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path5 /workspace/out/models/m5/${MODEL_BASE5}\"; fi
+    #if [ -n \"${MODEL_PATH6:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path6 /workspace/out/models/m6/${MODEL_BASE6}\"; fi
 
     if [ -z \"\$MODEL_ARGS\" ]; then
       if [ -z \"${MODEL_CKPT:-}\" ]; then
