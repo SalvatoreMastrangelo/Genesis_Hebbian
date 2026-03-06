@@ -13,7 +13,8 @@ Workflow:
 
 import argparse
 import os
-os.environ["GS_PARA_LEVEL"] = "3"
+import sys
+os.environ["GS_PARA_LEVEL"] = "2"
 import pickle
 import shutil
 import time
@@ -29,6 +30,7 @@ from winged_drone_train.env import WingedDroneEnv
 from winged_drone_train.rl.logging import RLTrainingLogger
 from general_policy.env_gen import Gen_Env
 from general_policy.catalog import build_catalog
+from general_policy.super_scene import run_logical_super_scene_training
 
 
 # --------------------------------------------------------------------------- #
@@ -63,6 +65,9 @@ def train(
     device: Optional[str] = None,
     n_urdf: Optional[int] = None,
     urdf_seed: int = 0,
+    logical_super_scene: bool = False,
+    urdf_shard_size: int = 0,
+    num_workers: int = 0,
     vis: bool = False,
 ) -> None:
     """
@@ -86,8 +91,30 @@ def train(
     # ------------------------------------------------------------------ #
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    # Helps reduce CUDA allocator fragmentation in long PPO runs.
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
-    gs.init(logging_level="error", backend=gs.gpu)
+    headless_no_gl = not bool(vis)
+    if headless_no_gl:
+        os.environ.setdefault("GS_HEADLESS_NO_GL", "1")
+
+    node_name = os.uname().nodename
+    cuda_visible = os.getenv("CUDA_VISIBLE_DEVICES", "<unset>")
+    if torch.cuda.is_available():
+        gpu_idx = torch.cuda.current_device()
+        gpu_name = torch.cuda.get_device_name(gpu_idx)
+        print(
+            f"[RUNTIME] Node={node_name} CUDA_VISIBLE_DEVICES={cuda_visible} "
+            f"GPU[{gpu_idx}]={gpu_name}",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            f"[RUNTIME] Node={node_name} CUDA_VISIBLE_DEVICES={cuda_visible} GPU=<not available>",
+            file=sys.stderr,
+            flush=True,
+        )
 
     # ------------------------------------------------------------------ #
     # Logging directory                                                  #
@@ -102,6 +129,9 @@ def train(
     # Load configs                                                       #
     # ------------------------------------------------------------------ #
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
+    if headless_no_gl:
+        env_cfg = dict(env_cfg)
+        env_cfg["enable_rendering"] = False
     train_cfg = get_train_cfg(experiment_name, max_iterations)
 
     obs_cfg["add_genome_obs"] = True  # Always include genome observation
@@ -131,6 +161,42 @@ def train(
         build_catalog(catalog_path, n=n_urdf, seed=urdf_seed)
 
     use_mixture = bool(catalog_path and catalog_path.is_dir())
+
+    # ------------------------------------------------------------------ #
+    # Logical super-scene mode (opt-in, mixture-only)                   #
+    # ------------------------------------------------------------------ #
+    if logical_super_scene:
+        if not use_mixture:
+            raise RuntimeError(
+                "[train] --logical-super-scene requires a valid URDF catalog directory."
+            )
+        if urdf_shard_size <= 0:
+            raise RuntimeError(
+                "[train] --logical-super-scene requires --urdf-shard-size > 0."
+            )
+        if vis:
+            print("[train] logical-super-scene mode: viewer enabled only on worker #0.")
+
+        run_logical_super_scene_training(
+            experiment_name=experiment_name,
+            catalog_path=catalog_path,
+            train_cfg=train_cfg,
+            env_cfg=env_cfg,
+            obs_cfg=obs_cfg,
+            reward_cfg=reward_cfg,
+            command_cfg=command_cfg,
+            log_dir=log_dir,
+            num_envs_total=num_envs,
+            max_iterations=max_iterations,
+            urdf_shard_size=urdf_shard_size,
+            num_workers=num_workers,
+            device=device,
+            vis=vis,
+        )
+        return
+
+    # Standard path keeps original behavior.
+    gs.init(logging_level="error", backend=gs.gpu)
 
     # ------------------------------------------------------------------ #
     # Environment creation                                               #
@@ -262,6 +328,30 @@ def _parse_args() -> argparse.Namespace:
         default=0,
         help="Random seed used when generating URDFs with --n-urdf.",
     )
+    parser.add_argument(
+        "--logical-super-scene",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable logical super-scene mode: spawn one worker per URDF shard, "
+            "collect rollout across all shards, then perform one global PPO update."
+        ),
+    )
+    parser.add_argument(
+        "--urdf-shard-size",
+        type=int,
+        default=0,
+        help="Shard size used by --logical-super-scene (required when that mode is active).",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help=(
+            "Number of worker processes in logical-super-scene mode. "
+            "If 0, auto-uses one worker per shard."
+        ),
+    )
 
     parser.add_argument(
         "--device",
@@ -288,6 +378,9 @@ def main() -> None:
         device=args.device,
         n_urdf=args.n_urdf,
         urdf_seed=args.urdf_seed,
+        logical_super_scene=args.logical_super_scene,
+        urdf_shard_size=args.urdf_shard_size,
+        num_workers=args.num_workers,
         vis=args.vis,
     )
 
