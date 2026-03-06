@@ -1184,7 +1184,7 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
     last_time = time.time()
 
     while controller.running:
-        time.sleep(0.2)
+
         now = time.time()
         dt = now - last_time
         last_time = now
@@ -1206,8 +1206,6 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
         # 4) Debug visualization of aero forces (lift + drag arrows)
         model.debug_step()
         model.print_joint_positions(drone, controller.servo_joint_names)
-
-        #time.sleep(0.02)  # yield to other threads
 
         # 5) Limit loop rate to viewer max FPS
         v = scene.viewer

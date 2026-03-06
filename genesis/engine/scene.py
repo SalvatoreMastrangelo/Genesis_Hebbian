@@ -130,6 +130,18 @@ class Scene(RBC):
         profiling_options = profiling_options or ProfilingOptions()
         renderer = renderer or Rasterizer()
 
+        headless_no_gl = str(os.getenv("GS_HEADLESS_NO_GL", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if headless_no_gl:
+            vis_options.enable_rendering = False
+            if show_viewer:
+                gs.logger.warning("GS_HEADLESS_NO_GL=1 set: forcing show_viewer=False.")
+                show_viewer = False
+
         if show_FPS is not None:
             warn_once("Scene.show_FPS is deprecated. Please use Scene.profiling_options.show_FPS")
             profiling_options.show_FPS = show_FPS

@@ -99,6 +99,8 @@ class VisOptions(Options):
         This option is deprecated. Please use `rendered_envs_idx` instead.
     lights : list of dict.
         Lights added to the scene.
+    enable_rendering : bool
+        Whether to initialize rendering backends (rasterizer/raytracer contexts). Defaults to True.
     """
 
     show_world_frame: bool = False
@@ -125,6 +127,7 @@ class VisOptions(Options):
     )
     n_rendered_envs: Optional[int] = None  # number of environments being rendered
     rendered_envs_idx: Optional[list] = None  # idx of environments being rendered
+    enable_rendering: bool = True
     lights: list = [
         {"type": "directional", "dir": (-1, -1, -1), "color": (1.0, 1.0, 1.0), "intensity": 5.0},
     ]

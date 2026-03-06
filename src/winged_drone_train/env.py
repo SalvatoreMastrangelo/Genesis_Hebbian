@@ -292,6 +292,7 @@ class WingedDroneEnv:
         self.growing_forest = self.env_cfg.get("growing_forest", True)
         self.unique_forests_eval = self.env_cfg.get("unique_forests_eval", True)
         self.show_viewer = bool(show_viewer)
+        self.enable_rendering = bool(self.env_cfg.get("enable_rendering", True))
         self._tree_radius = float(self.env_cfg.get("tree_radius", 1.0))
         self._collision_tol = 0.01 if self.evaluation else 0.1
         self._termination_abs_y_max = float(
@@ -378,6 +379,7 @@ class WingedDroneEnv:
                 ambient_light=(0.1, 0.1, 0.1),
                 shadow=False,
                 background_color=(0.04, 0.08, 0.12),
+                enable_rendering=self.enable_rendering,
             ),
             rigid_options=gs.options.RigidOptions(
                 dt=self.dt,
@@ -482,7 +484,7 @@ class WingedDroneEnv:
         self.rec_cam = None
 
         # We only support recording when there is a single environment.
-        if self.num_envs == 1 and self.evaluation:
+        if self.num_envs == 1 and self.evaluation and self.enable_rendering:
             self._create_follow_camera()
 
         # ------------------------------------------------------------------ #

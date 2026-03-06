@@ -30,6 +30,10 @@ NUM_ENVS=${NUM_ENVS:-32768}
 MAX_ITERS=${MAX_ITERS:-4000}
 N_URDF=${N_URDF:-50}
 URDF_SEED=${URDF_SEED:-0}
+LOGICAL_SUPER_SCENE=${LOGICAL_SUPER_SCENE:-1}
+URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-32}
+NUM_WORKERS=${NUM_WORKERS:-0}
+VIS=${VIS:-0}
 
 # ------------------------------------------------------------
 # Organized output layout (single bind target)
@@ -127,11 +131,27 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
     URDF_ARGS=\"--catalog-dir /workspace/out/urdf_generated\"
   fi
 
+  # Logical super-scene args (optional, train_gen.py specific)
+  LSS_ARGS=\"\"
+  if [ \"${LOGICAL_SUPER_SCENE}\" -ne 0 ]; then
+    LSS_ARGS=\"--logical-super-scene --urdf-shard-size ${URDF_SHARD_SIZE}\"
+    if [ \"${NUM_WORKERS}\" -gt 0 ]; then
+      LSS_ARGS=\"\${LSS_ARGS} --num-workers ${NUM_WORKERS}\"
+    fi
+  fi
+
+  VIS_ARGS=\"\"
+  if [ \"${VIS}\" -ne 0 ]; then
+    VIS_ARGS=\"--vis\"
+  fi
+
   # IMPORTANT: adjust this path if your script lives under Genesis-dev/src/...
   python /workspace/bind/src/general_policy/train_gen.py \
     --exp-name \"${EXP_NAME}\" \
     --num-envs \"${NUM_ENVS}\" \
     --max-iterations \"${MAX_ITERS}\" \
     --device cuda \
-    \$URDF_ARGS
+    \$URDF_ARGS \
+    \$LSS_ARGS \
+    \$VIS_ARGS
 "

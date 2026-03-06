@@ -2,7 +2,6 @@ import genesis as gs
 from genesis.repr_base import RBC
 
 from .camera import Camera
-from .rasterizer import Rasterizer
 
 VIEWER_DEFAULT_HEIGHT_RATIO = 0.5
 VIEWER_DEFAULT_ASPECT_RATIO = 0.75
@@ -24,6 +23,7 @@ class Visualizer(RBC):
     def __init__(self, scene, show_viewer, vis_options, viewer_options, renderer_options):
         self._t = -1
         self._scene = scene
+        self._enable_rendering = bool(getattr(vis_options, "enable_rendering", True))
 
         self._is_built = False
         self._context = None
@@ -32,12 +32,22 @@ class Visualizer(RBC):
         self._raytracer = None
         self._batch_renderer = None
         self.viewer_lock = DummyViewerLock()
+        self._cameras = gs.List()
+
+        if not self._enable_rendering:
+            if show_viewer:
+                gs.raise_exception(
+                    "Rendering is disabled (VisOptions.enable_rendering=False), so viewer cannot be enabled."
+                )
+            self._has_display = False
+            self._renderer = None
+            return
 
         # Rasterizer context is shared by viewer and rasterizer
         try:
+            from .rasterizer import Rasterizer
             from .rasterizer_context import RasterizerContext
             from .viewer import Viewer
-
         except Exception as e:
             gs.raise_exception_from("Rendering not working on this machine.", e)
         self._context = RasterizerContext(vis_options)
@@ -91,8 +101,6 @@ class Visualizer(RBC):
         elif isinstance(renderer_options, gs.renderers.Rasterizer):
             self._renderer = self._rasterizer
 
-        self._cameras = gs.List()
-
     def __del__(self):
         self.destroy()
 
@@ -119,6 +127,8 @@ class Visualizer(RBC):
     def add_camera(
         self, res, pos, lookat, up, model, fov, aperture, focus_dist, GUI, spp, denoise, near, far, env_idx, debug
     ):
+        if not self._enable_rendering:
+            gs.raise_exception("Cannot add camera when rendering is disabled (VisOptions.enable_rendering=False).")
         cam_idx = len([camera for camera in self._cameras if camera.debug == debug])
         camera = Camera(
             self,
@@ -156,6 +166,10 @@ class Visualizer(RBC):
 
     @gs.assert_built
     def reset(self):
+        if not self._enable_rendering:
+            self._t = -1
+            return
+
         self._t = -1
 
         self._context.reset()
@@ -170,6 +184,10 @@ class Visualizer(RBC):
             self._viewer.update(auto_refresh=True)
 
     def build(self):
+        if not self._enable_rendering:
+            self._is_built = True
+            return
+
         self._context.build(self._scene)
 
         if self._viewer is not None:
@@ -194,6 +212,9 @@ class Visualizer(RBC):
         self.reset()
 
     def update(self, force=True, auto=None):
+        if not self._enable_rendering:
+            return
+
         if force:  # force update
             self.reset()
         elif self._viewer is not None:
@@ -206,6 +227,9 @@ class Visualizer(RBC):
         """
         Update all visualization-only variables here.
         """
+        if not self._enable_rendering:
+            return
+
         # Early return if already updated previously
         if not force_render and self._t >= self.scene._t:
             return
@@ -250,6 +274,9 @@ class Visualizer(RBC):
         self._t = self._scene._t
 
     def colorize_seg_idxc_arr(self, seg_idxc_arr):
+        if not self._enable_rendering:
+            gs.raise_exception("Segmentation colorization is unavailable when rendering is disabled.")
+
         if self._batch_renderer is not None:
             return self._batch_renderer.colorize_seg_idxc_arr(seg_idxc_arr)
         else:
@@ -301,7 +328,13 @@ class Visualizer(RBC):
 
     @property
     def segmentation_idx_dict(self):
+        if not self._enable_rendering:
+            return {}
         if self._batch_renderer is not None:
             return self._batch_renderer.seg_idxc_map
         else:
             return self._context.seg_idxc_map
+
+    @property
+    def enable_rendering(self):
+        return self._enable_rendering
