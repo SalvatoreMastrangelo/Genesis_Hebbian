@@ -28,12 +28,17 @@ EXP_NAME=${EXP_NAME:-foundation-mixture}
 RUN_TAG=${RUN_TAG:-${EXP_NAME}_${SLURM_JOB_ID}}
 NUM_ENVS=${NUM_ENVS:-32768}
 MAX_ITERS=${MAX_ITERS:-4000}
-N_URDF=${N_URDF:-50}
+N_URDF=${N_URDF:-250}
 URDF_SEED=${URDF_SEED:-0}
 LOGICAL_SUPER_SCENE=${LOGICAL_SUPER_SCENE:-1}
 URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-32}
 NUM_WORKERS=${NUM_WORKERS:-0}
 VIS=${VIS:-0}
+LOGICAL_SUPER_SCENE_SHM=${LOGICAL_SUPER_SCENE_SHM:-1}
+
+# CUDA MPS controls (single-GPU multiprocess concurrency)
+ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-1}
+MPS_THREAD_PCT=${MPS_THREAD_PCT:-0}  # 0 => auto split in orchestrator
 
 # ------------------------------------------------------------
 # Organized output layout (single bind target)
@@ -48,6 +53,7 @@ CACHE_DIR="${RUN_DIR}/.cache"
 # Make sure output + cache dirs exist
 mkdir -p "$LOG_DIR" "$URDF_DIR" "$CACHE_DIR"
 mkdir -p "$URDF_DIR/meshes"
+mkdir -p "${RUN_DIR}/.mps/pipe" "${RUN_DIR}/.mps/log"
 
 # Safety checks
 if [ ! -f "$IMG" ]; then
@@ -73,6 +79,31 @@ BINDS="--bind ${SRC}:/workspace/bind:ro,${RUN_DIR}:/workspace/out:rw"
 # ------------------------------------------------------------
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_PER_GPU:-1}}"
 
+# ------------------------------------------------------------
+# Optional: start CUDA MPS daemon on host
+# ------------------------------------------------------------
+MPS_STARTED=0
+if [ "${ENABLE_CUDA_MPS}" -ne 0 ]; then
+  if command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
+    export CUDA_MPS_PIPE_DIRECTORY="${RUN_DIR}/.mps/pipe"
+    export CUDA_MPS_LOG_DIRECTORY="${RUN_DIR}/.mps/log"
+    rm -f "${CUDA_MPS_PIPE_DIRECTORY}/nvidia-cuda-mps-control" || true
+    nvidia-cuda-mps-control -d
+    MPS_STARTED=1
+    echo "[MPS] started (pipe=${CUDA_MPS_PIPE_DIRECTORY})"
+  else
+    echo "[WARN] nvidia-cuda-mps-control not found; running without MPS."
+  fi
+fi
+
+cleanup_mps() {
+  if [ "${MPS_STARTED}" -eq 1 ]; then
+    echo quit | nvidia-cuda-mps-control >/dev/null 2>&1 || true
+    echo "[MPS] stopped"
+  fi
+}
+trap cleanup_mps EXIT
+
 srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   set -euo pipefail
 
@@ -85,8 +116,14 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   export TAICHI_CACHE_DIR=/workspace/out/.cache/taichi
   export GSTAICHI_CACHE_DIR=/workspace/out/.cache/gstaichi
   export MPLCONFIGDIR=/workspace/out/.cache/mpl
+  export LOGICAL_SUPER_SCENE_SHM=${LOGICAL_SUPER_SCENE_SHM}
+  export LOGICAL_SUPER_SCENE_MPS_THREAD_PERCENT=${MPS_THREAD_PCT}
+  if [ \"${ENABLE_CUDA_MPS}\" -ne 0 ]; then
+    export CUDA_MPS_PIPE_DIRECTORY=/workspace/out/.mps/pipe
+    export CUDA_MPS_LOG_DIRECTORY=/workspace/out/.mps/log
+  fi
 
-  mkdir -p /workspace/out/logs /workspace/out/urdf_generated /workspace/out/.cache
+  mkdir -p /workspace/out/logs /workspace/out/urdf_generated /workspace/out/.cache /workspace/out/.mps/pipe /workspace/out/.mps/log
   cd /workspace/out
 
   # Runtime placement debug (node + GPU)

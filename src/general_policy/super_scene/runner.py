@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, List, Sequence
 
@@ -162,6 +163,8 @@ def run_logical_super_scene_training(
         command_cfg=command_cfg,
         device=device,
         show_viewer=vis,
+        use_shared_memory=bool(int(os.getenv("LOGICAL_SUPER_SCENE_SHM", "1"))),
+        mps_active_thread_percentage=int(os.getenv("LOGICAL_SUPER_SCENE_MPS_THREAD_PERCENT", "0")),
     )
     env = LogicalSuperSceneVecEnv(orchestrator=orchestrator, device=device)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -16,6 +16,7 @@ class WorkerHandle:
     conn: any
     num_envs: int
     sl: slice
+    shm: Optional[Dict[str, torch.Tensor]] = None
 
 
 class LogicalSuperSceneOrchestrator:
@@ -37,6 +38,8 @@ class LogicalSuperSceneOrchestrator:
         command_cfg: Dict,
         device: str,
         show_viewer: bool = False,
+        use_shared_memory: bool = True,
+        mps_active_thread_percentage: int = 0,
     ) -> None:
         if len(shards) == 0:
             raise RuntimeError("No shards provided")
@@ -46,6 +49,7 @@ class LogicalSuperSceneOrchestrator:
         self.device = torch.device(device)
         self._workers: List[WorkerHandle] = []
         self._worker_slices: List[slice] = []
+        self.use_shared_memory = bool(use_shared_memory)
 
         ctx = mp.get_context("spawn")
 
@@ -53,6 +57,12 @@ class LogicalSuperSceneOrchestrator:
         metas: List[Dict] = []
         initial_obs_cpu: List[torch.Tensor] = []
         initial_critic_cpu: List[torch.Tensor] = []
+
+        n_workers = len(shards)
+        if mps_active_thread_percentage > 0:
+            per_worker_pct = max(1, min(100, int(mps_active_thread_percentage)))
+        else:
+            per_worker_pct = max(1, min(100, int(100 // max(1, n_workers))))
 
         for i, (urdfs_i, n_env_i) in enumerate(zip(shards, shard_env_counts)):
             if n_env_i <= 0:
@@ -71,6 +81,8 @@ class LogicalSuperSceneOrchestrator:
                     "command_cfg": dict(command_cfg),
                     "device": str(device),
                     "show_viewer": bool(show_viewer and i == 0),
+                    "use_shared_memory": self.use_shared_memory,
+                    "mps_active_thread_percentage": per_worker_pct,
                 },
                 daemon=True,
             )
@@ -84,13 +96,30 @@ class LogicalSuperSceneOrchestrator:
 
             meta = dict(reply.payload["meta"])
             metas.append(meta)
-            initial_obs_cpu.append(reply.payload["obs"])
-            initial_critic_cpu.append(reply.payload["critic_obs"])
+
+            shm = reply.payload.get("shared_buffers")
+            if self.use_shared_memory and not isinstance(shm, dict):
+                raise RuntimeError(f"Worker {i} did not provide shared buffers")
+
+            if shm is not None:
+                initial_obs_cpu.append(shm["obs"])
+                initial_critic_cpu.append(shm["critic_obs"])
+            else:
+                initial_obs_cpu.append(reply.payload["obs"])
+                initial_critic_cpu.append(reply.payload["critic_obs"])
 
             stop = start + int(meta["num_envs"])
             sl = slice(start, stop)
             self._worker_slices.append(sl)
-            self._workers.append(WorkerHandle(process=p, conn=parent_conn, num_envs=int(meta["num_envs"]), sl=sl))
+            self._workers.append(
+                WorkerHandle(
+                    process=p,
+                    conn=parent_conn,
+                    num_envs=int(meta["num_envs"]),
+                    sl=sl,
+                    shm=shm if isinstance(shm, dict) else None,
+                )
+            )
             start = stop
 
         self.num_envs = start
@@ -116,15 +145,22 @@ class LogicalSuperSceneOrchestrator:
         if isinstance(msg, WorkerReply):
             return msg
         if isinstance(msg, dict):
-            return WorkerReply(ok=bool(msg.get("ok", False)), payload=dict(msg.get("payload", {})), error=str(msg.get("error", "")))
+            return WorkerReply(
+                ok=bool(msg.get("ok", False)),
+                payload=dict(msg.get("payload", {})),
+                error=str(msg.get("error", "")),
+            )
         return WorkerReply(ok=False, payload={}, error="Invalid worker reply format")
+
+    def _assert_worker_alive(self, w: WorkerHandle, phase: str) -> None:
+        if not w.process.is_alive():
+            raise RuntimeError(
+                f"Worker process died before {phase} (pid={w.process.pid}, exitcode={w.process.exitcode})."
+            )
 
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
         for w in self._workers:
-            if not w.process.is_alive():
-                raise RuntimeError(
-                    f"Worker process died before reset send (pid={w.process.pid}, exitcode={w.process.exitcode})."
-                )
+            self._assert_worker_alive(w, "reset send")
             try:
                 w.conn.send(WorkerCommand(cmd="reset", payload={}))
             except BrokenPipeError as exc:
@@ -138,8 +174,12 @@ class LogicalSuperSceneOrchestrator:
             rep = self._recv_reply(w.conn)
             if not rep.ok:
                 raise RuntimeError(rep.error)
-            obs_chunks.append(rep.payload["obs"])
-            critic_chunks.append(rep.payload["critic_obs"])
+            if w.shm is not None:
+                obs_chunks.append(w.shm["obs"])
+                critic_chunks.append(w.shm["critic_obs"])
+            else:
+                obs_chunks.append(rep.payload["obs"])
+                critic_chunks.append(rep.payload["critic_obs"])
 
         self._obs = torch.cat(obs_chunks, dim=0).to(self.device)
         self._critic = torch.cat(critic_chunks, dim=0).to(self.device)
@@ -151,15 +191,16 @@ class LogicalSuperSceneOrchestrator:
                 f"Expected actions shape {(self.num_envs, self.num_actions)}, got {tuple(actions.shape)}"
             )
 
-        # Send in parallel
         actions_cpu = actions.detach().to("cpu")
         for w in self._workers:
-            if not w.process.is_alive():
-                raise RuntimeError(
-                    f"Worker process died before step send (pid={w.process.pid}, exitcode={w.process.exitcode})."
-                )
+            self._assert_worker_alive(w, "step send")
+            if w.shm is not None:
+                w.shm["actions"].copy_(actions_cpu[w.sl])
+                payload = {}
+            else:
+                payload = {"actions": actions_cpu[w.sl].contiguous()}
             try:
-                w.conn.send(WorkerCommand(cmd="step", payload={"actions": actions_cpu[w.sl].contiguous()}))
+                w.conn.send(WorkerCommand(cmd="step", payload=payload))
             except BrokenPipeError as exc:
                 raise RuntimeError(
                     f"Broken pipe sending step to worker (pid={w.process.pid}, exitcode={w.process.exitcode})."
@@ -176,13 +217,21 @@ class LogicalSuperSceneOrchestrator:
             rep = self._recv_reply(w.conn)
             if not rep.ok:
                 raise RuntimeError(rep.error)
-            payload = rep.payload
-            obs_chunks.append(payload["obs"])
-            critic_chunks.append(payload["critic_obs"])
-            rew_chunks.append(payload["rew"])
-            done_chunks.append(payload["done"])
-            timeout_chunks.append(payload["time_outs"])
-            ep = payload.get("episode")
+            if w.shm is not None:
+                obs_chunks.append(w.shm["obs"])
+                critic_chunks.append(w.shm["critic_obs"])
+                rew_chunks.append(w.shm["rew"])
+                done_chunks.append(w.shm["done"])
+                timeout_chunks.append(w.shm["time_outs"])
+            else:
+                payload = rep.payload
+                obs_chunks.append(payload["obs"])
+                critic_chunks.append(payload["critic_obs"])
+                rew_chunks.append(payload["rew"])
+                done_chunks.append(payload["done"])
+                timeout_chunks.append(payload["time_outs"])
+
+            ep = rep.payload.get("episode")
             if isinstance(ep, dict):
                 episodes.append(ep)
 
@@ -215,7 +264,6 @@ class LogicalSuperSceneOrchestrator:
 
         self._obs = obs
         self._critic = critic
-
         return obs, critic, rew, done, extras
 
     def close(self) -> None:
