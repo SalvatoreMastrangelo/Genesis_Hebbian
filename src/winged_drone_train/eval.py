@@ -203,8 +203,9 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
         Total energy per meter for all non-NaN environments.
     v_cmd : np.ndarray, shape (N_valid,)
         Commanded speed of each valid environment.
-    progress : np.ndarray, shape (N_envs,)
-        Total distance covered along +X for all environments (NaN envs included).
+    progress : np.ndarray, shape (N_valid,)
+        Total distance covered along +X for valid environments only
+        (same indexing as v_mean / E_tot / v_cmd).
     final_reason : np.ndarray, shape (N_envs,)
         Integer code for termination reason:
         0=success, 1=obstacle, 2=wall, 3=angle, 4=other.
@@ -306,7 +307,9 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
     mg = env.nominal_mass * 9.81
     COT   = E_tot / mg
     v_cmd = env.commands[~nan_indices, 0].detach().cpu().numpy()
-    progress = dx_acc.cpu().numpy()
+    progress_all = dx_acc.cpu().numpy()
+    valid_mask = ~nan_indices.cpu().numpy()
+    progress = progress_all[valid_mask]
     final_reason = final_reason.cpu().numpy()
     reward_total = reward_acc.cpu().numpy()
     reward_total[nan_indices.cpu().numpy()] = np.nan

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -228,7 +229,30 @@ class WingedDroneEnv:
     GENOME_MIN, GENOME_MAX = Chromosome_Drone.genome_min_max()
 
     @staticmethod
-    def _resolve_aero_config(solver_kind: str) -> dict:
+    def _resolve_aero_config(solver_kind: str, urdf_file: Optional[str] = None) -> dict:
+        candidates: List[Path] = []
+        env_path = os.getenv("AERO_CONFIG_PATH", "").strip()
+        if env_path:
+            candidates.append(Path(env_path))
+        if urdf_file:
+            candidates.append(Path(str(urdf_file)).expanduser().resolve().parent / "aero_parameters.yaml")
+
+        try:
+            import yaml as _yaml  # type: ignore
+        except Exception:
+            _yaml = None
+
+        if _yaml is not None:
+            for path in candidates:
+                try:
+                    if path.is_file():
+                        with open(path, "r") as f:
+                            cfg = _yaml.safe_load(f)
+                        if isinstance(cfg, dict):
+                            return cfg
+                except Exception:
+                    pass
+
         return resolve_aero_config(solver_kind)
 
     def _apply_dynamics_noise(self, env_ids: torch.Tensor) -> None:
@@ -356,7 +380,7 @@ class WingedDroneEnv:
         self.urdf_file = str(urdf_file)
         if not Path(self.urdf_file).exists():
             raise FileNotFoundError(f"URDF not found: {self.urdf_file}")
-        self._aero_config = self._resolve_aero_config(self.aero_solver_kind)
+        self._aero_config = self._resolve_aero_config(self.aero_solver_kind, self.urdf_file)
         self.drone_model = DroneAeroModel(self.urdf_file, config_override=self._aero_config)
 
         # ------------------------------------------------------------------ #

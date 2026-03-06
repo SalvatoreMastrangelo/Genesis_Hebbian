@@ -31,11 +31,14 @@ so the geometry can be reconstructed or traced back later.
 
 import math
 import os
+import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence, Tuple, Union, List, Dict, Optional
 import csv
+
+from winged_drone_train.defaults import default_mydrone_urdf_dir
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -292,7 +295,7 @@ class UrdfMaker:
     # ────────────────────────────────────────────────────────────────────
     def _load_actuator_catalog(self) -> None:
         """Load actuator properties from actuators.csv into _actuator_catalog."""
-        csv_path = Path(__file__).resolve().parents[2] / "genesis" / "assets" / "urdf" / "mydrone" / "actuators.csv"
+        csv_path = default_mydrone_urdf_dir() / "actuators.csv"
         catalog: Dict[Tuple[str, str], Dict[str, str]] = {}
         if csv_path.exists():
             try:
@@ -360,15 +363,9 @@ class UrdfMaker:
             candidates.append(Path(env_path))
         if out_dir:
             candidates.append(Path(out_dir) / "aero_parameters.yaml")
-        repo_default = (
-            Path(__file__).resolve().parents[2]
-            / "genesis"
-            / "assets"
-            / "urdf"
-            / "mydrone"
-            / "aero_parameters.yaml"
-        )
-        candidates.append(repo_default)
+        from winged_drone_train.defaults import default_mydrone_urdf_dir
+
+        candidates.append(default_mydrone_urdf_dir() / "aero_parameters.yaml")
 
         try:
             import yaml as _yaml  # type: ignore
@@ -1378,6 +1375,25 @@ class UrdfMaker:
         """Return genome as a filename-friendly string."""
         return "[" + ", ".join(f"{v:g}" for v in self._raw_genome_values()) + "]"
 
+    def _ensure_support_files(self) -> None:
+        """
+        Ensure aerodynamic sidecar files exist next to generated URDFs.
+
+        `DroneAeroModel` loads `aero_parameters.yaml` and `actuators.csv`
+        from the URDF directory at runtime, and URDF visual meshes are
+        referenced as `package://meshes/...`.
+        """
+        src_dir = default_mydrone_urdf_dir()
+        for name in ("aero_parameters.yaml", "actuators.csv"):
+            src = src_dir / name
+            dst = self.out / name
+            if src.is_file() and not dst.exists():
+                shutil.copy2(src, dst)
+        src_meshes = src_dir / "meshes"
+        dst_meshes = self.out / "meshes"
+        if src_meshes.is_dir() and not dst_meshes.exists():
+            shutil.copytree(src_meshes, dst_meshes)
+
     def create_urdf(self, filename: str | None = None) -> str:
         """
         Generate the URDF file on disk.
@@ -1397,6 +1413,7 @@ class UrdfMaker:
             filename = f"{self._params_as_string()}.urdf"
 
         self.out.mkdir(parents=True, exist_ok=True)
+        self._ensure_support_files()
 
         tree = self.build_tree()
         self._indent(tree.getroot())
