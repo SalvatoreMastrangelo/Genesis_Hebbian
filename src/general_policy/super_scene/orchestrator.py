@@ -121,7 +121,16 @@ class LogicalSuperSceneOrchestrator:
 
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
         for w in self._workers:
-            w.conn.send(WorkerCommand(cmd="reset", payload={}))
+            if not w.process.is_alive():
+                raise RuntimeError(
+                    f"Worker process died before reset send (pid={w.process.pid}, exitcode={w.process.exitcode})."
+                )
+            try:
+                w.conn.send(WorkerCommand(cmd="reset", payload={}))
+            except BrokenPipeError as exc:
+                raise RuntimeError(
+                    f"Broken pipe sending reset to worker (pid={w.process.pid}, exitcode={w.process.exitcode})."
+                ) from exc
 
         obs_chunks: List[torch.Tensor] = []
         critic_chunks: List[torch.Tensor] = []
@@ -145,7 +154,16 @@ class LogicalSuperSceneOrchestrator:
         # Send in parallel
         actions_cpu = actions.detach().to("cpu")
         for w in self._workers:
-            w.conn.send(WorkerCommand(cmd="step", payload={"actions": actions_cpu[w.sl].contiguous()}))
+            if not w.process.is_alive():
+                raise RuntimeError(
+                    f"Worker process died before step send (pid={w.process.pid}, exitcode={w.process.exitcode})."
+                )
+            try:
+                w.conn.send(WorkerCommand(cmd="step", payload={"actions": actions_cpu[w.sl].contiguous()}))
+            except BrokenPipeError as exc:
+                raise RuntimeError(
+                    f"Broken pipe sending step to worker (pid={w.process.pid}, exitcode={w.process.exitcode})."
+                ) from exc
 
         obs_chunks: List[torch.Tensor] = []
         critic_chunks: List[torch.Tensor] = []

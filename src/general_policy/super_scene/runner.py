@@ -42,7 +42,11 @@ class LogicalSuperSceneVecEnv:
             "time_outs": torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32),
         }
 
-        self.reset()
+        # Orchestrator already collected an initial reset from each worker at startup.
+        # Reusing that state avoids an immediate all-workers reset burst.
+        self.obs_buf = orchestrator._obs.to(self.device)  # populated in orchestrator.__init__
+        self.privileged_obs_buf = orchestrator._critic.to(self.device)
+        self.extras["observations"]["critic"] = self.privileged_obs_buf
 
     def reset(self):
         obs, critic = self.orchestrator.reset()
