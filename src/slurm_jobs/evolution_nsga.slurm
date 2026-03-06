@@ -1,10 +1,11 @@
 #!/bin/bash -l
 #SBATCH --job-name=nsga
 #SBATCH --partition=l40s
-#SBATCH --nodes=5
-#SBATCH --ntasks=1
-#SBATCH --gpus=40
-#SBATCH --cpus-per-task=80
+#SBATCH --nodes=2
+#SBATCH --ntasks=2
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=5:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 
@@ -19,10 +20,10 @@ SRC="$HOME/binding/Genesis-dev"
 # ------------------------------------------------------------
 # Run params (override via sbatch --export=...)
 # ------------------------------------------------------------
-POP_SIZE=${POP_SIZE:-40}
-NUM_GEN=${NUM_GEN:-25}
+POP_SIZE=${POP_SIZE:-4}
+NUM_GEN=${NUM_GEN:-4}
 TRAIN_ITERS=${TRAIN_ITERS:-700}
-TRAIN_REPETITION=${TRAIN_REPETITION:-5}
+TRAIN_REPETITION=${TRAIN_REPETITION:-2}
 RUN_TAG=${RUN_TAG:-nsga_${SLURM_JOB_ID}}
 RUN_NAME=${RUN_NAME:-${RUN_TAG}}
 DEVICE=${DEVICE:-cuda:0}
