@@ -211,7 +211,7 @@ class LogicalSuperSceneOrchestrator:
         rew_chunks: List[torch.Tensor] = []
         done_chunks: List[torch.Tensor] = []
         timeout_chunks: List[torch.Tensor] = []
-        episodes: List[Dict] = []
+        episodes: List[Tuple[Dict, int]] = []
 
         for w in self._workers:
             rep = self._recv_reply(w.conn)
@@ -223,6 +223,7 @@ class LogicalSuperSceneOrchestrator:
                 rew_chunks.append(w.shm["rew"])
                 done_chunks.append(w.shm["done"])
                 timeout_chunks.append(w.shm["time_outs"])
+                done_local = w.shm["done"]
             else:
                 payload = rep.payload
                 obs_chunks.append(payload["obs"])
@@ -230,10 +231,15 @@ class LogicalSuperSceneOrchestrator:
                 rew_chunks.append(payload["rew"])
                 done_chunks.append(payload["done"])
                 timeout_chunks.append(payload["time_outs"])
+                done_local = payload["done"]
 
             ep = rep.payload.get("episode")
             if isinstance(ep, dict):
-                episodes.append(ep)
+                try:
+                    ep_count = int(done_local.sum().item())
+                except Exception:
+                    ep_count = 1
+                episodes.append((ep, max(ep_count, 1)))
 
         obs = torch.cat(obs_chunks, dim=0).to(self.device)
         critic = torch.cat(critic_chunks, dim=0).to(self.device)
@@ -249,17 +255,17 @@ class LogicalSuperSceneOrchestrator:
         }
         if episodes:
             agg: Dict[str, float] = {}
-            c = 0
-            for e in episodes:
-                c += 1
+            total_weight = 0
+            for e, weight in episodes:
+                total_weight += weight
                 for k, v in e.items():
                     try:
-                        agg[k] = agg.get(k, 0.0) + float(v)
+                        agg[k] = agg.get(k, 0.0) + float(v) * weight
                     except Exception:
                         pass
-            if c > 0:
+            if total_weight > 0:
                 for k in list(agg.keys()):
-                    agg[k] /= float(c)
+                    agg[k] /= float(total_weight)
                 extras["episode"] = agg
 
         self._obs = obs

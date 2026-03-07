@@ -495,7 +495,7 @@ def main() -> None:
         help="Enable Genesis viewer visualization.",
     )
     parser.add_argument(
-        "-B", "--num_envs", type=int, default=32768, # 32768,16384
+        "-B", "--num_envs", type=int, default=16384, # 32768,16384
         help="Number of parallel environments.",
     )
     parser.add_argument(

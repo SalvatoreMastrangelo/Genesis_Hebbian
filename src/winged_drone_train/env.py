@@ -1138,6 +1138,30 @@ class WingedDroneEnv:
         self._flag_nonfinite_rows(self.rew_buf)
         self._flag_nonfinite_rows(self.last_reward_components)
 
+    def _rebuild_observations(self) -> None:
+        """
+        Recompute actor/critic observations from the current simulator state.
+
+        This is needed both after physics stepping and after resetting finished
+        environments, so the returned observation always matches the internal
+        state used for the next action.
+        """
+        depth_actor = self.depth if self.include_depth else None
+
+        obs_actor, obs_critic = self.obs_builder.build_observations(
+            base_pos=self.base_pos,
+            base_quat=self.base_quat,
+            base_lin_vel=self.base_lin_vel,
+            last_actions=self.last_actions,
+            commands=self.commands,
+            depth_actor=depth_actor,
+        )
+
+        self.obs_buf.copy_(obs_actor)
+        self.privileged_obs_buf.copy_(obs_critic)
+        self._flag_nonfinite_rows(self.obs_buf)
+        self._flag_nonfinite_rows(self.privileged_obs_buf)
+
     # ---------------------------------------------------------------------- #
     # Step function                                                          #
     # ---------------------------------------------------------------------- #
@@ -1259,21 +1283,7 @@ class WingedDroneEnv:
         self._accumulate_rewards()
 
         # ------------------------- Observations ---------------------------- #
-        depth_actor = self.depth if self.include_depth else None
-
-        obs_actor, obs_critic = self.obs_builder.build_observations(
-            base_pos=self.base_pos,
-            base_quat=self.base_quat,
-            base_lin_vel=self.base_lin_vel,
-            last_actions=self.last_actions,
-            commands=self.commands,
-            depth_actor=depth_actor,
-        )
-
-        self.obs_buf.copy_(obs_actor)
-        self.privileged_obs_buf.copy_(obs_critic)
-        self._flag_nonfinite_rows(self.obs_buf)
-        self._flag_nonfinite_rows(self.privileged_obs_buf)
+        self._rebuild_observations()
 
         # If any env produced NaNs, force safe outputs and trigger reset.
         nan_mask = self.nan_envs.bool()
@@ -1300,7 +1310,14 @@ class WingedDroneEnv:
             # Render one frame for the recording camera.
             self.rec_cam.render()
 
-        self.reset_idx(self.reset_buf.nonzero(as_tuple=False).flatten())
+        reset_env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+        self.reset_idx(reset_env_ids)
+        if reset_env_ids.numel() > 0:
+            # Match the next observation to the freshly reset state so PPO
+            # stores coherent transitions across episode boundaries.
+            self.depth[reset_env_ids] = self.MAX_DISTANCE
+            self._rebuild_observations()
+            self.extras["observations"]["critic"] = self.privileged_obs_buf
 
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
 
@@ -1473,6 +1490,8 @@ class WingedDroneEnv:
 
         self.extras.setdefault("observations", {})
         self.extras["observations"]["critic"] = self.privileged_obs_buf
+        if "episode" in self.extras:
+            del self.extras["episode"]
 
         return self.obs_buf, self.extras
 

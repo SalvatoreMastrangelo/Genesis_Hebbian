@@ -26,18 +26,18 @@ SRC="$HOME/binding/Genesis-dev"
 # ------------------------------------------------------------
 EXP_NAME=${EXP_NAME:-foundation-mixture}
 RUN_TAG=${RUN_TAG:-${EXP_NAME}_${SLURM_JOB_ID}}
-NUM_ENVS=${NUM_ENVS:-32768}
+NUM_ENVS=${NUM_ENVS:-16384}
 MAX_ITERS=${MAX_ITERS:-4000}
-N_URDF=${N_URDF:-250}
+N_URDF=${N_URDF:-200}
 URDF_SEED=${URDF_SEED:-0}
 LOGICAL_SUPER_SCENE=${LOGICAL_SUPER_SCENE:-1}
-URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-32}
+URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-40}
 NUM_WORKERS=${NUM_WORKERS:-0}
 VIS=${VIS:-0}
 LOGICAL_SUPER_SCENE_SHM=${LOGICAL_SUPER_SCENE_SHM:-1}
 
 # CUDA MPS controls (single-GPU multiprocess concurrency)
-ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-1}
+ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-0}
 MPS_THREAD_PCT=${MPS_THREAD_PCT:-0}  # 0 => auto split in orchestrator
 
 # ------------------------------------------------------------
@@ -74,10 +74,26 @@ BINDS="--bind ${SRC}:/workspace/bind:ro,${RUN_DIR}:/workspace/out:rw"
 
 # ------------------------------------------------------------
 # Run
-# Note: cpus-per-gpu=4 => total CPUs per task typically 4 on 1 GPU.
-# Use SLURM_CPUS_PER_TASK if set, otherwise fall back to cpus-per-gpu.
+# Approximate per-process OpenMP threads as:
+#   floor(cpus_assigned / active_processes), with a minimum of 1.
+# In logical super-scene mode, active_processes ~= workers + parent.
 # ------------------------------------------------------------
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_PER_GPU:-1}}"
+CPUS_ASSIGNED="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_PER_GPU:-1}}"
+OMP_PROCESSES=1
+if [ "${LOGICAL_SUPER_SCENE}" -ne 0 ]; then
+  if [ "${NUM_WORKERS}" -gt 0 ]; then
+    OMP_PROCESSES="${NUM_WORKERS}"
+  else
+    OMP_PROCESSES=$(( (N_URDF + URDF_SHARD_SIZE - 1) / URDF_SHARD_SIZE ))
+  fi
+  OMP_PROCESSES=$(( OMP_PROCESSES + 1 ))
+fi
+OMP_THREADS=$(( CPUS_ASSIGNED / OMP_PROCESSES ))
+if [ "${OMP_THREADS}" -lt 1 ]; then
+  OMP_THREADS=1
+fi
+export OMP_NUM_THREADS="${OMP_THREADS}"
+echo "[RUNTIME] cpus_assigned=${CPUS_ASSIGNED} omp_processes=${OMP_PROCESSES} OMP_NUM_THREADS=${OMP_NUM_THREADS}"
 
 # ------------------------------------------------------------
 # Optional: start CUDA MPS daemon on host
