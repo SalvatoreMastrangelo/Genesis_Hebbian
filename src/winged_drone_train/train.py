@@ -222,8 +222,8 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "y_lower": -50.0,
         "y_upper": 50.0,
         # X-limit for success condition
-        "forest_x_limit": 150.0,
-        "x_upper": 150.0,
+        "forest_x_limit": 200.0,
+        "x_upper": 200.0,
 
         # ---------- AERODYNAMIC NOISE -------------------------------------
         # Single group controlling BOTH:
@@ -277,7 +277,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "obstacle": -0.1,
             "energy": -2e-3,#-5e-4,   
             "progress": 5e-1,
-            "height": -5e-3, #-1e-2,
+            "height": -5e-3, #-5e-3,
             "success": 0.0,
             "cosmetic": -1.0,
             "stability": -0,

@@ -1362,10 +1362,10 @@ class WingedDroneEnv:
         self.base_lin_vel[env_ids, 0] = r * 24.0 + 6.0
         # Lateral speed
         r.normal_()
-        self.base_lin_vel[env_ids, 1] = torch.clamp(r * 1.5, min=-6.0, max=6.0)
+        self.base_lin_vel[env_ids, 1] = torch.clamp(r * 2.0, min=-8.0, max=8.0)
         # Vertical speed
         r.normal_()
-        self.base_lin_vel[env_ids, 2] = torch.clamp(r * 1.5, min=-6.0, max=6.0)
+        self.base_lin_vel[env_ids, 2] = torch.clamp(r * 2.0, min=-8.0, max=8.0)
 
         self.base_euler[env_ids, 1] = torch.atan2(-self.base_lin_vel[env_ids, 2], self.base_lin_vel[env_ids, 0])
         self.base_euler[env_ids, 2] = torch.atan2(self.base_lin_vel[env_ids, 1], self.base_lin_vel[env_ids, 0])
