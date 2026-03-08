@@ -233,6 +233,12 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "aero_noise_sigma0": 0.05,    # base std for mag/dir noise on aero forces
         "noise_sigma_param": 0.1,
 
+        # ---------- LIGHT PER-ENV PHYSICAL RANDOMIZATION ------------------
+        "property_randomization": {
+            "mass_shift_std": 0.02,      # additive std scaled by nominal link mass
+            "com_shift_std": 0.004,       # additive std in meters
+        },
+
     }
 
     # --------------------------------------------------------------------- #

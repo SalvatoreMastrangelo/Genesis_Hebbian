@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -17,6 +18,8 @@ class WorkerHandle:
     num_envs: int
     sl: slice
     shm: Optional[Dict[str, torch.Tensor]] = None
+    worker_idx: int = -1
+    worker_device: str = ""
 
 
 class LogicalSuperSceneOrchestrator:
@@ -60,10 +63,13 @@ class LogicalSuperSceneOrchestrator:
         metas: List[Dict] = []
         initial_obs_cpu: List[torch.Tensor] = []
         initial_critic_cpu: List[torch.Tensor] = []
+        startup_t0 = time.perf_counter()
 
         workers_per_device: Dict[str, int] = {}
         for dev in worker_devices:
             workers_per_device[dev] = workers_per_device.get(dev, 0) + 1
+
+        pending_workers: List[Tuple[int, str, Sequence[str], any, mp.Process]] = []
 
         for i, (urdfs_i, n_env_i, worker_device) in enumerate(zip(shards, shard_env_counts, worker_devices)):
             if n_env_i <= 0:
@@ -95,9 +101,27 @@ class LogicalSuperSceneOrchestrator:
                 },
                 daemon=True,
             )
-            p.start()
 
-            reply = self._recv_reply(parent_conn)
+            launch_t0 = time.perf_counter()
+            p.start()
+            print(
+                "[logical-super-scene] "
+                f"launched worker={i} pid={p.pid} device={worker_device} "
+                f"target_envs={int(n_env_i)} urdfs={len(urdfs_i)} "
+                f"mps_thread_pct={per_worker_pct} launch_s={time.perf_counter() - launch_t0:.3f}"
+            )
+            pending_workers.append((i, worker_device, urdfs_i, parent_conn, p))
+
+        print(
+            "[logical-super-scene] "
+            f"all {len(pending_workers)} workers launched in {time.perf_counter() - startup_t0:.3f}s; "
+            "waiting for ready replies"
+        )
+
+        ready_wait_t0 = time.perf_counter()
+        for i, worker_device, urdfs_i, parent_conn, p in pending_workers:
+            reply_wait_t0 = time.perf_counter()
+            reply = self._recv_reply(parent_conn, worker_idx=i, process=p)
             if not reply.ok:
                 raise RuntimeError(reply.error or f"Worker {i} failed to start")
             if reply.payload.get("event") != "ready":
@@ -127,15 +151,23 @@ class LogicalSuperSceneOrchestrator:
                     num_envs=int(meta["num_envs"]),
                     sl=sl,
                     shm=shm if isinstance(shm, dict) else None,
+                    worker_idx=i,
+                    worker_device=worker_device,
                 )
             )
             start = stop
 
             print(
                 "[logical-super-scene] "
-                f"worker={i} device={worker_device} envs={int(meta['num_envs'])} "
-                f"urdfs={len(urdfs_i)} mps_thread_pct={per_worker_pct}"
+                f"ready worker={i} pid={p.pid} device={worker_device} envs={int(meta['num_envs'])} "
+                f"urdfs={len(urdfs_i)} ready_wait_s={time.perf_counter() - reply_wait_t0:.3f}"
             )
+
+        print(
+            "[logical-super-scene] "
+            f"all workers ready in {time.perf_counter() - ready_wait_t0:.3f}s "
+            f"(startup_total_s={time.perf_counter() - startup_t0:.3f})"
+        )
 
         self.num_envs = start
         self.num_obs = int(metas[0]["num_obs"])
@@ -155,8 +187,15 @@ class LogicalSuperSceneOrchestrator:
         self._obs = torch.cat(initial_obs_cpu, dim=0).to(self.device)
         self._critic = torch.cat(initial_critic_cpu, dim=0).to(self.device)
 
-    def _recv_reply(self, conn) -> WorkerReply:
-        msg = conn.recv()
+    def _recv_reply(self, conn, worker_idx: Optional[int] = None, process: Optional[mp.Process] = None) -> WorkerReply:
+        try:
+            msg = conn.recv()
+        except EOFError as exc:
+            details = ""
+            if process is not None:
+                details = f" pid={process.pid} exitcode={process.exitcode}"
+            prefix = f"worker={worker_idx}" if worker_idx is not None else "worker=<unknown>"
+            raise RuntimeError(f"EOF while waiting reply from {prefix}.{details}") from exc
         if isinstance(msg, WorkerReply):
             return msg
         if isinstance(msg, dict):
@@ -186,7 +225,7 @@ class LogicalSuperSceneOrchestrator:
         obs_chunks: List[torch.Tensor] = []
         critic_chunks: List[torch.Tensor] = []
         for w in self._workers:
-            rep = self._recv_reply(w.conn)
+            rep = self._recv_reply(w.conn, worker_idx=w.worker_idx, process=w.process)
             if not rep.ok:
                 raise RuntimeError(rep.error)
             if w.shm is not None:
@@ -229,7 +268,7 @@ class LogicalSuperSceneOrchestrator:
         episodes: List[Tuple[Dict, int]] = []
 
         for w in self._workers:
-            rep = self._recv_reply(w.conn)
+            rep = self._recv_reply(w.conn, worker_idx=w.worker_idx, process=w.process)
             if not rep.ok:
                 raise RuntimeError(rep.error)
             if w.shm is not None:
@@ -296,7 +335,7 @@ class LogicalSuperSceneOrchestrator:
 
         for w in self._workers:
             try:
-                _ = self._recv_reply(w.conn)
+                _ = self._recv_reply(w.conn, worker_idx=w.worker_idx, process=w.process)
             except Exception:
                 pass
 

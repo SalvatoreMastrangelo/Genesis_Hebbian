@@ -255,10 +255,26 @@ class WingedDroneEnv:
 
         return resolve_aero_config(solver_kind)
 
-    def _apply_dynamics_noise(self, env_ids: torch.Tensor) -> None:
+    def _resolve_property_randomization_cfg(self) -> Dict[str, float]:
+        cfg = dict(self.env_cfg.get("property_randomization", {}) or {})
         noise_cfg = self._aero_config.get("noise", {}) or {}
-        sigma_mass = float(noise_cfg.get("mass_shift", 0.0))
-        sigma_com = float(noise_cfg.get("com_shift", 0.0))
+
+        def _get_std(name: str, legacy_name: Optional[str] = None) -> float:
+            if name in cfg and cfg.get(name) is not None:
+                return float(cfg.get(name, 0.0) or 0.0)
+            if legacy_name is not None:
+                return float(noise_cfg.get(legacy_name, 0.0) or 0.0)
+            return 0.0
+
+        return {
+            "mass_shift_std": _get_std("mass_shift_std", legacy_name="mass_shift"),
+            "com_shift_std": _get_std("com_shift_std", legacy_name="com_shift"),
+        }
+
+    def _apply_dynamics_noise(self, env_ids: torch.Tensor) -> None:
+        rand_cfg = self._property_rand_cfg
+        sigma_mass = float(rand_cfg.get("mass_shift_std", 0.0))
+        sigma_com = float(rand_cfg.get("com_shift_std", 0.0))
 
         n = env_ids.numel()
         if n == 0:
@@ -381,6 +397,7 @@ class WingedDroneEnv:
         if not Path(self.urdf_file).exists():
             raise FileNotFoundError(f"URDF not found: {self.urdf_file}")
         self._aero_config = self._resolve_aero_config(self.aero_solver_kind, self.urdf_file)
+        self._property_rand_cfg = self._resolve_property_randomization_cfg()
         self.drone_model = DroneAeroModel(self.urdf_file, config_override=self._aero_config)
 
         # ------------------------------------------------------------------ #
@@ -646,6 +663,8 @@ class WingedDroneEnv:
         print(f"  - Action space size: {self.num_actions} (throttle + {self.num_servos} servos)")
         print(f"  - Drone span: {self.span:.3f} m")
         print(f"  - Nominal mass: {self.nominal_mass:.3f} kg")
+        if any(float(v) > 0.0 for v in self._property_rand_cfg.values()):
+            print(f"  - Property randomization stds: {self._property_rand_cfg}")
 
         # ------------------------------------------------------------------ #
         # Setup drone actuators                                          #
