@@ -32,6 +32,7 @@ class LogicalSuperSceneOrchestrator:
         *,
         shards: Sequence[Sequence[str]],
         shard_env_counts: Sequence[int],
+        worker_devices: Sequence[str],
         env_cfg: Dict,
         obs_cfg: Dict,
         reward_cfg: Dict,
@@ -45,6 +46,8 @@ class LogicalSuperSceneOrchestrator:
             raise RuntimeError("No shards provided")
         if len(shards) != len(shard_env_counts):
             raise RuntimeError("shards and shard_env_counts must have same length")
+        if len(shards) != len(worker_devices):
+            raise RuntimeError("shards and worker_devices must have same length")
 
         self.device = torch.device(device)
         self._workers: List[WorkerHandle] = []
@@ -58,15 +61,21 @@ class LogicalSuperSceneOrchestrator:
         initial_obs_cpu: List[torch.Tensor] = []
         initial_critic_cpu: List[torch.Tensor] = []
 
-        n_workers = len(shards)
-        if mps_active_thread_percentage > 0:
-            per_worker_pct = max(1, min(100, int(mps_active_thread_percentage)))
-        else:
-            per_worker_pct = max(1, min(100, int(100 // max(1, n_workers))))
+        workers_per_device: Dict[str, int] = {}
+        for dev in worker_devices:
+            workers_per_device[dev] = workers_per_device.get(dev, 0) + 1
 
-        for i, (urdfs_i, n_env_i) in enumerate(zip(shards, shard_env_counts)):
+        for i, (urdfs_i, n_env_i, worker_device) in enumerate(zip(shards, shard_env_counts, worker_devices)):
             if n_env_i <= 0:
                 raise RuntimeError(f"Invalid shard env count at worker {i}: {n_env_i}")
+
+            if mps_active_thread_percentage > 0:
+                per_worker_pct = max(1, min(100, int(mps_active_thread_percentage)))
+            else:
+                per_worker_pct = max(
+                    1,
+                    min(100, int(100 // max(1, workers_per_device.get(worker_device, 1)))),
+                )
 
             parent_conn, child_conn = ctx.Pipe()
             p = ctx.Process(
@@ -79,7 +88,7 @@ class LogicalSuperSceneOrchestrator:
                     "obs_cfg": dict(obs_cfg),
                     "reward_cfg": dict(reward_cfg),
                     "command_cfg": dict(command_cfg),
-                    "device": str(device),
+                    "device": str(worker_device),
                     "show_viewer": bool(show_viewer and i == 0),
                     "use_shared_memory": self.use_shared_memory,
                     "mps_active_thread_percentage": per_worker_pct,
@@ -121,6 +130,12 @@ class LogicalSuperSceneOrchestrator:
                 )
             )
             start = stop
+
+            print(
+                "[logical-super-scene] "
+                f"worker={i} device={worker_device} envs={int(meta['num_envs'])} "
+                f"urdfs={len(urdfs_i)} mps_thread_pct={per_worker_pct}"
+            )
 
         self.num_envs = start
         self.num_obs = int(metas[0]["num_obs"])

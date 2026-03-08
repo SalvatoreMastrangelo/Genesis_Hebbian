@@ -20,6 +20,29 @@ def _to_cpu(t: torch.Tensor) -> torch.Tensor:
     return t.detach().to("cpu", copy=True)
 
 
+def _bind_process_to_device(device: str) -> str:
+    """
+    Bind the worker process to a single CUDA device before Genesis init.
+
+    If the worker is assigned `cuda:N`, we mask visibility to only that GPU and
+    then use `cuda:0` locally inside the child process.
+    """
+    dev = str(device).strip().lower()
+    if not dev.startswith("cuda"):
+        return device
+
+    try:
+        _, idx_str = dev.split(":", 1)
+        gpu_idx = int(idx_str)
+    except Exception:
+        gpu_idx = 0
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(0)
+    return "cuda:0"
+
+
 def _make_shared_buffers(
     *,
     num_envs: int,
@@ -62,6 +85,7 @@ def worker_main(
         os.environ.setdefault("GS_PARA_LEVEL", "2")
         if mps_active_thread_percentage is not None and int(mps_active_thread_percentage) > 0:
             os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(int(mps_active_thread_percentage))
+        local_device = _bind_process_to_device(device)
 
         import genesis as gs
         from general_policy.env_gen import Gen_Env
@@ -78,7 +102,7 @@ def worker_main(
             max_scenes=None,
             show_viewer=show_viewer,
             eval=False,
-            device=device,
+            device=local_device,
         )
 
         obs, info = env.reset()

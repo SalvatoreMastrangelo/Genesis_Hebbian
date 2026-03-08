@@ -3,7 +3,7 @@
 #SBATCH --partition=l40s
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=1
+#SBATCH --gpus=4
 #SBATCH --cpus-per-task=8
 #SBATCH --time=25:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
@@ -31,10 +31,11 @@ MAX_ITERS=${MAX_ITERS:-4000}
 N_URDF=${N_URDF:-200}
 URDF_SEED=${URDF_SEED:-0}
 LOGICAL_SUPER_SCENE=${LOGICAL_SUPER_SCENE:-1}
-URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-40}
+URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-50}
 NUM_WORKERS=${NUM_WORKERS:-0}
+COLLECTION_GPUS=${COLLECTION_GPUS:-${SLURM_GPUS_ON_NODE:-4}}
 VIS=${VIS:-0}
-LOGICAL_SUPER_SCENE_SHM=${LOGICAL_SUPER_SCENE_SHM:-1}
+LOGICAL_SUPER_SCENE_SHM=${LOGICAL_SUPER_SCENE_SHM:-0}
 
 # CUDA MPS controls (single-GPU multiprocess concurrency)
 ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-0}
@@ -187,7 +188,7 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   # Logical super-scene args (optional, train_gen.py specific)
   LSS_ARGS=\"\"
   if [ \"${LOGICAL_SUPER_SCENE}\" -ne 0 ]; then
-    LSS_ARGS=\"--logical-super-scene --urdf-shard-size ${URDF_SHARD_SIZE}\"
+    LSS_ARGS=\"--logical-super-scene --urdf-shard-size ${URDF_SHARD_SIZE} --collection-gpus ${COLLECTION_GPUS}\"
     if [ \"${NUM_WORKERS}\" -gt 0 ]; then
       LSS_ARGS=\"\${LSS_ARGS} --num-workers ${NUM_WORKERS}\"
     fi

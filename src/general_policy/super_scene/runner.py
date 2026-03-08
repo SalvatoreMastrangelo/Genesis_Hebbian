@@ -116,6 +116,7 @@ def run_logical_super_scene_training(
     max_iterations: int,
     urdf_shard_size: int,
     num_workers: int,
+    collection_gpus: int,
     device: str,
     vis: bool,
 ) -> None:
@@ -145,18 +146,34 @@ def run_logical_super_scene_training(
             f"Got num_workers={num_workers}, n_shards={n_shards}."
         )
 
+    if collection_gpus <= 0:
+        raise RuntimeError(f"Invalid collection_gpus={collection_gpus}. Must be > 0.")
+
+    if torch.cuda.is_available():
+        visible_cuda = torch.cuda.device_count()
+        collection_gpus = min(int(collection_gpus), int(visible_cuda))
+    else:
+        collection_gpus = 0
+
+    if collection_gpus == 0:
+        worker_devices = ["cpu"] * n_shards
+    else:
+        worker_devices = [f"cuda:{i % collection_gpus}" for i in range(n_shards)]
+
     shard_env_counts = split_even(num_envs_total, n_shards)
     _validate_shards(shards, shard_env_counts, num_envs_total)
 
     print(
         "[logical-super-scene] "
         f"exp={experiment_name} urdfs={len(all_urdfs)} shards={n_shards} shard_size={urdf_shard_size} "
-        f"num_envs_total={num_envs_total} per_shard_envs={shard_env_counts}"
+        f"num_envs_total={num_envs_total} per_shard_envs={shard_env_counts} "
+        f"collection_gpus={collection_gpus} learner_device={device}"
     )
 
     orchestrator = LogicalSuperSceneOrchestrator(
         shards=shards,
         shard_env_counts=shard_env_counts,
+        worker_devices=worker_devices,
         env_cfg=env_cfg,
         obs_cfg=obs_cfg,
         reward_cfg=reward_cfg,

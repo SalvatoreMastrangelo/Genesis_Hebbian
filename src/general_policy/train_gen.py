@@ -68,6 +68,7 @@ def train(
     logical_super_scene: bool = False,
     urdf_shard_size: int = 0,
     num_workers: int = 0,
+    collection_gpus: int = 1,
     vis: bool = False,
 ) -> None:
     """
@@ -190,6 +191,7 @@ def train(
             max_iterations=max_iterations,
             urdf_shard_size=urdf_shard_size,
             num_workers=num_workers,
+            collection_gpus=collection_gpus,
             device=device,
             vis=vis,
         )
@@ -352,6 +354,15 @@ def _parse_args() -> argparse.Namespace:
             "If 0, auto-uses one worker per shard."
         ),
     )
+    parser.add_argument(
+        "--collection-gpus",
+        type=int,
+        default=1,
+        help=(
+            "Number of visible GPUs to use for rollout shard collection in "
+            "logical-super-scene mode. Default: 1."
+        ),
+    )
 
     parser.add_argument(
         "--device",
@@ -381,6 +392,7 @@ def main() -> None:
         logical_super_scene=args.logical_super_scene,
         urdf_shard_size=args.urdf_shard_size,
         num_workers=args.num_workers,
+        collection_gpus=args.collection_gpus,
         vis=args.vis,
     )
 
