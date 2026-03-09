@@ -79,7 +79,19 @@ BINDS="--bind ${SRC}:/workspace/bind:ro,${RUN_DIR}:/workspace/out:rw"
 #   floor(cpus_assigned / active_processes), with a minimum of 1.
 # In logical super-scene mode, active_processes ~= workers + parent.
 # ------------------------------------------------------------
-CPUS_ASSIGNED="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_PER_GPU:-1}}"
+CPUS_ASSIGNED=""
+if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
+  CPUS_ASSIGNED="${SLURM_CPUS_PER_TASK}"
+elif [ -n "${SLURM_CPUS_PER_GPU:-}" ]; then
+  GPUS_ASSIGNED_RAW="${SLURM_GPUS_ON_NODE:-${SLURM_GPUS_PER_NODE:-${SLURM_GPUS:-1}}}"
+  GPUS_ASSIGNED="$(printf '%s' "${GPUS_ASSIGNED_RAW}" | tr -cd '0-9')"
+  if [ -z "${GPUS_ASSIGNED}" ]; then
+    GPUS_ASSIGNED=1
+  fi
+  CPUS_ASSIGNED=$(( SLURM_CPUS_PER_GPU * GPUS_ASSIGNED ))
+else
+  CPUS_ASSIGNED=1
+fi
 OMP_PROCESSES=1
 if [ "${LOGICAL_SUPER_SCENE}" -ne 0 ]; then
   if [ "${NUM_WORKERS}" -gt 0 ]; then

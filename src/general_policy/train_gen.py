@@ -27,7 +27,9 @@ from rsl_rl.runners import OnPolicyRunner
 
 from winged_drone_train.train import get_cfgs, get_train_cfg
 from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.noise_config import configure_solver_noise
 from winged_drone_train.rl.logging import RLTrainingLogger
+from winged_drone_train.runtime_random import seed_runtime_randomness
 from general_policy.env_gen import Gen_Env
 from general_policy.catalog import build_catalog
 from general_policy.super_scene import run_logical_super_scene_training
@@ -133,7 +135,8 @@ def train(
     if headless_no_gl:
         env_cfg = dict(env_cfg)
         env_cfg["enable_rendering"] = False
-    train_cfg = get_train_cfg(experiment_name, max_iterations)
+    runtime_seed = seed_runtime_randomness(f"train_gen:{experiment_name}")
+    train_cfg = get_train_cfg(experiment_name, max_iterations, runtime_seed)
 
     obs_cfg["add_genome_obs"] = True  # Always include genome observation
 
@@ -235,6 +238,7 @@ def train(
             eval=False,
             device=device,
         )
+    configure_solver_noise(env, env_cfg)
     env_init_elapsed = time.perf_counter() - env_init_start
     per_env = env_init_elapsed / max(1, num_envs)
     print(

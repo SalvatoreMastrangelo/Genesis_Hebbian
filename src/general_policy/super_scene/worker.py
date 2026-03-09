@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
+from winged_drone_train.noise_config import configure_solver_noise
+from winged_drone_train.runtime_random import seed_runtime_randomness
+
 from .ipc import WorkerCommand, WorkerReply
 
 
@@ -86,6 +89,7 @@ def worker_main(
         if mps_active_thread_percentage is not None and int(mps_active_thread_percentage) > 0:
             os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(int(mps_active_thread_percentage))
         local_device = _bind_process_to_device(device)
+        seed_runtime_randomness(f"super_scene_worker:{local_device}")
 
         import genesis as gs
         from general_policy.env_gen import Gen_Env
@@ -104,6 +108,7 @@ def worker_main(
             eval=False,
             device=local_device,
         )
+        configure_solver_noise(env, env_cfg)
 
         obs, info = env.reset()
         critic = info.get("observations", {}).get("critic")
