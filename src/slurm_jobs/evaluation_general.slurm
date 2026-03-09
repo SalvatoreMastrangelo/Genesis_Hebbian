@@ -436,7 +436,7 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
     python /workspace/bind/src/general_policy/eval_gen.py \
       --catalog-dir /workspace/out/urdf_generated \
       --n-urdf ${N_URDF} \
-      --seed ${URDF_SEED} \
+      --urdf-seed ${URDF_SEED} \
       --exp ${EVAL_EXP} \
       --csv evaluation_results.csv \
       --eval-envs ${EVAL_ENVS} \

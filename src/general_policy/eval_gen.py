@@ -48,7 +48,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
-import random
 import torch
 import genesis as gs
 from filelock import FileLock
@@ -1050,7 +1049,6 @@ def _process_urdf_impl(
     exp_name: str,
     saving_path: str,
     csv_path: Optional[Path],
-    rng_seed: int,
     eval_envs: int,
     vmin: float,
     vmax: float,
@@ -1070,12 +1068,6 @@ def _process_urdf_impl(
         if csv_path is not None
         else None
     )
-
-    random.seed(rng_seed)
-    np.random.seed(rng_seed)
-    torch.manual_seed(rng_seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(rng_seed)
 
     logger.info("=== [%d] %s ===", idx, urdf.name)
 
@@ -1139,26 +1131,17 @@ def _process_urdf_impl(
     train_t0 = time.time()
     for rep in range(train_repeats):
         exp_train = f"{saving_path}_urdf{idx:03d}_rep{rep+1}"
-        run_seed = rng_seed + rep
         rep_t0 = time.time()
 
         logger.info(
-            "[train %d/%d] exp=%s  seed=%d  envs=%d  iters=%d",
+            "[train %d/%d] exp=%s  runtime_seed=os_entropy  envs=%d  iters=%d",
             rep + 1,
             train_repeats,
             exp_train,
-            run_seed,
             train_envs,
             train_iters,
         )
-
-        random.seed(run_seed)
-        np.random.seed(run_seed)
-        torch.manual_seed(run_seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(run_seed)
-
-        print(f"[EVAL 10] Starting training for exp={exp_train} with seed={run_seed}")
+        print(f"[EVAL 10] Starting training for exp={exp_train} with runtime_seed=os_entropy")
 
         rep_fitness: FitnessTriple
         rep_reward: float
@@ -1312,7 +1295,7 @@ if USE_PARALLEL:
 def run_pipeline(
     catalog_dir: Path,
     n_urdf: int,
-    rng_seed: int,
+    urdf_seed: int,
     baseline_models: Sequence[Path],
     cfg_dir: Optional[Path],
     exp_name: str,      # foundation-exp (per evaluation)
@@ -1338,8 +1321,8 @@ def run_pipeline(
     n_urdf:
         If > 0, a fresh catalog with exactly ``n_urdf`` URDFs is built
         before evaluation. If 0, an existing catalog is used as-is.
-    rng_seed:
-        Global random seed for reproducibility (Python, NumPy, Torch).
+    urdf_seed:
+        Random seed used only for URDF catalog generation.
     baseline_models:
         Sequence of checkpoint files implementing the foundation policy
         to be evaluated.
@@ -1362,8 +1345,7 @@ def run_pipeline(
         Number of PPO iterations for per-URDF policies. The final
         checkpoint is assumed to be ``model_{train_iters-1}.pt``.
     train_repeats:
-        Number of independent training runs per URDF (with different
-        random seeds).
+        Number of independent training runs per URDF.
     device:
         Device string for training, e.g. ``"cuda:0"`` or ``"cpu"``.
     """
@@ -1384,15 +1366,6 @@ def run_pipeline(
         logger.error("Meshes directory not found at %s", meshes_src)
         raise FileNotFoundError(f"Meshes directory missing: {meshes_src}")
 
-
-    # ------------------------------------------------------------------ #
-    # RNG seeding                                                        #
-    # ------------------------------------------------------------------ #
-    random.seed(rng_seed)
-    np.random.seed(rng_seed)
-    torch.manual_seed(rng_seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(rng_seed)
 
     # ------------------------------------------------------------------ #
     # Build / load catalog                                               #
@@ -1419,7 +1392,7 @@ def run_pipeline(
         build_catalog(
             catalog_dir=catalog_dir,
             n=n_urdf,
-            seed=rng_seed,
+            seed=urdf_seed,
         )
         urdf_list = list_urdfs(catalog_dir)
     if not urdf_list:
@@ -1497,7 +1470,6 @@ def run_pipeline(
                 exp_name=exp_name,
                 saving_path=saving_path,
                 csv_path=csv_writer.path,
-                rng_seed=rng_seed,
                 eval_envs=int(eval_envs),
                 vmin=float(vmin),
                 vmax=float(vmax),
@@ -1527,7 +1499,6 @@ def run_pipeline(
             exp_name=exp_name,
             saving_path=saving_path,
             csv_path=csv_writer.path,
-            rng_seed=rng_seed,
             eval_envs=int(eval_envs),
             vmin=float(vmin),
             vmax=float(vmax),
@@ -1572,10 +1543,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="If > 0, build a fresh catalog with this many URDFs.",
     )
     parser.add_argument(
+        "--urdf-seed",
         "--seed",
+        dest="urdf_seed",
         type=int,
         default=0,
-        help="Base random seed for catalog generation and training.",
+        help="Random seed used only for URDF catalog generation.",
     )
 
     # Baseline checkpoints (up to 6 for convenience)
@@ -1729,7 +1702,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     run_pipeline(
         catalog_dir=args.catalog_dir,
         n_urdf=int(args.n_urdf),
-        rng_seed=int(args.seed),
+        urdf_seed=int(args.urdf_seed),
         baseline_models=args.baseline_models,
         cfg_dir=args.cfg_dir,
         exp_name=(args.foundation_exp),

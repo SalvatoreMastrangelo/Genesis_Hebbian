@@ -26,6 +26,8 @@ matplotlib.use("Agg")
 
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh
 from winged_drone_train.defaults import default_mydrone_urdf_path
+from winged_drone_train.noise_config import configure_solver_noise
+from winged_drone_train.runtime_random import seed_runtime_randomness
 import builtins
 
 builtins.ActorCriticTanh = ActorCriticTanh  # for model loading
@@ -415,14 +417,14 @@ def evaluation(
 
     with cfg_path.open("rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+    runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
 
     # Command range used in this evaluation
     command_cfg["min_speed"] = float(vmin)
     command_cfg["max_speed"] = float(vmax)
 
-    # Disable observation noise during evaluation
+    # Keep the same noise magnitudes as training, while sampling fresh noise.
     obs_cfg_eval = dict(obs_cfg)
-    obs_cfg_eval["add_noise"] = False
     if obs_genome is not None:
         obs_cfg_eval["add_genome_obs"] = bool(obs_genome)
 
@@ -440,8 +442,10 @@ def evaluation(
         eval=True,
         device=device,
     )
+    configure_solver_noise(env, env_cfg)
 
     runner_cfg = copy.deepcopy(train_cfg)
+    runner_cfg["seed"] = int(runtime_seed)
     runner = OnPolicyRunner(env, runner_cfg, log_dir_str, device=gs.device)
 
     if custom_policy_path is not None:

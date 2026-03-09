@@ -1467,7 +1467,7 @@ class WingedDroneEnv:
 
         # Optional aero parameter randomization
         if hasattr(self.aero_solver, "_enable_noise"):
-            if hasattr(self.rigid_solver, "randomize_aero_params"):
+            if hasattr(self.aero_solver, "randomize_aero_params"):
                 self.aero_solver.randomize_aero_params(env_ids)
 
         # Reset actuator dynamics state (latency buffer)
