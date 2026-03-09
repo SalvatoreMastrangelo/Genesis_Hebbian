@@ -250,7 +250,7 @@ def train(
     # RSL-RL runner                                                      #
     # ------------------------------------------------------------------ #
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
-    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir)
+    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=max_iterations)
     rl_logger.attach()
     try:
         runner.learn(

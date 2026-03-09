@@ -400,11 +400,15 @@ def training(
         parent_root=Path("logs") / "ea",
         tag="train_single",
     )
-
-    runner.learn(
-        num_learning_iterations=max_iterations,
-        init_at_random_ep_len=False,
-    )
+    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=max_iterations)
+    rl_logger.attach()
+    try:
+        runner.learn(
+            num_learning_iterations=max_iterations,
+            init_at_random_ep_len=False,
+        )
+    finally:
+        rl_logger.close()
 
     try:
         gs.destroy()
@@ -521,7 +525,7 @@ def main() -> None:
     # --------------------------------------------------------------------- #
     #  Training loop                                                       #
     # --------------------------------------------------------------------- #
-    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir)
+    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=args.max_iterations)
     rl_logger.attach()
     try:
         runner.learn(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -10,17 +11,25 @@ import torch
 class RLTrainingLogger:
     """Attach robust PPO diagnostics logging/printing to an RSL-RL runner."""
 
-    def __init__(self, runner: Any, log_dir: Path) -> None:
+    def __init__(self, runner: Any, log_dir: Path, max_iterations: Optional[int] = None) -> None:
         self.runner = runner
         self.log_dir = Path(log_dir)
+        self.max_iterations = int(max_iterations) if max_iterations is not None else 0
 
         self.writer = None
         self.owns_writer = False
+        self.original_writer_add_scalar = None
 
         self.alg = getattr(self.runner, "alg", None)
         self.original_update = getattr(self.alg, "update", None) if self.alg is not None else None
         self.update_step = {"i": 0}
         self.cuda_mem_log_every = max(1, int(os.getenv("PPO_CUDA_MEM_LOG_EVERY", "5") or 5))
+        self.csv_path = self.log_dir / "tensorboard_1pct.csv"
+        self.csv_file = None
+        self.csv_writer = None
+        self.current_scalars: Dict[str, float] = {}
+        self.pending_csv_step: Optional[int] = None
+        self.next_csv_percent = 1
 
         self.internal_capture: Dict[str, Any] = {
             "enabled": False,
@@ -55,6 +64,10 @@ class RLTrainingLogger:
         except Exception:
             pass
         try:
+            self._flush_pending_csv_step()
+        except Exception:
+            pass
+        try:
             if self.actor_critic is not None and self.wrapped_get_actions_log_prob is not None:
                 self.actor_critic.get_actions_log_prob = self.wrapped_get_actions_log_prob
         except Exception:
@@ -63,6 +76,16 @@ class RLTrainingLogger:
             if self.storage_obj is not None:
                 for method_name, method_orig in self.wrapped_gen_methods.items():
                     setattr(self.storage_obj, method_name, method_orig)
+        except Exception:
+            pass
+        try:
+            if self.writer is not None and self.original_writer_add_scalar is not None:
+                self.writer.add_scalar = self.original_writer_add_scalar
+        except Exception:
+            pass
+        try:
+            if self.csv_file is not None:
+                self.csv_file.close()
         except Exception:
             pass
         try:
@@ -84,6 +107,76 @@ class RLTrainingLogger:
         except Exception:
             self.writer = None
             self.owns_writer = False
+        self._patch_writer_add_scalar()
+
+    def _patch_writer_add_scalar(self) -> None:
+        if self.writer is None or not hasattr(self.writer, "add_scalar"):
+            return
+        try:
+            orig_add_scalar = self.writer.add_scalar
+
+            def _wrapped_add_scalar(tag: str, scalar_value: Any, global_step: Optional[int] = None, *args: Any, **kwargs: Any) -> Any:
+                out = orig_add_scalar(tag, scalar_value, global_step, *args, **kwargs)
+                self._track_scalar_for_csv(tag, scalar_value, global_step)
+                return out
+
+            self.writer.add_scalar = _wrapped_add_scalar
+            self.original_writer_add_scalar = orig_add_scalar
+        except Exception:
+            self.original_writer_add_scalar = None
+
+    def _ensure_csv_writer(self) -> bool:
+        if self.max_iterations <= 0:
+            return False
+        if self.csv_writer is not None and self.csv_file is not None:
+            return True
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            self.csv_file = self.csv_path.open("w", newline="")
+            self.csv_writer = csv.writer(self.csv_file)
+            self.csv_writer.writerow(("progress_pct", "step", "tag", "value"))
+            self.csv_file.flush()
+            return True
+        except Exception:
+            self.csv_file = None
+            self.csv_writer = None
+            return False
+
+    def _track_scalar_for_csv(self, tag: Any, scalar_value: Any, global_step: Optional[int]) -> None:
+        if self.max_iterations <= 0 or global_step is None:
+            return
+        try:
+            step = int(global_step)
+        except Exception:
+            return
+
+        scalar = self._to_float(scalar_value)
+        if scalar is None:
+            return
+
+        if self.pending_csv_step is not None and step != self.pending_csv_step:
+            self._flush_pending_csv_step()
+
+        self.pending_csv_step = step
+        self.current_scalars[str(tag)] = scalar
+
+    def _flush_pending_csv_step(self) -> None:
+        if self.pending_csv_step is None or self.max_iterations <= 0:
+            return
+        if not self._ensure_csv_writer():
+            return
+
+        completed_pct = int(((self.pending_csv_step + 1) * 100) // max(1, self.max_iterations))
+        if completed_pct <= 0:
+            return
+
+        while self.next_csv_percent <= min(100, completed_pct):
+            for tag in sorted(self.current_scalars):
+                self.csv_writer.writerow(
+                    (self.next_csv_percent, self.pending_csv_step, tag, self.current_scalars[tag])
+                )
+            self.csv_file.flush()
+            self.next_csv_percent += 1
 
     def _to_float(self, val: Any) -> Optional[float]:
         try:

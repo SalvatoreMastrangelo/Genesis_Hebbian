@@ -7,6 +7,8 @@ from typing import Dict, List, Sequence
 import torch
 from rsl_rl.runners import OnPolicyRunner
 
+from winged_drone_train.rl.logging import RLTrainingLogger
+
 from .catalog import chunk_list, load_catalog_urdfs, split_even
 from .orchestrator import LogicalSuperSceneOrchestrator
 
@@ -185,6 +187,8 @@ def run_logical_super_scene_training(
     )
     env = LogicalSuperSceneVecEnv(orchestrator=orchestrator, device=device)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
+    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=max_iterations)
+    rl_logger.attach()
 
     try:
         runner.learn(
@@ -192,6 +196,10 @@ def run_logical_super_scene_training(
             init_at_random_ep_len=True,
         )
     finally:
+        try:
+            rl_logger.close()
+        except Exception:
+            pass
         try:
             env.close()
         except Exception:
