@@ -69,7 +69,7 @@ class PostAnalyzer:
     ) -> None:
         self.df = pd.read_csv(csv_path)
         self.invalid_v = {0.0} if invalid_v is None else set(invalid_v)
-        self.invalid_e = {-100.0} if invalid_e is None else set(invalid_e)
+        self.invalid_e = {-10.0} if invalid_e is None else set(invalid_e)
         self.invalid_p = {0.0} if invalid_p is None else set(invalid_p)
 
         if "row_kind" in self.df.columns:

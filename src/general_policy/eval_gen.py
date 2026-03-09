@@ -103,7 +103,7 @@ def get_eval_root(exp_name: str) -> Path:
     return LOG_ROOT / f"{exp_name}_evaluation"
 
 # Sentinel used when something goes wrong with an energy measurement
-INVALID_ENERGY = 100
+INVALID_ENERGY = 10
 # Minimal progress below which speed/energy are set to sentinel in CSV
 MINIMAL_PROGRESS_CSV = 250.0
 DEFAULT_EXTRA_GENOME = list(STANDARD_MYDRONE_GENOME)

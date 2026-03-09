@@ -152,7 +152,7 @@ if USE_PARALLEL:
 # =============================================================================
 
 INVALID_V = {0.0}       # invalid average velocity
-INVALID_E = {-100.0}    # negative energy sentinel (equivalent to +100 before flip)
+INVALID_E = {-10.0}     # negative energy sentinel (equivalent to +10 before flip)
 INVALID_P = {0.0}       # invalid progress / maneuverability
 
 
@@ -624,15 +624,15 @@ class CodesignDEAP:
           - prog: global max progress (unfiltered)
         """
         if len(p_s) == 0:
-            zero = dict(mean_v=0.0, mean_E=100.0, mean_progress=0.0)
+            zero = dict(mean_v=0.0, mean_E=10.0, mean_progress=0.0)
             return zero, zero, zero
 
         idx_p = int(np.argmax(p_s))
         mask = np.where(p_s >= minimal_p)[0]
 
         if mask.size == 0:
-            vel = dict(mean_v=0.0, mean_E=100.0, mean_progress=0.0)
-            eff = dict(mean_v=0.0, mean_E=100.0, mean_progress=0.0)
+            vel = dict(mean_v=0.0, mean_E=10.0, mean_progress=0.0)
+            eff = dict(mean_v=0.0, mean_E=10.0, mean_progress=0.0)
         else:
             idx_v = int(mask[np.argmax(v_s[mask])])
             idx_e = int(mask[np.argmin(E_s[mask])])
@@ -693,7 +693,7 @@ class CodesignDEAP:
             train_repetition = len(rep_payloads)
             avg_failed_ff = (
                 float(min(INVALID_V)),
-                -1.0,
+                float(min(INVALID_E)),
                 float(min(INVALID_P)),
             )
             avg_all_invalid = False
@@ -830,7 +830,7 @@ class CodesignDEAP:
                         if key in ("vel_v", "eff_v", "prog_v"):
                             _accum(acc, key, _avg_adjust(rep_meta[key], INVALID_V, 0.0))
                         elif key in ("vel_E", "eff_E", "prog_E"):
-                            _accum(acc, key, _avg_adjust(rep_meta[key], INVALID_E, -1.0))
+                            _accum(acc, key, _avg_adjust(rep_meta[key], INVALID_E, float(min(INVALID_E))))
                         elif key in ("vel_P", "eff_P", "prog_P"):
                             _accum(acc, key, _avg_adjust(rep_meta[key], INVALID_P, float(min(INVALID_P))))
                         else:

@@ -25,7 +25,7 @@ BIX3_POINT = np.array([15.6, 0.36, 340.0], dtype=float)
 
 # Sentinel values defined in src/morph_evolution/evolution_nsga.py
 INVALID_V = {0.0}
-INVALID_E = {-100.0}
+INVALID_E = {-10.0}
 INVALID_P = {0.0}
 INVALID_PROGRESS_THRESHOLD = 250.0
 
@@ -97,7 +97,7 @@ def apply_invalid_repetition_values(
     df = df.copy()
     invalid_mask = invalid_repetition_mask(df, reference_df=reference_df)
     df.loc[invalid_mask, "ff_0"] = 0.0
-    df.loc[invalid_mask, "ff_1"] = -1.0
+    df.loc[invalid_mask, "ff_1"] = float(min(INVALID_E))
     return df
 
 
@@ -151,7 +151,7 @@ def _fitness_frame_for_plot(
     if is_raw and fitness == "ff_0":
         temp.loc[temp[fitness].isin(INVALID_V), fitness] = 0.0
     if is_raw and fitness == "ff_1":
-        temp.loc[temp[fitness].isin(INVALID_E), fitness] = -1.0
+        temp.loc[temp[fitness].isin(INVALID_E), fitness] = float(min(INVALID_E))
     if fitness == "ff_1":
         temp[fitness] = -temp[fitness]
     return temp
