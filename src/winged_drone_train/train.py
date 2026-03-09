@@ -39,6 +39,8 @@ from winged_drone_train.rl.A2C_modified import ActorCriticTanh
 from winged_drone_train.rl.logging import RLTrainingLogger
 from winged_drone_train.defaults import default_mydrone_urdf_path
 from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.noise_config import configure_solver_noise
+from winged_drone_train.runtime_random import seed_runtime_randomness
 
 import builtins
 
@@ -91,7 +93,7 @@ def _init_genesis_with_retry() -> None:
 #  TRAINING CONFIGURATION
 # =============================================================================
 
-def get_train_cfg(exp_name: str, max_iterations: int) -> Dict[str, Any]:
+def get_train_cfg(exp_name: str, max_iterations: int, seed: int) -> Dict[str, Any]:
     """
     Build the training configuration dictionary consumed by RSL-RL.
 
@@ -105,7 +107,7 @@ def get_train_cfg(exp_name: str, max_iterations: int) -> Dict[str, Any]:
         # Runner / logging
         "runner_class_name": "OnPolicyRunner",
         "empirical_normalization": True,
-        "seed": 1,
+        "seed": int(seed),
         "logger": "tensorboard",
 
         # PPO hyperparameters
@@ -294,77 +296,6 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
     return env_cfg, obs_cfg, reward_cfg, command_cfg
 
 
-# =============================================================================
-#  NOISE CONFIGURATION HELPERS
-# =============================================================================
-
-def configure_solver_noise(env: WingedDroneEnv, env_cfg: Dict[str, Any]) -> None:
-    """
-    Configure all three noise mechanisms in a single place:
-
-    1) Mass / inertia randomization:
-       - Controlled by env_cfg["robot_randomization"], "rand_mass_frac", "rand_inertia_frac".
-       - Applied inside env._randomize_physical_props() at construction time.
-
-    2) Aerodynamic parameter noise:
-       - Controlled via the rigid solver flag `_enable_noise`.
-       - When enabled, env.reset_idx() will call `aero_solver.randomize_aero_params(...)`
-         if available in the current Genesis version.
-
-    3) Aerodynamic force noise:
-       - Configured by `aero_solver.noise_sigma_mag` and `aero_solver.noise_sigma_dir` when present.
-       - These scale random perturbations on aerodynamic force magnitude and direction.
-    """
-    aero_solver = getattr(env, "aero_solver", None)
-    if aero_solver is None:
-        return
-
-    # --- 2) aerodynamic parameter noise ---------------------------------- #
-    aero_noise_enabled = bool(env_cfg.get("aero_noise", False))
-    if hasattr(aero_solver, "_enable_noise"):
-        aero_solver._enable_noise = aero_noise_enabled
-
-    # --- 3) aerodynamic force noise -------------------------------------- #
-    sigma0 = float(env_cfg.get("aero_noise_sigma0", 0.0))
-    if aero_noise_enabled:
-        sigma_mag = sigma0
-        sigma_dir = sigma0
-        sigma_param = float(env_cfg.get("noise_sigma_param", 0.0))
-    else:
-        sigma_mag = 0.0
-        sigma_dir = 0.0
-        sigma_param = 0.0
-
-    if hasattr(env, "set_noise_settings"):
-        env.set_noise_settings(
-            aero_sigma_mag=sigma_mag,
-            aero_sigma_dir=sigma_dir,
-            aero_sigma_param=sigma_param,
-            enable_aero_param_noise=aero_noise_enabled,
-        )
-    else:
-        if hasattr(aero_solver, "noise_sigma_mag"):
-            aero_solver.noise_sigma_mag = sigma_mag
-        if hasattr(aero_solver, "noise_sigma_dir"):
-            aero_solver.noise_sigma_dir = sigma_dir
-        if hasattr(aero_solver, "noise_sigma_param"):
-            aero_solver.noise_sigma_param = sigma_param
-
-    if env_cfg.get("debug", False):
-        print(
-            f"[configure_solver_noise] Aero noise enabled: {aero_noise_enabled}, "
-            f"sigma_mag: {getattr(aero_solver, 'noise_sigma_mag', 'N/A')}, "
-            f"sigma_dir: {getattr(aero_solver, 'noise_sigma_dir', 'N/A')}, "
-            f"sigma_param: {getattr(aero_solver, 'noise_sigma_param', 'N/A')}"
-        )
-
-    # --- 1) mass / inertia randomization --------------------------------- #
-    # Mass randomization is handled inside the env via env.robot_randomization
-    # and env_cfg["rand_mass_frac"]. We do not need additional wiring here.
-    # `rand_inertia_frac` is kept in the config for future use by the env or
-    # by a solver extension that also perturbs inertias.
-
-
 def _write_cfg_snapshot(
     cfg_path: Path,
     env_cfg: Dict[str, Any],
@@ -427,6 +358,7 @@ def training(
     _configure_cache_root()
     # Genesis init
     _init_genesis_with_retry()
+    runtime_seed = seed_runtime_randomness(f"train:{exp_name}")
 
     # Log directory for evolution runs
     log_dir = Path("logs") / "ea" / exp_name
@@ -439,7 +371,7 @@ def training(
     if obs_cfg.get("add_genome_obs", False):
         print("[train_single] add_genome_obs enabled in cfg → forcing off for evolution training.")
         obs_cfg["add_genome_obs"] = False
-    train_cfg = get_train_cfg(exp_name, max_iterations)
+    train_cfg = get_train_cfg(exp_name, max_iterations, runtime_seed)
 
     # Save cfg snapshot
     cfg_path = log_dir / "cfgs.pkl"
@@ -531,6 +463,7 @@ def main() -> None:
         backend=gs.gpu,
         #performance_mode=True,
     )
+    runtime_seed = seed_runtime_randomness(f"train_cli:{args.exp_name}")
 
     # --------------------------------------------------------------------- #
     #  Logging directory                                                   #
@@ -546,7 +479,7 @@ def main() -> None:
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
     env_cfg["debug"] = bool(args.debug)
 
-    train_cfg = get_train_cfg(args.exp_name, args.max_iterations)
+    train_cfg = get_train_cfg(args.exp_name, args.max_iterations, runtime_seed)
 
     # Snapshot of all configurations for reproducibility
     cfg_path = log_dir / "cfgs.pkl"

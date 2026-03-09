@@ -22,7 +22,7 @@ SRC="$HOME/binding/Genesis-dev"
 # ------------------------------------------------------------
 POP_SIZE=${POP_SIZE:-4}
 NUM_GEN=${NUM_GEN:-4}
-TRAIN_ITERS=${TRAIN_ITERS:-700}
+TRAIN_ITERS=${TRAIN_ITERS:-800}
 TRAIN_REPETITION=${TRAIN_REPETITION:-2}
 RUN_TAG=${RUN_TAG:-nsga_${SLURM_JOB_ID}}
 RUN_NAME=${RUN_NAME:-${RUN_TAG}}
