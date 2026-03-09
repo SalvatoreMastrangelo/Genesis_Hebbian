@@ -8,6 +8,11 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 
 
+_TB_ADD_SCALAR_PATCHED = False
+_TB_ORIG_ADD_SCALAR = None
+_TB_LOGGER_BY_DIR: Dict[str, "RLTrainingLogger"] = {}
+
+
 class RLTrainingLogger:
     """Attach robust PPO diagnostics logging/printing to an RSL-RL runner."""
 
@@ -18,7 +23,6 @@ class RLTrainingLogger:
 
         self.writer = None
         self.owns_writer = False
-        self.original_writer_add_scalar = None
 
         self.alg = getattr(self.runner, "alg", None)
         self.original_update = getattr(self.alg, "update", None) if self.alg is not None else None
@@ -78,11 +82,7 @@ class RLTrainingLogger:
                     setattr(self.storage_obj, method_name, method_orig)
         except Exception:
             pass
-        try:
-            if self.writer is not None and self.original_writer_add_scalar is not None:
-                self.writer.add_scalar = self.original_writer_add_scalar
-        except Exception:
-            pass
+        _TB_LOGGER_BY_DIR.pop(str(self.log_dir.resolve()), None)
         try:
             if self.csv_file is not None:
                 self.csv_file.close()
@@ -107,23 +107,38 @@ class RLTrainingLogger:
         except Exception:
             self.writer = None
             self.owns_writer = False
-        self._patch_writer_add_scalar()
+        self._register_tensorboard_hook()
 
-    def _patch_writer_add_scalar(self) -> None:
-        if self.writer is None or not hasattr(self.writer, "add_scalar"):
+    def _register_tensorboard_hook(self) -> None:
+        global _TB_ADD_SCALAR_PATCHED, _TB_ORIG_ADD_SCALAR
+        try:
+            resolved_log_dir = str(self.log_dir.resolve())
+        except Exception:
+            resolved_log_dir = str(self.log_dir)
+        _TB_LOGGER_BY_DIR[resolved_log_dir] = self
+        if _TB_ADD_SCALAR_PATCHED:
             return
         try:
-            orig_add_scalar = self.writer.add_scalar
+            from torch.utils.tensorboard import SummaryWriter
 
-            def _wrapped_add_scalar(tag: str, scalar_value: Any, global_step: Optional[int] = None, *args: Any, **kwargs: Any) -> Any:
-                out = orig_add_scalar(tag, scalar_value, global_step, *args, **kwargs)
-                self._track_scalar_for_csv(tag, scalar_value, global_step)
+            _TB_ORIG_ADD_SCALAR = SummaryWriter.add_scalar
+
+            def _wrapped_add_scalar(writer_self: Any, tag: str, scalar_value: Any, global_step: Optional[int] = None, *args: Any, **kwargs: Any) -> Any:
+                out = _TB_ORIG_ADD_SCALAR(writer_self, tag, scalar_value, global_step, *args, **kwargs)
+                try:
+                    writer_log_dir = getattr(writer_self, "log_dir", None)
+                    if writer_log_dir is not None:
+                        logger = _TB_LOGGER_BY_DIR.get(str(Path(writer_log_dir).resolve()))
+                        if logger is not None:
+                            logger._track_scalar_for_csv(tag, scalar_value, global_step)
+                except Exception:
+                    pass
                 return out
 
-            self.writer.add_scalar = _wrapped_add_scalar
-            self.original_writer_add_scalar = orig_add_scalar
+            SummaryWriter.add_scalar = _wrapped_add_scalar
+            _TB_ADD_SCALAR_PATCHED = True
         except Exception:
-            self.original_writer_add_scalar = None
+            pass
 
     def _ensure_csv_writer(self) -> bool:
         if self.max_iterations <= 0:
