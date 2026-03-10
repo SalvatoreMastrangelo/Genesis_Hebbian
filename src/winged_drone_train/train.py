@@ -261,22 +261,9 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
 
         # Whether to add Gaussian noise to actor observations
         "add_noise": True,
-        "actor_genome_obs": False,
-        "critic_genome_obs": False,
-        "privileged_obs": {
-            "base_ang_vel": True,
-            "joint_position": True,
-            "joint_velocity": True,
-            "actual_thrust": True,
-        },
-        "depth_backend": "taichi",  # "taichi" or "cpu" (Taichi is faster but may cause OOM on large batches)
-        # Genome-observation noise.
-        # `episode_std` is sampled once at every reset and persists for the
-        # whole episode. `step_std` is sampled fresh every observation build.
-        "genome_obs_noise": {
-            "episode_std": 0.1,
-            "step_std": 0.02,
-        },
+        "add_genome_obs_actor": False,
+        "add_genome_obs_critic": False,
+
         # Per-feature noise standard deviations.
         # The keys are understood by the current ObservationBuilder / helper functions.
         "noise_std": {
@@ -327,10 +314,16 @@ def _write_cfg_snapshot(
     reward_cfg: Dict[str, Any],
     command_cfg: Dict[str, Any],
     train_cfg: Dict[str, Any],
+    runtime_seed: int,
 ) -> None:
     """Persist the full config tuple used for the run."""
     with cfg_path.open("wb") as f:
-        pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
+        pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, runtime_seed], f)
+
+    # Also save runtime_seed to a text file for easy reference
+    seed_path = cfg_path.parent / "runtime_seed.txt"
+    with seed_path.open("w") as f:
+        f.write(f"runtime_seed={runtime_seed}\n")
 
 
 def _apply_train_drone_overrides(
@@ -507,19 +500,15 @@ def training(
 
     # Build configs
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
-    env_cfg = _apply_train_drone_overrides(env_cfg, urdf_file=urdf_file)
-    if (
-        obs_cfg.get("actor_genome_obs", False)
-        or obs_cfg.get("critic_genome_obs", False)
-    ):
-        print("[train_single] genome observations enabled in cfg -> forcing off for evolution training.")
-        obs_cfg["actor_genome_obs"] = False
-        obs_cfg["critic_genome_obs"] = False
+    if obs_cfg.get("add_genome_obs_actor", False) or obs_cfg.get("add_genome_obs_critic", False):
+        print("[train_single] add_genome_obs_actor/critic enabled in cfg → forcing off for evolution training.")
+        obs_cfg["add_genome_obs_actor"] = False
+        obs_cfg["add_genome_obs_critic"] = False
     train_cfg = get_train_cfg(exp_name, max_iterations, runtime_seed)
 
     # Save cfg snapshot
     cfg_path = log_dir / "cfgs.pkl"
-    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg)
+    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, runtime_seed)
 
     # Environment
     env = WingedDroneEnv(
@@ -672,7 +661,9 @@ def main() -> None:
         urdf_file=urdf_file,
     )
     cfg_path = log_dir / "cfgs.pkl"
-    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg)
+    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, runtime_seed)
+    
+    urdf_file = str(default_mydrone_urdf_path())
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #

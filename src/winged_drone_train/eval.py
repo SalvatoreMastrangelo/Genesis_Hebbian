@@ -435,19 +435,13 @@ def evaluation(
         raise FileNotFoundError(f"Missing cfgs.pkl at {cfg_path}")
 
     with cfg_path.open("rb") as f:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
-
-    env_cfg.setdefault("property_randomization", {})
-    env_cfg["property_randomization"]["joint_target_episode_bias_std"] = 0.0
-    env_cfg["property_randomization"]["joint_target_step_noise_std"] = 0.0
-    
-    urdf_file = resolve_or_generate_urdf(urdf_file=urdf_file, drone_key=env_cfg.get("drone"))
-    urdf_path = Path(urdf_file).expanduser()
-    clean_stem = safe_urdf_stem(urdf_path)
-    print(
-        f"[evaluation] exp={exp_name} ckpt={ckpt} urdf={urdf_path.name} "
-        f"clean={clean_stem} envs={envs} save_plots={save_plots} eval_dir={eval_dir}"
-    )
+        cfg_data = pickle.load(f)
+    # Handle both old format (5 elements) and new format (6 elements with runtime_seed)
+    if len(cfg_data) == 6:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, training_seed = cfg_data
+        print(f"[evaluation] Loaded training runtime_seed={training_seed} (not used in eval)")
+    else:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
     runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
 
     # Command range used in this evaluation
@@ -458,8 +452,8 @@ def evaluation(
     # Keep the same noise magnitudes as training, while sampling fresh noise.
     obs_cfg_eval = dict(obs_cfg)
     if obs_genome is not None:
-        obs_cfg_eval["actor_genome_obs"] = bool(obs_genome)
-        obs_cfg_eval["critic_genome_obs"] = bool(obs_genome)
+        obs_cfg_eval["add_genome_obs_actor"] = bool(obs_genome)
+        obs_cfg_eval["add_genome_obs_critic"] = bool(obs_genome)
 
     # Evaluation-specific environment tweaks
     _apply_eval_env_overrides(env_cfg)
@@ -718,8 +712,8 @@ if __name__ == "__main__":
 
     # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
-    #obs_cfg_eval["actor_genome_obs"] = False
-    #obs_cfg_eval["critic_genome_obs"] = False
+    obs_cfg_eval["add_genome_obs_actor"] = False
+    obs_cfg_eval["add_genome_obs_critic"] = False
 
     # Print configs for sanity check
     print("\nEnvironment Configuration (eval):")

@@ -1,0 +1,109 @@
+##############################################################################
+# Default RunConfig — all parameters in one place.
+#
+# Override from CLI with:  --cfg.section.key value
+# Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
+##############################################################################
+
+exp_name: drone-forest
+
+ppo:
+  clip_param: 0.15
+  desired_kl: 0.006
+  entropy_coef: 0.002
+  gamma: 0.99
+  lam: 0.9
+  learning_rate: 1.0e-4
+  max_grad_norm: 0.5
+  num_learning_epochs: 2
+  num_mini_batches: 32
+  schedule: adaptive
+  use_clipped_value_loss: true
+  value_loss_coef: 0.3
+  normalize_advantage_per_mini_batch: true
+
+policy:
+  actor_hidden_dims: [64, 64]
+  critic_hidden_dims: [64, 64]
+  activation: elu
+  init_noise_std: 0.3
+  rnn_type: lstm
+  rnn_hidden_size: 64
+  rnn_num_layers: 1
+  max_servo: 1.0
+  max_throttle: 1.0
+
+training:
+  num_envs: 32768
+  max_iterations: 850
+  num_steps_per_env: 25
+  save_interval: 100
+  eval_interval: 200
+  seed: 1
+  empirical_normalization: true
+  device: "cuda:0"
+
+env:
+  num_actions: 5
+  dt: 0.01
+  drone: morphing_drone
+  naca: "3416"
+  termination_if_close_to_ground: 0.1
+  termination_if_y_greater_than: 50.0
+  termination_if_z_greater_than: 50.0
+  base_init_pos: [-30.0, 0.0, 15.0]
+  base_init_quat: [1.0, 0.0, 0.0, 0.0]
+  episode_length_s: 100.0
+  at_target_threshold: 0.1
+  resampling_time_s: 3.0
+  simulate_action_latency: true
+  action_latency_min_steps: 0
+  action_latency_max_steps: 1
+  action_latency_random_per_step: false
+  clip_actions: 1.0
+  visualize_target: false
+  visualize_camera: true
+  max_visualize_FPS: 15
+  tree_radius: 0.75
+  tree_height: 100.0
+  y_lower: -50.0
+  y_upper: 50.0
+  forest_x_limit: 150.0
+  x_upper: 150.0
+  aero_noise: true
+  aero_noise_sigma0: 0.05
+  noise_sigma_param: 0.15
+
+obs:
+  num_obs: 36
+  add_noise: true
+  add_genome_obs_actor: false
+  add_genome_obs_critic: false
+  noise_std_z: 0.01
+  noise_std_quat: 0.01
+  noise_std_vel: 0.02
+  noise_std_depth: 0.05
+  noise_std_last_thr: 0.0
+  noise_std_last_jnts: 0.0
+  noise_std_v_tgt: 0.0
+  noise_std_genome: 0.05
+
+reward:
+  smooth: -0.1
+  angular: -0.005
+  crash: -10.0
+  obstacle: -0.1
+  energy: -0.002
+  progress: 0.5
+  height: -0.005
+  success: 0.0
+  cosmetic: -1.0
+  stability: 0.0
+
+command:
+  num_commands: 1
+
+catalog:
+  n_urdf: null
+  catalog_dir: null
+  urdf_seed: 0

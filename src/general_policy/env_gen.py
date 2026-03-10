@@ -280,6 +280,16 @@ class Gen_Env:
             f"num_actions={self.num_actions}"
         )
 
+    def __getattr__(self, name: str):
+        """Delegate unknown attributes to the first sub-environment."""
+        # Avoid infinite recursion for attributes accessed during __init__
+        if name.startswith("_"):
+            raise AttributeError(name)
+        subs = self.__dict__.get("_subs")
+        if subs:
+            return getattr(subs[0], name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                   #
     # ------------------------------------------------------------------ #

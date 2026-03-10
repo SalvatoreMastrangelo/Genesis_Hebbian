@@ -638,8 +638,8 @@ class WingedDroneEnv:
         # ------------------------------------------------------------------ #
         # Genome handling (optional)                                        #
         # ------------------------------------------------------------------ #
-        self.actor_genome_obs = bool(self.obs_cfg.get("actor_genome_obs", False))
-        self.critic_genome_obs = bool(self.obs_cfg.get("critic_genome_obs", False))
+        self.add_genome_obs_actor = bool(self.obs_cfg.get("add_genome_obs_actor", False))
+        self.add_genome_obs_critic = bool(self.obs_cfg.get("add_genome_obs_critic", False))
         self._genome_vec: Optional[torch.Tensor] = None
         self._genome_base_vec: Optional[torch.Tensor] = None
         self._genome_obs_scratch: Optional[torch.Tensor] = None
@@ -826,8 +826,8 @@ class WingedDroneEnv:
             num_sectors_actor=self.NUM_SECTORS_ACTOR,
             joint_limits_max=self.joint_limit_max,
             obs_cfg=self.obs_cfg,
-            actor_genome_obs=self.actor_genome_obs and (self._genome_vec is not None),
-            critic_genome_obs=self.critic_genome_obs and (self._genome_vec is not None),
+            add_genome_obs_actor=self.add_genome_obs_actor and (self._genome_vec is not None),
+            add_genome_obs_critic=self.add_genome_obs_critic and (self._genome_vec is not None),
             genome_vec=self._genome_vec,
             genome_min=self.GENOME_MIN if self._genome_vec is not None else None,
             genome_max=self.GENOME_MAX if self._genome_vec is not None else None,

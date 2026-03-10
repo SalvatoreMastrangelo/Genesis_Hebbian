@@ -296,26 +296,13 @@ def train(
         obs_cfg["actor_genome_obs"] = False
         obs_cfg["critic_genome_obs"] = True
 
-    env_cfg = dict(env_cfg)
-    obs_cfg = dict(obs_cfg)
-    reward_cfg = dict(reward_cfg)
-    command_cfg = dict(command_cfg)
-    train_cfg = dict(train_cfg)
-    runner_cfg = dict(train_cfg.get("runner", {}))
-    runner_cfg["experiment_name"] = experiment_name
-    runner_cfg["max_iterations"] = max_iterations
-    runner_cfg["resume"] = False
-    runner_cfg["resume_path"] = None
-    train_cfg["runner"] = runner_cfg
-    train_cfg["seed"] = runtime_seed
-
-    if headless_no_gl:
-        env_cfg["enable_rendering"] = False
+    obs_cfg["add_genome_obs_actor"] = True  # Always include genome observation
+    obs_cfg["add_genome_obs_critic"] = True
 
     cfg_snapshot_path = log_dir / "cfgs.pkl"
     with cfg_snapshot_path.open("wb") as f:
         pickle.dump(
-            [env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg],
+            [env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, runtime_seed],
             f,
             protocol=pickle.HIGHEST_PROTOCOL,
         )
@@ -331,6 +318,12 @@ def train(
             f,
             protocol=pickle.HIGHEST_PROTOCOL,
         )
+
+    # Also save runtime_seed to a text file for easy reference
+    seed_path = log_dir / "runtime_seed.txt"
+    with seed_path.open("w") as f:
+        f.write(f"runtime_seed={runtime_seed}\n")
+    print(f"[train] Runtime seed saved to {seed_path}")
 
     # ------------------------------------------------------------------ #
     # Catalog resolution + optional building                             #
