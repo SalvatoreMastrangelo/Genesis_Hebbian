@@ -191,7 +191,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "naca": "3416",
 
         # Termination criteria
-        "termination_if_close_to_ground": 0.1,
+        "termination_if_close_to_ground": 0.5,
         "termination_if_y_greater_than": 50.0,
         "termination_if_z_greater_than": 50.0,
 
@@ -223,9 +223,11 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "tree_height": 100.0,
         "y_lower": -50.0,
         "y_upper": 50.0,
+        "dens_min_min": 0.0,
+        "dens_min_max": 3.0,
         # X-limit for success condition
-        "forest_x_limit": 200.0,
-        "x_upper": 200.0,
+        "forest_x_limit": 150.0,
+        "x_upper": 150.0,
 
         # ---------- AERODYNAMIC NOISE -------------------------------------
         # Single group controlling BOTH:

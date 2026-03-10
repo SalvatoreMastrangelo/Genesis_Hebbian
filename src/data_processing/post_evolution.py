@@ -21,7 +21,7 @@ FITNESS_LABELS = {
 }
 
 # Custom reference point (BIX3) for Pareto plots.
-BIX3_POINT = np.array([15.6, 0.36, 340.0], dtype=float)
+BIX3_POINT = np.array([21.6, 0.3, 325.0], dtype=float)
 
 # Sentinel values defined in src/morph_evolution/evolution_nsga.py
 INVALID_V = {0.0}
@@ -38,6 +38,51 @@ def load_nsga_csv(csv_path: Path) -> pd.DataFrame:
         missing_list = ", ".join(sorted(missing))
         raise ValueError(f"Missing columns in {csv_path}: {missing_list}")
     return df
+
+
+def _resolve_analysis_dir(input_path: Path) -> Path | None:
+    path = input_path.expanduser().resolve()
+    if path.is_dir():
+        if (path / "population_history.csv").exists():
+            return path
+        if (path / "analysis" / "population_history.csv").exists():
+            return (path / "analysis").resolve()
+        return None
+
+    parent = path.parent
+    if path.name in {"population_history.csv", "pareto_history.csv", "generation_summary.csv", "nsga.csv"}:
+        return parent if (parent / "population_history.csv").exists() else None
+    if parent.name == "analysis" and (parent / "population_history.csv").exists():
+        return parent.resolve()
+    if (parent / "analysis" / "population_history.csv").exists():
+        return (parent / "analysis").resolve()
+    return None
+
+
+def _resolve_run_dir(input_path: Path, analysis_dir: Path | None) -> Path:
+    path = input_path.expanduser().resolve()
+    if path.is_dir():
+        if analysis_dir is not None and path == analysis_dir:
+            return analysis_dir.parent.resolve()
+        return path
+    if analysis_dir is not None:
+        return analysis_dir.parent.resolve()
+    return path.parent.resolve()
+
+
+def load_run_tables(input_path: Path) -> tuple[pd.DataFrame, pd.DataFrame | None, Path, Path]:
+    analysis_dir = _resolve_analysis_dir(input_path)
+    run_dir = _resolve_run_dir(input_path, analysis_dir)
+    if analysis_dir is not None:
+        population_path = analysis_dir / "population_history.csv"
+        summary_path = analysis_dir / "generation_summary.csv"
+        pop_df = load_nsga_csv(population_path)
+        summary_df = pd.read_csv(summary_path) if summary_path.exists() else None
+        return pop_df, summary_df, population_path, run_dir
+
+    csv_path = input_path.expanduser().resolve()
+    pop_df = load_nsga_csv(csv_path)
+    return pop_df, None, csv_path, run_dir
 
 
 def _extract_genome_name_series(df: pd.DataFrame) -> pd.Series:
@@ -289,7 +334,8 @@ def plot_genome_fitness_correlation(df: pd.DataFrame, output_path: Path) -> None
     genome_df = pd.DataFrame(matrix, columns=gene_cols, index=aligned_df.index)
 
     combined = pd.concat([genome_df, fitness_df], axis=1)
-    corr = combined.corr(numeric_only=True).loc[gene_cols, fitness_cols]
+    combined = combined.apply(pd.to_numeric, errors="coerce")
+    corr = combined.corr().loc[gene_cols, fitness_cols]
     corr = corr.fillna(0.0)
 
     _apply_plot_style()
@@ -420,20 +466,31 @@ def plot_fitness_trends(
     df: pd.DataFrame,
     output_path: Path,
     raw_df: pd.DataFrame | None = None,
+    summary_df: pd.DataFrame | None = None,
 ) -> None:
     grouped = df.groupby("generation", sort=True)
     generations = grouped.size().index.to_numpy()
     if generations.size == 0:
         raise ValueError("No valid rows available after filtering sentinel values.")
 
+    if summary_df is not None:
+        required_summary_cols = {"generation"}
+        missing_summary = required_summary_cols - set(summary_df.columns)
+        if missing_summary:
+            missing_list = ", ".join(sorted(missing_summary))
+            raise ValueError(f"Missing columns in generation summary: {missing_list}")
+
     base_df = raw_df if raw_df is not None else df
-    fitness_cols = _fitness_columns_for_plots(base_df)
+    fitness_cols = [col for col in _fitness_columns_for_plots(base_df) if col in FITNESS_COLUMNS]
+    if EVAL_REWARD_COLUMN in base_df.columns:
+        fitness_cols.append(EVAL_REWARD_COLUMN)
     if not fitness_cols:
         raise ValueError("No fitness columns available for plotting.")
 
     _apply_plot_style()
+    total_plots = len(fitness_cols) + 1
     ncols = 2
-    nrows = int(np.ceil(len(fitness_cols) / ncols))
+    nrows = int(np.ceil(total_plots / ncols))
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -443,46 +500,102 @@ def plot_fitness_trends(
     axes_array = np.atleast_1d(axes)
     axes_flat = axes_array.flatten()
     for ax, fitness in zip(axes_flat, fitness_cols):
-        if raw_df is not None:
+        if summary_df is not None and fitness in FITNESS_COLUMNS:
+            summary = summary_df.sort_values("generation").copy()
+            if fitness == "ff_0":
+                center_col = "median_vel"
+                extreme_col = "best_vel"
+                band_low_col = "q1_vel"
+                band_high_col = "q3_vel"
+            elif fitness == "ff_1":
+                center_col = "median_eff"
+                extreme_col = "best_eff"
+                band_low_col = "q1_eff"
+                band_high_col = "q3_eff"
+            else:
+                center_col = "median_prog"
+                extreme_col = "best_prog"
+                band_low_col = "q1_prog"
+                band_high_col = "q3_prog"
+
+            needed = {
+                "generation",
+                center_col,
+                extreme_col,
+                band_low_col,
+                band_high_col,
+            }
+            missing = needed - set(summary.columns)
+            if missing:
+                missing_list = ", ".join(sorted(missing))
+                raise ValueError(f"Missing summary columns for {fitness}: {missing_list}")
+
+            stats = pd.DataFrame(
+                {
+                    "generation": summary["generation"].to_numpy(),
+                    "mean": summary[center_col].to_numpy(),
+                    "median": summary[center_col].to_numpy(),
+                    "extreme": summary[extreme_col].to_numpy(),
+                    "band_low": summary[band_low_col].to_numpy(),
+                    "band_high": summary[band_high_col].to_numpy(),
+                }
+            )
+            if fitness == "ff_1":
+                for col in ("mean", "median", "extreme", "band_low", "band_high"):
+                    stats[col] = -stats[col]
+            ylim_values = stats[["band_low", "band_high", "extreme"]].to_numpy(dtype=float).ravel()
+            band_lower = stats["band_low"]
+            band_upper = stats["band_high"]
+            extreme_series = stats["extreme"]
+            extreme_label = "best"
+        elif raw_df is not None:
             temp = _fitness_frame_for_plot(raw_df, fitness, is_raw=True)
             stats = temp.groupby("generation", sort=True)[fitness].agg(
                 ["mean", "median", "std", "max", "min"]
             ).reset_index()
             ylim_values = temp[fitness].to_numpy()
+            band_lower = stats["mean"] - stats["std"].fillna(0.0)
+            band_upper = stats["mean"] + stats["std"].fillna(0.0)
+            extreme_col = "min" if fitness == "ff_1" else "max"
+            extreme_series = stats[extreme_col]
+            extreme_label = "min" if fitness == "ff_1" else "max"
         else:
             temp = _fitness_frame_for_plot(df, fitness, is_raw=False)
             stats = temp.groupby("generation", sort=True)[fitness].agg(
                 ["mean", "median", "std", "max", "min"]
             ).reset_index()
             ylim_values = temp[fitness].to_numpy()
-        stats["std"] = stats["std"].fillna(0.0)
+            stats["std"] = stats["std"].fillna(0.0)
+            band_lower = stats["mean"] - stats["std"]
+            band_upper = stats["mean"] + stats["std"]
+            extreme_col = "min" if fitness == "ff_1" else "max"
+            extreme_series = stats[extreme_col]
+            extreme_label = "min" if fitness == "ff_1" else "max"
         ax.fill_between(
             stats["generation"],
-            stats["mean"] - stats["std"],
-            stats["mean"] + stats["std"],
+            band_lower,
+            band_upper,
             color="#9ecae1",
             alpha=0.35,
-            label="mean ± std",
+            label="IQR" if summary_df is not None and fitness in FITNESS_COLUMNS else "mean ± std",
         )
         ax.plot(
             stats["generation"],
             stats["mean"],
             color="#1f77b4",
             linewidth=2.5,
-            label="mean",
+            label="median" if summary_df is not None and fitness in FITNESS_COLUMNS else "mean",
         )
         ax.plot(
             stats["generation"],
             stats["median"],
             color="#2ca02c",
             linewidth=2.2,
-            label="median",
+            label="median" if summary_df is None or fitness not in FITNESS_COLUMNS else "median (same as center)",
         )
-        extreme_col = "min" if fitness == "ff_1" else "max"
-        extreme_label = "min" if fitness == "ff_1" else "max"
         ax.plot(
             stats["generation"],
-            stats[extreme_col],
+            extreme_series,
             color="#d62728",
             linewidth=2.0,
             linestyle="--",
@@ -495,14 +608,64 @@ def plot_fitness_trends(
         ax.tick_params(axis="y", labelsize=12)
         ax.grid(alpha=0.35)
         curve_values = [
-            stats["mean"].to_numpy(),
-            stats["median"].to_numpy(),
-            stats[extreme_col].to_numpy(),
+            stats["mean"].to_numpy(dtype=float),
+            stats["median"].to_numpy(dtype=float),
+            np.asarray(extreme_series, dtype=float),
         ]
         ax.set_ylim(_scaled_ylim_from_series(curve_values, padding_ratio=0.1))
         ax.set_xticks(generations)
 
-    for ax in axes_flat[len(fitness_cols):]:
+    count_ax = axes_flat[len(fitness_cols)]
+    count_source_df = raw_df if raw_df is not None else df
+    if summary_df is not None and {"generation", "minimal_p"}.issubset(summary_df.columns):
+        threshold_df = summary_df.loc[:, ["generation", "minimal_p"]].copy()
+    else:
+        threshold_df = pd.DataFrame(
+            {
+                "generation": sorted(count_source_df["generation"].unique()),
+                "minimal_p": float(INVALID_PROGRESS_THRESHOLD),
+            }
+        )
+
+    count_df = count_source_df.loc[:, ["generation", "ff_2"]].copy()
+    count_df = count_df[np.isfinite(count_df["ff_2"].to_numpy(dtype=float))]
+    count_stats = []
+    threshold_map = dict(zip(threshold_df["generation"], threshold_df["minimal_p"]))
+    for generation in sorted(count_df["generation"].unique()):
+        gen_ff2 = count_df.loc[count_df["generation"] == generation, "ff_2"].to_numpy(dtype=float)
+        threshold = float(threshold_map.get(generation, INVALID_PROGRESS_THRESHOLD))
+        count_stats.append(
+            {
+                "generation": generation,
+                "count_above_threshold": int(np.sum(gen_ff2 >= threshold)),
+                "minimal_p": threshold,
+            }
+        )
+    count_stats_df = pd.DataFrame(count_stats)
+    count_ax.bar(
+        count_stats_df["generation"],
+        count_stats_df["count_above_threshold"],
+        width=0.7,
+        color="#6baed6",
+        alpha=0.85,
+        label="count >= minimal_p",
+    )
+    count_ax.plot(
+        count_stats_df["generation"],
+        count_stats_df["count_above_threshold"],
+        color="#08519c",
+        linewidth=2.2,
+        marker="o",
+        markersize=4.8,
+    )
+    count_ax.set_title("Individuals Above Minimal Progress")
+    count_ax.set_xlabel("Generation", fontsize=12)
+    count_ax.set_ylabel("Count", fontsize=13)
+    count_ax.grid(alpha=0.35)
+    count_ax.set_xticks(generations)
+    count_ax.set_ylim(_scaled_ylim(count_stats_df["count_above_threshold"].to_numpy(dtype=float), padding_ratio=0.12))
+
+    for ax in axes_flat[total_plots:]:
         ax.set_visible(False)
 
     axes_flat[0].legend(loc="best")
@@ -554,29 +717,28 @@ def plot_pareto_fronts(df: pd.DataFrame, output_path: Path, generation: int) -> 
         finite_mask = np.isfinite(all_points).all(axis=1)
         all_points = all_points[finite_mask]
         all_generations = all_generations[finite_mask]
-        pareto_points = _pareto_points_from_plot(all_points, [x_col, y_col])
-        front_mask_2d = pareto_mask_finite(pareto_points)
+        global_pareto_points = _pareto_points_from_plot(all_points, [x_col, y_col])
+        global_front_mask_2d = pareto_mask_finite(global_pareto_points)
         total_points = int(all_points.shape[0])
-        front_points = int(np.sum(front_mask_2d))
+        front_points = int(np.sum(global_front_mask_2d))
         scatter_handle = ax.scatter(
             all_points[:, 0],
             all_points[:, 1],
             c=all_generations,
             cmap="viridis",
-            s=20,
-            alpha=0.35,
-            label="population",
+            s=18,
+            alpha=0.28,
+            label="all generations",
             zorder=1,
         )
-
         ax.scatter(
-            all_points[front_mask_2d, 0],
-            all_points[front_mask_2d, 1],
-            s=46,
+            all_points[global_front_mask_2d, 0],
+            all_points[global_front_mask_2d, 1],
+            s=42,
             facecolor="none",
             edgecolor="#d62728",
-            linewidth=1.6,
-            label="pareto front",
+            linewidth=1.8,
+            label="global 2D front",
             zorder=3,
         )
         bix3_x = BIX3_POINT[FITNESS_COLUMNS.index(x_col)]
@@ -590,13 +752,13 @@ def plot_pareto_fronts(df: pd.DataFrame, output_path: Path, generation: int) -> 
             edgecolor="#7a5a00",
             linewidth=1.2,
             label="BIX3",
-            zorder=4,
+            zorder=5,
         )
         ax.set_xlabel(FITNESS_LABELS[x_col])
         ax.set_ylabel(FITNESS_LABELS[y_col])
         ax.set_title(
             f"{FITNESS_LABELS[x_col]} vs {FITNESS_LABELS[y_col]} "
-            f"(front {front_points}/{total_points})"
+            f"(global front {front_points}/{total_points})"
         )
         ax.grid(alpha=0.35)
 
@@ -940,6 +1102,123 @@ def plot_evolutionary_metrics(metrics_df: pd.DataFrame, output_path: Path) -> No
     plt.close(fig)
 
 
+def plot_dominance_solutions(
+    df: pd.DataFrame,
+    output_path: Path,
+    *,
+    summary_df: pd.DataFrame | None = None,
+) -> None:
+    if summary_df is not None and {"generation", "pareto_size"}.issubset(summary_df.columns):
+        plot_df = summary_df.loc[:, ["generation", "pareto_size"]].copy()
+        plot_df = plot_df.sort_values("generation")
+        plot_df = plot_df.rename(columns={"pareto_size": "nondominated_count"})
+    else:
+        if "generation" not in df.columns:
+            raise ValueError("Missing 'generation' column for dominance plot.")
+        if "is_pareto" in df.columns:
+            plot_df = (
+                df.groupby("generation", sort=True)["is_pareto"]
+                .sum()
+                .reset_index(name="nondominated_count")
+            )
+        else:
+            rows = []
+            for generation in sorted(df["generation"].unique()):
+                gen_df = df[df["generation"] == generation]
+                points = gen_df[FITNESS_COLUMNS].to_numpy(dtype=float)
+                points = points[np.isfinite(points).all(axis=1)]
+                rows.append(
+                    {
+                        "generation": generation,
+                        "nondominated_count": int(np.sum(pareto_mask(points))) if points.size else 0,
+                    }
+                )
+            plot_df = pd.DataFrame(rows)
+
+    if "is_pareto" in df.columns:
+        pareto_df = df.loc[df["is_pareto"].astype(int) == 1].copy()
+    else:
+        rows = []
+        for generation in sorted(df["generation"].unique()):
+            gen_df = df[df["generation"] == generation].copy()
+            points = gen_df[FITNESS_COLUMNS].to_numpy(dtype=float)
+            finite_mask = np.isfinite(points).all(axis=1)
+            gen_df = gen_df.loc[finite_mask].copy()
+            points = points[finite_mask]
+            if points.size == 0:
+                continue
+            gen_df["_is_pareto_tmp"] = pareto_mask(points).astype(int)
+            rows.append(gen_df.loc[gen_df["_is_pareto_tmp"] == 1].drop(columns="_is_pareto_tmp"))
+        pareto_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=df.columns)
+
+    if not pareto_df.empty:
+        genome_name = _extract_genome_name_series(pareto_df)
+        pareto_df = pareto_df.copy()
+        pareto_df["_dominance_key"] = genome_name
+        missing_key_mask = pareto_df["_dominance_key"].isna()
+        if missing_key_mask.any():
+            rounded_points = pareto_df.loc[missing_key_mask, FITNESS_COLUMNS].round(8)
+            pareto_df.loc[missing_key_mask, "_dominance_key"] = rounded_points.apply(
+                lambda row: tuple(row[col] for col in FITNESS_COLUMNS),
+                axis=1,
+            )
+        first_seen = (
+            pareto_df.groupby("_dominance_key", sort=False)["generation"]
+            .min()
+            .reset_index(name="first_generation")
+        )
+        discovered_df = (
+            first_seen.groupby("first_generation", sort=True)
+            .size()
+            .reset_index(name="new_nondominated_count")
+            .rename(columns={"first_generation": "generation"})
+        )
+    else:
+        discovered_df = pd.DataFrame(
+            {"generation": plot_df["generation"].to_numpy(dtype=int), "new_nondominated_count": 0}
+        )
+
+    plot_df = plot_df.merge(discovered_df, on="generation", how="left")
+    plot_df["new_nondominated_count"] = plot_df["new_nondominated_count"].fillna(0.0)
+
+    generations = plot_df["generation"].to_numpy(dtype=int)
+    values = plot_df["nondominated_count"].to_numpy(dtype=float)
+    discovered_values = plot_df["new_nondominated_count"].to_numpy(dtype=float)
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(9.5, 5.2))
+    ax.bar(
+        generations,
+        discovered_values,
+        width=0.65,
+        color="#9ecae1",
+        alpha=0.75,
+        label="new Pareto solutions discovered",
+        zorder=1,
+    )
+    ax.plot(
+        generations,
+        values,
+        marker="o",
+        linewidth=2.4,
+        markersize=5.5,
+        color="#d62728",
+        label="Pareto solutions in generation",
+        zorder=3,
+    )
+    ax.fill_between(generations, 0.0, values, color="#fcae91", alpha=0.20, zorder=2)
+    ax.set_title("Pareto Dominance Across Generations", fontsize=14, weight="bold")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Count")
+    ax.set_xticks(generations)
+    ax.set_ylim(_scaled_ylim(np.concatenate([values, discovered_values]), padding_ratio=0.12))
+    ax.grid(alpha=0.35)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+
 def report_duplicate_stats(df: pd.DataFrame) -> None:
     genome_series = _extract_genome_name_series(df)
     if genome_series.isna().all():
@@ -1011,18 +1290,41 @@ def export_pareto_csv(df: pd.DataFrame, output_path: Path) -> pd.DataFrame:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate post-evolution plots from nsga.csv.")
+    parser = argparse.ArgumentParser(
+        description="Generate post-evolution plots from legacy nsga.csv or a new NSGA run directory."
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data_processing/nsga_GP"),
+        help=(
+            "Path to a legacy nsga.csv, to population_history.csv, to an analysis directory, "
+            "or to the root folder of a new NSGA run."
+        ),
+    )
+    parser.add_argument(
+        "--run-dir",
+        dest="input",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--csv",
+        dest="input",
         type=Path,
-        default=Path("src/data_processing/nsga_GP.csv"),
-        help="Path to nsga.csv.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--tag",
         type=str,
         default=None,
         help="Optional tag to name the output folder as post_evolution_plots_<tag>.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Optional output directory. Default: <run-dir>/post_evolution_plots[_<tag>].",
     )
     parser.add_argument(
         "--generation",
@@ -1035,22 +1337,31 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    df_raw = load_nsga_csv(args.csv)
+    df_raw, summary_df, source_csv, run_dir = load_run_tables(args.input)
     df_agg_raw = filter_to_agg(df_raw)
     df = filter_sentinels(df_agg_raw, reference_df=df_raw)
     trends_raw = apply_invalid_repetition_values(df_agg_raw, reference_df=df_raw)
 
-    tag = args.tag
-    if tag is None:
-        tag = input("Output folder tag (post_evolution_plots_<tag>): ").strip()
-    if not tag:
-        tag = "default"
-    safe_tag = re.sub(r"[^A-Za-z0-9._-]+", "_", tag)
-    output_dir = Path("src/data_processing") / f"post_evolution_plots_{safe_tag}"
+    if args.output_dir is not None:
+        output_dir = args.output_dir.expanduser().resolve()
+    else:
+        tag = args.tag.strip() if isinstance(args.tag, str) and args.tag.strip() else ""
+        safe_tag = re.sub(r"[^A-Za-z0-9._-]+", "_", tag).strip("_")
+        dir_name = "post_evolution_plots"
+        if safe_tag:
+            dir_name = f"{dir_name}_{safe_tag}"
+        output_dir = run_dir / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"Loaded evolution data from: {source_csv}")
+    print(f"Using run directory: {run_dir}")
     report_duplicate_stats(df)
-    plot_fitness_trends(df, output_dir / "fitness_trends.png", raw_df=trends_raw)
+    plot_fitness_trends(
+        df,
+        output_dir / "fitness_trends.png",
+        raw_df=trends_raw,
+        summary_df=summary_df,
+    )
 
     if args.generation is None:
         generation = int(df["generation"].max())
@@ -1061,6 +1372,11 @@ def main() -> None:
     export_pareto_csv(df, output_dir / "pareto.csv")
     metrics_df = compute_evolutionary_metrics(df, output_dir / "evolutionary_metrics.csv")
     plot_evolutionary_metrics(metrics_df, output_dir / "evolutionary_metrics.png")
+    plot_dominance_solutions(
+        df,
+        output_dir / "dominance_solutions.png",
+        summary_df=summary_df,
+    )
     plot_genome_pca_generations(df, output_dir / "genome_pca_generations.png")
     plot_genome_fitness_correlation(df, output_dir / "genome_fitness_correlation.png")
     plot_top5pct_gene_means(df, output_dir / "genome_top5pct_gene_means.png")

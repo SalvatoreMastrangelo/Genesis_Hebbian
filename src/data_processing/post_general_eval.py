@@ -18,9 +18,12 @@ class URDFHistogramPlotter:
     SPEED_NORM = 30.0
     REWARD_NORM = 500.0
     MINIMAL_PROGRESS_M = 250.0
-    STEPS_REWARD_TARGET = 0.95
+    STEPS_REWARD_TARGET = 0.9
     STEPS_REWARD_OFFSET = 5.0
     MAX_GENERAL_POLICIES = 6
+    INVALID_SPEED_VALUES = (0.0,)
+    INVALID_PROGRESS_VALUES = (0.0,)
+    INVALID_NEGE_VALUES = (-10.0, -100.0)
     BIX3_URDF_STEM = (
         0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4.0, 0.2, 2.0, 0.0, 2.0, 2.5, 3.0, 4.0, 16.0
     )
@@ -36,6 +39,7 @@ class URDFHistogramPlotter:
         self.gp_csv_paths = self._resolve_gp_csv_paths(gp_csv_paths)
         self.df_all = self._load_df_with_genome(self.csv_path)
         self._gp_policy_count_from_csvs = 0
+        self._gp_runtime_divisor_by_policy_idx = {}
         self._merge_gp_baselines_from_csvs()
         self.df = self._filter_agg_rows(self.df_all)
         self._steps90_rep_cache = self._build_steps90_rep_cache(self.df_all)
@@ -146,12 +150,86 @@ class URDFHistogramPlotter:
             return df.reset_index(drop=True)
         return agg_df
 
+    def _synthesize_missing_sp_agg_rows(self, df):
+        if len(df) == 0 or "row_kind" not in df.columns:
+            return df
+
+        rep_mask = self._row_kind_mask(df, "rep")
+        agg_mask = self._row_kind_mask(df, "agg")
+        if not rep_mask.any():
+            return df
+
+        agg_keys = set()
+        for _, row in df.loc[agg_mask].iterrows():
+            key = self._canonical_urdf_key(row)
+            if key is not None:
+                agg_keys.add(key)
+
+        synthetic_rows = []
+        for key, group in df.loc[rep_mask].groupby(
+            df.loc[rep_mask].apply(self._canonical_urdf_key, axis=1)
+        ):
+            if key is None or key in agg_keys:
+                continue
+
+            rep_rows = group.reset_index(drop=True)
+            out = {}
+            for col in df.columns:
+                if col == "row_kind":
+                    out[col] = "agg"
+                    continue
+                if col == "rep_idx":
+                    out[col] = np.nan
+                    continue
+                series = rep_rows[col]
+                non_na = series.dropna()
+                if col in ("urdf_stem", "urdf_params"):
+                    out[col] = non_na.iloc[0] if len(non_na) > 0 else []
+                else:
+                    out[col] = non_na.iloc[0] if len(non_na) > 0 else np.nan
+
+            trained_metric_prefixes = (
+                "f_speed_trained",
+                "f_negE_trained",
+                "f_prog_trained",
+                "reward_ep_mean_trained",
+            )
+            for prefix in trained_metric_prefixes:
+                values = []
+                idx = 1
+                while f"{prefix}{idx}" in df.columns:
+                    val = out.get(f"{prefix}{idx}", np.nan)
+                    try:
+                        val = float(val)
+                    except (TypeError, ValueError):
+                        val = np.nan
+                    if np.isfinite(val):
+                        values.append(val)
+                    idx += 1
+                mean_col = f"{prefix}_mean"
+                if mean_col in df.columns and len(values) > 0:
+                    out[mean_col] = float(np.mean(values))
+
+            synthetic_rows.append(out)
+
+        if not synthetic_rows:
+            return df
+
+        synth_df = pd.DataFrame(synthetic_rows, columns=df.columns)
+        print(
+            f"[INFO] Synthesized {len(synth_df)} missing SP aggregate row(s) from rep rows."
+        )
+        return pd.concat([df, synth_df], ignore_index=True)
+
     def _infer_policy_count(self, policy_kind):
+        return self._infer_policy_count_from_df(self.df, policy_kind)
+
+    def _infer_policy_count_from_df(self, df, policy_kind):
         pattern = re.compile(
             rf"(?:f_speed|f_negE|f_prog|reward_ep_mean)_{policy_kind}(\d+)$"
         )
         indices = []
-        for col in self.df.columns:
+        for col in df.columns:
             match = pattern.match(col)
             if match:
                 indices.append(int(match.group(1)))
@@ -191,8 +269,25 @@ class URDFHistogramPlotter:
 
     def _normalize_cot(self, values):
         cot = -np.array(values, dtype=float)
-        cot[np.isclose(cot, 100)] = 0
+        invalid_cot_values = -np.asarray(self.INVALID_NEGE_VALUES, dtype=float)
+        if invalid_cot_values.size > 0:
+            cot_flat = np.atleast_1d(cot)
+            invalid_mask = np.isclose(
+                cot_flat[:, None],
+                invalid_cot_values[None, :],
+            ).any(axis=1)
+            cot_flat[invalid_mask] = 0
+            cot = cot_flat.reshape(np.shape(cot))
         return cot
+
+    def _matches_any_invalid(self, values, invalid_values):
+        vals = np.asarray(values, dtype=float)
+        invalid = np.asarray(tuple(invalid_values), dtype=float)
+        if vals.ndim == 0:
+            vals = vals.reshape(1)
+        if invalid.size == 0:
+            return np.zeros(vals.shape, dtype=bool)
+        return np.isclose(vals[:, None], invalid[None, :]).any(axis=1)
 
     def _select_policy_value(self, values, policy_idx):
         if len(values) == 0:
@@ -267,18 +362,22 @@ class URDFHistogramPlotter:
         gp_means = [0.0] * gp_count
         gp_stds = [0.0] * gp_count
 
-        # GP: each evaluation_results_GP*.csv corresponds to one policy.
-        for pi in range(gp_count):
-            if pi >= len(self.gp_csv_paths):
-                continue
-            gp_path = self.gp_csv_paths[pi]
-            gp_df_all = self._load_df_with_genome(gp_path)
-            gp_df = self._filter_agg_rows(gp_df_all)
-            rates = self._trial_pass_rates_for_progress(gp_df, "f_prog_baseline")
-            if len(rates) == 0:
-                continue
-            gp_means[pi] = float(np.mean(rates))
-            gp_stds[pi] = float(np.std(rates)) if len(rates) > 1 else 0.0
+        # GP: use already-merged agg rows so policy indexing stays consistent
+        # across both cases:
+        #   1. evaluation_results_GP.csv -> baseline1, baseline2, ... are distinct policies
+        #   2. evaluation_results_GP{idx}*.csv -> files with same idx are seed variants
+        #      of the same policy and are already merged into baseline{idx}.
+        threshold = float(self.MINIMAL_PROGRESS_M)
+        n_drones = len(self.df)
+        if n_drones > 0:
+            for pi in range(gp_count):
+                col = f"f_prog_baseline{pi + 1}"
+                if col not in self.df.columns:
+                    continue
+                vals = pd.to_numeric(self.df[col], errors="coerce").to_numpy(dtype=float)
+                pass_mask = np.isfinite(vals) & (vals > threshold)
+                gp_means[pi] = float(np.sum(pass_mask) / float(n_drones))
+                gp_stds[pi] = 0.0
 
         # SP: use trained trials directly from SP agg rows.
         sp_rates = self._trial_pass_rates_for_progress(self.df, "f_prog_trained")
@@ -289,9 +388,13 @@ class URDFHistogramPlotter:
     def _minimal_progress_threshold_norm(self):
         return self.MINIMAL_PROGRESS_M / self.PROGRESS_NORM
 
-    def _draw_progress_threshold_segment(self, ax, x_center, width):
+    def _draw_progress_threshold_segment(self, ax, x_center, width, threshold_norm=None):
         width = width * 1.20
-        y = self._minimal_progress_threshold_norm()
+        y = (
+            self._minimal_progress_threshold_norm()
+            if threshold_norm is None
+            else float(threshold_norm)
+        )
         ax.plot(
             [x_center - width / 2, x_center + width / 2],
             [y, y],
@@ -523,8 +626,17 @@ class URDFHistogramPlotter:
         return np.full(max(0, count), fallback_ratio, dtype=float)
 
     def _is_valid_metric(self, metric, values):
+        values = np.asarray(values, dtype=float)
         mask = np.isfinite(values)
-        if metric in ("speed", "cot", "steps90"):
+
+        if metric == "speed":
+            mask = mask & (values > 0) & (~self._matches_any_invalid(values, self.INVALID_SPEED_VALUES))
+        elif metric == "cot":
+            invalid_cot_values = -np.asarray(self.INVALID_NEGE_VALUES, dtype=float)
+            mask = mask & (values > 0) & (~self._matches_any_invalid(values, invalid_cot_values))
+        elif metric == "prog":
+            mask = mask & (~self._matches_any_invalid(values, self.INVALID_PROGRESS_VALUES))
+        elif metric == "steps90":
             mask = mask & (values > 0)
         return mask
 
@@ -752,11 +864,15 @@ class URDFHistogramPlotter:
         gp_count = max(0, self.general_policy_count)
         gp_pass_counts = [0] * gp_count
         sp_pass_count = 0
+        gp_runtime_vals = [[] for _ in range(gp_count)]
+        sp_runtime_vals = []
 
         for _, row in self.df.iterrows():
             metrics = self._process_row(row)
             gp_prog = np.asarray(metrics["baseline_all"]["prog"], dtype=float)
             tr_prog = np.asarray(metrics["trained"]["prog"], dtype=float)
+            eval_duration_s = self._safe_row_float(row, "eval_duration_s")
+            train_duration_s = self._safe_row_float(row, "train_duration_s")
 
             for pi in range(gp_count):
                 if pi >= len(gp_prog):
@@ -764,19 +880,42 @@ class URDFHistogramPlotter:
                 val = gp_prog[pi]
                 if np.isfinite(val) and val > prog_threshold_norm:
                     gp_pass_counts[pi] += 1
+                    gp_runtime = self._safe_row_float(row, f"gp_runtime_s{pi + 1}")
+                    if np.isfinite(gp_runtime):
+                        gp_runtime_vals[pi].append(float(gp_runtime))
 
             valid_mask = np.isfinite(tr_prog) & (tr_prog > 0)
             valid_vals = tr_prog[valid_mask]
             if len(valid_vals) > 0 and valid_vals.mean() > prog_threshold_norm:
                 sp_pass_count += 1
+                rep_count = max(1, self._count_indexed_columns(row, "f_prog_trained"))
+                sp_runtime = (train_duration_s + eval_duration_s) / float(rep_count)
+                if np.isfinite(sp_runtime):
+                    sp_runtime_vals.append(float(sp_runtime))
 
         print(
             f"\n=== URDFs above minimal progress threshold "
             f"({self.MINIMAL_PROGRESS_M:.1f} m) ==="
         )
         for pi in range(gp_count):
-            print(f"  GP{pi + 1}: {gp_pass_counts[pi]}/{len(self.df)}")
-        print(f"  SP: {sp_pass_count}/{len(self.df)}")
+            runtime_arr = np.asarray(gp_runtime_vals[pi], dtype=float)
+            runtime_arr = runtime_arr[np.isfinite(runtime_arr)]
+            runtime_mean = float(np.mean(runtime_arr)) if len(runtime_arr) > 0 else np.nan
+            runtime_std = float(np.std(runtime_arr)) if len(runtime_arr) > 1 else np.nan
+            print(
+                f"  GP{pi + 1}: {gp_pass_counts[pi]}/{len(self.df)} | "
+                f"runtime mean={self._fmt_duration(runtime_mean)} | "
+                f"std={self._fmt_duration(runtime_std)}"
+            )
+        sp_runtime_arr = np.asarray(sp_runtime_vals, dtype=float)
+        sp_runtime_arr = sp_runtime_arr[np.isfinite(sp_runtime_arr)]
+        sp_runtime_mean = float(np.mean(sp_runtime_arr)) if len(sp_runtime_arr) > 0 else np.nan
+        sp_runtime_std = float(np.std(sp_runtime_arr)) if len(sp_runtime_arr) > 1 else np.nan
+        print(
+            f"  SP: {sp_pass_count}/{len(self.df)} | "
+            f"runtime mean={self._fmt_duration(sp_runtime_mean)} | "
+            f"std={self._fmt_duration(sp_runtime_std)}"
+        )
         print("===============================================\n")
 
     def _print_gp_selected_below_threshold_details(self, general_policy_idx=None):
@@ -818,6 +957,7 @@ class URDFHistogramPlotter:
                 )
 
         rows = []
+        runtime_vals = []
         for urdf_idx, (_, row) in enumerate(self.df.iterrows(), start=1):
             metrics = self._process_row(row, general_policy_idx=gp_idx)
             gp_selected = metrics["baseline_selected"]
@@ -849,6 +989,286 @@ class URDFHistogramPlotter:
                 f"{_fmt_metric('prog', gp_prog, sp_prog)}"
             )
             print(f"    reward: {_fmt_metric('reward', *item['metrics']['reward'])}")
+        print("===============================================================\n")
+
+    def _print_sp_below_threshold_details(self):
+        """Print SP metrics for URDFs where mean SP progress is below threshold."""
+        if len(self.df) == 0:
+            print("[WARN] No URDFs available for SP below-threshold report.")
+            return
+
+        threshold_m = float(self.MINIMAL_PROGRESS_M)
+        rows = []
+        runtime_vals = []
+        runtime_vals = []
+        runtime_vals = []
+
+        for urdf_idx, (_, row) in enumerate(self.df.iterrows(), start=1):
+            metrics = self._process_row(row)
+
+            tr_prog = np.asarray(metrics["trained"]["prog"], dtype=float) * self.PROGRESS_NORM
+            tr_speed = np.asarray(metrics["trained"]["speed"], dtype=float) * self.SPEED_NORM
+            tr_cot = np.asarray(metrics["trained"]["cot"], dtype=float)
+            tr_reward = np.asarray(metrics["trained"]["reward"], dtype=float) * self.REWARD_NORM
+
+            prog_mask = np.isfinite(tr_prog) & (tr_prog > 0)
+            prog_valid = tr_prog[prog_mask]
+            if len(prog_valid) == 0:
+                continue
+
+            prog_mean = float(np.mean(prog_valid))
+            if not np.isfinite(prog_mean) or prog_mean > threshold_m:
+                continue
+
+            speed_mask = self._is_valid_metric("speed", tr_speed)
+            cot_mask = self._is_valid_metric("cot", tr_cot)
+            reward_mask = self._is_valid_metric("reward", tr_reward)
+
+            speed_valid = tr_speed[speed_mask]
+            cot_valid = tr_cot[cot_mask]
+            reward_valid = tr_reward[reward_mask]
+
+            rows.append(
+                dict(
+                    urdf_idx=urdf_idx,
+                    urdf_stem=row.get("urdf_stem", ""),
+                    prog_mean=prog_mean,
+                    prog_reps=tr_prog,
+                    speed_mean=float(np.mean(speed_valid)) if len(speed_valid) > 0 else np.nan,
+                    speed_reps=tr_speed,
+                    cot_mean=float(np.mean(cot_valid)) if len(cot_valid) > 0 else np.nan,
+                    cot_reps=tr_cot,
+                    reward_mean=float(np.mean(reward_valid)) if len(reward_valid) > 0 else np.nan,
+                    reward_reps=tr_reward,
+                )
+            )
+
+        print(
+            f"\n=== URDFs below minimal progress threshold for SP "
+            f"({threshold_m:.1f} m) ==="
+        )
+        if len(rows) == 0:
+            print("  None")
+            print("===============================================================\n")
+            return
+
+        def _fmt_scalar(val, unit=""):
+            if not np.isfinite(val):
+                return "nan"
+            return f"{val:.2f}{unit}"
+
+        def _fmt_reps(vals):
+            return ", ".join(
+                "nan" if not np.isfinite(v) else f"{float(v):.2f}"
+                for v in np.asarray(vals, dtype=float)
+            )
+
+        for item in rows:
+            print(
+                f"  URDF {item['urdf_idx']:02d}: progress_mean={_fmt_scalar(item['prog_mean'], ' m')} | "
+                f"urdf={item['urdf_stem']}"
+            )
+            print(f"    progress reps: {_fmt_reps(item['prog_reps'])}")
+            print(
+                f"    speed mean: {_fmt_scalar(item['speed_mean'])} | "
+                f"speed reps: {_fmt_reps(item['speed_reps'])}"
+            )
+            print(
+                f"    cot mean: {_fmt_scalar(item['cot_mean'])} | "
+                f"cot reps: {_fmt_reps(item['cot_reps'])}"
+            )
+            print(
+                f"    reward mean: {_fmt_scalar(item['reward_mean'])} | "
+                f"reward reps: {_fmt_reps(item['reward_reps'])}"
+            )
+        print("===============================================================\n")
+
+    def _print_sp_steps_for_above_threshold(self):
+        """Print SP steps@target reward for URDFs above minimal progress."""
+        if len(self.df) == 0:
+            print("[WARN] No URDFs available for SP steps report.")
+            return
+
+        threshold_m = float(self.MINIMAL_PROGRESS_M)
+        rows = []
+        runtime_vals = []
+
+        for urdf_idx, (_, row) in enumerate(self.df.iterrows(), start=1):
+            metrics = self._process_row(row)
+
+            tr_prog = np.asarray(metrics["trained"]["prog"], dtype=float) * self.PROGRESS_NORM
+            tr_steps = np.asarray(metrics["trained"]["steps90"], dtype=float)
+
+            prog_mask = np.isfinite(tr_prog) & (tr_prog > 0)
+            prog_valid = tr_prog[prog_mask]
+            if len(prog_valid) == 0:
+                continue
+
+            prog_mean = float(np.mean(prog_valid))
+            if not np.isfinite(prog_mean) or prog_mean <= threshold_m:
+                continue
+
+            steps_mask = self._is_valid_metric("steps90", tr_steps)
+            steps_valid = tr_steps[steps_mask]
+            if len(steps_valid) == 0:
+                continue
+
+            rep_count = max(1, self._count_indexed_columns(row, "f_prog_trained"))
+            runtime_s = (
+                self._safe_row_float(row, "train_duration_s")
+                + self._safe_row_float(row, "eval_duration_s")
+            ) / float(rep_count)
+            if np.isfinite(runtime_s):
+                runtime_vals.append(float(runtime_s))
+
+            rows.append(
+                dict(
+                    urdf_idx=urdf_idx,
+                    urdf_stem=row.get("urdf_stem", ""),
+                    prog_mean=prog_mean,
+                    steps_mean=float(np.mean(steps_valid)),
+                    steps_reps=tr_steps,
+                    runtime_s=runtime_s,
+                )
+            )
+
+        print(
+            "\n=== SP steps to reach "
+            f"{self._steps_target_pct_label()} reward for URDFs above minimal progress "
+            f"({threshold_m:.1f} m) ==="
+        )
+        print(
+            "  Note: value reported as fraction of total training steps "
+            "(the same quantity used in the plots)."
+        )
+        if len(rows) == 0:
+            print("  None")
+            print("===============================================================\n")
+            return
+
+        def _fmt_ratio(val):
+            if not np.isfinite(val):
+                return "nan"
+            return f"{val:.4f} ({val * 100.0:.2f}%)"
+
+        def _fmt_reps(vals):
+            return ", ".join(
+                "nan" if not np.isfinite(v) else f"{float(v):.4f} ({float(v) * 100.0:.2f}%)"
+                for v in np.asarray(vals, dtype=float)
+            )
+
+        for item in rows:
+            print(
+                f"  URDF {item['urdf_idx']:02d}: progress_mean={item['prog_mean']:.2f} m | "
+                f"steps_mean={_fmt_ratio(item['steps_mean'])} | "
+                f"runtime={self._fmt_duration(item['runtime_s'])} | urdf={item['urdf_stem']}"
+            )
+            print(f"    steps reps: {_fmt_reps(item['steps_reps'])}")
+
+        all_steps_means = np.asarray([item["steps_mean"] for item in rows], dtype=float)
+        valid_global = all_steps_means[np.isfinite(all_steps_means) & (all_steps_means > 0)]
+        global_mean = float(np.mean(valid_global)) if len(valid_global) > 0 else np.nan
+        global_std = float(np.std(valid_global)) if len(valid_global) > 1 else np.nan
+        runtime_arr = np.asarray(runtime_vals, dtype=float)
+        runtime_arr = runtime_arr[np.isfinite(runtime_arr) & (runtime_arr > 0)]
+        runtime_mean = float(np.mean(runtime_arr)) if len(runtime_arr) > 0 else np.nan
+        runtime_std = float(np.std(runtime_arr)) if len(runtime_arr) > 1 else np.nan
+        print(
+            "  SP mean over URDFs above minimal progress only: "
+            f"{_fmt_ratio(global_mean)} | std={_fmt_ratio(global_std)} "
+            f"| runtime mean={self._fmt_duration(runtime_mean)} "
+            f"| runtime std={self._fmt_duration(runtime_std)} "
+            f"(n = {len(valid_global)})"
+        )
+        print("===============================================================\n")
+
+    def _print_above_threshold_metric_summaries(self, general_policy_idx=None):
+        """Print global summaries above minimal progress for steps and reward."""
+        if len(self.df) == 0:
+            print("[WARN] No URDFs available for above-threshold summaries.")
+            return
+
+        gp_idx = self._resolve_policy_index(
+            general_policy_idx if general_policy_idx is not None else self.general_policy_idx,
+            self.general_policy_count,
+            "General",
+        )
+        threshold_m = float(self.MINIMAL_PROGRESS_M)
+        gp_steps_vals = []
+        sp_steps_vals = []
+        gp_reward_vals = []
+        sp_reward_vals = []
+
+        for _, row in self.df.iterrows():
+            metrics = self._process_row(row, general_policy_idx=gp_idx)
+
+            gp_prog = float(metrics["baseline_selected"]["prog"]) * self.PROGRESS_NORM
+            if np.isfinite(gp_prog) and gp_prog > threshold_m:
+                gp_steps = float(metrics["baseline_selected"]["steps90"])
+                gp_reward = float(metrics["baseline_selected"]["reward"]) * self.REWARD_NORM
+                if self._is_valid_metric("steps90", np.asarray([gp_steps], dtype=float))[0]:
+                    gp_steps_vals.append(gp_steps)
+                if self._is_valid_metric("reward", np.asarray([gp_reward], dtype=float))[0]:
+                    gp_reward_vals.append(gp_reward)
+
+            tr_prog = np.asarray(metrics["trained"]["prog"], dtype=float) * self.PROGRESS_NORM
+            tr_prog_valid = tr_prog[np.isfinite(tr_prog) & (tr_prog > 0)]
+            if len(tr_prog_valid) == 0:
+                continue
+            tr_prog_mean = float(np.mean(tr_prog_valid))
+            if not np.isfinite(tr_prog_mean) or tr_prog_mean <= threshold_m:
+                continue
+
+            tr_steps = np.asarray(metrics["trained"]["steps90"], dtype=float)
+            tr_steps_valid = tr_steps[self._is_valid_metric("steps90", tr_steps)]
+            if len(tr_steps_valid) > 0:
+                sp_steps_vals.append(float(np.mean(tr_steps_valid)))
+
+            tr_reward = np.asarray(metrics["trained"]["reward"], dtype=float) * self.REWARD_NORM
+            tr_reward_valid = tr_reward[self._is_valid_metric("reward", tr_reward)]
+            if len(tr_reward_valid) > 0:
+                sp_reward_vals.append(float(np.mean(tr_reward_valid)))
+
+        def _fmt_ratio_summary(vals):
+            arr = np.asarray(vals, dtype=float)
+            arr = arr[np.isfinite(arr) & (arr > 0)]
+            if len(arr) == 0:
+                return "nan"
+            mean = float(np.mean(arr))
+            std = float(np.std(arr)) if len(arr) > 1 else np.nan
+            return (
+                f"{mean:.4f} ({mean * 100.0:.2f}%) | "
+                f"std={std:.4f} ({std * 100.0:.2f}%) | n = {len(arr)}"
+            )
+
+        def _fmt_scalar_summary(vals):
+            arr = np.asarray(vals, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if len(arr) == 0:
+                return "nan"
+            mean = float(np.mean(arr))
+            std = float(np.std(arr)) if len(arr) > 1 else np.nan
+            return f"{mean:.4f} | std={std:.4f} | n = {len(arr)}"
+
+        print(
+            f"\n=== Above-threshold summaries ({threshold_m:.1f} m minimal progress) ==="
+        )
+        print(
+            f"  GP{gp_idx} steps@{self._steps_target_pct_label()}: "
+            f"{_fmt_ratio_summary(gp_steps_vals)}"
+        )
+        print(
+            f"  SP mean steps@{self._steps_target_pct_label()}: "
+            f"{_fmt_ratio_summary(sp_steps_vals)}"
+        )
+        print(
+            f"  GP{gp_idx} evaluation reward: "
+            f"{_fmt_scalar_summary(gp_reward_vals)}"
+        )
+        print(
+            "  SP mean evaluation reward: "
+            f"{_fmt_scalar_summary(sp_reward_vals)}"
+        )
         print("===============================================================\n")
 
     def _compute_mean_delta_ratio(self, numerators, denominators):
@@ -1126,6 +1546,8 @@ class URDFHistogramPlotter:
             if col in ("row_kind", "urdf_stem", "urdf_params"):
                 continue
             parsed[col] = pd.to_numeric(parsed[col], errors="coerce")
+        if re.search(r"evaluation_(?:general_)?SP\.csv$|evaluation_results_SP\.csv$", str(target_csv)):
+            parsed = self._synthesize_missing_sp_agg_rows(parsed)
         return parsed
 
     def _resolve_sp_csv_path(self, csv_path):
@@ -1140,14 +1562,18 @@ class URDFHistogramPlotter:
             return str(fallback)
         return csv_path
 
-    def _gp_sort_key(self, path_str):
-        name = Path(path_str).stem
-        match = re.search(r"GP(\d+)$", name)
+    def _parse_gp_group_index(self, path_str):
+        stem = Path(path_str).stem
+        match = re.match(r"^evaluation_results_GP(\d+)(?:\D.*)?$", stem)
         if match:
             return int(match.group(1))
-        if name.endswith("GP"):
-            return 1
-        return 10_000
+        return None
+
+    def _gp_sort_key(self, path_str):
+        explicit_idx = self._parse_gp_group_index(path_str)
+        if explicit_idx is not None:
+            return (0, explicit_idx, Path(path_str).name)
+        return (1, 10_000, Path(path_str).name)
 
     def _resolve_gp_csv_paths(self, gp_csv_paths):
         if gp_csv_paths is not None:
@@ -1164,6 +1590,52 @@ class URDFHistogramPlotter:
                 existing.append(p)
         existing = sorted(set(existing), key=self._gp_sort_key)
         return existing
+
+    def _group_gp_csv_paths(self, gp_csv_paths):
+        if not gp_csv_paths:
+            return []
+
+        grouped = {}
+        sequential = []
+        for path_str in gp_csv_paths:
+            explicit_idx = self._parse_gp_group_index(path_str)
+            if explicit_idx is None:
+                sequential.append(
+                    {
+                        "policy_idx_hint": None,
+                        "paths": [path_str],
+                        "mode": "per_column",
+                        "label": Path(path_str).stem,
+                    }
+                )
+                continue
+            grouped.setdefault(explicit_idx, []).append(path_str)
+
+        out = []
+        for explicit_idx in sorted(grouped):
+            out.append(
+                {
+                    "policy_idx_hint": explicit_idx,
+                    "paths": sorted(grouped[explicit_idx], key=self._gp_sort_key),
+                    "mode": "aggregate",
+                    "label": f"GP{explicit_idx}",
+                }
+            )
+        out.extend(sequential)
+        return out
+
+    def _extract_gp_policy_value(self, row, prefix, policy_idx):
+        col = f"{prefix}{policy_idx}"
+        if col not in row.index:
+            return np.nan
+        try:
+            val = float(row[col])
+        except (TypeError, ValueError):
+            return np.nan
+        filtered = self._filter_gp_runs_like_sp(prefix, np.asarray([val], dtype=float))
+        if len(filtered) == 0:
+            return np.nan
+        return float(filtered[0])
 
     def _extract_prefixed_series(self, row, prefix):
         values = []
@@ -1219,6 +1691,7 @@ class URDFHistogramPlotter:
         rows = []
         for _, row in gp_df.iterrows():
             out = {
+                "eval_duration_s": self._safe_row_float(row, "eval_duration_s"),
                 "urdf_key": self._canonical_urdf_key(row),
                 "urdf_array": self._numeric_urdf_array(row),
                 "metrics": {},
@@ -1232,7 +1705,7 @@ class URDFHistogramPlotter:
                 else:
                     mean_val = float(np.mean(vals))
                     std_val = float(np.std(vals)) if len(vals) > 1 else 0.0
-                out["metrics"][prefix] = {"mean": mean_val, "std": std_val}
+                out["metrics"][prefix] = {"series": vals, "mean": mean_val, "std": std_val}
             rows.append(out)
         return rows
 
@@ -1276,26 +1749,119 @@ class URDFHistogramPlotter:
         loaded_policies = 0
         total_filled = 0
 
-        for gp_path in self.gp_csv_paths:
-            gp_df_all = self._load_df_with_genome(gp_path)
-            gp_df = self._filter_agg_rows(gp_df_all).copy()
-            if len(gp_df) == 0:
+        for group in self._group_gp_csv_paths(self.gp_csv_paths):
+            if group.get("mode") == "per_column":
+                gp_path = group["paths"][0]
+                gp_df_all = self._load_df_with_genome(gp_path)
+                gp_df = self._filter_agg_rows(gp_df_all).copy()
+                if len(gp_df) == 0:
+                    continue
+
+                gp_rows_by_key = {}
+                gp_rows_with_arrays = []
+                for _, gp_row in gp_df.iterrows():
+                    entry = {
+                        "row": gp_row,
+                        "urdf_key": self._canonical_urdf_key(gp_row),
+                        "urdf_array": self._numeric_urdf_array(gp_row),
+                    }
+                    if entry["urdf_key"] is not None:
+                        gp_rows_by_key[entry["urdf_key"]] = entry
+                    if entry["urdf_array"] is not None:
+                        gp_rows_with_arrays.append(entry)
+                if not gp_rows_by_key and not gp_rows_with_arrays:
+                    continue
+
+                per_file_policy_count = self._infer_policy_count_from_df(gp_df, "baseline")
+                if per_file_policy_count <= 0:
+                    continue
+
+                for source_policy_idx in range(1, per_file_policy_count + 1):
+                    loaded_policies += 1
+                    policy_idx = loaded_policies
+                    runtime_col = f"gp_runtime_s{policy_idx}"
+                    for prefix in metric_prefixes:
+                        mean_col = f"{prefix}{policy_idx}"
+                        std_col = f"{prefix}_std{policy_idx}"
+                        if mean_col not in self.df_all.columns:
+                            self.df_all[mean_col] = np.nan
+                        if std_col not in self.df_all.columns:
+                            self.df_all[std_col] = np.nan
+                    if runtime_col not in self.df_all.columns:
+                        self.df_all[runtime_col] = np.nan
+
+                    matched_rows = 0
+                    overlap_matches = 0
+                    filled = 0
+
+                    for idx, row in self.df_all.iterrows():
+                        match, used_overlap = self._match_gp_entry(
+                            row,
+                            gp_rows_by_key,
+                            gp_rows_with_arrays,
+                        )
+                        if match is None:
+                            continue
+                        matched_rows += 1
+                        if used_overlap:
+                            overlap_matches += 1
+
+                        source_row = match["row"]
+                        eval_runtime_s = self._safe_row_float(source_row, "eval_duration_s")
+                        if np.isfinite(eval_runtime_s):
+                            self.df_all.at[idx, runtime_col] = eval_runtime_s / float(max(1, per_file_policy_count))
+                        for prefix in metric_prefixes:
+                            mean_col = f"{prefix}{policy_idx}"
+                            std_col = f"{prefix}_std{policy_idx}"
+                            mean_val = self._extract_gp_policy_value(
+                                source_row,
+                                prefix,
+                                source_policy_idx,
+                            )
+                            if np.isfinite(mean_val):
+                                self.df_all.at[idx, mean_col] = mean_val
+                                filled += 1
+                            self.df_all.at[idx, std_col] = np.nan
+
+                    total_filled += filled
+                    print(
+                        f"[INFO] Loaded GP policy #{policy_idx} from '{Path(gp_path).name}' "
+                        f"(source column baseline{source_policy_idx}): "
+                        f"matched rows={matched_rows}, overlap matches={overlap_matches}, "
+                        f"filled values={filled}."
+                    )
+                    self._gp_runtime_divisor_by_policy_idx[policy_idx] = max(1, per_file_policy_count)
                 continue
 
-            gp_entries = self._aggregate_gp_runs_by_row(gp_df)
-            gp_rows_by_key = {}
-            gp_rows_with_arrays = []
-            for entry in gp_entries:
-                key = entry["urdf_key"]
-                if key is not None:
-                    gp_rows_by_key[key] = entry
-                if entry["urdf_array"] is not None:
-                    gp_rows_with_arrays.append(entry)
-            if not gp_rows_by_key and not gp_rows_with_arrays:
+            group_matchers = []
+            source_files = []
+
+            for gp_path in group["paths"]:
+                gp_df_all = self._load_df_with_genome(gp_path)
+                gp_df = self._filter_agg_rows(gp_df_all).copy()
+                if len(gp_df) == 0:
+                    continue
+
+                gp_entries = self._aggregate_gp_runs_by_row(gp_df)
+                gp_rows_by_key = {}
+                gp_rows_with_arrays = []
+                for entry in gp_entries:
+                    key = entry["urdf_key"]
+                    if key is not None:
+                        gp_rows_by_key[key] = entry
+                    if entry["urdf_array"] is not None:
+                        gp_rows_with_arrays.append(entry)
+                if not gp_rows_by_key and not gp_rows_with_arrays:
+                    continue
+                group_matchers.append((gp_rows_by_key, gp_rows_with_arrays))
+                source_files.append(gp_path)
+
+            if not group_matchers:
                 continue
 
             loaded_policies += 1
             policy_idx = loaded_policies
+            runtime_col = f"gp_runtime_s{policy_idx}"
             for prefix in metric_prefixes:
                 mean_col = f"{prefix}{policy_idx}"
                 std_col = f"{prefix}_std{policy_idx}"
@@ -1303,28 +1869,54 @@ class URDFHistogramPlotter:
                     self.df_all[mean_col] = np.nan
                 if std_col not in self.df_all.columns:
                     self.df_all[std_col] = np.nan
+            if runtime_col not in self.df_all.columns:
+                self.df_all[runtime_col] = np.nan
 
             matched_rows = 0
             overlap_matches = 0
             filled = 0
 
             for idx, row in self.df_all.iterrows():
-                match, used_overlap = self._match_gp_entry(
-                    row,
-                    gp_rows_by_key,
-                    gp_rows_with_arrays,
-                )
-                if match is None:
+                collected = {prefix: [] for prefix in metric_prefixes}
+                runtime_series = []
+                row_matched = False
+
+                for gp_rows_by_key, gp_rows_with_arrays in group_matchers:
+                    match, used_overlap = self._match_gp_entry(
+                        row,
+                        gp_rows_by_key,
+                        gp_rows_with_arrays,
+                    )
+                    if match is None:
+                        continue
+                    row_matched = True
+                    if used_overlap:
+                        overlap_matches += 1
+                    eval_runtime_s = float(match.get("eval_duration_s", np.nan))
+                    if np.isfinite(eval_runtime_s):
+                        runtime_series.append(float(eval_runtime_s))
+                    for prefix in metric_prefixes:
+                        series = np.asarray(match["metrics"][prefix].get("series", []), dtype=float)
+                        series = series[np.isfinite(series)]
+                        if len(series) > 0:
+                            collected[prefix].append(series)
+
+                if not row_matched:
                     continue
                 matched_rows += 1
-                if used_overlap:
-                    overlap_matches += 1
+                if runtime_series:
+                    self.df_all.at[idx, runtime_col] = float(np.mean(runtime_series))
 
                 for prefix in metric_prefixes:
                     mean_col = f"{prefix}{policy_idx}"
                     std_col = f"{prefix}_std{policy_idx}"
-                    mean_val = match["metrics"][prefix]["mean"]
-                    std_val = match["metrics"][prefix]["std"]
+                    if collected[prefix]:
+                        merged = np.concatenate(collected[prefix])
+                        mean_val = float(np.mean(merged))
+                        std_val = float(np.std(merged)) if len(merged) > 1 else 0.0
+                    else:
+                        mean_val = np.nan
+                        std_val = np.nan
                     if np.isfinite(mean_val):
                         self.df_all.at[idx, mean_col] = mean_val
                         filled += 1
@@ -1333,10 +1925,12 @@ class URDFHistogramPlotter:
 
             total_filled += filled
             print(
-                f"[INFO] Loaded GP policy #{policy_idx} from '{gp_path}': "
+                f"[INFO] Loaded GP policy #{policy_idx} from {len(source_files)} file(s) "
+                f"({', '.join(Path(p).name for p in source_files)}): "
                 f"matched rows={matched_rows}, overlap matches={overlap_matches}, "
                 f"filled values={filled}."
             )
+            self._gp_runtime_divisor_by_policy_idx[policy_idx] = 1
 
         self._gp_policy_count_from_csvs = loaded_policies
         if loaded_policies > 0:
@@ -1351,6 +1945,39 @@ class URDFHistogramPlotter:
             col = f"{prefix}_std{i}"
             values.append(row[col] if col in row.index else np.nan)
         return np.array(values, dtype=float)
+
+    def _normalize_urdf_indices(self, urdf_indices):
+        if urdf_indices is None:
+            return None
+        out = set()
+        for idx in urdf_indices:
+            try:
+                out.add(int(idx))
+            except (TypeError, ValueError):
+                continue
+        return out or None
+
+    def _count_indexed_columns(self, row, prefix):
+        pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$")
+        count = 0
+        for col in row.index:
+            if isinstance(col, str) and pattern.match(col):
+                count += 1
+        return count
+
+    def _safe_row_float(self, row, col, default=np.nan):
+        if col not in row.index:
+            return float(default)
+        try:
+            return float(row[col])
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _fmt_duration(self, seconds):
+        if not np.isfinite(seconds):
+            return "nan"
+        minutes = float(seconds) / 60.0
+        return f"{float(seconds):.2f}s ({minutes:.2f} min)"
 
     # ------------------------------------------------------------
     #   Per-row normalizations and transformations
@@ -1612,7 +2239,7 @@ class URDFHistogramPlotter:
         print("===============================================================\n")
         self._print_delta4_vs_steps90_correlation(general_policy_idx=gp_idx)
         self._print_minimal_threshold_counts()
-        self._print_gp_selected_below_threshold_details(general_policy_idx=gp_idx)
+        self._print_above_threshold_metric_summaries(general_policy_idx=gp_idx)
 
 
 
@@ -2042,9 +2669,10 @@ class URDFHistogramPlotter:
 
         print("\nBIX3 vs Mean plot saved to:", os.path.abspath(save_path))
 
-    def plot_per_urdf_policies(self, save_dir=None, show=False):
+    def plot_per_urdf_policies(self, save_dir=None, show=False, urdf_indices=None):
         metric_order = ["prog", "speed", "cot", "reward", "steps90"]
         metric_labels = self._metric_labels_with_norm()
+        selected_urdfs = self._normalize_urdf_indices(urdf_indices)
 
         gp_count = max(1, self.general_policy_count)
         cmap = plt.get_cmap("tab10")
@@ -2055,6 +2683,8 @@ class URDFHistogramPlotter:
         offsets = (np.arange(gp_count + 1) - gp_count / 2) * bar_spacing
 
         for row_idx, (_, row) in enumerate(self.df.iterrows(), start=1):
+            if selected_urdfs is not None and row_idx not in selected_urdfs:
+                continue
             metrics = self._process_row(row)
             gp_all = metrics["baseline_all"]
             gp_all_std = metrics["baseline_all_std"]
@@ -2159,9 +2789,21 @@ class URDFHistogramPlotter:
                 plt.show()
             plt.close(fig)
 
-    def plot_mean_policies(self, save_path=None, show=False):
+    def plot_mean_policies(
+        self,
+        save_path=None,
+        show=False,
+        only_above_minimal_progress=False,
+        progress_threshold_m=None,
+    ):
         metric_order = self._metric_order_hist()
         metric_labels = self._metric_labels_with_norm()
+        threshold_m = (
+            self.MINIMAL_PROGRESS_M
+            if progress_threshold_m is None
+            else float(progress_threshold_m)
+        )
+        threshold_norm = threshold_m / self.PROGRESS_NORM
 
         gp_count = max(1, self.general_policy_count)
         cmap = plt.get_cmap("tab10")
@@ -2182,6 +2824,10 @@ class URDFHistogramPlotter:
             metrics = self._process_row(row)
             gp_all = metrics["baseline_all"]
             tr_all = metrics["trained"]
+            gp_prog_vals = np.asarray(gp_all["prog"], dtype=float)
+            tr_prog_vals = np.asarray(tr_all["prog"], dtype=float)
+            tr_prog_valid = tr_prog_vals[np.isfinite(tr_prog_vals) & (tr_prog_vals > 0)]
+            tr_prog_mean = float(np.mean(tr_prog_valid)) if len(tr_prog_valid) > 0 else np.nan
 
             for m in metric_order:
                 if m == "thr_count":
@@ -2190,14 +2836,31 @@ class URDFHistogramPlotter:
                 for pi in range(gp_count):
                     if pi < len(gp_vals):
                         val = gp_vals[pi]
-                        if np.isfinite(val) and val > 0:
+                        gp_prog_ok = (
+                            pi < len(gp_prog_vals)
+                            and np.isfinite(gp_prog_vals[pi])
+                            and gp_prog_vals[pi] > threshold_norm
+                        )
+                        if np.isfinite(val) and val > 0 and (
+                            (not only_above_minimal_progress) or gp_prog_ok
+                        ):
                             gp_acc[m][pi].append(val)
 
                 tr_vals = tr_all[m]
+                tr_prog_ok = (
+                    (not only_above_minimal_progress)
+                    or (np.isfinite(tr_prog_mean) and tr_prog_mean > threshold_norm)
+                )
                 valid_mask = self._is_valid_metric(m, tr_vals)
                 valid_vals = tr_vals[valid_mask]
-                if len(valid_vals) > 0:
-                    tr_acc[m].extend(valid_vals.tolist())
+                if len(valid_vals) > 0 and tr_prog_ok:
+                    if only_above_minimal_progress:
+                        # In the filtered plot use one contribution per URDF,
+                        # otherwise min/max can reflect a failing repetition
+                        # from an otherwise above-threshold drone.
+                        tr_acc[m].append(float(np.mean(valid_vals)))
+                    else:
+                        tr_acc[m].extend(valid_vals.tolist())
 
         # Compute means + total std (across URDFs / valid repetitions)
         gp_means = {
@@ -2208,12 +2871,26 @@ class URDFHistogramPlotter:
             m: [np.std(gp_acc[m][pi]) if len(gp_acc[m][pi]) > 1 else 0 for pi in range(gp_count)]
             for m in metric_order
         }
+        gp_mins = {
+            m: [np.min(gp_acc[m][pi]) if gp_acc[m][pi] else 0 for pi in range(gp_count)]
+            for m in metric_order
+        }
+        gp_maxs = {
+            m: [np.max(gp_acc[m][pi]) if gp_acc[m][pi] else 0 for pi in range(gp_count)]
+            for m in metric_order
+        }
         tr_means = {m: (np.mean(tr_acc[m]) if len(tr_acc[m]) else 0) for m in metric_order}
         tr_stds = {m: (np.std(tr_acc[m]) if len(tr_acc[m]) > 1 else 0) for m in metric_order}
+        tr_mins = {m: (np.min(tr_acc[m]) if len(tr_acc[m]) else 0) for m in metric_order}
+        tr_maxs = {m: (np.max(tr_acc[m]) if len(tr_acc[m]) else 0) for m in metric_order}
         gp_means["thr_count"] = [gp_threshold_rates[pi] if pi < len(gp_threshold_rates) else 0 for pi in range(gp_count)]
         gp_stds["thr_count"] = [gp_threshold_stds[pi] if pi < len(gp_threshold_stds) else 0 for pi in range(gp_count)]
+        gp_mins["thr_count"] = [gp_threshold_rates[pi] if pi < len(gp_threshold_rates) else 0 for pi in range(gp_count)]
+        gp_maxs["thr_count"] = [gp_threshold_rates[pi] if pi < len(gp_threshold_rates) else 0 for pi in range(gp_count)]
         tr_means["thr_count"] = sp_threshold_rate
         tr_stds["thr_count"] = sp_threshold_std
+        tr_mins["thr_count"] = sp_threshold_rate
+        tr_maxs["thr_count"] = sp_threshold_rate
 
         # Plot
         fig, ax = plt.subplots(figsize=self._metric_plot_figsize())
@@ -2233,6 +2910,8 @@ class URDFHistogramPlotter:
                 x = center + offsets[pi]
                 val = gp_means[metric][pi]
                 std_val = gp_stds[metric][pi]
+                min_val = gp_mins[metric][pi]
+                max_val = gp_maxs[metric][pi]
                 if (val <= 0 or not np.isfinite(val)) and metric != "thr_count":
                     ax.text(x, 0.01, "X", ha="center", va="bottom", fontsize=9)
                 else:
@@ -2241,14 +2920,41 @@ class URDFHistogramPlotter:
                         val,
                         width=bar_spacing * 0.9,
                         color=gp_colors[pi],
-                        yerr=std_val,
-                        capsize=4,
                     )
+                    if np.isfinite(std_val) and std_val > 0:
+                        ax.errorbar(
+                            x,
+                            val,
+                            yerr=std_val,
+                            fmt="none",
+                            ecolor="black",
+                            elinewidth=2.2,
+                            capsize=5,
+                            capthick=2.2,
+                            zorder=5,
+                        )
+                    lower = max(0.0, float(val - min_val))
+                    upper = max(0.0, float(max_val - val))
+                    if lower > 0 or upper > 0:
+                        ax.errorbar(
+                            x,
+                            val,
+                            yerr=np.array([[lower], [upper]], dtype=float),
+                            fmt="none",
+                            ecolor="black",
+                            elinewidth=1.0,
+                            capsize=3,
+                            capthick=1.0,
+                            alpha=0.9,
+                            zorder=4.5,
+                        )
 
             # SP mean
             x = center + offsets[-1]
             mean_val = tr_means[metric]
             std_val = tr_stds[metric]
+            min_val = tr_mins[metric]
+            max_val = tr_maxs[metric]
             if (mean_val <= 0 or not np.isfinite(mean_val)) and metric != "thr_count":
                 ax.text(x, 0.01, "X", ha="center", va="bottom", fontsize=9)
             else:
@@ -2257,12 +2963,42 @@ class URDFHistogramPlotter:
                     mean_val,
                     width=bar_spacing * 0.9,
                     color=trained_color,
-                    yerr=std_val,
-                    capsize=4,
                     alpha=0.9,
                 )
+                if np.isfinite(std_val) and std_val > 0:
+                    ax.errorbar(
+                        x,
+                        mean_val,
+                        yerr=std_val,
+                        fmt="none",
+                        ecolor="black",
+                        elinewidth=2.2,
+                        capsize=5,
+                        capthick=2.2,
+                        zorder=5,
+                    )
+                lower = max(0.0, float(mean_val - min_val))
+                upper = max(0.0, float(max_val - mean_val))
+                if lower > 0 or upper > 0:
+                    ax.errorbar(
+                        x,
+                        mean_val,
+                        yerr=np.array([[lower], [upper]], dtype=float),
+                        fmt="none",
+                        ecolor="black",
+                        elinewidth=1.0,
+                        capsize=3,
+                        capthick=1.0,
+                        alpha=0.9,
+                        zorder=4.5,
+                    )
 
-        self._draw_progress_threshold_segment(ax, prog_center, prog_span)
+        self._draw_progress_threshold_segment(
+            ax,
+            prog_center,
+            prog_span,
+            threshold_norm=threshold_norm,
+        )
 
         ax.set_xticks(group_centers)
         ax.set_xticklabels(
@@ -2271,9 +3007,15 @@ class URDFHistogramPlotter:
         )
         ax.set_ylabel("Normalized Value", fontsize=11)
         ax.set_ylim(0, 1)
-        ax.set_title("Performance Metrics Mean — General Policies vs SP (mean±std)", fontsize=12)
+        title = "Performance Metrics Mean — General Policies vs SP (mean±std, min-max)"
+        if only_above_minimal_progress:
+            if progress_threshold_m is None:
+                title += " — Above Minimal Progress Only"
+            else:
+                title += f" — Above {threshold_m:.0f} m Progress Only"
+        ax.set_title(title, fontsize=12)
 
-        legend_labels = [f"GP{i} mean±std" for i in range(1, gp_count + 1)] + ["SP mean±std"]
+        legend_labels = [f"GP{i} mean±std + min/max" for i in range(1, gp_count + 1)] + ["SP mean±std + min/max"]
         legend_patches = [
             plt.Rectangle((0, 0), 1, 1, color=gp_colors[i])
             for i in range(gp_count)
@@ -2282,6 +3024,151 @@ class URDFHistogramPlotter:
         legend_patches.append(self._progress_threshold_legend_handle())
         legend_labels.append("Minimal Progress Threshold")
         ax.legend(legend_patches, legend_labels, title="Policies", fontsize=9)
+
+        self._apply_dense_y_grid(ax)
+        plt.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
+
+        if show:
+            plt.show()
+        plt.close(fig)
+
+    def plot_selected_gp_vs_sp_distribution(
+        self,
+        save_path=None,
+        general_policy_idx=None,
+        show=False,
+        progress_threshold_m=None,
+        sp_use_all_repetitions=False,
+    ):
+        gp_idx = self._resolve_policy_index(
+            general_policy_idx if general_policy_idx is not None else self.general_policy_idx,
+            self.general_policy_count,
+            "General",
+        )
+        threshold_m = (
+            self.MINIMAL_PROGRESS_M
+            if progress_threshold_m is None
+            else float(progress_threshold_m)
+        )
+        threshold_norm = threshold_m / self.PROGRESS_NORM
+        metric_order = ["speed", "cot", "prog", "reward", "steps90"]
+        metric_labels = self._metric_labels_with_norm()
+
+        gp_dist = {m: [] for m in metric_order}
+        sp_dist = {m: [] for m in metric_order}
+
+        for _, row in self.df.iterrows():
+            metrics = self._process_row(row, general_policy_idx=gp_idx)
+            gp_sel = metrics["baseline_selected"]
+            sp_all = metrics["trained"]
+
+            for metric in metric_order:
+                gp_val = float(gp_sel[metric])
+                valid_mask = self._is_valid_metric(metric, np.asarray([gp_val], dtype=float))
+                if bool(valid_mask[0]):
+                    gp_dist[metric].append(gp_val)
+
+                sp_vals = np.asarray(sp_all[metric], dtype=float)
+                valid_mask = self._is_valid_metric(metric, sp_vals)
+                valid_vals = sp_vals[valid_mask]
+                if len(valid_vals) > 0:
+                    if sp_use_all_repetitions:
+                        sp_dist[metric].extend(valid_vals.tolist())
+                    else:
+                        sp_dist[metric].append(float(np.mean(valid_vals)))
+
+        fig, ax = plt.subplots(figsize=(14.5, 5.4))
+        centers = np.arange(len(metric_order))
+        half_offset = 0.14
+        violin_width = 0.24
+        gp_color = plt.get_cmap("tab10")(max(0, gp_idx - 1))
+        sp_color = "#444444"
+        rng = np.random.default_rng(0)
+
+        def _draw_violin(values, pos, color):
+            if len(values) == 0:
+                ax.text(pos, 0.01, "X", ha="center", va="bottom", fontsize=9)
+                return
+            vp = ax.violinplot(
+                [values],
+                positions=[pos],
+                widths=violin_width,
+                showmeans=False,
+                showmedians=False,
+                showextrema=False,
+            )
+            body = vp["bodies"][0]
+            body.set_facecolor(color)
+            body.set_edgecolor("black")
+            body.set_alpha(0.42)
+            body.set_linewidth(1.0)
+
+            vals = np.asarray(values, dtype=float)
+            mean_val = float(np.mean(vals))
+            med_val = float(np.median(vals))
+            x0, x1 = pos - violin_width * 0.35, pos + violin_width * 0.35
+            ax.plot([x0, x1], [mean_val, mean_val], color="black", linewidth=2.2, zorder=5)
+            ax.plot([x0, x1], [med_val, med_val], color="black", linewidth=1.0, alpha=0.75, zorder=5)
+
+            jitter = rng.uniform(-violin_width * 0.22, violin_width * 0.22, size=len(vals))
+            x_pts = pos + jitter
+            ax.scatter(
+                x_pts,
+                vals,
+                s=16,
+                color=color,
+                alpha=0.72,
+                edgecolor="black",
+                linewidth=0.35,
+                zorder=6,
+            )
+
+        for mi, metric in enumerate(metric_order):
+            center = centers[mi]
+            _draw_violin(gp_dist[metric], center - half_offset, gp_color)
+            _draw_violin(sp_dist[metric], center + half_offset, sp_color)
+
+        prog_idx = metric_order.index("prog")
+        self._draw_progress_threshold_segment(
+            ax,
+            centers[prog_idx],
+            (half_offset * 2) + violin_width * 1.15,
+            threshold_norm=threshold_norm,
+        )
+
+        ax.set_xticks(centers)
+        ax.set_xticklabels(
+            [metric_labels[m] for m in metric_order],
+            fontsize=self._metric_xtick_fontsize(),
+        )
+        ax.set_ylabel("Normalized Value", fontsize=11)
+        ax.set_ylim(0, 1)
+        sp_label_suffix = "SP All Seeds" if sp_use_all_repetitions else "SP Mean per URDF"
+        ax.set_title(
+            f"Performance Distributions per URDF — GP{gp_idx} vs {sp_label_suffix} — All Valid URDFs",
+            fontsize=12,
+        )
+
+        gp_n = len(gp_dist["prog"])
+        sp_n = len(sp_dist["prog"])
+        legend_handles = [
+            plt.Rectangle((0, 0), 1, 1, color=gp_color, alpha=0.42),
+            plt.Rectangle((0, 0), 1, 1, color=sp_color, alpha=0.42),
+            Line2D([0], [0], color="black", linewidth=2.2),
+            Line2D([0], [0], color="black", linewidth=1.0),
+            self._progress_threshold_legend_handle(),
+        ]
+        legend_labels = [
+            f"GP{gp_idx} distribution (n={gp_n})",
+            f"{sp_label_suffix} distribution (n={sp_n})",
+            "Mean",
+            "Median",
+            f"Progress threshold reference ({threshold_m:.0f} m)",
+        ]
+        ax.legend(legend_handles, legend_labels, title="Distributions", fontsize=9)
 
         self._apply_dense_y_grid(ax)
         plt.tight_layout()
@@ -2509,12 +3396,13 @@ class URDFHistogramPlotter:
             plt.show()
         plt.close(fig)
 
-    def plot_reward_evolution_per_urdf(self, save_dir=None, show=False):
+    def plot_reward_evolution_per_urdf(self, save_dir=None, show=False, urdf_indices=None):
         rep_mask = self._row_kind_mask(self.df_all, "rep")
         rep_df = self.df_all.loc[rep_mask].copy()
         if len(rep_df) == 0:
             print("[WARN] No 'rep' rows found for reward evolution plot.")
             return
+        selected_urdfs = self._normalize_urdf_indices(urdf_indices)
 
         pct_cols = []
         for col in rep_df.columns:
@@ -2560,6 +3448,8 @@ class URDFHistogramPlotter:
             self._urdf_output_dir(save_dir)
 
         for row_idx, (_, agg_row) in enumerate(agg_rows.iterrows(), start=1):
+            if selected_urdfs is not None and row_idx not in selected_urdfs:
+                continue
             key = self._canonical_urdf_key(agg_row)
             rep_rows = grouped.get(key, [])
             if len(rep_rows) == 0:
@@ -3691,6 +4581,16 @@ if __name__ == "__main__":
         default=None,
         help="1-based URDF index. If set, generate only urdf_XX_picture.png and exit.",
     )
+    parser.add_argument(
+        "--urdf-idxs",
+        type=int,
+        nargs="*",
+        default=None,
+        help=(
+            "Optional 1-based URDF indices for per-URDF outputs. "
+            "If omitted, no per-URDF plots or drone pictures are generated."
+        ),
+    )
     args = parser.parse_args()
 
     data_dir = os.path.abspath(args.data_dir)
@@ -3732,11 +4632,51 @@ if __name__ == "__main__":
         general_policy_idx=general_policy_idx,
         show=False,
     )
-    plotter.plot_per_urdf_policies(save_dir=save_dir, show=False)
-    plotter.plot_reward_evolution_per_urdf(save_dir=save_dir, show=False)
+    selected_urdfs = plotter._normalize_urdf_indices(args.urdf_idxs)
+    if selected_urdfs is not None:
+        plotter.plot_per_urdf_policies(
+            save_dir=save_dir,
+            show=False,
+            urdf_indices=selected_urdfs,
+        )
+        plotter.plot_reward_evolution_per_urdf(
+            save_dir=save_dir,
+            show=False,
+            urdf_indices=selected_urdfs,
+        )
+        for urdf_idx in sorted(selected_urdfs):
+            plotter.render_single_drone_picture(drone_idx=urdf_idx, save_dir=save_dir)
     plotter.plot_mean_policies(
         save_path=os.path.join(save_dir, "mean_across_urdfs.png"),
         show=False,
+    )
+    plotter.plot_mean_policies(
+        save_path=os.path.join(save_dir, "mean_across_urdfs_>minimal.png"),
+        show=False,
+        only_above_minimal_progress=True,
+    )
+    plotter.plot_mean_policies(
+        save_path=os.path.join(save_dir, "mean_across_urdfs_>300m.png"),
+        show=False,
+        only_above_minimal_progress=True,
+        progress_threshold_m=300.0,
+    )
+    plotter.plot_selected_gp_vs_sp_distribution(
+        save_path=os.path.join(
+            save_dir,
+            f"mean_across_urdfs_distribution_gp{general_policy_idx}.png",
+        ),
+        general_policy_idx=general_policy_idx,
+        show=False,
+    )
+    plotter.plot_selected_gp_vs_sp_distribution(
+        save_path=os.path.join(
+            save_dir,
+            f"mean_across_urdfs_distribution_gp{general_policy_idx}_sp_all_seeds.png",
+        ),
+        general_policy_idx=general_policy_idx,
+        show=False,
+        sp_use_all_repetitions=True,
     )
     plotter.plot_mean_sp_policies(
         save_path=os.path.join(save_dir, "mean_across_urdfs_sp.png"),

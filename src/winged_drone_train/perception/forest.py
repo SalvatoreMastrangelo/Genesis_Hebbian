@@ -36,6 +36,8 @@ class ForestConfig:
     tree_height: float = 50.0
     dens_min: float = 0.0
     dens_max: float = 4.0
+    dens_min_min: Optional[float] = None
+    dens_min_max: Optional[float] = None
     num_trees: int = 100
 
 
@@ -127,20 +129,51 @@ class ForestGenerator:
         if width_x <= 0.0:
             raise ValueError("ForestConfig.x_upper must be greater than x_lower")
 
-        # Approximate expected number of trees under linear density profile.
-        expected_N = 0.5 * (c.dens_min + c.dens_max) * width_x
-        num_trees = max(1, int(math.ceil(expected_N)))
+        dens_min_lo = c.dens_min if c.dens_min_min is None else float(c.dens_min_min)
+        dens_min_hi = c.dens_min if c.dens_min_max is None else float(c.dens_min_max)
+        if dens_min_hi < dens_min_lo:
+            raise ValueError("ForestConfig.dens_min_max must be >= dens_min_min")
 
-        # x positions according to PDF proportional to (x - x_lower).
-        u = torch.rand((F, num_trees), device=device)
-        xs = c.x_lower + width_x * torch.sqrt(u)
+        if (not self.evaluation) and dens_min_hi > dens_min_lo:
+            dens_min = torch.empty((F,), device=device).uniform_(dens_min_lo, dens_min_hi)
+        else:
+            dens_min = torch.full((F,), dens_min_lo, device=device, dtype=torch.float32)
 
-        # y positions uniform in [y_lower, y_upper].
-        ys = torch.rand((F, num_trees), device=device) * (c.y_upper - c.y_lower) + c.y_lower
+        dens_max = torch.full((F,), float(c.dens_max), device=device, dtype=torch.float32)
+        dens_max = torch.maximum(dens_max, dens_min)
 
-        zs = torch.full((F, num_trees), 0.5 * c.tree_height, device=device)
+        # Approximate expected number of trees per forest under a linear density profile.
+        expected_N = 0.5 * (dens_min + dens_max) * width_x
+        num_trees_per_forest = torch.ceil(expected_N).to(dtype=torch.long).clamp_min_(1)
+        max_trees = int(num_trees_per_forest.max().item())
 
-        cylinders = torch.stack((xs, ys, zs), dim=-1)  # (F, num_trees, 3)
+        u = torch.rand((F, max_trees), device=device)
+        delta = dens_max - dens_min
+
+        # Inverse-CDF sampling for a linearly varying density profile.
+        # For constant density (delta ~= 0) this reduces to a uniform distribution in x.
+        t = torch.empty((F, max_trees), device=device, dtype=torch.float32)
+        linear_mask = delta.abs() > 1e-6
+        if linear_mask.any():
+            dm = dens_min[linear_mask].unsqueeze(1)
+            dd = delta[linear_mask].unsqueeze(1)
+            z = 0.5 * (dm + dens_max[linear_mask].unsqueeze(1))
+            t[linear_mask] = (-dm + torch.sqrt(torch.clamp(dm * dm + 2.0 * dd * u[linear_mask] * z, min=0.0))) / dd
+        if (~linear_mask).any():
+            t[~linear_mask] = u[~linear_mask]
+
+        xs = c.x_lower + width_x * t
+        ys = torch.rand((F, max_trees), device=device) * (c.y_upper - c.y_lower) + c.y_lower
+        zs = torch.full((F, max_trees), 0.5 * c.tree_height, device=device)
+
+        # Keep a dense tensor shape by placing inactive trees far outside the useful region.
+        active_mask = torch.arange(max_trees, device=device).unsqueeze(0) < num_trees_per_forest.unsqueeze(1)
+        dummy_x = c.x_lower - 1.0e6
+        dummy_y = c.y_upper + 1.0e6
+        xs = torch.where(active_mask, xs, torch.full_like(xs, dummy_x))
+        ys = torch.where(active_mask, ys, torch.full_like(ys, dummy_y))
+
+        cylinders = torch.stack((xs, ys, zs), dim=-1)  # (F, max_trees, 3)
         return cylinders.float()
 
     # ------------------------------------------------------------------
@@ -226,6 +259,9 @@ def generate_forests(
     num_trees_key = "num_trees_eval" if evaluation else "num_trees"
     num_trees = cfg_dict.get(num_trees_key, None)
 
+    dens_min = float(cfg_dict.get("dens_min", 0.0))
+    dens_max = float(cfg_dict.get("dens_max", 4.0 if not evaluation else 5.0))
+
     cfg = ForestConfig(
         x_lower=float(cfg_dict.get("x_lower", 0.0)),
         x_upper=float(cfg_dict.get("x_upper", 600.0 if evaluation else 200.0)),
@@ -233,8 +269,10 @@ def generate_forests(
         y_upper=float(cfg_dict.get("y_upper", 50.0)),
         tree_radius=float(cfg_dict.get("tree_radius", 0.75)),
         tree_height=float(cfg_dict.get("tree_height", 50.0)),
-        dens_min=float(cfg_dict.get("dens_min", 0.0)),
-        dens_max=float(cfg_dict.get("dens_max", 4.0 if not evaluation else 5.0)),
+        dens_min=dens_min,
+        dens_max=dens_max,
+        dens_min_min=float(cfg_dict["dens_min_min"]) if "dens_min_min" in cfg_dict else None,
+        dens_min_max=float(cfg_dict["dens_min_max"]) if "dens_min_max" in cfg_dict else None,
         num_trees=int(num_trees) if num_trees is not None else ForestConfig.num_trees,
     )
 

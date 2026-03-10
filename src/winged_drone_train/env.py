@@ -334,7 +334,7 @@ class WingedDroneEnv:
         self.show_viewer = bool(show_viewer)
         self.enable_rendering = bool(self.env_cfg.get("enable_rendering", True))
         self._tree_radius = float(self.env_cfg.get("tree_radius", 1.0))
-        self._collision_tol = 0.01 if self.evaluation else 0.1
+        self._collision_tol = 0.01 if self.evaluation else 0.2
         self._termination_abs_y_max = float(
             self.env_cfg.get("termination_if_y_greater_than", 100.0)
         )
@@ -1355,7 +1355,7 @@ class WingedDroneEnv:
         self.base_pos[env_ids, 1] += r * 80.0 - 40.0
         # Altitude
         r.uniform_(0.0, 1.0)
-        self.base_pos[env_ids, 2] += r * 20.0 - 10.0
+        self.base_pos[env_ids, 2] += r * 15.0 - 10.0
 
         # Forward speed
         r.uniform_(0.0, 1.0)
