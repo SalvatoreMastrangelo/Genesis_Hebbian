@@ -416,7 +416,13 @@ def evaluation(
         raise FileNotFoundError(f"Missing cfgs.pkl at {cfg_path}")
 
     with cfg_path.open("rb") as f:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+        cfg_data = pickle.load(f)
+    # Handle both old format (5 elements) and new format (6 elements with runtime_seed)
+    if len(cfg_data) == 6:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, training_seed = cfg_data
+        print(f"[evaluation] Loaded training runtime_seed={training_seed} (not used in eval)")
+    else:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
     runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
 
     # Command range used in this evaluation
@@ -426,7 +432,8 @@ def evaluation(
     # Keep the same noise magnitudes as training, while sampling fresh noise.
     obs_cfg_eval = dict(obs_cfg)
     if obs_genome is not None:
-        obs_cfg_eval["add_genome_obs"] = bool(obs_genome)
+        obs_cfg_eval["add_genome_obs_actor"] = bool(obs_genome)
+        obs_cfg_eval["add_genome_obs_critic"] = bool(obs_genome)
 
     # Evaluation-specific environment tweaks
     _apply_eval_env_overrides(env_cfg)
@@ -642,7 +649,8 @@ if __name__ == "__main__":
 
     # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
-    obs_cfg_eval["add_genome_obs"] = False
+    obs_cfg_eval["add_genome_obs_actor"] = False
+    obs_cfg_eval["add_genome_obs_critic"] = False
 
     # Print configs for sanity check
     print("\nEnvironment Configuration (eval):")

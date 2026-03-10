@@ -1,0 +1,21 @@
+##############################################################################
+# Foundation training config — multi-morphology pretraining.
+#
+# Uses Gen_Env with a URDF catalog.  Actor has NO genome access.
+##############################################################################
+
+exp_name: multi_morphology
+
+training:
+  num_envs: 16384
+  max_iterations: 500
+  eval_interval: 100
+
+obs:
+  add_genome_obs_actor: false
+  add_genome_obs_critic: true
+
+catalog:
+  n_urdf: 10
+  catalog_dir: null # Not needed anymore unless specified in the CLI
+  urdf_seed: 42

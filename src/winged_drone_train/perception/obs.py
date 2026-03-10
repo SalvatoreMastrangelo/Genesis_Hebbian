@@ -46,8 +46,9 @@ class ObservationBuilder:
           last_actions(num_actions),
           forward_speed_cmd(1) ]
 
-    Optionally, a genome vector of dimension ``G`` can be appended at the end
-    of both actor and critic observations.
+    Optionally, a genome vector of dimension ``G`` can be appended separately
+    to actor and/or critic observations (controlled by add_genome_obs_actor
+    and add_genome_obs_critic).
 
     The critic observation mirrors the actor observation but without noise.
     """
@@ -59,7 +60,8 @@ class ObservationBuilder:
         *,
         joint_limits_max: Optional[torch.Tensor] = None,
         obs_cfg: Optional[Dict] = None,
-        add_genome_obs: bool = False,
+        add_genome_obs_actor: bool = False,
+        add_genome_obs_critic: bool = False,
         genome_vec: Optional[torch.Tensor] = None,
         genome_min: Optional[list] = None,
         genome_max: Optional[list] = None,
@@ -110,14 +112,16 @@ class ObservationBuilder:
         self._noise_scratch: Optional[torch.Tensor] = None
 
         # Genome configuration ------------------------------------------------
-        self.add_genome_obs = bool(add_genome_obs)
+        self.add_genome_obs_actor = bool(add_genome_obs_actor)
+        self.add_genome_obs_critic = bool(add_genome_obs_critic)
         self.genome_vec = genome_vec  # may be None initially
         self.genome_dim: Optional[int] = None
         self.genome_min: Optional[torch.Tensor] = None
         self.genome_max: Optional[torch.Tensor] = None
         self._genome_denom: Optional[torch.Tensor] = None
 
-        if self.add_genome_obs:
+        # Initialize genome if either actor or critic needs it
+        if self.add_genome_obs_actor or self.add_genome_obs_critic:
             if genome_vec is not None:
                 self.genome_dim = int(genome_vec.shape[1])
             elif genome_min is not None and genome_max is not None:
@@ -126,7 +130,7 @@ class ObservationBuilder:
                 self.genome_dim = len(genome_min)
             else:
                 raise ValueError(
-                    "add_genome_obs=True but neither genome_vec nor (genome_min, genome_max) were provided"
+                    "add_genome_obs_actor or add_genome_obs_critic is True but neither genome_vec nor (genome_min, genome_max) were provided"
                 )
 
             if genome_min is not None and genome_max is not None:
@@ -149,8 +153,9 @@ class ObservationBuilder:
         self.actor_obs_dim = base_kin_dim + depth_dim_actor + last_act_dim + cmd_dim
         self.priv_obs_dim = self.actor_obs_dim
 
-        if self.add_genome_obs and self.genome_dim is not None:
+        if self.add_genome_obs_actor and self.genome_dim is not None:
             self.actor_obs_dim += self.genome_dim
+        if self.add_genome_obs_critic and self.genome_dim is not None:
             self.priv_obs_dim += self.genome_dim
 
     # ------------------------------------------------------------------
@@ -316,9 +321,9 @@ class ObservationBuilder:
         obs_critic = obs_clean
 
         # ------------------------- Genome features --------------------------
-        if self.add_genome_obs:
+        if self.add_genome_obs_actor or self.add_genome_obs_critic:
             if self.genome_vec is None:
-                raise RuntimeError("add_genome_obs=True but no genome_vec has been provided.")
+                raise RuntimeError("add_genome_obs_actor or add_genome_obs_critic=True but no genome_vec has been provided.")
             genome = self.genome_vec
             if genome.device != device:
                 genome = genome.to(device)
@@ -341,10 +346,10 @@ class ObservationBuilder:
             else:
                 genome_norm = genome
 
-            genome_actor = genome_norm
-
-            obs_actor = torch.cat((obs_actor, genome_actor), dim=1)
-            obs_critic = torch.cat((obs_critic, genome_norm), dim=1)
+            if self.add_genome_obs_actor:
+                obs_actor = torch.cat((obs_actor, genome_norm), dim=1)
+            if self.add_genome_obs_critic:
+                obs_critic = torch.cat((obs_critic, genome_norm), dim=1)
 
             # print each different observation component of the first env separately for debugging
             '''

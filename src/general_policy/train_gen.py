@@ -138,16 +138,23 @@ def train(
     runtime_seed = seed_runtime_randomness(f"train_gen:{experiment_name}")
     train_cfg = get_train_cfg(experiment_name, max_iterations, runtime_seed)
 
-    obs_cfg["add_genome_obs"] = True  # Always include genome observation
+    obs_cfg["add_genome_obs_actor"] = True  # Always include genome observation
+    obs_cfg["add_genome_obs_critic"] = True
 
     cfg_snapshot_path = log_dir / "cfgs.pkl"
     with cfg_snapshot_path.open("wb") as f:
         pickle.dump(
-            [env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg],
+            [env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, runtime_seed],
             f,
             protocol=pickle.HIGHEST_PROTOCOL,
         )
     print(f"[train] Config snapshot saved to {cfg_snapshot_path}")
+
+    # Also save runtime_seed to a text file for easy reference
+    seed_path = log_dir / "runtime_seed.txt"
+    with seed_path.open("w") as f:
+        f.write(f"runtime_seed={runtime_seed}\n")
+    print(f"[train] Runtime seed saved to {seed_path}")
 
     # ------------------------------------------------------------------ #
     # Catalog resolution + optional building                             #
