@@ -166,11 +166,19 @@ class ForestGenerator:
         ys = torch.rand((F, max_trees), device=device) * (c.y_upper - c.y_lower) + c.y_lower
         zs = torch.full((F, max_trees), 0.5 * c.tree_height, device=device)
 
-        # Keep a dense tensor shape by placing inactive trees far outside the useful region.
+        # Keep a dense tensor shape by placing inactive trees outside the lateral forest bounds.
         active_mask = torch.arange(max_trees, device=device).unsqueeze(0) < num_trees_per_forest.unsqueeze(1)
-        dummy_x = c.x_lower - 1.0e6
-        dummy_y = c.y_upper + 1.0e6
-        xs = torch.where(active_mask, xs, torch.full_like(xs, dummy_x))
+        width_y = c.y_upper - c.y_lower
+        if width_y <= 0.0:
+            raise ValueError("ForestConfig.y_upper must be greater than y_lower")
+        dummy_x_lo = max(c.x_lower, 0.0)
+        dummy_x_hi = min(c.x_upper, 100.0)
+        if dummy_x_hi < dummy_x_lo:
+            dummy_x_lo = c.x_lower
+            dummy_x_hi = c.x_upper
+        dummy_xs = torch.rand((F, max_trees), device=device) * (dummy_x_hi - dummy_x_lo) + dummy_x_lo
+        dummy_y = c.y_upper + width_y + 1.0
+        xs = torch.where(active_mask, xs, dummy_xs)
         ys = torch.where(active_mask, ys, torch.full_like(ys, dummy_y))
 
         cylinders = torch.stack((xs, ys, zs), dim=-1)  # (F, max_trees, 3)
