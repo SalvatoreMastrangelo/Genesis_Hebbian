@@ -1393,6 +1393,7 @@ def run_pipeline(
             catalog_dir=catalog_dir,
             n=n_urdf,
             seed=urdf_seed,
+            include_standard_mydrone=True,
         )
         urdf_list = list_urdfs(catalog_dir)
     if not urdf_list:

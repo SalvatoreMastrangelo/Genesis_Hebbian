@@ -162,7 +162,12 @@ def train(
             f"[train] Building URDF catalog ({n_urdf} entries) "
             f"in {catalog_path} with seed={urdf_seed}"
         )
-        build_catalog(catalog_path, n=n_urdf, seed=urdf_seed)
+        build_catalog(
+            catalog_path,
+            n=n_urdf,
+            seed=urdf_seed,
+            include_standard_mydrone=False,
+        )
 
     use_mixture = bool(catalog_path and catalog_path.is_dir())
 

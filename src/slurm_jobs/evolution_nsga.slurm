@@ -139,6 +139,8 @@ if [ -z "$head_ip" ]; then
 fi
 RAY_PORT=${RAY_PORT:-$((6379 + (SLURM_JOB_ID % 20000)))}
 RAY_HEAD_ADDR="${head_ip}:${RAY_PORT}"
+RAY_MIN_WORKER_PORT=${RAY_MIN_WORKER_PORT:-20000}
+RAY_MAX_WORKER_PORT=${RAY_MAX_WORKER_PORT:-29999}
 
 echo "[ray] head_node=${head_node} head_ip=${head_ip} gpus_per_node=${GPUS_PER_NODE} total_gpus=${TOTAL_GPUS}"
 
@@ -212,7 +214,7 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
   if [ \"\${SELF_HOST}\" = \"${head_node}\" ]; then
     ray stop --force >/dev/null 2>&1 || true
     rm -rf \"\${RAY_TMPDIR}\" || true
-    ray start --head --node-ip-address ${head_ip} --port ${RAY_PORT} --num-gpus ${GPUS_PER_NODE} --disable-usage-stats --temp-dir \${NODE_TMP_DIR}
+    ray start --head --node-ip-address ${head_ip} --port ${RAY_PORT} --min-worker-port ${RAY_MIN_WORKER_PORT} --max-worker-port ${RAY_MAX_WORKER_PORT} --num-gpus ${GPUS_PER_NODE} --disable-usage-stats --temp-dir \${NODE_TMP_DIR}
     sleep 5
 
     GEN_POLICY_ARGS=\"--gen_policy ${GEN_POLICY}\"
@@ -237,7 +239,7 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
     ray stop --force >/dev/null 2>&1 || true
     rm -rf \"\${RAY_TMPDIR}\" || true
     sleep 8
-    ray start --address ${RAY_HEAD_ADDR} --num-gpus ${GPUS_PER_NODE} --disable-usage-stats --block
+    ray start --address ${RAY_HEAD_ADDR} --min-worker-port ${RAY_MIN_WORKER_PORT} --max-worker-port ${RAY_MAX_WORKER_PORT} --num-gpus ${GPUS_PER_NODE} --disable-usage-stats --block
   fi
 "
 
