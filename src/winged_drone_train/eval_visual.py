@@ -520,7 +520,7 @@ def create_overlay_video(
                 ln_beta.set_data(t_all[: idx + 1], beta_deg[: idx + 1])
 
             for ax in ts_axes:
-                ax.set_xlim(0, t_all[idx])
+                ax.set_xlim(0, max(t_all[idx], 1e-6))
 
             writer.grab_frame()
 
@@ -649,7 +649,7 @@ def create_camera_rewards_video(
                 pad = 0.10 * abs(y_max)
                 ax_rew.set_ylim(y_min - pad, y_max + pad)
 
-            ax_rew.set_xlim(0, t_all[idx])
+            ax_rew.set_xlim(0, max(t_all[idx], 1e-6))
             writer.grab_frame()
 
     cap.release()

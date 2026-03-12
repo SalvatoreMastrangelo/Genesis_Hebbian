@@ -73,6 +73,7 @@ import argparse
 import builtins
 import os
 os.environ["GS_PARA_LEVEL"] = "3"
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 import sys
 import time
 from pathlib import Path
@@ -98,6 +99,14 @@ from WP1.eval_videos import _generate_eval_videos
 builtins.ActorCriticTanh = ActorCriticTanh
 
 
+def _configure_torch_backends() -> None:
+    """Enable TF32 and cuDNN autotuning for faster GPU compute."""
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
+
 def _init_genesis() -> None:
     """Initialise the Genesis simulator (idempotent).
 
@@ -107,6 +116,70 @@ def _init_genesis() -> None:
     if gs._initialized:
         return
     gs.init(logging_level="error", backend=gs.gpu)
+
+
+def _enrich_csv_with_tensorboard_rewards(csv_path: Path, tb_dir: Path) -> None:
+    """Extract mean_reward values from TensorBoard and update CSV.
+
+    Reads the TensorBoard event files from a training run to extract the
+    'Train/mean_reward' scalar values logged by RSL-RL, then updates the
+    CSV file to fill in the mean_reward column (which may be empty if the
+    runner buffers were not exposed).
+
+    Parameters
+    ----------
+    csv_path : Path
+        Path to the training_log.csv file to update.
+    tb_dir : Path
+        Path to the TensorBoard log directory (containing event files).
+    """
+    import csv
+    import tempfile
+    from pathlib import Path
+
+    try:
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    except ImportError:
+        print("[WP1.train] tensorboard not available — skipping reward enrichment")
+        return
+
+    # Load TensorBoard events
+    ea = EventAccumulator(str(tb_dir))
+    ea.Reload()
+
+    # Extract mean_reward scalar (iteration -> value)
+    rewards_by_step = {}
+    try:
+        scalars = ea.Scalars("Train/mean_reward")
+        for event in scalars:
+            # event is a ScalarEvent with .step and .value attributes
+            rewards_by_step[event.step] = event.value
+    except KeyError:
+        print("[WP1.train] Train/mean_reward not found in TensorBoard")
+        return
+
+    if not rewards_by_step:
+        print("[WP1.train] No Train/mean_reward events in TensorBoard")
+        return
+
+    # Read CSV and update it
+    csv_path = Path(csv_path)
+    rows = []
+    with open(csv_path, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            iter_num = int(row["iter"])
+            if iter_num in rewards_by_step:
+                row["mean_reward"] = f"{rewards_by_step[iter_num]:.6g}"
+            rows.append(row)
+
+    # Write updated CSV back
+    with open(csv_path, "w", newline="") as f:
+        if rows:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+            print(f"[WP1.train] Updated {csv_path.name} with {len([r for r in rows if r.get('mean_reward')])} mean_reward values")
 
 
 
@@ -136,6 +209,7 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
         with the same experiment name and create a ``_resumed`` folder.
     """
     _configure_cache_root()
+    _configure_torch_backends()
     _init_genesis()
 
     # --- Run manager (creates timestamped folder) ---
@@ -204,6 +278,26 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
     # --- RSL-RL runner ---
     runner = OnPolicyRunner(env, train_cfg, str(run.log_dir), device=cfg.training.device)
 
+    # --- Compile policy for faster forward/backward passes ---
+    try:
+        runner.alg.policy = torch.compile(
+            runner.alg.policy, mode="reduce-overhead"
+        )
+        # Patch runner.save so checkpoints use unwrapped keys (no _orig_mod. prefix)
+        _orig_save = runner.save
+
+        def _save_unwrapped(path, infos=None):
+            policy = runner.alg.policy
+            unwrapped = getattr(policy, "_orig_mod", policy)
+            runner.alg.policy = unwrapped
+            _orig_save(path, infos)
+            runner.alg.policy = policy
+
+        runner.save = _save_unwrapped
+        print("[WP1.train] torch.compile enabled (reduce-overhead mode)")
+    except Exception as e:
+        print(f"[WP1.train] torch.compile skipped: {e}")
+
     # --- Attach PPO diagnostics logger (TensorBoard) ---
     rl_logger = RLTrainingLogger(runner=runner, log_dir=run.log_dir)
     rl_logger.attach()
@@ -257,6 +351,15 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
     finally:
         rl_logger.close()
         csv_logger.close()
+
+    # --- Extract mean_reward from TensorBoard and update CSV ---
+    try:
+        _enrich_csv_with_tensorboard_rewards(
+            csv_path=run.eval_dir / "training_log.csv",
+            tb_dir=run.log_dir
+        )
+    except Exception as e:
+        print(f"[WP1.train] TensorBoard reward extraction skipped: {e}")
 
     # --- Generate evaluation videos ---
     try:

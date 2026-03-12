@@ -169,7 +169,7 @@ class PolicyConfig:
     activation: str = "elu"
     init_noise_std: float = 0.3
     rnn_type: str = "lstm"
-    rnn_hidden_size: int = 64
+    rnn_hidden_size: int = 128
     rnn_num_layers: int = 1
     max_servo: float = 1.0
     max_throttle: float = 1.0
@@ -201,12 +201,12 @@ class TrainingConfig:
         Torch device string (``"cuda:0"``, ``"cpu"``).
     """
 
-    num_envs: int = 16384
-    max_iterations: int = 850
+    num_envs: int = 32768
+    max_iterations: int = 200
     num_steps_per_env: int = 25
     save_interval: int = 50
     eval_interval: int = 200
-    seed: int = 42
+    seed: int = 11
     empirical_normalization: bool = True
     device: str = "cuda:0"
 
@@ -374,7 +374,7 @@ class RewardConfig:
     angular: float = -5e-3
     crash: float = -10.0
     obstacle: float = -0.1
-    energy: float = -2e-3
+    energy: float = -2e-4
     progress: float = 5e-1
     height: float = -5e-3
     success: float = 0.0
@@ -464,7 +464,7 @@ class RunConfig:
         URDF catalog settings for multi-morphology training.
     """
 
-    exp_name: str = "drone-forest"
+    exp_name: str = "less_neurons_more_envs"
 
     ppo: PPOConfig = field(default_factory=PPOConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
