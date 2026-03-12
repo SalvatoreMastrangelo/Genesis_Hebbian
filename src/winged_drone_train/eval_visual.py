@@ -706,107 +706,7 @@ def create_overlay_video(
                 ln_beta.set_data(t_all[: idx + 1], beta_deg[: idx + 1])
 
             for ax in ts_axes:
-                ax.set_xlim(0, t_all[idx])
-            ax_T_right.set_xlim(0, t_all[idx])
-
-            writer.grab_frame()
-
-    cap_cam.release()
-    cap_td.release()
-    if cap_dp:
-        cap_dp.release()
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# Video generation: left column only (camera + depth + top-down)
-# ---------------------------------------------------------------------------
-
-def create_left_column_video(
-    cam_mp4: str,
-    td_mp4: str,
-    out_mp4: str,
-    depth_mp4: Optional[str] = None,
-    dpi: int = 240,
-) -> None:
-    """
-    Create a composite video with only the left overlay column:
-      - top: camera view
-      - middle: depth squares
-      - bottom: top-down render
-
-    Args:
-        cam_mp4: path to camera video.
-        td_mp4: path to top-down video.
-        out_mp4: path to output MP4.
-        depth_mp4: optional path to depth video; if None, depth panel is blank.
-        dpi: DPI for matplotlib.
-    """
-    import cv2
-    from matplotlib.gridspec import GridSpec
-
-    cap_cam = cv2.VideoCapture(cam_mp4)
-    cap_td = cv2.VideoCapture(td_mp4)
-    cap_dp = cv2.VideoCapture(depth_mp4) if depth_mp4 else None
-
-    fps_cam = cap_cam.get(cv2.CAP_PROP_FPS) or 25.0
-    nF_list = [
-        int(cap_cam.get(cv2.CAP_PROP_FRAME_COUNT) or 1),
-        int(cap_td.get(cv2.CAP_PROP_FRAME_COUNT) or 1),
-    ]
-    if cap_dp:
-        nF_list.append(int(cap_dp.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
-    nF = min(nF_list)
-
-    fig = plt.figure(figsize=(8.0, 9.0), dpi=dpi)
-    gs = GridSpec(
-        nrows=3,
-        ncols=1,
-        height_ratios=[5.9, 0.78, 2.42],
-        hspace=0.012,
-    )
-    fig.subplots_adjust(left=0.012, right=0.995, top=0.988, bottom=0.042)
-
-    ax_cam = fig.add_subplot(gs[0, 0])
-    ax_cam.axis("off")
-    ax_depth = fig.add_subplot(gs[1, 0])
-    ax_depth.axis("off")
-    ax_td = fig.add_subplot(gs[2, 0])
-    ax_td.axis("off")
-
-    okC, frm_cam = cap_cam.read()
-    okT, frm_td = cap_td.read()
-    if not (okC and okT):
-        raise RuntimeError("Cannot read first frames from camera/top-down videos.")
-    im_cam = ax_cam.imshow(cv2.cvtColor(frm_cam, cv2.COLOR_BGR2RGB))
-    im_td = ax_td.imshow(cv2.cvtColor(frm_td, cv2.COLOR_BGR2RGB))
-
-    im_depth = None
-    if cap_dp:
-        okD, frm_dp = cap_dp.read()
-        if not okD:
-            raise RuntimeError("Cannot read first frame from depth video.")
-        im_depth = ax_depth.imshow(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
-    else:
-        blank_depth = np.ones((48, 320, 3), dtype=np.uint8) * 255
-        im_depth = ax_depth.imshow(blank_depth)
-
-    writer = FFMpegWriter(fps=fps_cam, metadata=dict(artist="winged-drone"))
-    with writer.saving(fig, out_mp4, dpi=dpi):
-        for k in range(nF):
-            if k:
-                rC, frm_cam = cap_cam.read()
-                rT, frm_td = cap_td.read()
-                if not (rC and rT):
-                    break
-                im_cam.set_data(cv2.cvtColor(frm_cam, cv2.COLOR_BGR2RGB))
-                im_td.set_data(cv2.cvtColor(frm_td, cv2.COLOR_BGR2RGB))
-
-                if cap_dp:
-                    rD, frm_dp = cap_dp.read()
-                    if not rD:
-                        break
-                    im_depth.set_data(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
+                ax.set_xlim(0, max(t_all[idx], 1e-6))
 
             writer.grab_frame()
 
@@ -935,7 +835,7 @@ def create_camera_rewards_video(
                 pad = 0.10 * abs(y_max)
                 ax_rew.set_ylim(y_min - pad, y_max + pad)
 
-            ax_rew.set_xlim(0, t_all[idx])
+            ax_rew.set_xlim(0, max(t_all[idx], 1e-6))
             writer.grab_frame()
 
     cap.release()
