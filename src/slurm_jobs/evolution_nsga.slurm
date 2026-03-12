@@ -3,7 +3,7 @@
 #SBATCH --partition=l40s
 #SBATCH --nodes=2
 #SBATCH --ntasks=2
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=5:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
@@ -20,18 +20,18 @@ SRC="$HOME/binding/Genesis-dev"
 # ------------------------------------------------------------
 # Run params (override via sbatch --export=...)
 # ------------------------------------------------------------
-POP_SIZE=${POP_SIZE:-4}
-NUM_GEN=${NUM_GEN:-4}
+POP_SIZE=${POP_SIZE:-40}
+NUM_GEN=${NUM_GEN:-25}
 TRAIN_ITERS=${TRAIN_ITERS:-850}
-TRAIN_REPETITION=${TRAIN_REPETITION:-2}
+TRAIN_REPETITION=${TRAIN_REPETITION:-0}
 RUN_TAG=${RUN_TAG:-nsga_${SLURM_JOB_ID}}
 RUN_NAME=${RUN_NAME:-${RUN_TAG}}
 DEVICE=${DEVICE:-cuda:0}
 GA_PARALLEL=${GA_PARALLEL:-1}
-GEN_POLICY=${GEN_POLICY:-0}
+GEN_POLICY=${GEN_POLICY:-1}
 POLICY_PATH=${POLICY_PATH:-}
 
-DEFAULT_POLICY_CLUSTER="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2502405/logs/ea/foundation-mixture/model_2000.pt"
+DEFAULT_POLICY_CLUSTER="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2636928/logs/ea/foundation-mixture/model_1400.pt"
 if [ "${GEN_POLICY}" != "0" ] && [ -z "${POLICY_PATH}" ]; then
   if [ -f "${DEFAULT_POLICY_CLUSTER}" ]; then
     POLICY_PATH="${DEFAULT_POLICY_CLUSTER}"
@@ -139,8 +139,8 @@ if [ -z "$head_ip" ]; then
 fi
 RAY_PORT=${RAY_PORT:-$((6379 + (SLURM_JOB_ID % 20000)))}
 RAY_HEAD_ADDR="${head_ip}:${RAY_PORT}"
-RAY_MIN_WORKER_PORT=${RAY_MIN_WORKER_PORT:-20000}
-RAY_MAX_WORKER_PORT=${RAY_MAX_WORKER_PORT:-29999}
+RAY_MIN_WORKER_PORT=${RAY_MIN_WORKER_PORT:-30000}
+RAY_MAX_WORKER_PORT=${RAY_MAX_WORKER_PORT:-39999}
 
 echo "[ray] head_node=${head_node} head_ip=${head_ip} gpus_per_node=${GPUS_PER_NODE} total_gpus=${TOTAL_GPUS}"
 

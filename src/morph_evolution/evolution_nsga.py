@@ -44,6 +44,7 @@ from morph_evolution.utils.reporting import (
     append_generation_summary,
     append_pareto_history,
     append_population_history,
+    append_selection_pool_history,
     ckpt_idx_from_train_it as _ckpt_idx_from_train_it,
     init_report_csvs,
     invalid_objective_masks,
@@ -74,16 +75,17 @@ class GAConfig:
     # --- NSGA-II operators (continuous) -----------------------------------
     crossover_probability: float = 0.9   # probability of SBX crossover
     mutation_probability: float = 1.0 # 0.12    # probability of applying mutation
-    eta_c: float = 20.0                  # SBX "spread" parameter (higher = more local)
-    eta_m: float = 20.0                  # polynomial mutation parameter
+    eta_c: float = 15.0                  # SBX "spread" parameter (higher = more local)
+    eta_m: float = 12.0                  # polynomial mutation parameter
+    mutation_indpb_numerator: float = 1.5  # effective indpb = numerator / n_genes
 
     # --- RL training / evaluation -----------------------------------------
     gen_policy: bool = False
     policy_path: Optional[str] = None  # path to initial policy checkpoint
-    train_iters_new: int = 700       # iterations for NEW morphologies
+    train_iters_new: int = 850       # iterations for NEW morphologies
     train_iters_inherit: int = 200  # iterations when inheriting from a parent
     train_repetition: int = 1       # repeat train+eval N times (gen_policy=0)
-    train_envs: int = 32768           # number of envs during training
+    train_envs: int = 16384           # number of envs during training
     eval_envs: int = 8192            # number of envs during evaluation
     vmin: float = 6.0               # min commanded speed in evaluation
     vmax: float = 30.0              # max commanded speed in evaluation
@@ -304,9 +306,9 @@ class CodesignDEAP:
         self.population_history_path = (self.analysis_dir / "population_history.csv").resolve()
         self.pareto_history_path = (self.analysis_dir / "pareto_history.csv").resolve()
         self.generation_summary_path = (self.analysis_dir / "generation_summary.csv").resolve()
+        self.selection_pool_history_path = (self.analysis_dir / "selection_pool_history.csv").resolve()
         self._last_minimal_p = float(self.cfg.fixed_p)
         self._init_report_csvs()
-        self._write_run_manifest()
 
         self.db = FitnessDB(self.cfg.csv_basename, 3, root=self.analysis_dir)
         self.stats = Stats(self.n_pop, self.n_gen, 3)
@@ -326,6 +328,9 @@ class CodesignDEAP:
         self._low = low
         self._up = up
         n_genes = Chromosome_Drone.num_genes()
+        self.n_genes = n_genes
+        self.mutation_indpb = min(1.0, float(self.cfg.mutation_indpb_numerator) / float(n_genes))
+        self._write_run_manifest()
 
         # DEAP toolbox
         self.tb = base.Toolbox()
@@ -347,7 +352,7 @@ class CodesignDEAP:
             low=self._low,
             up=self._up,
             eta=self.cfg.eta_m,
-            indpb=1.0 / n_genes,
+            indpb=self.mutation_indpb,
         )
         self.tb.register("select", tools.selNSGA2)
         self.tb.register("evaluate", self._evaluate)
@@ -357,9 +362,13 @@ class CodesignDEAP:
             self.population_history_path,
             self.pareto_history_path,
             self.generation_summary_path,
+            self.selection_pool_history_path,
         )
 
     def _write_run_manifest(self) -> None:
+        cfg_dict = asdict(self.cfg)
+        cfg_dict["mutation_indpb_effective"] = getattr(self, "mutation_indpb", np.nan)
+        cfg_dict["n_genes"] = getattr(self, "n_genes", np.nan)
         write_run_manifest(
             self.run_manifest_path,
             self.run_name,
@@ -367,7 +376,7 @@ class CodesignDEAP:
             self.analysis_dir,
             self.logs_dir,
             self.urdf_dir,
-            asdict(self.cfg),
+            cfg_dict,
             USE_PARALLEL,
         )
 
@@ -399,6 +408,22 @@ class CodesignDEAP:
             INVALID_V,
             INVALID_E,
             INVALID_P,
+        )
+
+    def _append_selection_pool_history(
+        self,
+        pool: Sequence["IndType"],
+        fronts: Sequence[Sequence["IndType"]],
+        selected: Sequence["IndType"],
+        origin_map: Dict[int, str],
+    ) -> None:
+        append_selection_pool_history(
+            self.selection_pool_history_path,
+            self._gen,
+            pool,
+            fronts,
+            [getattr(ind, "uid", -1) for ind in selected],
+            origin_map,
         )
 
     # ------------------------------------------------------------------ #
@@ -468,7 +493,9 @@ class CodesignDEAP:
             cfg_reps = 1
 
         # CSV cache: if we have seen this chromosome before, reuse its fitness.
-        if not self.gen_policy:
+        if not self.gen_policy and self.cfg.use_dynamic_p:
+            print("   ↪ cache bypassed (dynamic minimal_p enabled)")
+        elif not self.gen_policy:
             cached_row = self.db.get_row(chromo)
             if cached_row is not None:
                 cached_rep = cached_row.get("train_repetition", 1)
@@ -491,6 +518,10 @@ class CodesignDEAP:
                     indiv.fail_reason = str(cached_row.get("fail_reason", "") or "")
                     indiv.fail_category = str(cached_row.get("fail_category", "") or "")
                     indiv._failed = bool(cached_row.get("failed", False))
+                    indiv.cache_hit = True
+                    indiv.evaluated_fresh = False
+                    indiv.cache_source_uid = int(cached_row.get("uid", -1))
+                    indiv.cache_source_generation = int(cached_row.get("generation", -1))
                     indiv._meta_raw = {
                         "exp_name": cached_row.get("exp_name", None),
                         "train_it": cached_row.get("train_it", self.cfg.train_iters_new),
@@ -501,8 +532,22 @@ class CodesignDEAP:
                         "fail_reason": str(cached_row.get("fail_reason", "") or ""),
                         "fail_category": str(cached_row.get("fail_category", "") or ""),
                         "eval_reward_mean": cached_row.get("eval_reward_mean", 0.0),
+                        "vel_v": cached_row.get("vel_v", np.nan),
+                        "vel_E": cached_row.get("vel_E", np.nan),
+                        "vel_P": cached_row.get("vel_P", np.nan),
+                        "eff_v": cached_row.get("eff_v", np.nan),
+                        "eff_E": cached_row.get("eff_E", np.nan),
+                        "eff_P": cached_row.get("eff_P", np.nan),
+                        "prog_v": cached_row.get("prog_v", np.nan),
+                        "prog_E": cached_row.get("prog_E", np.nan),
+                        "prog_P": cached_row.get("prog_P", np.nan),
+                        "final_reward": cached_row.get("final_reward", np.nan),
+                        "steps90_pct": cached_row.get("steps90_pct", np.nan),
+                        "cache_hit": 1,
+                        "evaluated_fresh": 0,
+                        "cache_source_uid": int(cached_row.get("uid", -1)),
+                        "cache_source_generation": int(cached_row.get("generation", -1)),
                     }
-                    indiv._persisted = True
                     print(
                         f"   ↪ cache-hit uid={getattr(indiv, 'uid', -1)} "
                         f"parent_uid=({getattr(indiv, 'parent_uid_a', -1)}, "
@@ -574,6 +619,10 @@ class CodesignDEAP:
             indiv.max_p = meta["max_p"]
             indiv.exp_name = meta["exp_name"]
             indiv.train_it = meta["train_it"]
+            indiv.cache_hit = False
+            indiv.evaluated_fresh = True
+            indiv.cache_source_uid = -1
+            indiv.cache_source_generation = -1
             
             if extra:
                 indiv._p_s = extra["p_s"]
@@ -595,6 +644,10 @@ class CodesignDEAP:
         indiv.max_p = meta["max_p"]
         indiv.exp_name = meta["exp_name"]
         indiv.train_it = meta["train_it"]
+        indiv.cache_hit = False
+        indiv.evaluated_fresh = True
+        indiv.cache_source_uid = -1
+        indiv.cache_source_generation = -1
         if extra and "rep_payloads" not in extra:
             indiv._p_s = extra["p_s"]
             indiv._v_s = extra["v_s"]
@@ -806,6 +859,10 @@ class CodesignDEAP:
                         rep_idx=rep_idx,
                         train_repetition=train_repetition,
                         rep_exp_names=rep_meta.get("exp_name", ""),
+                        cache_hit=0,
+                        evaluated_fresh=1,
+                        cache_source_uid=-1,
+                        cache_source_generation=-1,
                     )
                 )
                 self.db.insert(list(ind), ff_rep, dict(generation=self._gen, **rep_meta))
@@ -865,6 +922,10 @@ class CodesignDEAP:
                     rep_idx=-1,
                     train_repetition=train_repetition,
                     rep_exp_names="|".join(rep_exp_names),
+                    cache_hit=int(bool(getattr(ind, "cache_hit", False))),
+                    evaluated_fresh=int(bool(getattr(ind, "evaluated_fresh", True))),
+                    cache_source_uid=int(getattr(ind, "cache_source_uid", -1)),
+                    cache_source_generation=int(getattr(ind, "cache_source_generation", -1)),
                 )
             )
             for key, vals in acc.items():
@@ -910,8 +971,41 @@ class CodesignDEAP:
             ind.fitness.values = ff_final
             return
 
+        if getattr(ind, "cache_hit", False):
+            ff_final = tuple(ind.fitness.values)
+            meta = dict(getattr(ind, "_meta_raw", {}))
+            meta.update(
+                dict(
+                    max_p=getattr(ind, "max_p", np.nan),
+                    minimal_p=minimal_p,
+                    ckpt_idx=_ckpt_idx_from_train_it(
+                        meta.get("train_it", getattr(ind, "train_it", self.cfg.train_iters_new))
+                    ),
+                    uid=uid,
+                    parent_idx_a=parent_idx_a,
+                    parent_idx_b=parent_idx_b,
+                    parent_uid_a=parent_uid_a,
+                    parent_uid_b=parent_uid_b,
+                    parent_gen_a=parent_gen_a,
+                    parent_gen_b=parent_gen_b,
+                    row_kind="agg",
+                    rep_idx=-1,
+                    train_repetition=int(meta.get("train_repetition", 1) or 1),
+                    rep_exp_names=meta.get("rep_exp_names", meta.get("exp_name", "")),
+                    cache_hit=1,
+                    evaluated_fresh=0,
+                    cache_source_uid=int(getattr(ind, "cache_source_uid", -1)),
+                    cache_source_generation=int(getattr(ind, "cache_source_generation", -1)),
+                )
+            )
+            self.db.insert(list(ind), ff_final, dict(generation=self._gen, **meta))
+            ind.failed = bool(meta.get("failed", False))
+            ind.fail_reason = str(meta.get("fail_reason", ""))
+            ind.fail_category = str(meta.get("fail_category", ""))
+            ind.fitness.values = ff_final
+            return
+
         if not hasattr(ind, "_p_s") and not getattr(ind, "_failed", False):
-            # Cached individuals or failed evals without payload: nothing to do.
             return
 
         meta = dict(getattr(ind, "_meta_raw", {}))
@@ -933,6 +1027,10 @@ class CodesignDEAP:
                 rep_idx=-1,
                 train_repetition=int(meta.get("train_repetition", 1) or 1),
                 rep_exp_names=meta.get("rep_exp_names", meta.get("exp_name", "")),
+                cache_hit=int(bool(getattr(ind, "cache_hit", False))),
+                evaluated_fresh=int(bool(getattr(ind, "evaluated_fresh", True))),
+                cache_source_uid=int(getattr(ind, "cache_source_uid", -1)),
+                cache_source_generation=int(getattr(ind, "cache_source_generation", -1)),
             )
         )
 
@@ -1073,6 +1171,10 @@ class CodesignDEAP:
                     ind.max_p = meta.get("max_p", np.nan)
                     ind.exp_name = meta.get("exp_name", None)
                     ind.train_it = meta.get("train_it", self.cfg.train_iters_new)
+                    ind.cache_hit = False
+                    ind.evaluated_fresh = True
+                    ind.cache_source_uid = -1
+                    ind.cache_source_generation = -1
                     if extra and "rep_payloads" not in extra:
                         ind._p_s = extra.get("p_s", np.array([]))
                         ind._v_s = extra.get("v_s", np.array([]))
@@ -1152,6 +1254,10 @@ class CodesignDEAP:
                 "failed",
                 "fail_reason",
                 "fail_category",
+                "cache_hit",
+                "evaluated_fresh",
+                "cache_source_uid",
+                "cache_source_generation",
             ):
                 if hasattr(ch, a):
                     delattr(ch, a)
@@ -1262,7 +1368,14 @@ class CodesignDEAP:
             ind.parent_gen_b = -1
         self._gen = 0
         self._train_eval_population(pop)
+        gen0_fronts = tools.sortNondominated(pop, len(pop), first_front_only=False)
         pop = tools.selNSGA2(pop, self.n_pop)
+        self._append_selection_pool_history(
+            pop,
+            gen0_fronts,
+            pop,
+            {id(ind): "initial" for ind in pop},
+        )
         self._after_generation(pop)
 
         # GEN ≥ 1
@@ -1286,7 +1399,13 @@ class CodesignDEAP:
             self._train_eval_population(offspring)
 
             # 4) survivor-selection NSGA-II → new population
-            pop = tools.selNSGA2(pop + offspring, self.n_pop)
+            pool = pop + offspring
+            pool_fronts = tools.sortNondominated(pool, len(pool), first_front_only=False)
+            selected = tools.selNSGA2(pool, self.n_pop)
+            origin_map = {id(ind): "parent" for ind in pop}
+            origin_map.update({id(ind): "offspring" for ind in offspring})
+            self._append_selection_pool_history(pool, pool_fronts, selected, origin_map)
+            pop = selected
 
             # 5) logging / plots
             self._after_generation(pop)
@@ -1320,6 +1439,24 @@ def main() -> None:
         type=int,
         default=1,
         help="Repeat train+eval N times (gen_policy=0) and average final fitness.",
+    )
+    parser.add_argument(
+        "--eta_m",
+        type=float,
+        default=None,
+        help="Polynomial mutation eta parameter.",
+    )
+    parser.add_argument(
+        "--eta_c",
+        type=float,
+        default=None,
+        help="SBX crossover eta parameter.",
+    )
+    parser.add_argument(
+        "--mutation_indpb_num",
+        type=float,
+        default=None,
+        help="Per-gene mutation probability numerator; effective indpb = value / n_genes.",
     )
     parser.add_argument(
         "--inherit",
@@ -1389,6 +1526,12 @@ def main() -> None:
     cfg.num_generations = args.gen
     cfg.train_iters_new = args.train_it
     cfg.train_repetition = args.train_repetition
+    if args.eta_m is not None:
+        cfg.eta_m = args.eta_m
+    if args.eta_c is not None:
+        cfg.eta_c = args.eta_c
+    if args.mutation_indpb_num is not None:
+        cfg.mutation_indpb_numerator = args.mutation_indpb_num
     cfg.inherit_policy = args.inherit
     cfg.csv_basename = "nsga"
     if args.no_dynamic_p:

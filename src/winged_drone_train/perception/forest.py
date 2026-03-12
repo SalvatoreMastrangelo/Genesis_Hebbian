@@ -83,9 +83,9 @@ class ForestGenerator:
             # each environment (or each pair) can have its own layout.
             self.total_forests = (self.num_envs * 1) if self.unique_forests_eval else 1
         else:
-            # During training we typically want a variety of layouts; a simple
-            # heuristic is to keep two forests per environment.
-            self.total_forests = max(1, self.num_envs * 2)
+            # During training we typically want a variety of layouts; keep
+            # ten forests per environment in memory.
+            self.total_forests = max(1, self.num_envs * 10)
 
         # Will be allocated in :meth:`generate`.
         self.cylinders: Optional[torch.Tensor] = None  # (F, T, 3)

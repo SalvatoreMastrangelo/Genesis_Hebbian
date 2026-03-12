@@ -8,6 +8,7 @@ import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 
@@ -467,6 +468,7 @@ def plot_fitness_trends(
     output_path: Path,
     raw_df: pd.DataFrame | None = None,
     summary_df: pd.DataFrame | None = None,
+    generated_valid_df: pd.DataFrame | None = None,
 ) -> None:
     grouped = df.groupby("generation", sort=True)
     generations = grouped.size().index.to_numpy()
@@ -637,39 +639,51 @@ def plot_fitness_trends(
         count_stats.append(
             {
                 "generation": generation,
-                "count_above_threshold": int(np.sum(gen_ff2 >= threshold)),
+                "selected_count_above_threshold": int(np.sum(gen_ff2 >= threshold)),
                 "minimal_p": threshold,
             }
         )
     count_stats_df = pd.DataFrame(count_stats)
+    generated_counts_map: dict[int, int] = {}
+    if generated_valid_df is not None and not generated_valid_df.empty:
+        gen_count_df = generated_valid_df.loc[:, ["generation", "ff_2"]].copy()
+        gen_count_df = gen_count_df[np.isfinite(gen_count_df["ff_2"].to_numpy(dtype=float))]
+        for generation in sorted(gen_count_df["generation"].unique()):
+            gen_ff2 = gen_count_df.loc[gen_count_df["generation"] == generation, "ff_2"].to_numpy(dtype=float)
+            threshold = float(threshold_map.get(generation, INVALID_PROGRESS_THRESHOLD))
+            generated_counts_map[int(generation)] = int(np.sum(gen_ff2 >= threshold))
+    count_stats_df["generated_count_above_threshold"] = count_stats_df["generation"].map(
+        lambda g: generated_counts_map.get(int(g), np.nan)
+    )
+    bar_values = count_stats_df["generated_count_above_threshold"]
+    bar_label = "generated valid >= minimal_p"
+    bar_color = "#d62728"
+    if not bar_values.notna().any():
+        bar_values = count_stats_df["selected_count_above_threshold"]
+        bar_label = "selected population >= minimal_p"
+        bar_color = "#6baed6"
     count_ax.bar(
         count_stats_df["generation"],
-        count_stats_df["count_above_threshold"],
+        bar_values,
         width=0.7,
-        color="#6baed6",
+        color=bar_color,
         alpha=0.85,
-        label="count >= minimal_p",
+        label=bar_label,
     )
-    count_ax.plot(
-        count_stats_df["generation"],
-        count_stats_df["count_above_threshold"],
-        color="#08519c",
-        linewidth=2.2,
-        marker="o",
-        markersize=4.8,
-    )
-    count_ax.set_title("Individuals Above Minimal Progress")
+    count_ax.set_title("Generated Valid Individuals Above Minimal Progress")
     count_ax.set_xlabel("Generation", fontsize=12)
     count_ax.set_ylabel("Count", fontsize=13)
     count_ax.grid(alpha=0.35)
     count_ax.set_xticks(generations)
-    count_ax.set_ylim(_scaled_ylim(count_stats_df["count_above_threshold"].to_numpy(dtype=float), padding_ratio=0.12))
+    ylim_series = [bar_values.to_numpy(dtype=float)]
+    max_count = float(np.nanmax(ylim_series[0])) if ylim_series and ylim_series[0].size else 1.0
+    count_ax.set_ylim(0.0, max(1.0, max_count * 1.08))
 
     for ax in axes_flat[total_plots:]:
         ax.set_visible(False)
 
     axes_flat[0].legend(loc="best")
-    fig.suptitle("Fitness Trends Across Generations", fontsize=14, weight="bold")
+    fig.suptitle("Fitness Trends Across Generations (Selected Population)", fontsize=14, weight="bold")
     fig.tight_layout()
     fig.savefig(output_path, dpi=220)
     plt.close(fig)
@@ -701,6 +715,353 @@ def pareto_mask_finite(points: np.ndarray) -> np.ndarray:
     mask = np.zeros(points.shape[0], dtype=bool)
     mask[finite_mask] = pareto_mask(points[finite_mask])
     return mask
+
+
+def _non_dominated_sort_ranks(points: np.ndarray) -> np.ndarray:
+    n_points = points.shape[0]
+    if n_points == 0:
+        return np.array([], dtype=int)
+
+    domination_counts = np.zeros(n_points, dtype=int)
+    dominates_list = [[] for _ in range(n_points)]
+    fronts: list[list[int]] = [[]]
+
+    for i in range(n_points):
+        for j in range(i + 1, n_points):
+            i_dominates_j = np.all(points[i] >= points[j]) and np.any(points[i] > points[j])
+            j_dominates_i = np.all(points[j] >= points[i]) and np.any(points[j] > points[i])
+
+            if i_dominates_j:
+                dominates_list[i].append(j)
+                domination_counts[j] += 1
+            elif j_dominates_i:
+                dominates_list[j].append(i)
+                domination_counts[i] += 1
+
+    for i in range(n_points):
+        if domination_counts[i] == 0:
+            fronts[0].append(i)
+
+    ranks = np.zeros(n_points, dtype=int)
+    current_rank = 1
+    current_front = fronts[0]
+    while current_front:
+        next_front: list[int] = []
+        for idx in current_front:
+            ranks[idx] = current_rank
+            for dominated_idx in dominates_list[idx]:
+                domination_counts[dominated_idx] -= 1
+                if domination_counts[dominated_idx] == 0:
+                    next_front.append(dominated_idx)
+        current_front = next_front
+        current_rank += 1
+
+    return ranks
+
+
+def plot_pareto_rank_distribution(df: pd.DataFrame, output_path: Path) -> None:
+    if "generation" not in df.columns:
+        raise ValueError("Missing 'generation' column for Pareto rank distribution plot.")
+
+    work_df = df.copy()
+    finite_mask = np.isfinite(work_df[FITNESS_COLUMNS].to_numpy(dtype=float)).all(axis=1)
+    work_df = work_df.loc[finite_mask].copy()
+    generations = np.array(sorted(work_df["generation"].unique()), dtype=int)
+    # Recompute local Pareto ranks from the raw DEAP fitness values.
+    # ff_1 is already stored as -energy / -CoT in the optimization, so all
+    # three objectives are maximized here and no sign flip is applied.
+    rank_values = np.zeros(len(work_df), dtype=int)
+    for generation in generations:
+        gen_mask = work_df["generation"] == generation
+        gen_points = work_df.loc[gen_mask, FITNESS_COLUMNS].to_numpy(dtype=float)
+        rank_values[gen_mask.to_numpy()] = _non_dominated_sort_ranks(gen_points)
+    work_df["local_pareto_rank"] = rank_values
+
+    rank_counts = (
+        work_df.groupby(["generation", "local_pareto_rank"], sort=True)
+        .size()
+        .unstack(fill_value=0)
+        .sort_index(axis=1)
+    )
+    rank_counts = rank_counts.reindex(generations, fill_value=0)
+    rank_columns = [int(col) for col in rank_counts.columns.tolist()]
+
+    cmap = plt.get_cmap("viridis", max(len(rank_columns), 2))
+    colors = [cmap(i) for i in range(len(rank_columns))]
+    if colors:
+        colors[0] = "#d62728"
+    if len(colors) > 1:
+        colors[1] = "#ff7f0e"
+    if len(colors) > 2:
+        colors[2] = "#f2c14e"
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(12.2, 5.6))
+    bottom = np.zeros(len(rank_counts), dtype=float)
+    for idx, rank in enumerate(rank_columns):
+        values = rank_counts[rank].to_numpy(dtype=float)
+        ax.bar(
+            generations,
+            values,
+            bottom=bottom,
+            width=0.72,
+            color=colors[idx],
+            edgecolor="white",
+            linewidth=0.4,
+        )
+        bottom += values
+
+    if rank_columns:
+        front1_values = rank_counts[rank_columns[0]].to_numpy(dtype=float)
+        for generation, value in zip(generations, front1_values):
+            if value > 0:
+                ax.text(
+                    generation,
+                    value * 0.5,
+                    f"{int(value)}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="white",
+                    weight="bold",
+                )
+
+    ax.set_title("Local Pareto Front Distribution (Selected Population)", fontsize=14, weight="bold")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Individuals")
+    ax.set_xticks(generations)
+    max_count = float(np.max(bottom)) if bottom.size else 1.0
+    ax.set_ylim(0.0, max(1.0, max_count * 1.05))
+    ax.grid(alpha=0.35, axis="y")
+    legend_handles = [
+        Patch(facecolor=colors[idx], edgecolor="white", label=("front 1 (Pareto)" if idx == 0 else f"front {idx + 1}"))
+        for idx in range(len(rank_columns))
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        ncol=1,
+    )
+    fig.tight_layout(rect=[0.0, 0.0, 0.84, 1.0])
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+
+def plot_prev_current_generation_rank_distribution(df: pd.DataFrame, output_path: Path) -> None:
+    if "generation" not in df.columns:
+        raise ValueError("Missing 'generation' column for previous/current generation rank plot.")
+
+    work_df = df.copy()
+    finite_mask = np.isfinite(work_df[FITNESS_COLUMNS].to_numpy(dtype=float)).all(axis=1)
+    work_df = work_df.loc[finite_mask].copy()
+    generations = np.array(sorted(work_df["generation"].unique()), dtype=int)
+    if generations.size == 0:
+        raise ValueError("No finite rows available for previous/current generation rank plot.")
+
+    rows = []
+    for generation in generations:
+        if generation == int(generations[0]):
+            pool_df = work_df.loc[work_df["generation"] == generation].copy()
+        else:
+            pool_df = work_df.loc[work_df["generation"].isin([generation - 1, generation])].copy()
+        pool_points = pool_df[FITNESS_COLUMNS].to_numpy(dtype=float)
+        pool_ranks = _non_dominated_sort_ranks(pool_points)
+        pool_df["pair_generation_rank"] = pool_ranks
+        current_df = pool_df.loc[pool_df["generation"] == generation].copy()
+        rows.append(current_df.loc[:, ["generation", "pair_generation_rank"]])
+
+    ranked_df = pd.concat(rows, ignore_index=True)
+    rank_counts = (
+        ranked_df.groupby(["generation", "pair_generation_rank"], sort=True)
+        .size()
+        .unstack(fill_value=0)
+        .sort_index(axis=1)
+    )
+    rank_counts = rank_counts.reindex(generations, fill_value=0)
+    rank_columns = [int(col) for col in rank_counts.columns.tolist()]
+
+    cmap = plt.get_cmap("viridis", max(len(rank_columns), 2))
+    colors = [cmap(i) for i in range(len(rank_columns))]
+    if colors:
+        colors[0] = "#d62728"
+    if len(colors) > 1:
+        colors[1] = "#ff7f0e"
+    if len(colors) > 2:
+        colors[2] = "#f2c14e"
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(12.8, 5.8))
+    bottom = np.zeros(len(rank_counts), dtype=float)
+    for idx, rank in enumerate(rank_columns):
+        values = rank_counts[rank].to_numpy(dtype=float)
+        ax.bar(
+            generations,
+            values,
+            bottom=bottom,
+            width=0.72,
+            color=colors[idx],
+            edgecolor="white",
+            linewidth=0.4,
+        )
+        bottom += values
+
+    if rank_columns:
+        front1_values = rank_counts[rank_columns[0]].to_numpy(dtype=float)
+        for generation, value in zip(generations, front1_values):
+            if value > 0:
+                ax.text(
+                    generation,
+                    value * 0.5,
+                    f"{int(value)}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="white",
+                    weight="bold",
+                )
+
+    ax.set_title("Generated Individuals Ranked In Pool (g-1 + g)", fontsize=14, weight="bold")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Individuals generated in current generation")
+    ax.set_xticks(generations)
+    max_count = float(np.max(bottom)) if bottom.size else 1.0
+    ax.set_ylim(0.0, max(1.0, max_count * 1.05))
+    ax.grid(alpha=0.35, axis="y")
+    legend_handles = [
+        Patch(
+            facecolor=colors[idx],
+            edgecolor="white",
+            label=("front 1 (in g-1 + g pool)" if idx == 0 else f"front {idx + 1}"),
+        )
+        for idx in range(len(rank_columns))
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        ncol=1,
+    )
+    fig.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+
+def plot_newcomer_rank_distribution(df: pd.DataFrame, output_path: Path) -> None:
+    if "generation" not in df.columns:
+        raise ValueError("Missing 'generation' column for newcomer rank plot.")
+
+    work_df = df.copy()
+    finite_mask = np.isfinite(work_df[FITNESS_COLUMNS].to_numpy(dtype=float)).all(axis=1)
+    work_df = work_df.loc[finite_mask].copy()
+    generations = np.array(sorted(work_df["generation"].unique()), dtype=int)
+    if generations.size == 0:
+        raise ValueError("No finite rows available for newcomer rank plot.")
+
+    if "uid" not in work_df.columns:
+        raise ValueError("Missing 'uid' column for newcomer rank plot.")
+
+    rows = []
+    for generation in generations:
+        current_df = work_df.loc[work_df["generation"] == generation].copy()
+        if generation == int(generations[0]):
+            newcomer_df = current_df.copy()
+            pool_df = current_df.copy()
+        else:
+            prev_df = work_df.loc[work_df["generation"] == generation - 1].copy()
+            prev_uids = set(prev_df["uid"].tolist())
+            newcomer_df = current_df.loc[~current_df["uid"].isin(prev_uids)].copy()
+            pool_df = work_df.loc[work_df["generation"].isin([generation - 1, generation])].copy()
+
+        if newcomer_df.empty:
+            continue
+
+        pool_points = pool_df[FITNESS_COLUMNS].to_numpy(dtype=float)
+        pool_df = pool_df.copy()
+        pool_df["pair_generation_rank"] = _non_dominated_sort_ranks(pool_points)
+        newcomer_ranked = pool_df.loc[pool_df["uid"].isin(newcomer_df["uid"])].copy()
+        rows.append(newcomer_ranked.loc[:, ["generation", "pair_generation_rank"]])
+
+    if not rows:
+        raise ValueError("No newcomer individuals found for newcomer rank plot.")
+
+    ranked_df = pd.concat(rows, ignore_index=True)
+    rank_counts = (
+        ranked_df.groupby(["generation", "pair_generation_rank"], sort=True)
+        .size()
+        .unstack(fill_value=0)
+        .sort_index(axis=1)
+    )
+    rank_counts = rank_counts.reindex(generations, fill_value=0)
+    rank_columns = [int(col) for col in rank_counts.columns.tolist()]
+
+    cmap = plt.get_cmap("viridis", max(len(rank_columns), 2))
+    colors = [cmap(i) for i in range(len(rank_columns))]
+    if colors:
+        colors[0] = "#d62728"
+    if len(colors) > 1:
+        colors[1] = "#ff7f0e"
+    if len(colors) > 2:
+        colors[2] = "#f2c14e"
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(12.8, 5.8))
+    bottom = np.zeros(len(rank_counts), dtype=float)
+    for idx, rank in enumerate(rank_columns):
+        values = rank_counts[rank].to_numpy(dtype=float)
+        ax.bar(
+            generations,
+            values,
+            bottom=bottom,
+            width=0.72,
+            color=colors[idx],
+            edgecolor="white",
+            linewidth=0.4,
+        )
+        bottom += values
+
+    if rank_columns:
+        front1_values = rank_counts[rank_columns[0]].to_numpy(dtype=float)
+        for generation, value in zip(generations, front1_values):
+            if value > 0:
+                ax.text(
+                    generation,
+                    value * 0.5,
+                    f"{int(value)}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="white",
+                    weight="bold",
+                )
+
+    newcomer_counts = rank_counts.sum(axis=1).to_numpy(dtype=float)
+    ax.set_title("Newcomer Rank In Pool (g-1 + g)", fontsize=14, weight="bold")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("New individuals in current generation")
+    ax.set_xticks(generations)
+    ax.set_ylim(0.0, max(1.0, float(np.max(newcomer_counts)) * 1.08))
+    ax.grid(alpha=0.35, axis="y")
+    legend_handles = [
+        Patch(
+            facecolor=colors[idx],
+            edgecolor="white",
+            label=("front 1 (in g-1 + g pool)" if idx == 0 else f"front {idx + 1}"),
+        )
+        for idx in range(len(rank_columns))
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        ncol=1,
+    )
+    fig.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
 
 
 def plot_pareto_fronts(df: pd.DataFrame, output_path: Path, generation: int) -> None:
@@ -1096,7 +1457,7 @@ def plot_evolutionary_metrics(metrics_df: pd.DataFrame, output_path: Path) -> No
         ax.set_ylim(_scaled_ylim(values))
         ax.set_xticks(generations)
 
-    fig.suptitle("Evolutionary Metrics Across Generations", fontsize=14, weight="bold")
+    fig.suptitle("Evolutionary Metrics Across Generations (Selected Population)", fontsize=14, weight="bold")
     fig.tight_layout()
     fig.savefig(output_path, dpi=220)
     plt.close(fig)
@@ -1108,82 +1469,80 @@ def plot_dominance_solutions(
     *,
     summary_df: pd.DataFrame | None = None,
 ) -> None:
-    if summary_df is not None and {"generation", "pareto_size"}.issubset(summary_df.columns):
-        plot_df = summary_df.loc[:, ["generation", "pareto_size"]].copy()
-        plot_df = plot_df.sort_values("generation")
-        plot_df = plot_df.rename(columns={"pareto_size": "nondominated_count"})
-    else:
-        if "generation" not in df.columns:
-            raise ValueError("Missing 'generation' column for dominance plot.")
-        if "is_pareto" in df.columns:
-            plot_df = (
-                df.groupby("generation", sort=True)["is_pareto"]
-                .sum()
-                .reset_index(name="nondominated_count")
+    if "generation" not in df.columns:
+        raise ValueError("Missing 'generation' column for dominance plot.")
+    all_generations = np.array(sorted(df["generation"].unique()), dtype=int)
+
+    work_df = df.copy()
+    finite_mask = np.isfinite(work_df[FITNESS_COLUMNS].to_numpy(dtype=float)).all(axis=1)
+    work_df = work_df.loc[finite_mask].copy()
+    genome_name = _extract_genome_name_series(work_df)
+    work_df["_dominance_key"] = genome_name
+    missing_key_mask = work_df["_dominance_key"].isna()
+    if missing_key_mask.any():
+        rounded_points = work_df.loc[missing_key_mask, FITNESS_COLUMNS].round(8)
+        work_df.loc[missing_key_mask, "_dominance_key"] = rounded_points.apply(
+            lambda row: tuple(row[col] for col in FITNESS_COLUMNS),
+            axis=1,
+        )
+
+    # Keep the first occurrence of each unique solution; global front size is computed
+    # on all unique solutions discovered up to each generation, not by summing local fronts.
+    unique_df = (
+        work_df.sort_values(["generation", "uid"] if "uid" in work_df.columns else ["generation"])
+        .drop_duplicates(subset="_dominance_key", keep="first")
+        .copy()
+    )
+    unique_df["discovery_generation"] = unique_df["generation"].astype(int)
+
+    final_points = unique_df[FITNESS_COLUMNS].to_numpy(dtype=float)
+    final_front_mask = pareto_mask(final_points) if final_points.size else np.array([], dtype=bool)
+    final_global_front_keys = set(unique_df.loc[final_front_mask, "_dominance_key"].tolist())
+
+    rows = []
+    cumulative_seen_keys: set[object] = set()
+    cumulative_global_front_keys: set[object] = set()
+    for generation in all_generations:
+        eligible = unique_df.loc[unique_df["discovery_generation"] <= generation].copy()
+        if eligible.empty:
+            rows.append(
+                {
+                    "generation": generation,
+                    "new_unique_solutions": 0,
+                    "global_pareto_front_size": 0,
+                    "new_global_front_solutions": 0,
+                }
             )
-        else:
-            rows = []
-            for generation in sorted(df["generation"].unique()):
-                gen_df = df[df["generation"] == generation]
-                points = gen_df[FITNESS_COLUMNS].to_numpy(dtype=float)
-                points = points[np.isfinite(points).all(axis=1)]
-                rows.append(
-                    {
-                        "generation": generation,
-                        "nondominated_count": int(np.sum(pareto_mask(points))) if points.size else 0,
-                    }
-                )
-            plot_df = pd.DataFrame(rows)
+            continue
 
-    if "is_pareto" in df.columns:
-        pareto_df = df.loc[df["is_pareto"].astype(int) == 1].copy()
-    else:
-        rows = []
-        for generation in sorted(df["generation"].unique()):
-            gen_df = df[df["generation"] == generation].copy()
-            points = gen_df[FITNESS_COLUMNS].to_numpy(dtype=float)
-            finite_mask = np.isfinite(points).all(axis=1)
-            gen_df = gen_df.loc[finite_mask].copy()
-            points = points[finite_mask]
-            if points.size == 0:
-                continue
-            gen_df["_is_pareto_tmp"] = pareto_mask(points).astype(int)
-            rows.append(gen_df.loc[gen_df["_is_pareto_tmp"] == 1].drop(columns="_is_pareto_tmp"))
-        pareto_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=df.columns)
+        points = eligible[FITNESS_COLUMNS].to_numpy(dtype=float)
+        front_mask = pareto_mask(points)
+        front_df = eligible.loc[front_mask].copy()
+        front_keys = set(front_df["_dominance_key"].tolist())
+        discovered_now = set(
+            eligible.loc[eligible["discovery_generation"] == generation, "_dominance_key"].tolist()
+        )
+        new_front_now = front_keys - cumulative_global_front_keys
+        final_front_now = new_front_now & final_global_front_keys
 
-    if not pareto_df.empty:
-        genome_name = _extract_genome_name_series(pareto_df)
-        pareto_df = pareto_df.copy()
-        pareto_df["_dominance_key"] = genome_name
-        missing_key_mask = pareto_df["_dominance_key"].isna()
-        if missing_key_mask.any():
-            rounded_points = pareto_df.loc[missing_key_mask, FITNESS_COLUMNS].round(8)
-            pareto_df.loc[missing_key_mask, "_dominance_key"] = rounded_points.apply(
-                lambda row: tuple(row[col] for col in FITNESS_COLUMNS),
-                axis=1,
-            )
-        first_seen = (
-            pareto_df.groupby("_dominance_key", sort=False)["generation"]
-            .min()
-            .reset_index(name="first_generation")
+        rows.append(
+            {
+                "generation": generation,
+                "new_unique_solutions": len(discovered_now - cumulative_seen_keys),
+                "global_pareto_front_size": len(front_keys),
+                "new_global_front_solutions": len(new_front_now),
+                "new_solutions_in_final_global_front": len(final_front_now),
+            }
         )
-        discovered_df = (
-            first_seen.groupby("first_generation", sort=True)
-            .size()
-            .reset_index(name="new_nondominated_count")
-            .rename(columns={"first_generation": "generation"})
-        )
-    else:
-        discovered_df = pd.DataFrame(
-            {"generation": plot_df["generation"].to_numpy(dtype=int), "new_nondominated_count": 0}
-        )
+        cumulative_seen_keys |= discovered_now
+        cumulative_global_front_keys = front_keys
 
-    plot_df = plot_df.merge(discovered_df, on="generation", how="left")
-    plot_df["new_nondominated_count"] = plot_df["new_nondominated_count"].fillna(0.0)
+    plot_df = pd.DataFrame(rows)
 
     generations = plot_df["generation"].to_numpy(dtype=int)
-    values = plot_df["nondominated_count"].to_numpy(dtype=float)
-    discovered_values = plot_df["new_nondominated_count"].to_numpy(dtype=float)
+    values = plot_df["global_pareto_front_size"].to_numpy(dtype=float)
+    discovered_values = plot_df["new_global_front_solutions"].to_numpy(dtype=float)
+    final_values = plot_df["new_solutions_in_final_global_front"].to_numpy(dtype=float)
 
     _apply_plot_style()
     fig, ax = plt.subplots(figsize=(9.5, 5.2))
@@ -1193,8 +1552,17 @@ def plot_dominance_solutions(
         width=0.65,
         color="#9ecae1",
         alpha=0.75,
-        label="new Pareto solutions discovered",
+        label="new solutions entering global Pareto front",
         zorder=1,
+    )
+    ax.bar(
+        generations,
+        final_values,
+        width=0.42,
+        color="#2ca02c",
+        alpha=0.90,
+        label="of those, still in final global Pareto front",
+        zorder=2,
     )
     ax.plot(
         generations,
@@ -1203,15 +1571,15 @@ def plot_dominance_solutions(
         linewidth=2.4,
         markersize=5.5,
         color="#d62728",
-        label="Pareto solutions in generation",
+        label="global Pareto front size",
         zorder=3,
     )
     ax.fill_between(generations, 0.0, values, color="#fcae91", alpha=0.20, zorder=2)
-    ax.set_title("Pareto Dominance Across Generations", fontsize=14, weight="bold")
+    ax.set_title("Global Pareto Front Growth Across Generations", fontsize=14, weight="bold")
     ax.set_xlabel("Generation")
     ax.set_ylabel("Count")
     ax.set_xticks(generations)
-    ax.set_ylim(_scaled_ylim(np.concatenate([values, discovered_values]), padding_ratio=0.12))
+    ax.set_ylim(_scaled_ylim(np.concatenate([values, discovered_values, final_values]), padding_ratio=0.12))
     ax.grid(alpha=0.35)
     ax.legend(loc="best")
     fig.tight_layout()
@@ -1341,6 +1709,13 @@ def main() -> None:
     df_agg_raw = filter_to_agg(df_raw)
     df = filter_sentinels(df_agg_raw, reference_df=df_raw)
     trends_raw = apply_invalid_repetition_values(df_agg_raw, reference_df=df_raw)
+    nsga_generated_df = df_agg_raw
+    nsga_generated_valid = df
+    nsga_csv_path = source_csv.parent / "nsga.csv"
+    if nsga_csv_path.exists():
+        nsga_full_df = load_nsga_csv(nsga_csv_path)
+        nsga_generated_df = filter_to_agg(nsga_full_df)
+        nsga_generated_valid = filter_sentinels(nsga_generated_df, reference_df=nsga_full_df)
 
     if args.output_dir is not None:
         output_dir = args.output_dir.expanduser().resolve()
@@ -1361,21 +1736,31 @@ def main() -> None:
         output_dir / "fitness_trends.png",
         raw_df=trends_raw,
         summary_df=summary_df,
+        generated_valid_df=nsga_generated_valid,
     )
 
     if args.generation is None:
         generation = int(df["generation"].max())
     else:
         generation = args.generation
-    plot_pareto_fronts(df, output_dir / "pareto_fronts.png", generation)
-    plot_pareto_front_3d(df, output_dir / "pareto_front_3d.html")
-    export_pareto_csv(df, output_dir / "pareto.csv")
+    plot_pareto_fronts(nsga_generated_valid, output_dir / "pareto_fronts.png", generation)
+    plot_pareto_front_3d(nsga_generated_valid, output_dir / "pareto_front_3d.html")
+    export_pareto_csv(nsga_generated_valid, output_dir / "pareto.csv")
     metrics_df = compute_evolutionary_metrics(df, output_dir / "evolutionary_metrics.csv")
     plot_evolutionary_metrics(metrics_df, output_dir / "evolutionary_metrics.png")
     plot_dominance_solutions(
-        df,
+        nsga_generated_valid,
         output_dir / "dominance_solutions.png",
         summary_df=summary_df,
+    )
+    plot_pareto_rank_distribution(df_agg_raw, output_dir / "pareto_rank_distribution.png")
+    plot_prev_current_generation_rank_distribution(
+        nsga_generated_valid,
+        output_dir / "pair_generation_rank_distribution.png",
+    )
+    plot_newcomer_rank_distribution(
+        nsga_generated_valid,
+        output_dir / "newcomer_rank_distribution.png",
     )
     plot_genome_pca_generations(df, output_dir / "genome_pca_generations.png")
     plot_genome_fitness_correlation(df, output_dir / "genome_fitness_correlation.png")
