@@ -34,6 +34,8 @@ def build_run_meta(
     train_it: int,
     max_p: float,
     eval_reward_mean: float,
+    train_duration_s: float = 0.0,
+    eval_duration_s: float = 0.0,
     train_repetition: Optional[int] = None,
     rep_exp_names: Optional[str] = None,
     failed: bool = False,
@@ -47,6 +49,8 @@ def build_run_meta(
         ckpt_idx=ckpt_idx_from_train_it(train_it_i),
         max_p=max_p,
         eval_reward_mean=eval_reward_mean,
+        train_duration_s=float(train_duration_s),
+        eval_duration_s=float(eval_duration_s),
     )
     if train_repetition is not None:
         meta["train_repetition"] = int(train_repetition)
@@ -75,6 +79,8 @@ def failure_result(
     invalid_p: set[float],
     exp_name: Optional[str] = None,
     train_it: Optional[int] = None,
+    train_duration_s: float = 0.0,
+    eval_duration_s: float = 0.0,
 ) -> Tuple[List[float], Dict[str, Any], Dict[str, np.ndarray]]:
     """Build a safe fallback result for failed train/eval steps."""
     ff = default_fitness(invalid_v, invalid_e, invalid_p)
@@ -82,6 +88,8 @@ def failure_result(
     meta = build_run_meta(
         exp_name=exp_name or "failed",
         train_it=int(train_it if train_it is not None else cfg.get("TRAIN_ITERS", 0)),
+        train_duration_s=train_duration_s,
+        eval_duration_s=eval_duration_s,
         train_repetition=int(cfg.get("TRAIN_REPETITION", 1)),
         rep_exp_names=exp_name or "",
         max_p=float("nan"),
@@ -223,6 +231,7 @@ def eval_only_custom(
             "[eval_only] running evaluation "
             f"(envs={cfg['EVAL_ENVS']} vmin={cfg['VMIN']} vmax={cfg['VMAX']})"
         )
+        eval_t0 = time.perf_counter()
         out = evaluation(
             exp_name=exp_name,
             urdf_file=urdf_file,
@@ -235,6 +244,7 @@ def eval_only_custom(
             custom_policy_path=policy_path,
             eval_dir=eval_dir,
         )
+        eval_duration_s = float(time.perf_counter() - eval_t0)
 
     if return_arrays:
         v_dict, e_dict, p_dict, _, extra = out
@@ -259,6 +269,8 @@ def eval_only_custom(
         **build_run_meta(
             exp_name=exp_name,
             train_it=0,
+            train_duration_s=0.0,
+            eval_duration_s=eval_duration_s,
             train_repetition=1,
             rep_exp_names=exp_name,
             max_p=max_p,
@@ -338,12 +350,15 @@ def train_and_eval_sync(
         train_repetition = 1
 
     def run_once(run_exp_name: str) -> Tuple[List[float], Dict[str, Any], Dict[str, Any]]:
+        train_duration_s = 0.0
+        eval_duration_s = 0.0
         try:
             jitter = float(os.getenv("WORKER_START_JITTER", "0") or 0.0)
             if jitter > 0:
                 time.sleep(random.uniform(0.0, jitter))
             log_mem(f"train_eval:{run_exp_name}:before_train")
             with pushd(base_dir):
+                train_t0 = time.perf_counter()
                 training(
                     exp_name=run_exp_name,
                     urdf_file=urdf_file,
@@ -353,17 +368,30 @@ def train_and_eval_sync(
                     parent_ckpt=parent_ckpt,
                     device=device,
                 )
+                train_duration_s = float(time.perf_counter() - train_t0)
         except Exception as exc:
+            if "train_t0" in locals():
+                train_duration_s = float(time.perf_counter() - train_t0)
             traceback.print_exc()
             reason = f"training_failed exp={run_exp_name}: {exc}"
             print(f"[safe_mode] {reason}")
-            return failure_result(reason, cfg, invalid_v, invalid_e, invalid_p, exp_name=run_exp_name, train_it=train_iters)
+            return failure_result(
+                reason,
+                cfg,
+                invalid_v,
+                invalid_e,
+                invalid_p,
+                exp_name=run_exp_name,
+                train_it=train_iters,
+                train_duration_s=train_duration_s,
+            )
 
         eval_dir = (Path(cfg["LOGS_DIR"]).expanduser().resolve() / "eval" / run_exp_name)
 
         try:
             log_mem(f"train_eval:{run_exp_name}:before_eval")
             with pushd(base_dir):
+                eval_t0 = time.perf_counter()
                 out = evaluation(
                     exp_name=run_exp_name,
                     urdf_file=urdf_file,
@@ -374,11 +402,21 @@ def train_and_eval_sync(
                     return_arrays=return_arrays,
                     eval_dir=eval_dir,
                 )
+                eval_duration_s = float(time.perf_counter() - eval_t0)
         except Exception as exc:
             traceback.print_exc()
             reason = f"evaluation_failed exp={run_exp_name}: {exc}"
             print(f"[safe_mode] {reason}")
-            return failure_result(reason, cfg, invalid_v, invalid_e, invalid_p, exp_name=run_exp_name, train_it=train_iters)
+            return failure_result(
+                reason,
+                cfg,
+                invalid_v,
+                invalid_e,
+                invalid_p,
+                exp_name=run_exp_name,
+                train_it=train_iters,
+                train_duration_s=train_duration_s,
+            )
 
         try:
             if return_arrays:
@@ -390,7 +428,17 @@ def train_and_eval_sync(
         except Exception as exc:
             reason = f"eval_output_unpack_failed exp={run_exp_name}: {exc}"
             print(f"[safe_mode] {reason}")
-            return failure_result(reason, cfg, invalid_v, invalid_e, invalid_p, exp_name=run_exp_name, train_it=train_iters)
+            return failure_result(
+                reason,
+                cfg,
+                invalid_v,
+                invalid_e,
+                invalid_p,
+                exp_name=run_exp_name,
+                train_it=train_iters,
+                train_duration_s=train_duration_s,
+                eval_duration_s=locals().get("eval_duration_s", 0.0),
+            )
 
         if not all_finite(
             [
@@ -406,7 +454,17 @@ def train_and_eval_sync(
                 f"P={p_dict.get('mean_progress')} max_p={max_p}"
             )
             print(f"[safe_mode] {reason}")
-            return failure_result(reason, cfg, invalid_v, invalid_e, invalid_p, exp_name=run_exp_name, train_it=train_iters)
+            return failure_result(
+                reason,
+                cfg,
+                invalid_v,
+                invalid_e,
+                invalid_p,
+                exp_name=run_exp_name,
+                train_it=train_iters,
+                train_duration_s=train_duration_s,
+                eval_duration_s=locals().get("eval_duration_s", 0.0),
+            )
 
         if return_arrays:
             p_s = np.asarray(extra.get("p_s", []))
@@ -415,7 +473,17 @@ def train_and_eval_sync(
             if p_s.size == 0 or v_s.size == 0 or E_s.size == 0:
                 reason = f"empty_eval_arrays exp={run_exp_name}"
                 print(f"[safe_mode] {reason}")
-                return failure_result(reason, cfg, invalid_v, invalid_e, invalid_p, exp_name=run_exp_name, train_it=train_iters)
+                return failure_result(
+                    reason,
+                    cfg,
+                    invalid_v,
+                    invalid_e,
+                    invalid_p,
+                    exp_name=run_exp_name,
+                    train_it=train_iters,
+                    train_duration_s=train_duration_s,
+                    eval_duration_s=eval_duration_s,
+                )
             if not (
                 np.isfinite(p_s).all()
                 and np.isfinite(v_s).all()
@@ -423,7 +491,17 @@ def train_and_eval_sync(
             ):
                 reason = f"non_finite_eval_arrays exp={run_exp_name}"
                 print(f"[safe_mode] {reason}")
-                return failure_result(reason, cfg, invalid_v, invalid_e, invalid_p, exp_name=run_exp_name, train_it=train_iters)
+                return failure_result(
+                    reason,
+                    cfg,
+                    invalid_v,
+                    invalid_e,
+                    invalid_p,
+                    exp_name=run_exp_name,
+                    train_it=train_iters,
+                    train_duration_s=train_duration_s,
+                    eval_duration_s=eval_duration_s,
+                )
 
         tb_log_dir = Path(cfg["LOG_ROOT"]) / run_exp_name
         reward_curve = extract_reward_curve(
@@ -450,6 +528,8 @@ def train_and_eval_sync(
             **build_run_meta(
                 exp_name=run_exp_name,
                 train_it=train_iters,
+                train_duration_s=train_duration_s,
+                eval_duration_s=eval_duration_s,
                 max_p=max_p,
                 eval_reward_mean=eval_reward_mean,
             ),

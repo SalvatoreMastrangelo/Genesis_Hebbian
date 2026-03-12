@@ -532,6 +532,8 @@ class CodesignDEAP:
                         "fail_reason": str(cached_row.get("fail_reason", "") or ""),
                         "fail_category": str(cached_row.get("fail_category", "") or ""),
                         "eval_reward_mean": cached_row.get("eval_reward_mean", 0.0),
+                        "train_duration_s": 0.0,
+                        "eval_duration_s": 0.0,
                         "vel_v": cached_row.get("vel_v", np.nan),
                         "vel_E": cached_row.get("vel_E", np.nan),
                         "vel_P": cached_row.get("vel_P", np.nan),
@@ -869,6 +871,8 @@ class CodesignDEAP:
                 rep_ff.append(ff_rep_avg)
 
                 for key in (
+                    "train_duration_s",
+                    "eval_duration_s",
                     "vel_v",
                     "vel_E",
                     "vel_P",

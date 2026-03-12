@@ -235,6 +235,10 @@ class FitnessDB:
         row = df[df.chromosome == str(list(chromo))]
         if row.empty:
             return None
+        if "evaluated_fresh" in row.columns:
+            fresh = row[row["evaluated_fresh"].fillna(0).astype(int) == 1]
+            if not fresh.empty:
+                row = fresh
         return [row[f"ff_{i}"].min() for i in range(self.n_obj)]
 
     def insert(self, chromo: Sequence[float], ff: Sequence[float], meta: Dict[str, Any]) -> None:
@@ -283,6 +287,8 @@ class FitnessDB:
                 "train_repetition",
                 "max_p",
                 "minimal_p",
+                "train_duration_s",
+                "eval_duration_s",
                 "vel_v",
                 "vel_E",
                 "vel_P",
@@ -308,6 +314,10 @@ class FitnessDB:
                 "final_reward",
                 "steps90_pct",
                 "eval_reward_mean",
+                "cache_hit",
+                "evaluated_fresh",
+                "cache_source_uid",
+                "cache_source_generation",
             ]
         )
         return pd.DataFrame(columns=cols)
@@ -336,6 +346,10 @@ class FitnessDB:
     def get_row(self, chromo: Sequence[float]) -> Optional[pd.Series]:
         df = self._filter_agg_rows(self.df)
         row = df[df.chromosome == str(list(chromo))]
+        if not row.empty and "evaluated_fresh" in row.columns:
+            fresh = row[row["evaluated_fresh"].fillna(0).astype(int) == 1]
+            if not fresh.empty:
+                row = fresh
         return None if row.empty else row.iloc[0]
 
 
@@ -377,6 +391,7 @@ def init_report_csvs(
     population_history_path: Path,
     pareto_history_path: Path,
     generation_summary_path: Path,
+    selection_pool_history_path: Path,
 ) -> None:
     if not population_history_path.exists():
         pd.DataFrame(
@@ -451,6 +466,37 @@ def init_report_csvs(
                 "q3_prog",
             ]
         ).to_csv(generation_summary_path, index=False)
+
+    if not selection_pool_history_path.exists():
+        pd.DataFrame(
+            columns=[
+                "generation",
+                "uid",
+                "origin",
+                "selected",
+                "preselect_pareto_rank",
+                "preselect_is_pareto",
+                "parent_uid_a",
+                "parent_uid_b",
+                "parent_gen_a",
+                "parent_gen_b",
+                "chromosome",
+                "ff_0",
+                "ff_1",
+                "ff_2",
+                "max_p",
+                "exp_name",
+                "train_it",
+                "ckpt_idx",
+                "failed",
+                "fail_category",
+                "fail_reason",
+                "cache_hit",
+                "evaluated_fresh",
+                "cache_source_uid",
+                "cache_source_generation",
+            ]
+        ).to_csv(selection_pool_history_path, index=False)
 
 
 def write_run_manifest(
@@ -676,3 +722,69 @@ def append_generation_summary(
         header=False,
         index=False,
     )
+
+
+def append_selection_pool_history(
+    selection_pool_history_path: Path,
+    generation: int,
+    pool: Sequence[Any],
+    fronts: Sequence[Sequence[Any]],
+    selected_uids: Sequence[int],
+    origin_map: Dict[int, str],
+) -> None:
+    rank_map: Dict[int, int] = {}
+    for ridx, front in enumerate(fronts):
+        for ind in front:
+            rank_map[id(ind)] = ridx
+
+    selected_uid_set = {int(uid) for uid in selected_uids}
+    rows: List[Dict[str, Any]] = []
+    for ind in pool:
+        ff = list(ind.fitness.values)
+        train_it_raw = getattr(ind, "train_it", np.nan)
+        try:
+            ckpt_idx = ckpt_idx_from_train_it(train_it_raw)
+        except Exception:
+            ckpt_idx = np.nan
+        fail_reason = getattr(ind, "fail_reason", "")
+        fail_category = getattr(ind, "fail_category", "")
+        if not fail_category and fail_reason:
+            fail_category, fail_reason = parse_fail_reason(fail_reason)
+        uid = int(getattr(ind, "uid", -1))
+        rows.append(
+            dict(
+                generation=generation,
+                uid=uid,
+                origin=origin_map.get(id(ind), "unknown"),
+                selected=int(uid in selected_uid_set),
+                preselect_pareto_rank=rank_map.get(id(ind), -1),
+                preselect_is_pareto=int(rank_map.get(id(ind), -1) == 0),
+                parent_uid_a=getattr(ind, "parent_uid_a", -1),
+                parent_uid_b=getattr(ind, "parent_uid_b", -1),
+                parent_gen_a=getattr(ind, "parent_gen_a", -1),
+                parent_gen_b=getattr(ind, "parent_gen_b", -1),
+                chromosome=str(list(ind)),
+                ff_0=ff[0],
+                ff_1=ff[1],
+                ff_2=ff[2],
+                max_p=getattr(ind, "max_p", np.nan),
+                exp_name=getattr(ind, "exp_name", ""),
+                train_it=train_it_raw,
+                ckpt_idx=ckpt_idx,
+                failed=int(bool(getattr(ind, "_failed", False) or getattr(ind, "failed", False))),
+                fail_category=fail_category,
+                fail_reason=fail_reason,
+                cache_hit=int(bool(getattr(ind, "cache_hit", False))),
+                evaluated_fresh=int(bool(getattr(ind, "evaluated_fresh", False))),
+                cache_source_uid=getattr(ind, "cache_source_uid", -1),
+                cache_source_generation=getattr(ind, "cache_source_generation", -1),
+            )
+        )
+
+    if rows:
+        pd.DataFrame(rows).to_csv(
+            selection_pool_history_path,
+            mode="a",
+            header=False,
+            index=False,
+        )
