@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 import gstaichi as ti
+import numpy as np
 import torch
 
 from genesis.engine.solvers.base_aero_solver import BaseAeroSolver
@@ -348,19 +349,22 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self.k_eps_tail_link = ti.field(ti.f32, shape=(B, L))
         self.k_slip_fus_link = ti.field(ti.f32, shape=(B, L))
 
-        # Debug fields (angles and forces per surface)
-        self.alpha_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
-        self.beta_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
-        self.lift_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
-        self.drag_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
-        self.side_force_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
         # Per-surface Reynolds number (computed from local flow speed and chord).
         self.Reynolds = ti.field(ti.f32, shape=(B, L))
-        # Tail/downwash debug (filled only for elevators when _aero_log=True)
-        self.alpha_tail_raw_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
-        self.downwash_eps_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
-        self.cl_wing_for_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
-        self.k_eps_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+
+        # Debug fields are expensive and only needed for eval/debug traces.
+        self._enable_aero_debug_buffers = bool(self._aero_log)
+        if self._enable_aero_debug_buffers:
+            self.alpha_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            self.beta_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            self.lift_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            self.drag_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            self.side_force_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            # Tail/downwash debug (filled only for elevators when _aero_log=True)
+            self.alpha_tail_raw_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            self.downwash_eps_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            self.cl_wing_for_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
+            self.k_eps_tail_dbg = ti.field(ti.f16, shape=(B, self.n_links_))
 
         # Per-surface constants (area, AR, chord, kind, side, link indices)
         self.area = ti.field(ti.f16, shape=(L,))
@@ -569,65 +573,51 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self._aero_enabled = True
 
     def _capture_global_param_nominals(self) -> None:
-        """Snapshot nominal per-env aerodynamic fields in Taichi buffers."""
-        self._param_nominal = {}
+        """Snapshot nominal per-env aerodynamic fields in Torch buffers."""
+        self._param_nominal_torch = {}
         for name, _, fld in self._iter_randomizable_params():
-            nominal = ti.field(dtype=ti.f32, shape=(self._B,))
-            self._copy_param_field_1d(fld, nominal)
-            self._param_nominal[name] = nominal
+            self._param_nominal_torch[name] = fld.to_torch(device=self._aero_device).clone()
 
     def _capture_link_param_nominals(self) -> None:
-        """Snapshot nominal per-link aerodynamic fields in Taichi buffers."""
-        self._link_param_nominals = {}
+        """Snapshot nominal per-link aerodynamic fields in Torch buffers."""
+        self._link_param_nominal_torch = {}
         for name in getattr(self, "_randomizable_link_field_names", ()):
             fld = getattr(self, name, None)
             if fld is None:
                 continue
-            nominal = ti.field(dtype=ti.f32, shape=(self._B, self.L))
-            self._copy_param_field_2d(fld, nominal)
-            self._link_param_nominals[name] = nominal
+            self._link_param_nominal_torch[name] = fld.to_torch(device=self._aero_device).clone()
 
-    @ti.kernel
-    def _copy_param_field_1d(self, src: ti.template(), dst: ti.template()):
-        for b in range(self._B):
-            dst[b] = src[b]
+    def _ensure_randomization_scratch(self) -> None:
+        if not hasattr(self, "_rand_param_scratch_1d"):
+            self._rand_param_scratch_1d = {}
+        if not hasattr(self, "_rand_param_scratch_2d"):
+            self._rand_param_scratch_2d = {}
 
-    @ti.kernel
-    def _copy_param_field_2d(self, src: ti.template(), dst: ti.template()):
-        for b, l in ti.ndrange(self._B, self.L):
-            dst[b, l] = src[b, l]
+    def _get_rand_scratch_1d(self, name: str, n_envs: int) -> torch.Tensor:
+        self._ensure_randomization_scratch()
+        buf = self._rand_param_scratch_1d.get(name)
+        if buf is None or buf.shape[0] != n_envs:
+            buf = torch.empty((n_envs,), device=self._aero_device, dtype=torch.float32)
+            self._rand_param_scratch_1d[name] = buf
+        return buf
 
-    @ti.kernel
-    def _randomize_param_field_1d(
-        self,
-        dst: ti.template(),
-        nominal: ti.template(),
-        env_ids: ti.types.ndarray(dtype=ti.i32, ndim=1),
-        n_envs: ti.i32,
-        sigma: ti.f32,
-    ):
-        for n in range(n_envs):
-            b = env_ids[n]
-            val = nominal[b]
-            if sigma > 0:
-                val *= 1.0 + sigma * ti.randn(ti.f32)
-            dst[b] = val
+    def _get_rand_scratch_2d(self, name: str, n_envs: int) -> torch.Tensor:
+        self._ensure_randomization_scratch()
+        buf = self._rand_param_scratch_2d.get(name)
+        if buf is None or buf.shape[0] != n_envs or buf.shape[1] != self.L:
+            buf = torch.empty((n_envs, self.L), device=self._aero_device, dtype=torch.float32)
+            self._rand_param_scratch_2d[name] = buf
+        return buf
 
-    @ti.kernel
-    def _randomize_param_field_2d(
-        self,
-        dst: ti.template(),
-        nominal: ti.template(),
-        env_ids: ti.types.ndarray(dtype=ti.i32, ndim=1),
-        n_envs: ti.i32,
-        sigma: ti.f32,
-    ):
-        for n, l in ti.ndrange(n_envs, self.L):
-            b = env_ids[n]
-            val = nominal[b, l]
-            if sigma > 0:
-                val *= 1.0 + sigma * ti.randn(ti.f32)
-            dst[b, l] = val
+    def _set_taichi_field_rows_1d(self, field: ti.Field, env_ids: np.ndarray, values: torch.Tensor) -> None:
+        arr = field.to_torch(device=self._aero_device)
+        arr[env_ids] = values
+        field.from_torch(arr)
+
+    def _set_taichi_field_rows_2d(self, field: ti.Field, env_ids: np.ndarray, values: torch.Tensor) -> None:
+        arr = field.to_torch(device=self._aero_device)
+        arr[env_ids, :] = values
+        field.from_torch(arr)
 
     def _resolve_drone_model(
         self,
@@ -877,21 +867,33 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         if n_envs == 0:
             return
 
-        env_ids_i32 = envs_idx.reshape(-1).to(device=self._aero_device, dtype=torch.int32)
+        env_ids = envs_idx.reshape(-1).to(device=self._aero_device, dtype=torch.long)
+        env_ids_np = env_ids.detach().cpu().numpy()
+        sigma_f = float(sigma)
 
         for name, _, fld in self._iter_randomizable_params():
-            nominal = self._param_nominal.get(name, None)
+            nominal = getattr(self, "_param_nominal_torch", {}).get(name, None)
             if nominal is None:
                 continue
-            self._randomize_param_field_1d(fld, nominal, env_ids_i32, n_envs, float(sigma))
+            values = self._get_rand_scratch_1d(name, n_envs)
+            values.copy_(nominal.index_select(0, env_ids))
+            if sigma_f > 0.0:
+                noise = torch.randn_like(values)
+                values.mul_(1.0 + sigma_f * noise)
+            self._set_taichi_field_rows_1d(fld, env_ids_np, values)
 
-        nominal_map = getattr(self, "_link_param_nominals", {})
+        nominal_map = getattr(self, "_link_param_nominal_torch", {})
         for name in getattr(self, "_randomizable_link_field_names", ()):
             fld = getattr(self, name, None)
             nominal = nominal_map.get(name)
             if fld is None or nominal is None:
                 continue
-            self._randomize_param_field_2d(fld, nominal, env_ids_i32, n_envs, float(sigma))
+            values = self._get_rand_scratch_2d(name, n_envs)
+            values.copy_(nominal.index_select(0, env_ids))
+            if sigma_f > 0.0:
+                noise = torch.randn_like(values)
+                values.mul_(1.0 + sigma_f * noise)
+            self._set_taichi_field_rows_2d(fld, env_ids_np, values)
 
         self._refresh_param_buffers()
 
@@ -1070,7 +1072,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             self.force_b[b, l] = Fb
             self.cp_b[b, l] = cp
 
-            if ti.static(self._aero_log):
+            if ti.static(self._enable_aero_debug_buffers):
                 self.alpha_dbg[b, l] = ti.cast(alpha, ti.f16)
                 self.beta_dbg[b, l] = ti.cast(beta, ti.f16)
                 self.drag_dbg[b, l] = ti.cast(D, ti.f16)
@@ -1185,7 +1187,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             self.force_b[b, l] = Fb_t
             self.cp_b[b, l] = cp_t
 
-            if ti.static(self._aero_log):
+            if ti.static(self._enable_aero_debug_buffers):
                 self.alpha_tail_raw_dbg[b, l] = ti.cast(alphat, ti.f16)
                 if kind == 2:
                     self.downwash_eps_dbg[b, l] = ti.cast(eps, ti.f16)

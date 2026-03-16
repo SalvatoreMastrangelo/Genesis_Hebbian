@@ -639,6 +639,8 @@ class WingedDroneEnv:
         )
         self.rigid_solver = self.scene.sim.rigid_solver
         self.aero_solver = self.scene.sim.aero_solver
+        if hasattr(self.aero_solver, "_aero_log"):
+            self.aero_solver._aero_log = bool(self.evaluation or self.debug)
         self.aero_solver.add_target(self.drone, drone_model=self.drone_model)
         naca_code = self._naca_code or str(self.env_cfg.get("naca", "") or "").strip()
         if naca_code and hasattr(self.aero_solver, "apply_naca_wing_override"):
@@ -833,8 +835,6 @@ class WingedDroneEnv:
         self._max_thr_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
         self._thrust_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
 
-        if self.evaluation: 
-            self.aero_solver._aero_log = True
         # Episode bookkeeping
         self.episode_length_buf = torch.zeros((self.num_envs,), device=self.device, dtype=torch.long)
         self.reset_buf = torch.zeros((self.num_envs,), device=self.device, dtype=torch.bool)
