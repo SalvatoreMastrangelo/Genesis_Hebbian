@@ -54,12 +54,19 @@ def _build_actor_critic(wp1_cfg_path: str | Path, device: str = "cpu", state_dic
     num_actions = wp1_cfg.env.num_actions
     num_critic_obs = num_obs
 
+    actor_rnn_hidden  = policy_cfg.get("rnn_hidden_size", 128)
+    critic_rnn_hidden = policy_cfg.get("critic_rnn_hidden_size", None)
+
     # Infer dims from checkpoint if available (config may be stale)
     if state_dict is not None:
         if "actor.4.weight" in state_dict:
             num_actions = state_dict["actor.4.weight"].shape[0]
+        if "memory_a.rnn.weight_ih_l0" in state_dict:
+            # LSTM weight_ih shape: (4*hidden, input) → hidden = shape[0] // 4
+            actor_rnn_hidden = state_dict["memory_a.rnn.weight_ih_l0"].shape[0] // 4
         if "memory_c.rnn.weight_ih_l0" in state_dict:
-            num_critic_obs = state_dict["memory_c.rnn.weight_ih_l0"].shape[1]
+            num_critic_obs    = state_dict["memory_c.rnn.weight_ih_l0"].shape[1]
+            critic_rnn_hidden = state_dict["memory_c.rnn.weight_ih_l0"].shape[0] // 4
 
     model = ActorCriticTanh(
         num_actor_obs=num_obs,
@@ -69,7 +76,8 @@ def _build_actor_critic(wp1_cfg_path: str | Path, device: str = "cpu", state_dic
         critic_hidden_dims=policy_cfg["critic_hidden_dims"],
         activation=policy_cfg["activation"],
         rnn_type=policy_cfg.get("rnn_type", "lstm"),
-        rnn_hidden_size=policy_cfg.get("rnn_hidden_size", 128),
+        rnn_hidden_size=actor_rnn_hidden,
+        critic_rnn_hidden_size=critic_rnn_hidden,
         rnn_num_layers=policy_cfg.get("rnn_num_layers", 1),
         init_noise_std=policy_cfg.get("init_noise_std", 0.3),
         max_servo=policy_cfg.get("max_servo", 1.0),

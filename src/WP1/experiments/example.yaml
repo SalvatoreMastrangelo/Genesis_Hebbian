@@ -1,11 +1,15 @@
 ##############################################################################
-# Default RunConfig — all parameters in one place.
+# Example experiment config — copy and modify this file for each sweep run.
 #
-# Override from CLI with:  --cfg.section.key value
-# Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
+# Drop any number of .yaml files in this folder, then launch with:
+#   bash src/WP1/slurm_jobs/run_sweep.sh    # sequential
+#   bash src/WP1/slurm_jobs/run_parallel.sh # parallel
+#
+# Only keys that differ from configs/default.yaml need to be specified.
 ##############################################################################
 
-exp_name: drone-forest
+exp_name: example_experiment
+repeat: 1  # number of times to submit this config as independent jobs
 
 ppo:
   clip_param: 0.15
@@ -29,13 +33,13 @@ policy:
   init_noise_std: 0.3
   rnn_type: lstm
   rnn_hidden_size: 64
-  critic_rnn_hidden_size: 32  # null = same as rnn_hidden_size
+  critic_rnn_hidden_size: null  # null = same as rnn_hidden_size
   rnn_num_layers: 1
   max_servo: 1.0
   max_throttle: 1.0
 
 training:
-  num_envs: 8192
+  num_envs: 16384
   max_iterations: 850
   num_steps_per_env: 25
   save_interval: 100
@@ -105,6 +109,6 @@ command:
   num_commands: 1
 
 catalog:
-  n_urdf: null
+  n_urdf: 20
   catalog_dir: null
   urdf_seed: 0

@@ -23,7 +23,7 @@ fi
 # ------------------------------------------------------------
 # SCRATCH workspace: fast temporary storage (no backup, auto-cleanup policy).
 # ------------------------------------------------------------
-SCR_BASE="/scratch/$USER"
+SCR_BASE="/scratch/izar/$USER"
 BUILD_DIR="$SCR_BASE/build/${SLURM_JOB_ID}"
 SIF_DIR="$SCR_BASE/sif"
 mkdir -p "$BUILD_DIR" "$SIF_DIR"
