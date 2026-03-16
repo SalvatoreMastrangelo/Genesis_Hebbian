@@ -1,0 +1,42 @@
+# Control: Hebbian OFF + Morphology OFF (frozen policy on fixed morphology)
+# This is a pure evaluation baseline — genome dim = 0 is invalid for evolution,
+# so this config is meant for single-individual evaluation only.
+# To run as baseline in evolution, set morphology.evolve=true or hebbian.enabled=true
+# with minimal population/generations for comparison.
+exp_name: baseline
+
+checkpoint_path: ""
+checkpoint_config_path: ""
+
+hebbian:
+  enabled: false
+
+evolution:
+  population_size: 4
+  num_generations: 1
+  enable_crossover: false
+  mutation_probability: 1.0
+  weights: [1.0, 1.0, 1.0]
+
+evaluation:
+  num_eval_episodes: 1
+  num_eval_envs: 8192
+  vmin: 6.0
+  vmax: 30.0
+  stochastic: true
+
+objectives:
+  velocity: true
+  energy: true
+  progress: true
+
+# NOTE: At least one of hebbian.enabled or morphology.evolve must be true
+# for the evolutionary loop to have a genome to work with.
+# For a pure baseline eval, use evaluate.py directly.
+morphology:
+  evolve: true
+  fixed_genome: null
+
+seed: 42
+device: "cuda:0"
+base_dir: "logs/runs_hebbian"
