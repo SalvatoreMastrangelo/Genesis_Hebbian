@@ -427,6 +427,213 @@ class CodesignDEAP:
             origin_map,
         )
 
+    @staticmethod
+    def _fitness_scalar(values: Sequence[float] | None) -> float:
+        if values is None:
+            return float("-inf")
+        try:
+            v0, v1, v2 = [float(v) for v in values]
+        except Exception:
+            return float("-inf")
+        return float(v0 + v1 + v2)
+
+    @staticmethod
+    def _topology_signature_from_genome(genome_norm: Sequence[float]) -> str:
+        try:
+            phys = Chromosome_Drone.to_physical(genome_norm)
+            return f"{int(phys[12])}{int(phys[13])}{int(phys[14]):02d}"
+        except Exception:
+            return ""
+
+    def _init_founder_logging(self, ind: "IndType") -> None:
+        uid = int(getattr(ind, "uid", -1))
+        topology_signature = self._topology_signature_from_genome(ind)
+        ind.lineage_id = uid
+        ind.lineage_root_uid = uid
+        ind.lineage_depth = 0
+        ind.primary_parent_uid = -1
+        ind.primary_parent_generation = -1
+        ind.reproduction_operator = "initial"
+        ind.crossover_applied = 0
+        ind.mutation_applied = 0
+        ind.mutation_changed_genome = 0
+        ind.topology_mutation = 0
+        ind.topology_mutation_magnitude = 0
+        ind.topology_signature = topology_signature
+        ind.parent_a_topology_signature = ""
+        ind.parent_b_topology_signature = ""
+        ind.primary_parent_topology_signature = ""
+        ind.successful_topology_mutation = 0
+        ind.beneficial_topology_event = 0
+        ind.selected_next_generation = 1
+        ind.parent_best_scalar_fitness = np.nan
+        ind.offspring_scalar_fitness = np.nan
+        ind.lineage_event = "founder"
+        ind.parent_a_lineage_id = -1
+        ind.parent_b_lineage_id = -1
+        ind.cross_lineage_mating = 0
+        ind.airfoil_signature = topology_signature
+        ind.parent_a_airfoil_signature = ""
+        ind.parent_b_airfoil_signature = ""
+        ind.primary_parent_airfoil_signature = ""
+        ind.airfoil_mutation = 0
+        ind.successful_airfoil_mutation = 0
+        ind.beneficial_airfoil_event = 0
+        ind.offspring_vs_best_parent_scalar_delta = np.nan
+
+    def _annotate_variation(
+        self,
+        child: "IndType",
+        parent_a: Optional["IndType"],
+        parent_b: Optional["IndType"],
+        *,
+        crossover_applied: bool,
+        mutation_applied: bool,
+        pre_variation_genome: Sequence[float],
+    ) -> None:
+        p_primary = parent_a if parent_a is not None else parent_b
+        primary_uid = int(getattr(p_primary, "uid", -1)) if p_primary is not None else -1
+        primary_gen = int(getattr(p_primary, "parent_gen_a", -1))
+        if p_primary is not None:
+            primary_gen = int(getattr(p_primary, "generation_origin", getattr(self, "_gen", 0) - 1))
+        lineage_id = int(getattr(p_primary, "lineage_id", primary_uid if primary_uid >= 0 else getattr(child, "uid", -1)))
+        lineage_root_uid = int(getattr(p_primary, "lineage_root_uid", primary_uid if primary_uid >= 0 else getattr(child, "uid", -1)))
+        lineage_depth = int(getattr(p_primary, "lineage_depth", -1)) + 1 if p_primary is not None else 0
+        parent_a_lineage_id = int(getattr(parent_a, "lineage_id", -1)) if parent_a is not None else -1
+        parent_b_lineage_id = int(getattr(parent_b, "lineage_id", -1)) if parent_b is not None else -1
+
+        child_topology = self._topology_signature_from_genome(child)
+        parent_a_topology = self._topology_signature_from_genome(parent_a) if parent_a is not None else ""
+        parent_b_topology = self._topology_signature_from_genome(parent_b) if parent_b is not None else ""
+        primary_topology = parent_a_topology if parent_a is not None else parent_b_topology
+        topology_magnitude = int(child_topology != primary_topology) if primary_topology else 0
+        airfoil_mutation = int(child_topology != primary_topology) if primary_topology else 0
+        mutation_changed_genome = int(
+            np.max(np.abs(np.asarray(child, dtype=float) - np.asarray(pre_variation_genome, dtype=float))) > 1e-12
+        )
+        operator_parts = []
+        if crossover_applied:
+            operator_parts.append("crossover")
+        if mutation_applied:
+            operator_parts.append("mutation")
+        if not operator_parts:
+            operator_parts.append("clone")
+
+        child.lineage_id = lineage_id
+        child.lineage_root_uid = lineage_root_uid
+        child.lineage_depth = lineage_depth
+        child.primary_parent_uid = primary_uid
+        child.primary_parent_generation = primary_gen
+        child.reproduction_operator = "+".join(operator_parts)
+        child.crossover_applied = int(crossover_applied)
+        child.mutation_applied = int(mutation_applied)
+        child.mutation_changed_genome = mutation_changed_genome
+        child.topology_mutation = int(topology_magnitude > 0)
+        child.topology_mutation_magnitude = topology_magnitude
+        child.topology_signature = child_topology
+        child.parent_a_topology_signature = parent_a_topology
+        child.parent_b_topology_signature = parent_b_topology
+        child.primary_parent_topology_signature = primary_topology
+        child.successful_topology_mutation = 0
+        child.beneficial_topology_event = 0
+        child.selected_next_generation = 0
+        best_parent_scalar = max(
+            self._fitness_scalar(getattr(parent_a, "fitness", None).values if parent_a is not None and hasattr(parent_a, "fitness") else None),
+            self._fitness_scalar(getattr(parent_b, "fitness", None).values if parent_b is not None and hasattr(parent_b, "fitness") else None),
+        )
+        child.parent_best_scalar_fitness = best_parent_scalar if np.isfinite(best_parent_scalar) else np.nan
+        child.offspring_scalar_fitness = np.nan
+        child.lineage_event = "topology_split" if int(topology_magnitude > 0) else "offspring"
+        child.parent_a_lineage_id = parent_a_lineage_id
+        child.parent_b_lineage_id = parent_b_lineage_id
+        child.cross_lineage_mating = int(
+            parent_a_lineage_id >= 0 and parent_b_lineage_id >= 0 and parent_a_lineage_id != parent_b_lineage_id
+        )
+        child.airfoil_signature = child_topology
+        child.parent_a_airfoil_signature = parent_a_topology
+        child.parent_b_airfoil_signature = parent_b_topology
+        child.primary_parent_airfoil_signature = primary_topology
+        child.airfoil_mutation = airfoil_mutation
+        child.successful_airfoil_mutation = 0
+        child.beneficial_airfoil_event = 0
+        child.offspring_vs_best_parent_scalar_delta = np.nan
+
+    def _annotate_selection_outcomes(
+        self,
+        pool: Sequence["IndType"],
+        selected: Sequence["IndType"],
+    ) -> None:
+        selected_uids = {int(getattr(ind, "uid", -1)) for ind in selected}
+        for ind in pool:
+            uid = int(getattr(ind, "uid", -1))
+            ind.selected_next_generation = int(uid in selected_uids)
+            ind.offspring_scalar_fitness = self._fitness_scalar(getattr(ind.fitness, "values", None))
+            parent_best = float(getattr(ind, "parent_best_scalar_fitness", np.nan))
+            offspring_scalar = float(getattr(ind, "offspring_scalar_fitness", np.nan))
+            ind.offspring_vs_best_parent_scalar_delta = (
+                offspring_scalar - parent_best if np.isfinite(parent_best) and np.isfinite(offspring_scalar) else np.nan
+            )
+            beneficial = (
+                int(getattr(ind, "topology_mutation", 0)) == 1
+                and int(getattr(ind, "selected_next_generation", 0)) == 1
+                and np.isfinite(float(getattr(ind, "parent_best_scalar_fitness", np.nan)))
+                and float(getattr(ind, "offspring_scalar_fitness", np.nan))
+                > float(getattr(ind, "parent_best_scalar_fitness", np.nan))
+            )
+            beneficial_airfoil = (
+                int(getattr(ind, "airfoil_mutation", 0)) == 1
+                and int(getattr(ind, "selected_next_generation", 0)) == 1
+                and np.isfinite(parent_best)
+                and np.isfinite(offspring_scalar)
+                and offspring_scalar > parent_best
+            )
+            ind.successful_topology_mutation = int(
+                int(getattr(ind, "topology_mutation", 0)) == 1 and int(getattr(ind, "selected_next_generation", 0)) == 1
+            )
+            ind.beneficial_topology_event = int(bool(beneficial))
+            ind.successful_airfoil_mutation = int(
+                int(getattr(ind, "airfoil_mutation", 0)) == 1 and int(getattr(ind, "selected_next_generation", 0)) == 1
+            )
+            ind.beneficial_airfoil_event = int(bool(beneficial_airfoil))
+            ind.generation_origin = int(getattr(self, "_gen", 0))
+
+    @staticmethod
+    def _logging_meta(ind: "IndType") -> Dict[str, Any]:
+        return dict(
+            lineage_id=int(getattr(ind, "lineage_id", -1)),
+            lineage_root_uid=int(getattr(ind, "lineage_root_uid", -1)),
+            lineage_depth=int(getattr(ind, "lineage_depth", -1)),
+            primary_parent_uid=int(getattr(ind, "primary_parent_uid", -1)),
+            primary_parent_generation=int(getattr(ind, "primary_parent_generation", -1)),
+            reproduction_operator=str(getattr(ind, "reproduction_operator", "")),
+            crossover_applied=int(getattr(ind, "crossover_applied", 0)),
+            mutation_applied=int(getattr(ind, "mutation_applied", 0)),
+            mutation_changed_genome=int(getattr(ind, "mutation_changed_genome", 0)),
+            topology_mutation=int(getattr(ind, "topology_mutation", 0)),
+            topology_mutation_magnitude=int(getattr(ind, "topology_mutation_magnitude", 0)),
+            topology_signature=str(getattr(ind, "topology_signature", "")),
+            parent_a_topology_signature=str(getattr(ind, "parent_a_topology_signature", "")),
+            parent_b_topology_signature=str(getattr(ind, "parent_b_topology_signature", "")),
+            primary_parent_topology_signature=str(getattr(ind, "primary_parent_topology_signature", "")),
+            successful_topology_mutation=int(getattr(ind, "successful_topology_mutation", 0)),
+            beneficial_topology_event=int(getattr(ind, "beneficial_topology_event", 0)),
+            selected_next_generation=int(getattr(ind, "selected_next_generation", 0)),
+            parent_best_scalar_fitness=float(getattr(ind, "parent_best_scalar_fitness", np.nan)),
+            offspring_scalar_fitness=float(getattr(ind, "offspring_scalar_fitness", np.nan)),
+            lineage_event=str(getattr(ind, "lineage_event", "")),
+            parent_a_lineage_id=int(getattr(ind, "parent_a_lineage_id", -1)),
+            parent_b_lineage_id=int(getattr(ind, "parent_b_lineage_id", -1)),
+            cross_lineage_mating=int(getattr(ind, "cross_lineage_mating", 0)),
+            airfoil_signature=str(getattr(ind, "airfoil_signature", "")),
+            parent_a_airfoil_signature=str(getattr(ind, "parent_a_airfoil_signature", "")),
+            parent_b_airfoil_signature=str(getattr(ind, "parent_b_airfoil_signature", "")),
+            primary_parent_airfoil_signature=str(getattr(ind, "primary_parent_airfoil_signature", "")),
+            airfoil_mutation=int(getattr(ind, "airfoil_mutation", 0)),
+            successful_airfoil_mutation=int(getattr(ind, "successful_airfoil_mutation", 0)),
+            beneficial_airfoil_event=int(getattr(ind, "beneficial_airfoil_event", 0)),
+            offspring_vs_best_parent_scalar_delta=float(getattr(ind, "offspring_vs_best_parent_scalar_delta", np.nan)),
+        )
+
     # ------------------------------------------------------------------ #
     # Fitness evaluation                                                 #
     # ------------------------------------------------------------------ #
@@ -523,6 +730,42 @@ class CodesignDEAP:
                     indiv.evaluated_fresh = False
                     indiv.cache_source_uid = int(cached_row.get("uid", -1))
                     indiv.cache_source_generation = int(cached_row.get("generation", -1))
+                    for attr in (
+                        "lineage_id",
+                        "lineage_root_uid",
+                        "lineage_depth",
+                        "primary_parent_uid",
+                        "primary_parent_generation",
+                        "reproduction_operator",
+                        "crossover_applied",
+                        "mutation_applied",
+                        "mutation_changed_genome",
+                        "topology_mutation",
+                        "topology_mutation_magnitude",
+                        "topology_signature",
+                        "parent_a_topology_signature",
+                        "parent_b_topology_signature",
+                        "primary_parent_topology_signature",
+                        "successful_topology_mutation",
+                        "beneficial_topology_event",
+                        "selected_next_generation",
+                        "parent_best_scalar_fitness",
+                        "offspring_scalar_fitness",
+                        "lineage_event",
+                        "parent_a_lineage_id",
+                        "parent_b_lineage_id",
+                        "cross_lineage_mating",
+                        "airfoil_signature",
+                        "parent_a_airfoil_signature",
+                        "parent_b_airfoil_signature",
+                        "primary_parent_airfoil_signature",
+                        "airfoil_mutation",
+                        "successful_airfoil_mutation",
+                        "beneficial_airfoil_event",
+                        "offspring_vs_best_parent_scalar_delta",
+                    ):
+                        if attr in cached_row.index:
+                            setattr(indiv, attr, cached_row.get(attr))
                     indiv._meta_raw = {
                         "exp_name": cached_row.get("exp_name", None),
                         "train_it": cached_row.get("train_it", self.cfg.train_iters_new),
@@ -550,6 +793,38 @@ class CodesignDEAP:
                         "evaluated_fresh": 0,
                         "cache_source_uid": int(cached_row.get("uid", -1)),
                         "cache_source_generation": int(cached_row.get("generation", -1)),
+                        "lineage_id": cached_row.get("lineage_id", np.nan),
+                        "lineage_root_uid": cached_row.get("lineage_root_uid", np.nan),
+                        "lineage_depth": cached_row.get("lineage_depth", np.nan),
+                        "primary_parent_uid": cached_row.get("primary_parent_uid", np.nan),
+                        "primary_parent_generation": cached_row.get("primary_parent_generation", np.nan),
+                        "reproduction_operator": cached_row.get("reproduction_operator", ""),
+                        "crossover_applied": cached_row.get("crossover_applied", np.nan),
+                        "mutation_applied": cached_row.get("mutation_applied", np.nan),
+                        "mutation_changed_genome": cached_row.get("mutation_changed_genome", np.nan),
+                        "topology_mutation": cached_row.get("topology_mutation", np.nan),
+                        "topology_mutation_magnitude": cached_row.get("topology_mutation_magnitude", np.nan),
+                        "topology_signature": cached_row.get("topology_signature", ""),
+                        "parent_a_topology_signature": cached_row.get("parent_a_topology_signature", ""),
+                        "parent_b_topology_signature": cached_row.get("parent_b_topology_signature", ""),
+                        "primary_parent_topology_signature": cached_row.get("primary_parent_topology_signature", ""),
+                        "successful_topology_mutation": cached_row.get("successful_topology_mutation", np.nan),
+                        "beneficial_topology_event": cached_row.get("beneficial_topology_event", np.nan),
+                        "selected_next_generation": cached_row.get("selected_next_generation", np.nan),
+                        "parent_best_scalar_fitness": cached_row.get("parent_best_scalar_fitness", np.nan),
+                        "offspring_scalar_fitness": cached_row.get("offspring_scalar_fitness", np.nan),
+                        "lineage_event": cached_row.get("lineage_event", ""),
+                        "parent_a_lineage_id": cached_row.get("parent_a_lineage_id", np.nan),
+                        "parent_b_lineage_id": cached_row.get("parent_b_lineage_id", np.nan),
+                        "cross_lineage_mating": cached_row.get("cross_lineage_mating", np.nan),
+                        "airfoil_signature": cached_row.get("airfoil_signature", ""),
+                        "parent_a_airfoil_signature": cached_row.get("parent_a_airfoil_signature", ""),
+                        "parent_b_airfoil_signature": cached_row.get("parent_b_airfoil_signature", ""),
+                        "primary_parent_airfoil_signature": cached_row.get("primary_parent_airfoil_signature", ""),
+                        "airfoil_mutation": cached_row.get("airfoil_mutation", np.nan),
+                        "successful_airfoil_mutation": cached_row.get("successful_airfoil_mutation", np.nan),
+                        "beneficial_airfoil_event": cached_row.get("beneficial_airfoil_event", np.nan),
+                        "offspring_vs_best_parent_scalar_delta": cached_row.get("offspring_vs_best_parent_scalar_delta", np.nan),
                     }
                     print(
                         f"   ↪ cache-hit uid={getattr(indiv, 'uid', -1)} "
@@ -868,6 +1143,7 @@ class CodesignDEAP:
                         cache_source_generation=-1,
                     )
                 )
+                rep_meta.update(self._logging_meta(ind))
                 self.db.insert(list(ind), ff_rep, dict(generation=self._gen, **rep_meta))
                 rep_ff.append(ff_rep_avg)
 
@@ -933,6 +1209,7 @@ class CodesignDEAP:
                     cache_source_generation=int(getattr(ind, "cache_source_generation", -1)),
                 )
             )
+            meta.update(self._logging_meta(ind))
             for key, vals in acc.items():
                 if vals:
                     meta[key] = float(np.nanmean(vals))
@@ -1003,6 +1280,7 @@ class CodesignDEAP:
                     cache_source_generation=int(getattr(ind, "cache_source_generation", -1)),
                 )
             )
+            meta.update(self._logging_meta(ind))
             self.db.insert(list(ind), ff_final, dict(generation=self._gen, **meta))
             ind.failed = bool(meta.get("failed", False))
             ind.fail_reason = str(meta.get("fail_reason", ""))
@@ -1038,6 +1316,7 @@ class CodesignDEAP:
                 cache_source_generation=int(getattr(ind, "cache_source_generation", -1)),
             )
         )
+        meta.update(self._logging_meta(ind))
 
         if getattr(ind, "_failed", False):
             ff_final = tuple(_default_fitness())
@@ -1263,6 +1542,38 @@ class CodesignDEAP:
                 "evaluated_fresh",
                 "cache_source_uid",
                 "cache_source_generation",
+                "lineage_id",
+                "lineage_root_uid",
+                "lineage_depth",
+                "primary_parent_uid",
+                "primary_parent_generation",
+                "reproduction_operator",
+                "crossover_applied",
+                "mutation_applied",
+                "mutation_changed_genome",
+                "topology_mutation",
+                "topology_mutation_magnitude",
+                "topology_signature",
+                "parent_a_topology_signature",
+                "parent_b_topology_signature",
+                "primary_parent_topology_signature",
+                "successful_topology_mutation",
+                "beneficial_topology_event",
+                "selected_next_generation",
+                "parent_best_scalar_fitness",
+                "offspring_scalar_fitness",
+                "lineage_event",
+                "parent_a_lineage_id",
+                "parent_b_lineage_id",
+                "cross_lineage_mating",
+                "airfoil_signature",
+                "parent_a_airfoil_signature",
+                "parent_b_airfoil_signature",
+                "primary_parent_airfoil_signature",
+                "airfoil_mutation",
+                "successful_airfoil_mutation",
+                "beneficial_airfoil_event",
+                "offspring_vs_best_parent_scalar_delta",
             ):
                 if hasattr(ch, a):
                     delattr(ch, a)
@@ -1284,30 +1595,56 @@ class CodesignDEAP:
                 child.parent_uid_b = p_uid_b
                 child.parent_gen_a = p_gen
                 child.parent_gen_b = p_gen
+                child.generation_origin = int(getattr(self, "_gen", 0))
 
             # crossover
+            crossover_applied = False
             if random.random() < self.cx_pb:
                 self.tb.mate(c1, c2)
                 if hasattr(c1.fitness, "values"):
                     del c1.fitness.values
                 if hasattr(c2.fitness, "values"):
                     del c2.fitness.values
+                crossover_applied = True
 
             # Keep discrete genes aligned to valid bins after crossover
             c1[:] = Chromosome_Drone.snap_genome_norm(c1)
             c2[:] = Chromosome_Drone.snap_genome_norm(c2)
 
             # mutation
+            c1_before = list(c1)
+            c2_before = list(c2)
+            c1_mutated = False
+            c2_mutated = False
             if random.random() < self.mut_pb:
                 before = list(c1)
                 self.tb.mutate(c1)
                 del c1.fitness.values
                 c1[:] = Chromosome_Drone.apply_discrete_mutation(before, c1)
+                c1_mutated = True
             if random.random() < self.mut_pb:
                 before = list(c2)
                 self.tb.mutate(c2)
                 del c2.fitness.values
                 c2[:] = Chromosome_Drone.apply_discrete_mutation(before, c2)
+                c2_mutated = True
+
+            self._annotate_variation(
+                c1,
+                p_a,
+                p_b,
+                crossover_applied=crossover_applied,
+                mutation_applied=c1_mutated,
+                pre_variation_genome=c1_before,
+            )
+            self._annotate_variation(
+                c2,
+                p_a,
+                p_b,
+                crossover_applied=crossover_applied,
+                mutation_applied=c2_mutated,
+                pre_variation_genome=c2_before,
+            )
 
             # inheritance → assign experiment + checkpoint suffix BEFORE training
             if self.inherit_policy:
@@ -1371,6 +1708,8 @@ class CodesignDEAP:
             ind.parent_uid_b = -1
             ind.parent_gen_a = -1
             ind.parent_gen_b = -1
+            ind.generation_origin = 0
+            self._init_founder_logging(ind)
         self._gen = 0
         self._train_eval_population(pop)
         gen0_fronts = tools.sortNondominated(pop, len(pop), first_front_only=False)
@@ -1409,6 +1748,7 @@ class CodesignDEAP:
             selected = tools.selNSGA2(pool, self.n_pop)
             origin_map = {id(ind): "parent" for ind in pop}
             origin_map.update({id(ind): "offspring" for ind in offspring})
+            self._annotate_selection_outcomes(pool, selected)
             self._append_selection_pool_history(pool, pool_fronts, selected, origin_map)
             pop = selected
 
