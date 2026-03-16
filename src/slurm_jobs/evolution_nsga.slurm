@@ -1,6 +1,5 @@
 #!/bin/bash -l
 #SBATCH --job-name=nsga
-#SBATCH --partition=l40s
 #SBATCH --nodes=2
 #SBATCH --ntasks=2
 #SBATCH --gpus-per-node=1

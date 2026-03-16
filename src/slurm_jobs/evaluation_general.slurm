@@ -1,6 +1,5 @@
 #!/bin/bash -l
 #SBATCH --job-name=gen_eval
-#SBATCH --partition=l40s
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-node=5

@@ -1,6 +1,5 @@
 #!/bin/bash -l
 #SBATCH --job-name=genesis_build
-#SBATCH --partition=l40s
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=1
