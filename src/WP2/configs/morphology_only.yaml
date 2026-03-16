@@ -1,0 +1,38 @@
+# Ablation: Hebbian OFF + Morphology ON (body shape without plasticity)
+exp_name: morphology_only
+
+checkpoint_path: ""
+checkpoint_config_path: ""
+
+hebbian:
+  enabled: false
+
+evolution:
+  population_size: 40
+  num_generations: 30
+  enable_crossover: true
+  crossover_probability: 0.9
+  mutation_probability: 1.0
+  eta_c: 20.0
+  eta_m: 20.0
+  weights: [1.0, 1.0, 1.0]
+
+evaluation:
+  num_eval_episodes: 1
+  num_eval_envs: 8192
+  vmin: 6.0
+  vmax: 30.0
+  stochastic: true
+
+objectives:
+  velocity: true
+  energy: true
+  progress: true
+
+morphology:
+  evolve: true
+  fixed_genome: null
+
+seed: 42
+device: "cuda:0"
+base_dir: "logs/runs_hebbian"

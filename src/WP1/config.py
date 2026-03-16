@@ -261,7 +261,7 @@ class EnvConfig:
         Std for aerodynamic parameter randomisation on reset.
     """
 
-    num_actions: int = 5
+    num_actions: int = 7
     dt: float = 0.01
     drone: str = "morphing_drone"
     naca: str = "3416"

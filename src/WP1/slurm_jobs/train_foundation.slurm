@@ -1,9 +1,8 @@
 #!/bin/bash -l
 #SBATCH --job-name=wp1_foundation
-#SBATCH --partition=l40s
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=25:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out

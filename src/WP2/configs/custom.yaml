@@ -1,0 +1,51 @@
+# Full co-optimisation: Hebbian ON + Morphology ON (main experiment)
+exp_name: hebbian_codesing_full_test
+
+checkpoint_path: ""       # SET THIS: path to frozen WP1 actor checkpoint (e.g. logs/runs/.../tb/model_199.pt)
+checkpoint_config_path: "" # SET THIS: path to the WP1 run's config.yaml
+
+hebbian:
+  enabled: true
+  eta: 0.01
+  evolve_eta: false
+  decay: 0.001
+  evolve_decay: false
+  w_max: 5.0
+  A_range: [-1.0, 1.0]
+  B_range: [-1.0, 1.0]
+  C_range: [-1.0, 1.0]
+  D_range: [-1.0, 1.0]
+  decay_range: [0.0, 0.1]
+  eta_range: [0.0, 0.1]
+
+evolution:
+  population_size: 512
+  num_generations: 100
+  enable_crossover: false
+  crossover_probability: 0.9
+  mutation_probability: 1.0
+  eta_c: 20.0
+  eta_m: 20.0
+  weights: [1.0, 1.0, 1.0]
+
+evaluation:
+  num_eval_episodes: 1
+  num_eval_envs: 2048
+  vmin: 6.0
+  vmax: 30.0
+  stochastic: true
+
+objectives:
+  velocity: true
+  energy: true
+  progress: true
+  smoothness: false
+  crash_rate: false
+
+morphology:
+  evolve: false
+  fixed_genome: null
+
+seed: 1
+device: "cuda:0"
+base_dir: "logs/runs_hebbian"

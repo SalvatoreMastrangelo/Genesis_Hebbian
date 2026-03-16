@@ -44,7 +44,7 @@ training:
   device: "cuda:0"
 
 env:
-  num_actions: 5
+  num_actions: 7
   dt: 0.01
   drone: morphing_drone
   naca: "3416"

@@ -386,7 +386,7 @@ class MorphologyConfig:
 @dataclass
 class HebbianEvolutionConfig:
     """Top-level config for WP2 runs."""
-    exp_name: str = "hebbian_coopt"
+    exp_name: str = "hebbian_codesing"
     checkpoint_path: str = ""               # path to frozen WP1 actor checkpoint
     checkpoint_config_path: str = ""        # path to the WP1 run's config.yaml
 
@@ -411,7 +411,7 @@ class HebbianEvolutionConfig:
 
 ```
 src/WP2/configs/
-├── full_coopt.yaml          # Hebbian ON + morphology ON   (main experiment)
+├── full_codesing.yaml          # Hebbian ON + morphology ON   (main experiment)
 ├── hebbian_only.yaml        # Hebbian ON + morphology OFF  (ablation)
 ├── morphology_only.yaml     # Hebbian OFF + morphology ON  (ablation)
 ├── baseline.yaml            # Hebbian OFF + morphology OFF (control)
@@ -535,7 +535,7 @@ hebbian = HebbianLastLayer(actor.last_layer, hebbian_rules, eta=cfg.eta, w_max=c
 A run can be resumed from any generation checkpoint:
 ```python
 # Resume from generation 15
-python -m WP2.run --resume logs/runs_hebbian/2026-03-12_14-30-00_hebbian_coopt --from-gen 15
+python -m WP2.run --resume logs/runs_hebbian/2026-03-12_14-30-00_hebbian_codesing --from-gen 15
 ```
 This loads `generations/gen_015/population.pkl` and `rng_state.pkl`, restoring
 the exact evolutionary state to continue from where it left off.
@@ -584,7 +584,7 @@ src/WP2/
 ├── plotting.py                        # all analysis/visualization functions
 ├── utils.py                           # seed control, serialization, genome encoding
 ├── configs/
-│   ├── full_coopt.yaml
+│   ├── full_codesing.yaml
 │   ├── hebbian_only.yaml
 │   ├── morphology_only.yaml
 │   ├── baseline.yaml
