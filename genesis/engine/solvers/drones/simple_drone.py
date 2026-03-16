@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 import gstaichi as ti
+import torch
 
 from genesis.engine.solvers.base_aero_solver import BaseAeroSolver
 from genesis.engine.entities import RigidEntity  # for get_link()
@@ -38,7 +39,7 @@ class SimpleDroneAeroParameters:
 
     TYPES = {
         "fuselage": {
-            "cd0": 0.85,
+            "cd0": 0.65,
             "k_slip_fus": 0.0,
             "cp_start": 0.0,
             "cp_end": 0.5,
@@ -48,6 +49,7 @@ class SimpleDroneAeroParameters:
             "cl_alpha_2d": 6.283185307179586,
             "alpha0_2d": -0.05235987755982988,
             "cd0": 0.05,
+            "oswald_efficiency": 0.8,
             "k_slip_wing": 0.1,
             "alpha_stall_deg": 10.0,
             "m_smooth": 0.2,
@@ -62,6 +64,7 @@ class SimpleDroneAeroParameters:
             "cl_alpha_2d": 6.283185307179586,
             "alpha0_2d": 0.0,
             "cd0": 0.013,
+            "oswald_efficiency": 0.8,
             "k_slip_tail": 1.0,
             "k_eps_tail": 1.0,
             "alpha_stall_deg": 10.0,
@@ -77,6 +80,7 @@ class SimpleDroneAeroParameters:
             "cl_alpha_2d": 6.283185307179586,
             "alpha0_2d": 0.0,
             "cd0": 0.013,
+            "oswald_efficiency": 0.8,
             "alpha_stall_deg": 10.0,
             "m_smooth": 0.2,
             "w": 0.0,
@@ -142,6 +146,10 @@ class SimpleDroneAeroParameters:
             "noise": copy.deepcopy(cls.NOISE),
         }
 
+    @classmethod
+    def fuselage_cd0(cls) -> float:
+        return float(cls.TYPES["fuselage"]["cd0"])
+
 
 @ti.data_oriented
 class SimpleDroneAeroSolver(BaseAeroSolver):
@@ -177,6 +185,24 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             "k_slip_tail",
             "k_eps_tail",
         ]
+        self._randomizable_link_field_names = (
+            "cd0_link",
+            "oswald_efficiency_link",
+            "alpha0_2d_link",
+            "cl_alpha_2d_link",
+            "alpha_stall_deg_link",
+            "m_smooth_link",
+            "w_link",
+            "cp_start_link",
+            "cp_end_link",
+            "cg_to_chord_link",
+            "k_slip_wing_link",
+            "k_slip_tail_link",
+            "k_eps_tail_link",
+            "k_slip_fus_link",
+            "re_nom_link",
+            "re_a_link",
+        )
 
     def _const_init(self):
         """
@@ -305,6 +331,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         """
         # Per-link parameter fields
         self.cd0_link = ti.field(ti.f32, shape=(B, L))
+        self.oswald_efficiency_link = ti.field(ti.f32, shape=(B, L))
         self.alpha0_2d_link = ti.field(ti.f32, shape=(B, L))
         self.cl_alpha_2d_link = ti.field(ti.f32, shape=(B, L))
         self.alpha_stall_deg_link = ti.field(ti.f32, shape=(B, L))
@@ -375,12 +402,14 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
             if kind == SurfaceKind.PROPELLER:
                 cd0_val = alpha0_val = cl_alpha_val = 0.0
+                oswald_efficiency_val = 1.0
                 alpha_stall_val = m_smooth_val = 0.0
                 w_val = 0.0
                 cp_start_val = cp_end_val = 0.0
                 cg_to_chord_val = 0.0
             elif kind == SurfaceKind.FUSELAGE:
-                cd0_val = require_param(frame, p, "cd0")
+                cd0_val = SimpleDroneAeroParameters.fuselage_cd0()
+                oswald_efficiency_val = 1.0
                 alpha0_val = cl_alpha_val = 0.0
                 alpha_stall_val = m_smooth_val = 0.0
                 w_val = 0.0
@@ -389,6 +418,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                 cg_to_chord_val = require_param(frame, p, "cg_to_chord")
             else:
                 cd0_val = require_param(frame, p, "cd0")
+                oswald_efficiency_val = float(p.get("oswald_efficiency", 0.8))
                 alpha0_val = require_param(frame, p, "alpha0_2d")
                 cl_alpha_val = require_param(frame, p, "cl_alpha_2d")
                 alpha_stall_val = require_param(frame, p, "alpha_stall_deg")
@@ -407,6 +437,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
             for b in range(self._B):
                 self.cd0_link[b, i] = cd0_val
+                self.oswald_efficiency_link[b, i] = oswald_efficiency_val
                 self.alpha0_2d_link[b, i] = alpha0_val
                 self.cl_alpha_2d_link[b, i] = cl_alpha_val
                 self.alpha_stall_deg_link[b, i] = alpha_stall_val
@@ -531,9 +562,72 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
         # Cached Torch buffers for parameters queried each step
         self._init_param_buffers()
+        self._capture_global_param_nominals()
+        self._capture_link_param_nominals()
 
         # Enable aero once everything is initialized
         self._aero_enabled = True
+
+    def _capture_global_param_nominals(self) -> None:
+        """Snapshot nominal per-env aerodynamic fields in Taichi buffers."""
+        self._param_nominal = {}
+        for name, _, fld in self._iter_randomizable_params():
+            nominal = ti.field(dtype=ti.f32, shape=(self._B,))
+            self._copy_param_field_1d(fld, nominal)
+            self._param_nominal[name] = nominal
+
+    def _capture_link_param_nominals(self) -> None:
+        """Snapshot nominal per-link aerodynamic fields in Taichi buffers."""
+        self._link_param_nominals = {}
+        for name in getattr(self, "_randomizable_link_field_names", ()):
+            fld = getattr(self, name, None)
+            if fld is None:
+                continue
+            nominal = ti.field(dtype=ti.f32, shape=(self._B, self.L))
+            self._copy_param_field_2d(fld, nominal)
+            self._link_param_nominals[name] = nominal
+
+    @ti.kernel
+    def _copy_param_field_1d(self, src: ti.template(), dst: ti.template()):
+        for b in range(self._B):
+            dst[b] = src[b]
+
+    @ti.kernel
+    def _copy_param_field_2d(self, src: ti.template(), dst: ti.template()):
+        for b, l in ti.ndrange(self._B, self.L):
+            dst[b, l] = src[b, l]
+
+    @ti.kernel
+    def _randomize_param_field_1d(
+        self,
+        dst: ti.template(),
+        nominal: ti.template(),
+        env_ids: ti.types.ndarray(dtype=ti.i32, ndim=1),
+        n_envs: ti.i32,
+        sigma: ti.f32,
+    ):
+        for n in range(n_envs):
+            b = env_ids[n]
+            val = nominal[b]
+            if sigma > 0:
+                val *= 1.0 + sigma * ti.randn(ti.f32)
+            dst[b] = val
+
+    @ti.kernel
+    def _randomize_param_field_2d(
+        self,
+        dst: ti.template(),
+        nominal: ti.template(),
+        env_ids: ti.types.ndarray(dtype=ti.i32, ndim=1),
+        n_envs: ti.i32,
+        sigma: ti.f32,
+    ):
+        for n, l in ti.ndrange(n_envs, self.L):
+            b = env_ids[n]
+            val = nominal[b, l]
+            if sigma > 0:
+                val *= 1.0 + sigma * ti.randn(ti.f32)
+            dst[b, l] = val
 
     def _resolve_drone_model(
         self,
@@ -769,6 +863,37 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                     k = int(self.kind[l])
                     if k == 2 or k == 3:
                         self.re_nom_link[b, l] = float(tail_re_nom)
+
+        self._capture_global_param_nominals()
+        self._capture_link_param_nominals()
+
+    def randomize_aero_params(self, envs_idx, sigma=None):
+        """
+        Randomize aerodynamic parameters for a subset of environments on-device.
+        """
+        if sigma is None:
+            sigma = getattr(self, "noise_sigma_param", 0.0)
+        n_envs = int(len(envs_idx))
+        if n_envs == 0:
+            return
+
+        env_ids_i32 = envs_idx.reshape(-1).to(device=self._aero_device, dtype=torch.int32)
+
+        for name, _, fld in self._iter_randomizable_params():
+            nominal = self._param_nominal.get(name, None)
+            if nominal is None:
+                continue
+            self._randomize_param_field_1d(fld, nominal, env_ids_i32, n_envs, float(sigma))
+
+        nominal_map = getattr(self, "_link_param_nominals", {})
+        for name in getattr(self, "_randomizable_link_field_names", ()):
+            fld = getattr(self, name, None)
+            nominal = nominal_map.get(name)
+            if fld is None or nominal is None:
+                continue
+            self._randomize_param_field_2d(fld, nominal, env_ids_i32, n_envs, float(sigma))
+
+        self._refresh_param_buffers()
 
     # ---------------------------------------------------------------------
     # Taichi kernels / device-side logic
@@ -1145,6 +1270,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             Surface kind (0=fuselage, 1=wing, 2=elevator, 3=rudder, 4=prop).
         """
         cd0 = self.cd0_link[b, l]
+        oswald_e = ti.max(self.oswald_efficiency_link[b, l], 1e-3)
         cut = self.alpha_stall_deg_link[b, l] * ti.math.pi/180
         cl_alpha = self.cl_alpha_2d_link[b, l]
         alpha0 = self.alpha0_2d_link[b, l]
@@ -1199,7 +1325,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
 
         cl_lin = cl_a * (a_wr - ref)
         cl_lin *= f_re
-        cd_lin = cd0 + cl_lin * cl_lin / (ti.math.pi * AR)
+        cd_lin = cd0 + cl_lin * cl_lin / (ti.math.pi * oswald_e * AR)
 
         # Post-stall flat-plate model (periodic)
         sa, ca = ti.sin(a_wr), ti.cos(a_wr)

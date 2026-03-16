@@ -718,6 +718,11 @@ class DroneModel:
                 ):
                     p[k] = v
 
+        if "re_nom" not in p and "re_nominal" in p:
+            p["re_nom"] = p["re_nominal"]
+        if "re_a" not in p and "a" in p:
+            p["re_a"] = p["a"]
+
         if "re_nom" in p:
             p["re_nom"] = float(p["re_nom"])
         if "re_a" in p:

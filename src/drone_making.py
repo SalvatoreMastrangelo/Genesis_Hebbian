@@ -124,7 +124,7 @@ class UrdfMaker:
     # "Mass model" densities (kg/m³) and constants
     # ------------------------------------------------------------------
     _RHO_FUS_STRUCT = 20.0
-    _FUS_SHELL_THICKNESS = 0.02  # [m] shell thickness
+    _FUS_SHELL_THICKNESS = 0.015  # [m] shell thickness
     _FUS_FIXED_MASS = 0.200              # e.g. battery, avionics, etc.
     _BATTERY_SIZE   = (0.10, 0.05, 0.05) # box for inertia (10×5×5 cm)
 
@@ -169,10 +169,10 @@ class UrdfMaker:
     _LE_REF = 0.25
 
     # Servo masses (kg) and box dimensions (m) used for inertia
-    _SERVO_WING_SWEEP_MASS = 0.040   # sweep servo per wing side
-    _SERVO_WING_TWIST_MASS = 0.030   # twist servo per wing side
-    _SERVO_TAIL_ELEV_MASS  = 0.020   # elevator servo
-    _SERVO_TAIL_RUDD_MASS  = 0.020   # rudder servo
+    _SERVO_WING_SWEEP_MASS = 0.025   # sweep servo per wing side
+    _SERVO_WING_TWIST_MASS = 0.010   # twist servo per wing side
+    _SERVO_TAIL_ELEV_MASS  = 0.010   # elevator servo
+    _SERVO_TAIL_RUDD_MASS  = 0.010   # rudder servo
     _SERVO_SIZE            = (0.03, 0.012, 0.03)  # (sx, sy, sz) ~ 30×12×30 mm
 
     # ------------------------------------------------------------------
@@ -1189,7 +1189,7 @@ class UrdfMaker:
         # Hinge link (structural intermediate)
         hinge_link = ET.SubElement(robot, "link", name="elevator_hinge")
         I_hinge = self._I_box(
-            self._MASS_INTER * 4,
+            self._MASS_INTER * 2,
             p.elevator_chord,
             p.elevator_span,
             thickness,

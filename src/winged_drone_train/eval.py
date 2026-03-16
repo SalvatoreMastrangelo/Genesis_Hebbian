@@ -482,11 +482,13 @@ def evaluation(
     # ---------------- Peak extraction from evaluation ------------------ #
     v_cmd_m, v_mean_m = v_cmd, v_mean
     E_tot_m, prog_m = COT, progress
+    reward_m = reward_total[np.isfinite(reward_total)]
 
     # Smoothed curves aligned to v_cmd (same axis used in plots)
-    _, v_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, v_mean_m, win_frac)
+    x_s, v_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, v_mean_m, win_frac)
     _, p_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, prog_m, win_frac)
     _, E_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, E_tot_m, win_frac)
+    _, reward_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, reward_m, win_frac)
     idx_p = int(np.argmax(p_s)) if len(p_s) else 0
     max_p = float(p_s[idx_p]) if len(p_s) else 0.0
 
@@ -598,9 +600,11 @@ def evaluation(
         # Return arrays aligned on v_cmd so pick_triples matches plot logic.
         extra.update(
             {
+                "v_cmd_s": x_s,
                 "p_s": p_s,
                 "v_s": v_s,
                 "E_s": E_s,
+                "eval_reward_s": reward_s,
             }
         )
 

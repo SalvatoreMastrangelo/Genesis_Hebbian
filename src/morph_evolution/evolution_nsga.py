@@ -35,6 +35,7 @@ from morph_evolution.utils.evaluation import (
     default_fitness as _default_fitness_impl,
     eval_only_custom as _eval_only_custom_impl,
     failure_result as _failure_result_impl,
+    load_rep_payload as _load_rep_payload,
     train_and_eval_sync as _train_and_eval_sync_impl,
 )
 from morph_evolution.utils.reporting import (
@@ -766,10 +767,10 @@ class CodesignDEAP:
                     payload_path = rep_extra.get("payload_path")
                     if payload_path:
                         try:
-                            with np.load(payload_path) as data:
-                                p_s = np.asarray(data.get("p_s", []))
-                                v_s = np.asarray(data.get("v_s", []))
-                                E_s = np.asarray(data.get("E_s", []))
+                            payload_data = _load_rep_payload(payload_path)
+                            p_s = np.asarray(payload_data.get("p_s", []))
+                            v_s = np.asarray(payload_data.get("v_s", []))
+                            E_s = np.asarray(payload_data.get("E_s", []))
                         except Exception as exc:
                             rep_failed = True
                             rep_meta["failed"] = True

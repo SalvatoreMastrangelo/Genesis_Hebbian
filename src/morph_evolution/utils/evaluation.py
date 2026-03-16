@@ -28,6 +28,78 @@ from winged_drone_train.eval import evaluation
 from winged_drone_train.train import training
 
 
+REP_PAYLOAD_COLUMNS: Tuple[str, ...] = ("v_cmd", "p_s", "v_s", "E_s", "eval_reward")
+
+
+def save_rep_payload_csv(
+    payload_path: Path,
+    *,
+    v_cmd_s: np.ndarray,
+    p_s: np.ndarray,
+    v_s: np.ndarray,
+    E_s: np.ndarray,
+    eval_reward_s: np.ndarray,
+) -> None:
+    """Save aligned repetition payload curves as a compact CSV."""
+    arrays = {
+        "v_cmd": np.asarray(v_cmd_s, dtype=float),
+        "p_s": np.asarray(p_s, dtype=float),
+        "v_s": np.asarray(v_s, dtype=float),
+        "E_s": np.asarray(E_s, dtype=float),
+        "eval_reward": np.asarray(eval_reward_s, dtype=float),
+    }
+    lengths = {key: arr.shape[0] for key, arr in arrays.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"rep payload arrays must have same length, got {lengths}")
+
+    payload_path.parent.mkdir(parents=True, exist_ok=True)
+    data = np.column_stack([arrays[col] for col in REP_PAYLOAD_COLUMNS])
+    header = ",".join(REP_PAYLOAD_COLUMNS)
+    np.savetxt(payload_path, data, delimiter=",", header=header, comments="")
+
+
+def load_rep_payload(payload_path: str | Path) -> Dict[str, np.ndarray]:
+    """Load repetition payload curves from CSV, with legacy NPZ fallback."""
+    path = Path(payload_path)
+    if path.suffix.lower() == ".npz":
+        with np.load(path) as data:
+            return {
+                "v_cmd_s": np.asarray(data.get("v_cmd_s", []), dtype=float),
+                "p_s": np.asarray(data.get("p_s", []), dtype=float),
+                "v_s": np.asarray(data.get("v_s", []), dtype=float),
+                "E_s": np.asarray(data.get("E_s", []), dtype=float),
+                "eval_reward_s": np.asarray(data.get("eval_reward_s", []), dtype=float),
+            }
+
+    try:
+        data = np.genfromtxt(path, delimiter=",", names=True, dtype=float)
+    except Exception as exc:
+        raise ValueError(f"failed to parse payload CSV {path}: {exc}") from exc
+
+    if data.size == 0:
+        return {
+            key: np.array([], dtype=float)
+            for key in ("v_cmd_s", "p_s", "v_s", "E_s", "eval_reward_s")
+        }
+
+    if getattr(data, "ndim", 0) == 0:
+        data = np.array([data], dtype=data.dtype)
+
+    columns = set(getattr(data.dtype, "names", ()) or ())
+    required = set(REP_PAYLOAD_COLUMNS)
+    missing = required - columns
+    if missing:
+        raise ValueError(f"payload CSV missing columns: {sorted(missing)}")
+
+    return {
+        "v_cmd_s": np.asarray(data["v_cmd"], dtype=float),
+        "p_s": np.asarray(data["p_s"], dtype=float),
+        "v_s": np.asarray(data["v_s"], dtype=float),
+        "E_s": np.asarray(data["E_s"], dtype=float),
+        "eval_reward_s": np.asarray(data["eval_reward"], dtype=float),
+    }
+
+
 def build_run_meta(
     *,
     exp_name: str,
@@ -99,9 +171,11 @@ def failure_result(
     )
     meta["fail_category"] = fail_category
     extra = dict(
+        v_cmd_s=np.array([]),
         p_s=np.array([]),
         v_s=np.array([]),
         E_s=np.array([]),
+        eval_reward_s=np.array([]),
     )
     return ff, meta, extra
 
@@ -467,10 +541,18 @@ def train_and_eval_sync(
             )
 
         if return_arrays:
+            v_cmd_s = np.asarray(extra.get("v_cmd_s", []))
             p_s = np.asarray(extra.get("p_s", []))
             v_s = np.asarray(extra.get("v_s", []))
             E_s = np.asarray(extra.get("E_s", []))
-            if p_s.size == 0 or v_s.size == 0 or E_s.size == 0:
+            eval_reward_s = np.asarray(extra.get("eval_reward_s", []))
+            if (
+                v_cmd_s.size == 0
+                or p_s.size == 0
+                or v_s.size == 0
+                or E_s.size == 0
+                or eval_reward_s.size == 0
+            ):
                 reason = f"empty_eval_arrays exp={run_exp_name}"
                 print(f"[safe_mode] {reason}")
                 return failure_result(
@@ -484,10 +566,30 @@ def train_and_eval_sync(
                     train_duration_s=train_duration_s,
                     eval_duration_s=eval_duration_s,
                 )
+            if not (v_cmd_s.size == p_s.size == v_s.size == E_s.size == eval_reward_s.size):
+                reason = (
+                    f"misaligned_eval_arrays exp={run_exp_name} "
+                    f"v_cmd={v_cmd_s.size} p={p_s.size} v={v_s.size} "
+                    f"E={E_s.size} R={eval_reward_s.size}"
+                )
+                print(f"[safe_mode] {reason}")
+                return failure_result(
+                    reason,
+                    cfg,
+                    invalid_v,
+                    invalid_e,
+                    invalid_p,
+                    exp_name=run_exp_name,
+                    train_it=train_iters,
+                    train_duration_s=train_duration_s,
+                    eval_duration_s=eval_duration_s,
+                )
             if not (
-                np.isfinite(p_s).all()
+                np.isfinite(v_cmd_s).all()
+                and np.isfinite(p_s).all()
                 and np.isfinite(v_s).all()
                 and np.isfinite(E_s).all()
+                and np.isfinite(eval_reward_s).all()
             ):
                 reason = f"non_finite_eval_arrays exp={run_exp_name}"
                 print(f"[safe_mode] {reason}")
@@ -544,9 +646,15 @@ def train_and_eval_sync(
 
         if return_arrays and train_repetition > 1:
             rep_dir = Path(cfg["BASE_DIR"]).expanduser().resolve() / "analysis" / "rep_payloads"
-            rep_dir.mkdir(parents=True, exist_ok=True)
-            payload_path = rep_dir / f"{run_exp_name}.npz"
-            np.savez_compressed(payload_path, p_s=p_s, v_s=v_s, E_s=E_s)
+            payload_path = rep_dir / f"{run_exp_name}.csv"
+            save_rep_payload_csv(
+                payload_path,
+                v_cmd_s=v_cmd_s,
+                p_s=p_s,
+                v_s=v_s,
+                E_s=E_s,
+                eval_reward_s=eval_reward_s,
+            )
             extra = {"payload_path": str(payload_path)}
             print(f"[train_eval] rep payload saved -> {payload_path}")
 
