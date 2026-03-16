@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=2
-#SBATCH --cpus-per-gpu=8
-#SBATCH --time=25:00:00
+#SBATCH --cpus-per-gpu=2
+#SBATCH --time=00:15:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 
@@ -13,8 +13,8 @@ set -euo pipefail
 # ------------------------------------------------------------
 # Paths (adjust to your cluster layout)
 # ------------------------------------------------------------
-IMG="/scratch/$USER/sif/mygenesis.sif"
-SRC="$HOME/binding/Genesis-dev"
+IMG="/scratch/izar/$USER/sif/mygenesis.sif"
+SRC="$HOME/Genesis-dev"
 
 # ------------------------------------------------------------
 # Run params (override via sbatch --export=...)
@@ -30,7 +30,7 @@ MPS_THREAD_PCT=${MPS_THREAD_PCT:-0}
 # ------------------------------------------------------------
 # Output layout
 # ------------------------------------------------------------
-OUT_BASE="$HOME/binding/genesis_runs"
+OUT_BASE="/scratch/izar/$USER/genesis_runs"
 RUN_DIR="${RUN_DIR:-${OUT_BASE}/wp1_training/${RUN_TAG}}"
 CACHE_DIR="${RUN_DIR}/.cache"
 
@@ -140,3 +140,11 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
     --cfg /workspace/bind/src/WP1/${CFG_FILE} \
     ${CLI_OVERRIDES}
 "
+
+# ------------------------------------------------------------
+# Copy run output to home for long-term storage
+# ------------------------------------------------------------
+echo "[POST] Copying run to $HOME/genesis_runs/ ..."
+mkdir -p "$HOME/genesis_runs/wp1_training"
+cp -a "${RUN_DIR}" "$HOME/genesis_runs/wp1_training/"
+echo "[POST] Done: $HOME/genesis_runs/wp1_training/$(basename ${RUN_DIR})"

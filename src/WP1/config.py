@@ -154,7 +154,10 @@ class PolicyConfig:
     rnn_type : str
         Recurrent cell type: ``"lstm"`` or ``"gru"``.
     rnn_hidden_size : int
-        Number of units in the recurrent cell.
+        Number of units in the actor recurrent cell.
+    critic_rnn_hidden_size : Optional[int]
+        Number of units in the critic recurrent cell.
+        ``None`` (default) means the critic uses the same size as the actor.
     rnn_num_layers : int
         Number of stacked recurrent layers.
     max_servo : float
@@ -170,6 +173,7 @@ class PolicyConfig:
     init_noise_std: float = 0.3
     rnn_type: str = "lstm"
     rnn_hidden_size: int = 128
+    critic_rnn_hidden_size: Optional[int] = None
     rnn_num_layers: int = 1
     max_servo: float = 1.0
     max_throttle: float = 1.0
@@ -529,6 +533,7 @@ class RunConfig:
                 "init_noise_std": self.policy.init_noise_std,
                 "rnn_type": self.policy.rnn_type,
                 "rnn_hidden_size": self.policy.rnn_hidden_size,
+                "critic_rnn_hidden_size": self.policy.critic_rnn_hidden_size,
                 "rnn_num_layers": self.policy.rnn_num_layers,
                 "max_servo": self.policy.max_servo,
                 "max_throttle": self.policy.max_throttle,

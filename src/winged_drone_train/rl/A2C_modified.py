@@ -2,16 +2,57 @@ import torch
 import torch.nn.functional as F
 from rsl_rl.modules.actor_critic_recurrent import ActorCriticRecurrent
 from rsl_rl.modules.actor_critic import ActorCritic
+from rsl_rl.networks import Memory
 from torch.distributions import Normal
 import math
 
 class ActorCriticTanh(ActorCriticRecurrent):
-    def __init__(self, *args, max_servo=0.34906585, max_throttle=1.0, **kw):
-        super().__init__(*args, **kw)
+    is_recurrent = True
+
+    def __init__(
+        self,
+        num_actor_obs,
+        num_critic_obs,
+        num_actions,
+        actor_hidden_dims=[256, 256, 256],
+        critic_hidden_dims=[256, 256, 256],
+        activation="elu",
+        rnn_type="lstm",
+        rnn_hidden_size=128,
+        critic_rnn_hidden_size=None,
+        rnn_num_layers=1,
+        init_noise_std=1.0,
+        max_servo=0.34906585,
+        max_throttle=1.0,
+        **kw,
+    ):
+        actor_rnn_hidden  = rnn_hidden_size
+        critic_rnn_hidden = critic_rnn_hidden_size if critic_rnn_hidden_size is not None else rnn_hidden_size
+
+        # Bypass ActorCriticRecurrent.__init__ so actor/critic can have
+        # independent LSTM hidden sizes. Call ActorCritic directly with the
+        # correct MLP input dims (= each RNN's hidden size).
+        ActorCritic.__init__(
+            self,
+            num_actor_obs=actor_rnn_hidden,
+            num_critic_obs=critic_rnn_hidden,
+            num_actions=num_actions,
+            actor_hidden_dims=actor_hidden_dims,
+            critic_hidden_dims=critic_hidden_dims,
+            activation=activation,
+            init_noise_std=init_noise_std,
+        )
+
+        self.memory_a = Memory(num_actor_obs,  type=rnn_type, num_layers=rnn_num_layers, hidden_size=actor_rnn_hidden)
+        self.memory_c = Memory(num_critic_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=critic_rnn_hidden)
+
+        print(f"Actor RNN: {self.memory_a}")
+        print(f"Critic RNN: {self.memory_c}")
+
         self.max_servo    = max_servo
         self.max_throttle = max_throttle
         self._LOG2        = math.log(2.)
-        self.recurrency    = True
+        self.recurrency   = True
     # ------------------------------------------------ helper
     def _scale(self, a):
         thr = 0.5 * (a[..., :1] + 1) * self.max_throttle
