@@ -72,7 +72,7 @@ from __future__ import annotations
 import argparse
 import builtins
 import os
-os.environ["GS_PARA_LEVEL"] = "3"
+os.environ["GS_PARA_LEVEL"] = "4"  # max parallelization for scene compilation
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 import sys
 import time
@@ -401,6 +401,17 @@ def main() -> None:
     parser.add_argument("--cfg", type=str, default=None, help="Path to YAML config file.")
     parser.add_argument("-v", "--vis", action="store_true", help="Enable viewer.")
     parser.add_argument("--resume", action="store_true", help="Resume from latest matching run.")
+    parser.add_argument(
+        "--multi-gpu",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Distribute physics across N GPUs using worker processes "
+            "(one Gen_Env per GPU, policy stays on the coordinator). "
+            "Requires a URDF catalog (catalog.n_urdf > 0). Default: 1 (single-GPU)."
+        ),
+    )
     args, remaining = parser.parse_known_args()
 
     # Build config
@@ -415,7 +426,11 @@ def main() -> None:
     # Apply CLI overrides like --cfg.ppo.learning_rate 3e-4
     cfg.apply_cli_overrides(remaining)
 
-    train(cfg, vis=args.vis, resume=args.resume)
+    if args.multi_gpu > 1:
+        from WP1.multi_gpu_train import train_multi_gpu
+        train_multi_gpu(cfg, num_gpus=args.multi_gpu, vis=args.vis, resume=args.resume)
+    else:
+        train(cfg, vis=args.vis, resume=args.resume)
 
 
 if __name__ == "__main__":

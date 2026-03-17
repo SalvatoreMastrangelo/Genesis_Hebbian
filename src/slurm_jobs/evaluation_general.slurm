@@ -7,6 +7,8 @@
 #SBATCH --time=4:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
+#SBATCH --mail-user=salvatore.mastrangelo@epfl.ch
+#SBATCH --mail-type=END
 
 set -euo pipefail
 

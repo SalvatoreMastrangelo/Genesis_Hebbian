@@ -191,10 +191,12 @@ class Gen_Env:
                 f"(count={count_i}, urdf='{Path(urdf_i).name}')"
             )
             self._subs.append(sub)
-            if torch.cuda.is_available():
-                # Keep allocator pressure lower during multi-sub-env construction.
-                torch.cuda.empty_cache()
+            # Defer cache clearing to reduce GPU stall overhead
             start = stop
+
+        # Clear cache once after all sub-envs are built
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         print(
             f"[Gen_Env] Created {len(self._subs)} sub-envs in "
