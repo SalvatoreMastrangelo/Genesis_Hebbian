@@ -11,6 +11,9 @@
 #
 # All jobs are submitted immediately with no dependency — the scheduler
 # will run them as resources become available.
+#
+# Multi-GPU: pass MULTI_GPU=N as an environment variable to use N GPUs per job.
+#   MULTI_GPU=2 bash run_parallel.sh src/WP1/experiments/ --gpus=2
 
 set -euo pipefail
 
@@ -41,16 +44,23 @@ JOB_IDS=()
 
 for YAML_PATH in "${YAMLS[@]}"; do
   CFG_FILE="$(realpath --relative-to="${REPO_ROOT}/src/WP1" "${YAML_PATH}")"
-  EXP_NAME="$(basename "${YAML_PATH}" .yaml)"
+  EXP_NAME="$(grep -E '^exp_name:' "${YAML_PATH}" | awk '{print $2}' || echo "$(basename "${YAML_PATH}" .yaml)")"
   REPEAT=$(grep -E '^repeat:' "${YAML_PATH}" | awk '{print $2}' || echo "1")
   REPEAT="${REPEAT:-1}"
 
   for ((i = 1; i <= REPEAT; i++)); do
     RUN_TAG="wp1_${EXP_NAME}_r${i}"
 
+    MULTI_GPU_EXPORT=""
+    if [ -n "${MULTI_GPU:-}" ] && [ "${MULTI_GPU}" -gt 1 ]; then
+      MULTI_GPU_EXPORT=",MULTI_GPU=${MULTI_GPU}"
+    fi
+
     JOB_ID=$(sbatch \
       --job-name="wp1_${EXP_NAME}_r${i}" \
-      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}" \
+      --output="/home/%u/slurm_logs/${RUN_TAG}-%j.out" \
+      --error="/home/%u/slurm_logs/${RUN_TAG}-%j.err" \
+      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}${MULTI_GPU_EXPORT}" \
       "$@" \
       "${SLURM_SCRIPT}" \
       | awk '{print $NF}')

@@ -3,10 +3,12 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=2
-#SBATCH --cpus-per-gpu=2
-#SBATCH --time=00:15:00
+#SBATCH --cpus-per-gpu=4
+#SBATCH --time=00:25:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
+#SBATCH --mail-user=salvatore.mastrangelo@epfl.ch
+#SBATCH --mail-type=END
 
 set -euo pipefail
 
@@ -22,6 +24,11 @@ SRC="$HOME/Genesis-dev"
 CFG_FILE=${CFG_FILE:-configs/foundation.yaml}
 RUN_TAG=${RUN_TAG:-wp1_foundation_${SLURM_JOB_ID}}
 CLI_OVERRIDES=${CLI_OVERRIDES:-}
+
+# Multi-GPU: set MULTI_GPU=N to split the URDF catalog across N GPUs.
+# MULTI_GPU must be <= the number of --gpus requested above.
+# Example: sbatch --gpus=2 --export=ALL,MULTI_GPU=2,CFG_FILE=... train_foundation.slurm
+MULTI_GPU=${MULTI_GPU:-1}
 
 # CUDA MPS controls (for multi-GPU concurrency)
 ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-0}
@@ -127,18 +134,21 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   SRC_AERO_DIR=/workspace/bind/genesis/assets/urdf/mydrone
   if [ -d \"\${SRC_URDF_DIR}/meshes\" ]; then
     mkdir -p /workspace/out/urdf_generated/meshes
-    cp -a \"\${SRC_URDF_DIR}/meshes/.\" /workspace/out/urdf_generated/meshes/
+    cp -r \"\${SRC_URDF_DIR}/meshes/.\" /workspace/out/urdf_generated/meshes/
   fi
   for fname in aero_parameters.yaml actuators.csv; do
     if [ -f \"\${SRC_AERO_DIR}/\${fname}\" ]; then
       mkdir -p /workspace/out/urdf_generated
-      cp -a \"\${SRC_AERO_DIR}/\${fname}\" /workspace/out/urdf_generated/
+      cp -r \"\${SRC_AERO_DIR}/\${fname}\" /workspace/out/urdf_generated/
     fi
   done
 
-  python -m WP1.train \
-    --cfg /workspace/bind/src/WP1/${CFG_FILE} \
-    ${CLI_OVERRIDES}
+  if [ "${MULTI_GPU:-1}" -gt 1 ]; then
+    echo \"[RUNTIME] Multi-GPU mode: distributing across ${MULTI_GPU} GPUs\"
+    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} --multi-gpu ${MULTI_GPU} ${CLI_OVERRIDES}
+  else
+    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} ${CLI_OVERRIDES}
+  fi
 "
 
 # ------------------------------------------------------------

@@ -11,6 +11,9 @@
 #
 # Each job runs train_foundation.slurm with CFG_FILE pointing to the yaml.
 # Jobs are chained with --dependency=afterok so they run one at a time.
+#
+# Multi-GPU: pass MULTI_GPU=N as an environment variable to use N GPUs per job.
+#   MULTI_GPU=2 bash run_sweep.sh src/WP1/experiments/ --gpus=2
 
 set -euo pipefail
 
@@ -43,7 +46,7 @@ PREV_JOB_ID=""
 for YAML_PATH in "${YAMLS[@]}"; do
   # Make CFG_FILE relative to src/WP1/ (as expected by train_foundation.slurm)
   CFG_FILE="$(realpath --relative-to="${REPO_ROOT}/src/WP1" "${YAML_PATH}")"
-  EXP_NAME="$(basename "${YAML_PATH}" .yaml)"
+  EXP_NAME="$(grep -E '^exp_name:' "${YAML_PATH}" | awk '{print $2}' || echo "$(basename "${YAML_PATH}" .yaml)")"
   REPEAT=$(grep -E '^repeat:' "${YAML_PATH}" | awk '{print $2}' || echo "1")
   REPEAT="${REPEAT:-1}"
 
@@ -55,10 +58,17 @@ for YAML_PATH in "${YAMLS[@]}"; do
       DEPENDENCY_ARG="--dependency=afterok:${PREV_JOB_ID}"
     fi
 
+    MULTI_GPU_EXPORT=""
+    if [ -n "${MULTI_GPU:-}" ] && [ "${MULTI_GPU}" -gt 1 ]; then
+      MULTI_GPU_EXPORT=",MULTI_GPU=${MULTI_GPU}"
+    fi
+
     JOB_ID=$(sbatch \
       --job-name="wp1_${EXP_NAME}_r${i}" \
+      --output="/home/%u/slurm_logs/${RUN_TAG}-%j.out" \
+      --error="/home/%u/slurm_logs/${RUN_TAG}-%j.err" \
       ${DEPENDENCY_ARG} \
-      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}" \
+      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}${MULTI_GPU_EXPORT}" \
       "$@" \
       "${SLURM_SCRIPT}" \
       | awk '{print $NF}')

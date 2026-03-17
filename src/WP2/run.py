@@ -26,6 +26,9 @@ import os
 import sys
 from pathlib import Path
 
+# Optimize Genesis scene compilation parallelization
+os.environ["GS_PARA_LEVEL"] = "4"
+
 # Ensure src/ is on the import path
 _src_dir = Path(__file__).resolve().parent.parent
 if str(_src_dir) not in sys.path:

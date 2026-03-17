@@ -192,22 +192,12 @@ class Gen_Env:
                 self.slowest_scene_init_s = scene_init_s
                 self.slowest_scene_urdf = Path(urdf_i).name
             self._subs.append(sub)
-            if torch.cuda.is_available():
-                # Keep allocator pressure lower during multi-sub-env construction.
-                torch.cuda.empty_cache()
-            if self._progress_callback is not None:
-                self._progress_callback(
-                    {
-                        "local_completed_scenes": len(self._subs),
-                        "local_total_scenes": K,
-                        "scene_idx": i,
-                        "scene_envs": int(count_i),
-                        "scene_init_s": float(sub_init_elapsed),
-                        "scene_build_s": scene_build_s,
-                        "urdf": Path(urdf_i).name,
-                    }
-                )
+            # Defer cache clearing to reduce GPU stall overhead
             start = stop
+
+        # Clear cache once after all sub-envs are built
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         print(
             f"[Gen_Env] Created {len(self._subs)} sub-envs in "

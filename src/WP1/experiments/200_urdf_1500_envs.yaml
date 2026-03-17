@@ -8,8 +8,8 @@
 # Only keys that differ from configs/default.yaml need to be specified.
 ##############################################################################
 
-exp_name: example_experiment
-repeat: 1  # number of times to submit this config as independent jobs
+exp_name: 200_urdf_1500_envs
+repeat: 10  # number of times to submit this config as independent jobs
 
 ppo:
   clip_param: 0.15
@@ -32,15 +32,15 @@ policy:
   activation: elu
   init_noise_std: 0.3
   rnn_type: lstm
-  rnn_hidden_size: 64
-  critic_rnn_hidden_size: null  # null = same as rnn_hidden_size
+  rnn_hidden_size: 128
+  critic_rnn_hidden_size: 64  # null = same as rnn_hidden_size
   rnn_num_layers: 1
   max_servo: 1.0
   max_throttle: 1.0
 
 training:
-  num_envs: 16384
-  max_iterations: 850
+  num_envs: 32768
+  max_iterations: 1500
   num_steps_per_env: 25
   save_interval: 100
   eval_interval: 200
@@ -109,6 +109,6 @@ command:
   num_commands: 1
 
 catalog:
-  n_urdf: 20
+  n_urdf: 200
   catalog_dir: null
   urdf_seed: 0
