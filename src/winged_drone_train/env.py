@@ -363,7 +363,7 @@ class WingedDroneEnv:
             self.action_latency_random_per_step = False
             if self.num_envs > 1:
                 v_min = float(self.command_cfg.get("min_speed", 5.0))
-                v_max = float(self.command_cfg.get("max_speed", 20.0))
+                v_max = float(self.command_cfg.get("max_speed", 25.0))
                 self._eval_speed_grid = torch.linspace(
                     v_min, v_max, self.num_envs, device=self.device, dtype=torch.float32
                 )
@@ -1037,14 +1037,14 @@ class WingedDroneEnv:
             # Linearly spaced fixed speeds for all eval envs.
             if self._eval_speed_grid is None or self._eval_speed_grid.shape[0] != self.num_envs:
                 v_min = float(self.command_cfg.get("min_speed", 5.0))
-                v_max = float(self.command_cfg.get("max_speed", 20.0))
+                v_max = float(self.command_cfg.get("max_speed", 25.0))
                 self._eval_speed_grid = torch.linspace(
                     v_min, v_max, self.num_envs, device=self.device, dtype=torch.float32
                 )
             self.commands[env_ids, 0] = self._eval_speed_grid[env_ids]
         else:
             v_min = float(self.command_cfg.get("min_speed", 5.0))
-            v_max = float(self.command_cfg.get("max_speed", 20.0))
+            v_max = float(self.command_cfg.get("max_speed", 25.0))
             u = self._rand_scalar_scratch[: env_ids.numel()]
             u.uniform_(0.0, 1.0)
             self.commands[env_ids, 0] = v_min + (v_max - v_min) * u

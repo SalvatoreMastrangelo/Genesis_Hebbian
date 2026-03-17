@@ -123,7 +123,7 @@ def _apply_eval_env_overrides(env_cfg: Dict[str, Any]) -> None:
 def _command_speed_range(command_cfg: Dict[str, Any]) -> Tuple[float, float]:
     return (
         float(command_cfg.get("min_speed", 5.0)),
-        float(command_cfg.get("max_speed", 20.0)),
+        float(command_cfg.get("max_speed", 25.0)),
     )
 
 
@@ -642,7 +642,7 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt", type=int, default=300)
     parser.add_argument("--envs", type=int, default=8192)
     parser.add_argument("--vmin", type=float, default=5.0)
-    parser.add_argument("--vmax", type=float, default=20.0)
+    parser.add_argument("--vmax", type=float, default=25.0)
     parser.add_argument("--gpu", default="cuda")
     args = parser.parse_args()
 

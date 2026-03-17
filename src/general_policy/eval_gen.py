@@ -1631,13 +1631,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--vmin",
         type=float,
-        default=6.0,
+        default=5.0,
         help="Minimum commanded speed for evaluation sweeps.",
     )
     parser.add_argument(
         "--vmax",
         type=float,
-        default=30.0,
+        default=25.0,
         help="Maximum commanded speed for evaluation sweeps.",
     )
 

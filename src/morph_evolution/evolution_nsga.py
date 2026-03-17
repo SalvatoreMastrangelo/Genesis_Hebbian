@@ -88,8 +88,8 @@ class GAConfig:
     train_repetition: int = 1       # repeat train+eval N times (gen_policy=0)
     train_envs: int = 16384           # number of envs during training
     eval_envs: int = 8192            # number of envs during evaluation
-    vmin: float = 6.0               # min commanded speed in evaluation
-    vmax: float = 30.0              # max commanded speed in evaluation
+    vmin: float = 5.0               # min commanded speed in evaluation
+    vmax: float = 25.0              # max commanded speed in evaluation
 
     # --- Fitness shaping / invalid individuals ----------------------------
     # fail_value removed; fallback uses INVALID_* sentinels
