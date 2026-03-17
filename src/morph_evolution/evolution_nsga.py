@@ -730,42 +730,6 @@ class CodesignDEAP:
                     indiv.evaluated_fresh = False
                     indiv.cache_source_uid = int(cached_row.get("uid", -1))
                     indiv.cache_source_generation = int(cached_row.get("generation", -1))
-                    for attr in (
-                        "lineage_id",
-                        "lineage_root_uid",
-                        "lineage_depth",
-                        "primary_parent_uid",
-                        "primary_parent_generation",
-                        "reproduction_operator",
-                        "crossover_applied",
-                        "mutation_applied",
-                        "mutation_changed_genome",
-                        "topology_mutation",
-                        "topology_mutation_magnitude",
-                        "topology_signature",
-                        "parent_a_topology_signature",
-                        "parent_b_topology_signature",
-                        "primary_parent_topology_signature",
-                        "successful_topology_mutation",
-                        "beneficial_topology_event",
-                        "selected_next_generation",
-                        "parent_best_scalar_fitness",
-                        "offspring_scalar_fitness",
-                        "lineage_event",
-                        "parent_a_lineage_id",
-                        "parent_b_lineage_id",
-                        "cross_lineage_mating",
-                        "airfoil_signature",
-                        "parent_a_airfoil_signature",
-                        "parent_b_airfoil_signature",
-                        "primary_parent_airfoil_signature",
-                        "airfoil_mutation",
-                        "successful_airfoil_mutation",
-                        "beneficial_airfoil_event",
-                        "offspring_vs_best_parent_scalar_delta",
-                    ):
-                        if attr in cached_row.index:
-                            setattr(indiv, attr, cached_row.get(attr))
                     indiv._meta_raw = {
                         "exp_name": cached_row.get("exp_name", None),
                         "train_it": cached_row.get("train_it", self.cfg.train_iters_new),
