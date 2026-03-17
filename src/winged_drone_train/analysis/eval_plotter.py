@@ -31,6 +31,25 @@ class EvaluationPlotter:
         """
         self.default_win_frac = float(default_win_frac)
 
+    @staticmethod
+    def _resolve_velocity_range(
+        velocity_range: Optional[Tuple[float, float]],
+        fallback_values: np.ndarray,
+    ) -> Tuple[float, float]:
+        if velocity_range is not None:
+            v_min, v_max = map(float, velocity_range)
+            if v_max < v_min:
+                raise ValueError(
+                    f"velocity_range must satisfy max >= min, got {(v_min, v_max)}"
+                )
+            return v_min, v_max
+
+        vals = np.asarray(fallback_values, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return 0.0, 1.0
+        return float(vals.min()), float(vals.max())
+
     # ------------------------------------------------------------------ #
     # Shared helper: moving average                                      #
     # ------------------------------------------------------------------ #
@@ -169,6 +188,7 @@ class EvaluationPlotter:
         out: str = "joint_behaviour_heatmap.png",
         s_bins: int = 20,
         v_bins: int = 16,
+        command_speed_range: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         Heatmap of mean joint behaviour as a function of distance and v_cmd.
@@ -190,7 +210,7 @@ class EvaluationPlotter:
         import matplotlib.pyplot as plt
 
         v_cmd = np.asarray(traces_all["v_cmd"])
-        v_min, v_max = float(v_cmd.min()), float(v_cmd.max())
+        v_min, v_max = self._resolve_velocity_range(command_speed_range, v_cmd)
         env_n = len(v_cmd)
 
         # Max distance across all envs
@@ -283,6 +303,7 @@ class EvaluationPlotter:
         v_cmd: np.ndarray,
         html_out: str = "speed_energy_progress_3D.html",
         cmap: str = "Viridis",
+        velocity_range: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         Interactive 3D scatter:
@@ -328,7 +349,10 @@ class EvaluationPlotter:
         fig.update_layout(
             title="Speed–Energy–Progress (3-D)",
             scene=dict(
-                xaxis=dict(title="v_mean [m/s]", range=[5, 20]),
+                xaxis=dict(
+                    title="v_mean [m/s]",
+                    range=list(EvaluationPlotter._resolve_velocity_range(velocity_range, v_cmd)),
+                ),
                 yaxis=dict(title="E_tot [J/m]", range=[4, 10]),
                 zaxis=dict(title="Progress [m]", range=[0, 1000]),
             ),
@@ -348,6 +372,7 @@ class EvaluationPlotter:
         win_frac: float = 0.03,
         html_out: str = "speed_energy_progress_ma_3D.html",
         cmap: str = "Viridis",
+        velocity_range: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         3D scatter + moving-average curve linking:
@@ -405,7 +430,10 @@ class EvaluationPlotter:
         fig.update_layout(
             title="Speed–Energy–Progress (3-D) + moving average",
             scene=dict(
-                xaxis=dict(title="v_mean [m/s]", range=[5, 20]),
+                xaxis=dict(
+                    title="v_mean [m/s]",
+                    range=list(cls._resolve_velocity_range(velocity_range, v_cmd)),
+                ),
                 yaxis=dict(title="E_tot [J/m]", range=[4, 10]),
                 zaxis=dict(title="Progress [m]", range=[0, 1000]),
             ),
@@ -481,6 +509,7 @@ class EvaluationPlotter:
         minimal_p: float | None = None,
         custom_point=None,   # (v, p, eff) or {"v":..., "p":..., "eff":...}
         out: str = "total_plot.png",
+        velocity_range: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         2×1 figure (shared x-axis).
@@ -656,7 +685,7 @@ class EvaluationPlotter:
         )
 
         # Common x-limits
-        ax2.set_xlim(5, 25)
+        ax2.set_xlim(cls._resolve_velocity_range(velocity_range, x))
         xmin, xmax = ax2.get_xlim()
 
         Z_LINE = 6
@@ -943,6 +972,7 @@ class EvaluationPlotter:
         out: str = "total_plot_points_instead_of_ma.png",
         data_marker_size: float = 22.0,
         op_marker_size: float = 80.0,
+        velocity_range: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         Same frame/axes/legend as `total_plot`, but:
@@ -1004,7 +1034,7 @@ class EvaluationPlotter:
         cax1 = fig.add_subplot(gs[0, 1])
         cax2 = fig.add_subplot(gs[1, 1])
 
-        ax2.set_xlim(5, 25)
+        ax2.set_xlim(cls._resolve_velocity_range(velocity_range, C))
         xmin, xmax = ax2.get_xlim()
 
         # Shaded bands
