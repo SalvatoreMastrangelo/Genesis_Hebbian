@@ -100,6 +100,28 @@ def load_rep_payload(payload_path: str | Path) -> Dict[str, np.ndarray]:
     }
 
 
+def save_eval_payload(
+    eval_dir: Path,
+    *,
+    v_cmd_s: np.ndarray,
+    p_s: np.ndarray,
+    v_s: np.ndarray,
+    E_s: np.ndarray,
+    eval_reward_s: np.ndarray,
+) -> Path:
+    """Persist evaluation curves next to the plots for that evaluation."""
+    payload_path = eval_dir / "rep_payload.csv"
+    save_rep_payload_csv(
+        payload_path,
+        v_cmd_s=v_cmd_s,
+        p_s=p_s,
+        v_s=v_s,
+        E_s=E_s,
+        eval_reward_s=eval_reward_s,
+    )
+    return payload_path
+
+
 def build_run_meta(
     *,
     exp_name: str,
@@ -326,6 +348,19 @@ def eval_only_custom(
     else:
         v_dict, e_dict, p_dict, _, max_p = out
         extra = None
+
+    if return_arrays and extra is not None:
+        payload_path = save_eval_payload(
+            eval_dir,
+            v_cmd_s=np.asarray(extra.get("v_cmd_s", [])),
+            p_s=np.asarray(extra.get("p_s", [])),
+            v_s=np.asarray(extra.get("v_s", [])),
+            E_s=np.asarray(extra.get("E_s", [])),
+            eval_reward_s=np.asarray(extra.get("eval_reward_s", [])),
+        )
+        extra = dict(extra)
+        extra["payload_path"] = str(payload_path)
+        print(f"[eval_only] rep payload saved -> {payload_path}")
 
     eval_reward_mean = float(extra.get("eval_reward_mean", np.nan)) if extra else float("nan")
     if not np.isfinite(eval_reward_mean):
@@ -644,18 +679,17 @@ def train_and_eval_sync(
             p_dict["mean_progress"],
         ]
 
-        if return_arrays and train_repetition > 1:
-            rep_dir = Path(cfg["BASE_DIR"]).expanduser().resolve() / "analysis" / "rep_payloads"
-            payload_path = rep_dir / f"{run_exp_name}.csv"
-            save_rep_payload_csv(
-                payload_path,
+        if return_arrays:
+            payload_path = save_eval_payload(
+                eval_dir,
                 v_cmd_s=v_cmd_s,
                 p_s=p_s,
                 v_s=v_s,
                 E_s=E_s,
                 eval_reward_s=eval_reward_s,
             )
-            extra = {"payload_path": str(payload_path)}
+            extra = dict(extra)
+            extra["payload_path"] = str(payload_path)
             print(f"[train_eval] rep payload saved -> {payload_path}")
 
         return ff, meta, extra

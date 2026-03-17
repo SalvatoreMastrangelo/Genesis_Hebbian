@@ -1383,24 +1383,12 @@ class CodesignDEAP:
     @staticmethod
     def _cleanup_individual_payloads(ind: "IndType") -> None:
         """
-        Drop heavy per-individual payloads and delete temporary rep files.
+        Drop heavy per-individual payloads from memory.
 
-        This keeps only the information needed for later stages
-        (e.g., exp_name/train_it for inheritance and CSV plots).
+        Persisted evaluation payload CSVs live in the eval folders and are
+        intentionally kept on disk for later inspection.
         """
         if hasattr(ind, "_rep_payloads"):
-            try:
-                rep_payloads = list(getattr(ind, "_rep_payloads", []))
-            except Exception:
-                rep_payloads = []
-            for payload in rep_payloads:
-                rep_extra = payload.get("extra", {}) if isinstance(payload, dict) else {}
-                payload_path = rep_extra.get("payload_path") if isinstance(rep_extra, dict) else None
-                if payload_path:
-                    try:
-                        Path(payload_path).unlink(missing_ok=True)
-                    except Exception:
-                        pass
             try:
                 delattr(ind, "_rep_payloads")
             except Exception:
