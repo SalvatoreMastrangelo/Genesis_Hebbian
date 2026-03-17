@@ -293,6 +293,8 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
     # --------------------------------------------------------------------- #
     command_cfg: Dict[str, Any] = {
         "num_commands": 1,
+        "min_speed": 5.0,
+        "max_speed": 25.0,
     }
 
     return env_cfg, obs_cfg, reward_cfg, command_cfg

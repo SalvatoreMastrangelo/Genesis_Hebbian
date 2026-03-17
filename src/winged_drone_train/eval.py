@@ -120,6 +120,13 @@ def _apply_eval_env_overrides(env_cfg: Dict[str, Any]) -> None:
     )
 
 
+def _command_speed_range(command_cfg: Dict[str, Any]) -> Tuple[float, float]:
+    return (
+        float(command_cfg.get("min_speed", 5.0)),
+        float(command_cfg.get("max_speed", 20.0)),
+    )
+
+
 def _extract_tb_reward_metrics(log_dir: str | Path, ckpt: int) -> Tuple[float, float]:
     """
     Extract final reward and steps-to-90% from TensorBoard scalar logs.
@@ -422,6 +429,7 @@ def evaluation(
     # Command range used in this evaluation
     command_cfg["min_speed"] = float(vmin)
     command_cfg["max_speed"] = float(vmax)
+    command_speed_range = _command_speed_range(command_cfg)
 
     # Keep the same noise magnitudes as training, while sampling fresh noise.
     obs_cfg_eval = dict(obs_cfg)
@@ -540,14 +548,24 @@ def evaluation(
                 _write_placeholder_png(p, "pre-plot placeholder")
 
         try:
-            plotter.plot_joint_diff_heatmap(traces_all, "sweep", out=str(sweep_out))
+            plotter.plot_joint_diff_heatmap(
+                traces_all,
+                "sweep",
+                out=str(sweep_out),
+                command_speed_range=command_speed_range,
+            )
             print(f"[evaluation] joint_heatmap_sweep → {sweep_out}")
         except Exception as exc:
             print(f"[evaluation][error] joint_heatmap_sweep failed: {exc}")
             _write_placeholder_png(sweep_out, "heatmap_sweep failed")
 
         try:
-            plotter.plot_joint_diff_heatmap(traces_all, "twist", out=str(twist_out))
+            plotter.plot_joint_diff_heatmap(
+                traces_all,
+                "twist",
+                out=str(twist_out),
+                command_speed_range=command_speed_range,
+            )
             print(f"[evaluation] joint_heatmap_twist → {twist_out}")
         except Exception as exc:
             print(f"[evaluation][error] joint_heatmap_twist failed: {exc}")
@@ -562,6 +580,7 @@ def evaluation(
                 win_frac=win_frac,
                 minimal_p=minimal_progress,
                 out=str(total_out),
+                velocity_range=command_speed_range,
             )
             print(f"[evaluation] total_plot → {total_out}")
         except Exception as exc:
@@ -622,8 +641,8 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--exp_name", default="drone-forest")
     parser.add_argument("--ckpt", type=int, default=300)
     parser.add_argument("--envs", type=int, default=8192)
-    parser.add_argument("--vmin", type=float, default=6.0)
-    parser.add_argument("--vmax", type=float, default=30.0)
+    parser.add_argument("--vmin", type=float, default=5.0)
+    parser.add_argument("--vmax", type=float, default=20.0)
     parser.add_argument("--gpu", default="cuda")
     args = parser.parse_args()
 
@@ -643,6 +662,7 @@ if __name__ == "__main__":
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax
+    command_speed_range = _command_speed_range(command_cfg)
 
     # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
@@ -765,11 +785,13 @@ if __name__ == "__main__":
         traces_all,
         "sweep",
         out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_joint_behaviour_heatmap_sweep.png",
+        command_speed_range=command_speed_range,
     )
     plotter.plot_joint_diff_heatmap(
         traces_all,
         "twist",
         out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_joint_behaviour_heatmap_twist.png",
+        command_speed_range=command_speed_range,
     )
 
     EvaluationPlotter.plot_3d_speed_energy_agility(
@@ -778,6 +800,7 @@ if __name__ == "__main__":
         progress,
         v_cmd,
         html_out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_3D_speed_energy_progress.html",
+        velocity_range=command_speed_range,
     )
 
     EvaluationPlotter.plot_3d_speed_energy_progress_ma(
@@ -787,6 +810,7 @@ if __name__ == "__main__":
         v_cmd,
         win_frac=win_frac,
         html_out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_3D_speed_energy_progress_MA.html",
+        velocity_range=command_speed_range,
     )
 
     plotter.total_plot(
@@ -797,6 +821,7 @@ if __name__ == "__main__":
         win_frac=win_frac,
         minimal_p=250.0,  # same value as original script
         out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_total_plot.png",
+        velocity_range=command_speed_range,
     )
 
     plotter.total_plot_points_instead_of_ma(
@@ -807,4 +832,5 @@ if __name__ == "__main__":
         win_frac=win_frac,
         minimal_p=250.0,
         out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_total_plot_points_instead_of_ma.png",
+        velocity_range=command_speed_range,
     )

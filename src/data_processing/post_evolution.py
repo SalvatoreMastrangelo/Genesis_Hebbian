@@ -8,6 +8,7 @@ import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -29,6 +30,9 @@ INVALID_V = {0.0}
 INVALID_E = {-10.0}
 INVALID_P = {0.0}
 INVALID_PROGRESS_THRESHOLD = 250.0
+AIR_DENSITY_KG_M3 = 1.225
+AIR_DYNAMIC_VISCOSITY_KG_M_S = 1.81e-5
+NACA4_CSV_PATH = Path(__file__).resolve().parents[1] / "naca_generation" / "naca4.csv"
 
 
 def load_nsga_csv(csv_path: Path) -> pd.DataFrame:
@@ -256,6 +260,65 @@ def _parse_chromosome_matrix(df: pd.DataFrame) -> tuple[np.ndarray, pd.DataFrame
     return matrix, df.loc[idx_keep].copy()
 
 
+def _load_chromosome_drone_class():
+    try:
+        from morph_evolution.chromosome_drone import Chromosome_Drone
+    except Exception:
+        import sys
+        root = Path(__file__).resolve().parents[1]
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from morph_evolution.chromosome_drone import Chromosome_Drone
+    return Chromosome_Drone
+
+
+def _wing_reynolds_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    matrix, aligned_df = _parse_chromosome_matrix(df)
+    Chromosome_Drone = _load_chromosome_drone_class()
+    naca_df = pd.read_csv(NACA4_CSV_PATH)
+    naca_df["airfoil_code"] = naca_df["airfoil"].astype(str).str.strip().str.zfill(4)
+    re_nom_by_airfoil = naca_df.drop_duplicates("airfoil_code").set_index("airfoil_code")["ReNom"]
+
+    phys = np.asarray([Chromosome_Drone.to_physical(row) for row in matrix], dtype=float)
+    wing_span = phys[:, 0]
+    wing_ar = phys[:, 1]
+    chord = np.divide(
+        wing_span,
+        wing_ar,
+        out=np.full_like(wing_span, np.nan, dtype=float),
+        where=np.isfinite(wing_ar) & (np.abs(wing_ar) > 1e-12),
+    )
+    eff_v = pd.to_numeric(aligned_df["eff_v"], errors="coerce").to_numpy(dtype=float)
+    reynolds = (AIR_DENSITY_KG_M3 * eff_v * chord) / AIR_DYNAMIC_VISCOSITY_KG_M_S
+    wing_airfoil_codes = np.array(
+        [
+            str(Chromosome_Drone.naca_from_physical(row) or "").strip().zfill(4)
+            for row in phys
+        ],
+        dtype=object,
+    )
+    wing_re_nom = pd.Series(wing_airfoil_codes).map(re_nom_by_airfoil).to_numpy(dtype=float)
+    wing_re_delta = reynolds - wing_re_nom
+    wing_re_ratio_pct = np.divide(
+        100.0 * reynolds,
+        wing_re_nom,
+        out=np.full_like(reynolds, np.nan, dtype=float),
+        where=np.isfinite(wing_re_nom) & (np.abs(wing_re_nom) > 1e-12),
+    )
+
+    out = aligned_df.copy()
+    out["cost_of_transport"] = -pd.to_numeric(out["ff_1"], errors="coerce")
+    out["wing_span"] = wing_span
+    out["wing_aspect_ratio"] = wing_ar
+    out["wing_chord"] = chord
+    out["wing_airfoil_code"] = wing_airfoil_codes
+    out["wing_re_nom_a1"] = wing_re_nom
+    out["wing_reynolds_eff_v"] = reynolds
+    out["wing_reynolds_minus_nom_a1"] = wing_re_delta
+    out["wing_reynolds_over_nom_pct_a1"] = wing_re_ratio_pct
+    return out
+
+
 def _pca_fit_transform_unique(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if points.size == 0:
         raise ValueError("No points available for PCA.")
@@ -271,6 +334,36 @@ def _pca_fit_transform_unique(points: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return mean, vt, explained_ratio
 
 
+def _select_equally_spaced_generations(df: pd.DataFrame, n_generations: int = 6) -> list[int]:
+    unique_generations = np.sort(pd.to_numeric(df["generation"], errors="coerce").dropna().unique().astype(int))
+    if unique_generations.size == 0:
+        raise ValueError("No valid generations available for genome PCA plot.")
+    if unique_generations.size <= n_generations:
+        return unique_generations.tolist()
+
+    targets = np.linspace(unique_generations[0], unique_generations[-1], n_generations)
+    selected: list[int] = []
+    used: set[int] = set()
+
+    for idx, target in enumerate(targets):
+        if idx == n_generations - 1:
+            gen = int(unique_generations[-1])
+        else:
+            order = np.argsort(np.abs(unique_generations - target))
+            gen = None
+            for candidate_idx in order:
+                candidate = int(unique_generations[candidate_idx])
+                if candidate not in used:
+                    gen = candidate
+                    break
+            if gen is None:
+                gen = int(unique_generations[order[0]])
+        selected.append(gen)
+        used.add(gen)
+
+    return selected
+
+
 def plot_genome_pca_generations(df: pd.DataFrame, output_path: Path) -> None:
     matrix, aligned_df = _parse_chromosome_matrix(df)
     mean, vt, explained_ratio = _pca_fit_transform_unique(matrix)
@@ -281,7 +374,7 @@ def plot_genome_pca_generations(df: pd.DataFrame, output_path: Path) -> None:
     pc4_var = float(explained_ratio[3]) if explained_ratio.size > 3 else 0.0
     pc5_var = float(explained_ratio[4]) if explained_ratio.size > 4 else 0.0
 
-    generations = [0, 5, 10, 15, 20, 25]
+    generations = _select_equally_spaced_generations(aligned_df, n_generations=6)
     _apply_plot_style()
     fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharex=True, sharey=True)
 
@@ -296,6 +389,9 @@ def plot_genome_pca_generations(df: pd.DataFrame, output_path: Path) -> None:
         ax.grid(alpha=0.35)
         ax.set_xlabel(f"PC1 ({pc1_var * 100:.2f}%)")
         ax.set_ylabel(f"PC2 ({pc2_var * 100:.2f}%)")
+
+    for ax in axes.flat[len(generations):]:
+        ax.axis("off")
 
     fig.suptitle(
         "Genome PCA — "
@@ -388,7 +484,7 @@ def _get_gene_names(n_genes: int) -> list[str]:
     return gene_cols
 
 
-def plot_top5pct_gene_means(df: pd.DataFrame, output_path: Path) -> None:
+def plot_top10pct_gene_means(df: pd.DataFrame, output_path: Path) -> None:
     matrix, aligned_df = _parse_chromosome_matrix(df)
     gene_cols = _get_gene_names(matrix.shape[1])
     genome_df = pd.DataFrame(matrix, columns=gene_cols, index=aligned_df.index)
@@ -425,10 +521,10 @@ def plot_top5pct_gene_means(df: pd.DataFrame, output_path: Path) -> None:
 
         finite_vals = values[finite_mask]
         if fitness == "ff_1":
-            threshold = np.nanpercentile(finite_vals, 5)
+            threshold = np.nanpercentile(finite_vals, 10)
             select_mask = finite_mask & (values <= threshold)
         else:
-            threshold = np.nanpercentile(finite_vals, 95)
+            threshold = np.nanpercentile(finite_vals, 90)
             select_mask = finite_mask & (values >= threshold)
 
         if not np.any(select_mask):
@@ -449,7 +545,7 @@ def plot_top5pct_gene_means(df: pd.DataFrame, output_path: Path) -> None:
             ecolor=colors[fitness],
             elinewidth=1.2,
             capsize=3,
-            label=f"Top 5% {FITNESS_LABELS[fitness]}",
+            label=f"Top 10% {FITNESS_LABELS[fitness]}",
         )
     ax.set_ylabel("Mean gene value")
     ax.grid(alpha=0.35)
@@ -457,7 +553,7 @@ def plot_top5pct_gene_means(df: pd.DataFrame, output_path: Path) -> None:
     ax.set_xticks(range(len(gene_cols)))
     ax.set_xticklabels(gene_cols, rotation=25, ha="right")
     ax.set_xlabel("Genome gene")
-    ax.set_title("Top 5% Genome Means by Fitness", fontsize=14, weight="bold")
+    ax.set_title("Top 10% Genome Means by Fitness", fontsize=14, weight="bold")
     fig.tight_layout()
     fig.savefig(output_path, dpi=220)
     plt.close(fig)
@@ -1064,6 +1160,488 @@ def plot_newcomer_rank_distribution(df: pd.DataFrame, output_path: Path) -> None
     plt.close(fig)
 
 
+def _genealogy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    required = {"generation", "uid", "parent_uid_a", "parent_uid_b"}
+    missing = required - set(df.columns)
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        raise ValueError(f"Missing columns for genealogy plots: {missing_list}")
+
+    work_df = df.copy()
+    finite_mask = np.isfinite(work_df[FITNESS_COLUMNS].to_numpy(dtype=float)).all(axis=1)
+    work_df = work_df.loc[finite_mask].copy()
+    work_df = work_df.sort_values(["generation", "uid"]).drop_duplicates(subset="uid", keep="first")
+    if work_df.empty:
+        raise ValueError("No finite rows available for genealogy plots.")
+
+    work_df["uid"] = work_df["uid"].astype(int)
+    work_df["generation"] = work_df["generation"].astype(int)
+    work_df["parent_uid_a"] = work_df["parent_uid_a"].fillna(-1).astype(int)
+    work_df["parent_uid_b"] = work_df["parent_uid_b"].fillna(-1).astype(int)
+    if "pareto_rank" in work_df.columns:
+        work_df["pareto_rank"] = pd.to_numeric(work_df["pareto_rank"], errors="coerce").fillna(0).astype(int)
+    else:
+        work_df["pareto_rank"] = 0
+    return work_df
+
+
+def _founder_contribution_table(genealogy_df: pd.DataFrame) -> tuple[pd.DataFrame, list[int]]:
+    founders = genealogy_df.loc[
+        (genealogy_df["generation"] == int(genealogy_df["generation"].min()))
+        | ((genealogy_df["parent_uid_a"] < 0) & (genealogy_df["parent_uid_b"] < 0)),
+        "uid",
+    ].drop_duplicates().astype(int).tolist()
+    if not founders:
+        raise ValueError("No founder individuals available for genealogy plots.")
+
+    founder_index = {uid: idx for idx, uid in enumerate(founders)}
+    uid_to_vec: dict[int, np.ndarray] = {}
+    for row in genealogy_df.itertuples(index=False):
+        uid = int(row.uid)
+        parent_ids = [int(row.parent_uid_a), int(row.parent_uid_b)]
+        valid_parents = [pid for pid in parent_ids if pid >= 0 and pid in uid_to_vec]
+        if not valid_parents:
+            vec = np.zeros(len(founders), dtype=float)
+            vec[founder_index[uid]] = 1.0
+            uid_to_vec[uid] = vec
+            continue
+        vec = np.zeros(len(founders), dtype=float)
+        weight = 1.0 / float(len(valid_parents))
+        for pid in valid_parents:
+            vec += uid_to_vec[pid] * weight
+        total = float(np.sum(vec))
+        if total > 0.0:
+            vec /= total
+        uid_to_vec[uid] = vec
+
+    contrib_columns = [f"founder_uid_{uid}" for uid in founders]
+    contrib_df = pd.DataFrame.from_dict(uid_to_vec, orient="index", columns=contrib_columns)
+    contrib_df.index.name = "uid"
+    return contrib_df, founders
+
+
+def _primary_parent_forest(genealogy_df: pd.DataFrame) -> tuple[dict[int, int], dict[int, list[int]], dict[int, int]]:
+    parent_map: dict[int, int] = {}
+    for row in genealogy_df.itertuples(index=False):
+        uid = int(row.uid)
+        parent_uid = int(row.parent_uid_a) if int(row.parent_uid_a) >= 0 else int(row.parent_uid_b)
+        parent_map[uid] = parent_uid if parent_uid >= 0 else -1
+
+    founder_map: dict[int, int] = {}
+
+    def founder_of(uid: int) -> int:
+        if uid in founder_map:
+            return founder_map[uid]
+        parent_uid = parent_map.get(uid, -1)
+        if parent_uid < 0:
+            founder_map[uid] = uid
+            return uid
+        founder_map[uid] = founder_of(parent_uid)
+        return founder_map[uid]
+
+    for uid in parent_map:
+        founder_of(uid)
+
+    children_map: dict[int, list[int]] = {uid: [] for uid in parent_map}
+    for uid, parent_uid in parent_map.items():
+        if parent_uid >= 0 and parent_uid in children_map:
+            children_map[parent_uid].append(uid)
+    for uid in children_map:
+        children_map[uid] = sorted(children_map[uid])
+
+    return parent_map, children_map, founder_map
+
+
+def _descendant_counts_from_children(children_map: dict[int, list[int]]) -> pd.Series:
+    memo: dict[int, set[int]] = {}
+
+    def collect_descendants(uid: int) -> set[int]:
+        if uid in memo:
+            return memo[uid]
+        descendants: set[int] = set()
+        for child_uid in children_map.get(uid, []):
+            descendants.add(child_uid)
+            descendants |= collect_descendants(child_uid)
+        memo[uid] = descendants
+        return descendants
+
+    counts = {uid: len(collect_descendants(int(uid))) for uid in children_map}
+    return pd.Series(counts, name="descendant_count", dtype=float)
+
+
+def _scalar_fitness_proxy(df: pd.DataFrame) -> pd.Series:
+    points = df[FITNESS_COLUMNS].to_numpy(dtype=float).copy()
+    points[:, 1] = -points[:, 1]
+    mins = np.nanmin(points, axis=0)
+    maxs = np.nanmax(points, axis=0)
+    ranges = np.where((maxs - mins) == 0.0, 1.0, maxs - mins)
+    norm = np.clip((points - mins) / ranges, 0.0, 1.0)
+    return pd.Series(np.mean(norm, axis=1), index=df.index, dtype=float, name="fitness_proxy")
+
+
+def plot_phylogenetic_tree_like(
+    df: pd.DataFrame,
+    output_path: Path,
+    *,
+    top_lineages: int = 8,
+) -> None:
+    genealogy_df = _genealogy_dataframe(df)
+    parent_map, children_map, founder_map = _primary_parent_forest(genealogy_df)
+    desc_counts = _descendant_counts_from_children(children_map)
+    work_df = genealogy_df.copy()
+    work_df["dominant_founder_uid"] = work_df["uid"].map(lambda uid: founder_map[int(uid)]).astype(int)
+    work_df["fitness_proxy"] = _scalar_fitness_proxy(work_df)
+    work_df = work_df.join(desc_counts, on="uid")
+    work_df["descendant_count"] = work_df["descendant_count"].fillna(0.0)
+
+    final_generation = int(work_df["generation"].max())
+    final_lineage = (
+        work_df.loc[work_df["generation"] == final_generation, "dominant_founder_uid"]
+        .value_counts()
+        .sort_values(ascending=False)
+    )
+    top_founders = final_lineage.head(max(1, top_lineages)).index.astype(int).tolist()
+    work_df = work_df.loc[work_df["dominant_founder_uid"].isin(top_founders)].copy()
+    uid_rows = {int(row.uid): row for row in work_df.itertuples(index=False)}
+    selected_children_map = {uid: [child for child in children_map.get(uid, []) if child in uid_rows] for uid in uid_rows}
+
+    uid_to_y: dict[int, float] = {}
+    lineage_centers: dict[int, float] = {}
+    next_y = 0.0
+
+    def assign_subtree_y(uid: int) -> float:
+        nonlocal next_y
+        kids = selected_children_map.get(uid, [])
+        if not kids:
+            y_val = next_y
+            uid_to_y[uid] = y_val
+            next_y += 1.0
+            return y_val
+        child_ys = [assign_subtree_y(child_uid) for child_uid in kids]
+        y_val = float(np.mean(child_ys))
+        uid_to_y[uid] = y_val
+        return y_val
+
+    root_order = sorted(top_founders, key=lambda uid: (-int(final_lineage.get(uid, 0)), int(uid)))
+    for founder_uid in root_order:
+        start_y = next_y
+        assign_subtree_y(founder_uid)
+        lineage_centers[founder_uid] = 0.5 * (start_y + next_y - 1.0) if next_y > start_y else start_y
+        next_y += 2.0
+
+    sizes = 16.0 + 180.0 * np.sqrt(work_df["descendant_count"].to_numpy(dtype=float) + 1.0) / np.sqrt(
+        float(max(work_df["descendant_count"].max(), 1.0)) + 1.0
+    )
+    alphas = 0.15 + 0.85 * work_df["fitness_proxy"].to_numpy(dtype=float)
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(12.8, 8.8))
+
+    for row in work_df.itertuples(index=False):
+        child_uid = int(row.uid)
+        child_x = float(row.generation)
+        child_y = uid_to_y[child_uid]
+        parent_uid = parent_map.get(child_uid, -1)
+        if parent_uid < 0 or parent_uid not in uid_to_y:
+            continue
+        parent_row = uid_rows[parent_uid]
+        parent_x = float(parent_row.generation)
+        parent_y = uid_to_y[parent_uid]
+        edge_alpha = 0.06 + 0.34 * float(row.fitness_proxy)
+        ax.plot(
+            [parent_x, child_x],
+            [parent_y, child_y],
+            color="black",
+            alpha=edge_alpha,
+            linewidth=0.8,
+            zorder=1,
+        )
+
+    ax.scatter(
+        work_df["generation"].to_numpy(dtype=float),
+        np.array([uid_to_y[int(uid)] for uid in work_df["uid"].tolist()], dtype=float),
+        s=sizes,
+        c="black",
+        alpha=alphas,
+        edgecolors="none",
+        zorder=3,
+    )
+
+    for founder_uid in root_order:
+        ax.text(
+            final_generation + 0.55,
+            lineage_centers[founder_uid],
+            f"uid {founder_uid} ({int(final_lineage.get(founder_uid, 0))})",
+            va="center",
+            ha="left",
+            fontsize=9,
+        )
+
+    caption = (
+        "Each point is one individual from one of the strongest surviving lineages in the final generation, traced "
+        "through a primary-parent genealogy to mimic the lineage trees in Fig. 2c of the paper. Point size is "
+        "proportional to the number of descendants in this primary-parent forest; point opacity is a scalar fitness "
+        "proxy obtained by averaging normalized speed, efficiency, and progress. Because this NSGA-II run uses "
+        "two-parent crossover, following the primary recorded parent is an approximation introduced to recover a "
+        "tree-like representation comparable to the paper."
+    )
+
+    ax.set_title("Phylogenetic Tree of Top Surviving Lineages", fontsize=14, weight="bold")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Branch ordering")
+    generations = np.array(sorted(work_df["generation"].unique()), dtype=int)
+    ax.set_xticks(generations)
+    ax.grid(alpha=0.20, axis="x")
+    ax.grid(False, axis="y")
+    ax.set_yticks([])
+    fig.text(
+        0.03,
+        0.02,
+        caption,
+        ha="left",
+        va="bottom",
+        fontsize=9,
+        wrap=True,
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#bbbbbb", alpha=0.95),
+    )
+    fig.tight_layout(rect=[0.0, 0.08, 1.0, 1.0])
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+
+def plot_two_parent_genealogy(
+    df: pd.DataFrame,
+    output_path: Path,
+    *,
+    top_lineages: int = 8,
+) -> None:
+    genealogy_df = _genealogy_dataframe(df)
+    parent_map, children_map, founder_map = _primary_parent_forest(genealogy_df)
+    desc_counts = _descendant_counts_from_children(children_map)
+    work_df = genealogy_df.copy()
+    work_df["dominant_founder_uid"] = work_df["uid"].map(lambda uid: founder_map[int(uid)]).astype(int)
+    work_df["fitness_proxy"] = _scalar_fitness_proxy(work_df)
+    work_df = work_df.join(desc_counts, on="uid")
+    work_df["descendant_count"] = work_df["descendant_count"].fillna(0.0)
+
+    final_generation = int(work_df["generation"].max())
+    final_lineage = (
+        work_df.loc[work_df["generation"] == final_generation, "dominant_founder_uid"]
+        .value_counts()
+        .sort_values(ascending=False)
+    )
+    top_founders = final_lineage.head(max(1, top_lineages)).index.astype(int).tolist()
+    work_df = work_df.loc[work_df["dominant_founder_uid"].isin(top_founders)].copy()
+
+    root_order = sorted(top_founders, key=lambda uid: (-int(final_lineage.get(uid, 0)), int(uid)))
+    founder_offset = {uid: idx for idx, uid in enumerate(root_order)}
+    uid_to_y: dict[int, float] = {}
+    lineage_centers: dict[int, float] = {}
+    block_gap = 3.0
+
+    for founder_uid in root_order:
+        founder_df = work_df.loc[work_df["dominant_founder_uid"] == founder_uid].copy()
+        y_base = founder_offset[founder_uid] * (founder_df["generation"].max() + 8.0 + block_gap)
+        local_positions = {}
+        for generation in sorted(founder_df["generation"].unique()):
+            gen_df = founder_df.loc[founder_df["generation"] == generation].sort_values(
+                ["descendant_count", "fitness_proxy", "uid"],
+                ascending=[False, False, True],
+            )
+            for idx, row in enumerate(gen_df.itertuples(index=False)):
+                local_positions[int(row.uid)] = y_base + idx
+        uid_to_y.update(local_positions)
+        if local_positions:
+            ys = np.array(list(local_positions.values()), dtype=float)
+            lineage_centers[founder_uid] = float(np.mean([np.min(ys), np.max(ys)]))
+        else:
+            lineage_centers[founder_uid] = y_base
+
+    sizes = 12.0 + 120.0 * np.sqrt(work_df["descendant_count"].to_numpy(dtype=float) + 1.0) / np.sqrt(
+        float(max(work_df["descendant_count"].max(), 1.0)) + 1.0
+    )
+    alphas = 0.18 + 0.82 * work_df["fitness_proxy"].to_numpy(dtype=float)
+    uid_rows = {int(row.uid): row for row in work_df.itertuples(index=False)}
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(13.5, 9.0))
+
+    for row in work_df.itertuples(index=False):
+        child_uid = int(row.uid)
+        child_x = float(row.generation)
+        child_y = uid_to_y[child_uid]
+        for parent_uid, linestyle, linewidth, alpha_scale in (
+            (int(row.parent_uid_a), "-", 0.95, 1.0),
+            (int(row.parent_uid_b), "--", 0.8, 0.72),
+        ):
+            if parent_uid < 0 or parent_uid not in uid_to_y:
+                continue
+            parent_row = uid_rows[parent_uid]
+            parent_x = float(parent_row.generation)
+            parent_y = uid_to_y[parent_uid]
+            edge_alpha = (0.06 + 0.30 * float(row.fitness_proxy)) * alpha_scale
+            ax.plot(
+                [parent_x, child_x],
+                [parent_y, child_y],
+                color="black",
+                alpha=edge_alpha,
+                linewidth=linewidth,
+                linestyle=linestyle,
+                zorder=1,
+            )
+
+    ax.scatter(
+        work_df["generation"].to_numpy(dtype=float),
+        np.array([uid_to_y[int(uid)] for uid in work_df["uid"].tolist()], dtype=float),
+        s=sizes,
+        c="black",
+        alpha=alphas,
+        edgecolors="none",
+        zorder=3,
+    )
+
+    for founder_uid in root_order:
+        ax.text(
+            final_generation + 0.6,
+            lineage_centers[founder_uid],
+            f"uid {founder_uid} ({int(final_lineage.get(founder_uid, 0))})",
+            va="center",
+            ha="left",
+            fontsize=9,
+        )
+
+    caption = (
+        "This plot shows the real logged genealogy for the top surviving final lineages in nsga_GP. Each point is one "
+        "individual; solid edges connect parent A and dashed edges connect parent B, so most offspring visibly have "
+        "two parents. Point size is proportional to the number of descendants in the primary-parent forest used only "
+        "for sizing, while point opacity is a scalar fitness proxy from normalized speed, efficiency, and progress. "
+        "Unlike the paper-style tree, this figure is not forced into a single-parent lineage interpretation."
+    )
+
+    ax.set_title("Two-Parent Genealogy of Top Surviving Lineages", fontsize=14, weight="bold")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Lineage blocks")
+    generations = np.array(sorted(work_df["generation"].unique()), dtype=int)
+    ax.set_xticks(generations)
+    ax.grid(alpha=0.20, axis="x")
+    ax.grid(False, axis="y")
+    ax.set_yticks([])
+    legend_handles = [
+        Line2D([0], [0], marker="o", linestyle="None", color="black", markersize=6, label="node = individual"),
+        Line2D([0, 1], [0, 0], linestyle="-", color="black", linewidth=1.0, label="solid edge = parent A"),
+        Line2D([0, 1], [0, 0], linestyle="--", color="black", linewidth=1.0, label="dashed edge = parent B"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left")
+    fig.text(
+        0.03,
+        0.02,
+        caption,
+        ha="left",
+        va="bottom",
+        fontsize=9,
+        wrap=True,
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#bbbbbb", alpha=0.95),
+    )
+    fig.tight_layout(rect=[0.0, 0.08, 1.0, 1.0])
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+
+def plot_fractional_lineage_muller(
+    df: pd.DataFrame,
+    output_path: Path,
+    *,
+    top_lineages: int = 10,
+) -> None:
+    genealogy_df = _genealogy_dataframe(df)
+    _, _, founder_map = _primary_parent_forest(genealogy_df)
+    work_df = genealogy_df.copy()
+    work_df["dominant_founder_uid"] = work_df["uid"].map(lambda uid: founder_map[int(uid)]).astype(int)
+    work_df["fitness_proxy"] = _scalar_fitness_proxy(work_df)
+    generations = np.array(sorted(work_df["generation"].unique()), dtype=int)
+    lineage_counts = (
+        work_df.groupby(["generation", "dominant_founder_uid"])
+        .size()
+        .unstack(fill_value=0.0)
+        .reindex(generations, fill_value=0.0)
+    )
+    pop_sizes = work_df.groupby("generation").size().reindex(generations, fill_value=1).astype(float)
+    lineage_frac = lineage_counts.div(pop_sizes, axis=0)
+
+    final_share = lineage_frac.iloc[-1].sort_values(ascending=False)
+    top_founders = final_share.head(max(1, top_lineages)).index.astype(int).tolist()
+    plot_df = lineage_frac.loc[:, top_founders].copy()
+    plot_df.columns = [f"founder uid {uid}" for uid in top_founders]
+
+    cmap = plt.get_cmap("tab10", max(len(top_founders), 1))
+    colors = [cmap(idx % cmap.N) for idx in range(len(top_founders))]
+    labels = plot_df.columns.tolist()
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(12.8, 7.2))
+    ax.stackplot(
+        generations,
+        *[plot_df[col].to_numpy(dtype=float) for col in plot_df.columns],
+        colors=colors,
+        alpha=0.95,
+        linewidth=0.5,
+        edgecolor="white",
+    )
+    cumulative = np.zeros(len(generations), dtype=float)
+    band_centers = []
+    for col in plot_df.columns:
+        vals = plot_df[col].to_numpy(dtype=float)
+        band_centers.append(cumulative + 0.5 * vals)
+        cumulative += vals
+    for idx, founder_uid in enumerate(top_founders):
+        if plot_df.iloc[-1, idx] <= 0.0:
+            continue
+        ax.text(
+            generations[-1] + 0.35,
+            band_centers[idx][-1],
+            str(idx + 1),
+            va="center",
+            ha="left",
+            fontsize=9,
+            weight="bold",
+        )
+
+    caption = (
+        "Muller-style diagram approximating Fig. 2f of the paper. Each colored band is one of the top final surviving "
+        "lineages, defined here by the founder reached through the primary recorded parent at each reproduction event; "
+        "band thickness is that lineage's population share in each generation. Only the tracked top final lineages are "
+        "drawn, so white space corresponds to all remaining lineages outside this final top set. Numbers at the right "
+        "identify the largest final lineages. The paper can additionally mark successful topology-changing mutations "
+        "with stars, but those events are not explicitly logged in the current NSGA-II output, so this plot focuses on "
+        "lineage abundance over time."
+    )
+
+    ax.set_title("Muller Diagram of Top Surviving Lineages", fontsize=14, weight="bold")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Population share")
+    ax.set_xticks(generations)
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(alpha=0.25, axis="y")
+    ax.legend(labels, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
+    fig.text(
+        0.03,
+        0.02,
+        caption,
+        ha="left",
+        va="bottom",
+        fontsize=9,
+        wrap=True,
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#bbbbbb", alpha=0.95),
+    )
+    fig.tight_layout(rect=[0.0, 0.08, 0.84, 1.0])
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+    csv_df = plot_df.copy()
+    csv_df.insert(0, "generation", generations)
+    csv_df.to_csv(output_path.with_suffix(".csv"), index=False)
+
+
 def plot_pareto_fronts(df: pd.DataFrame, output_path: Path, generation: int) -> None:
     pairs = [("ff_0", "ff_1"), ("ff_0", "ff_2"), ("ff_1", "ff_2")]
     _apply_plot_style()
@@ -1262,6 +1840,111 @@ def plot_pareto_front_3d(df: pd.DataFrame, output_path: Path) -> None:
         fig.write_image(png_path, scale=2)
     except Exception as exc:
         print(f"plotly static export failed ({exc}); PNG not generated.")
+
+
+def plot_cot_vs_wing_reynolds(df: pd.DataFrame, output_path: Path) -> None:
+    re_df = _wing_reynolds_dataframe(df)
+    front_mask = pareto_mask_finite(re_df[FITNESS_COLUMNS].to_numpy(dtype=float))
+    re_df = re_df.loc[front_mask].copy()
+    plot_df = re_df[
+        [
+            "cost_of_transport",
+            "wing_reynolds_over_nom_pct_a1",
+            "eff_v",
+            "wing_airfoil_code",
+            "wing_span",
+            "wing_aspect_ratio",
+            "wing_chord",
+            "wing_re_nom_a1",
+            "wing_reynolds_eff_v",
+            "wing_reynolds_minus_nom_a1",
+            "exp_name",
+        ]
+    ].copy()
+    plot_df = plot_df.replace([np.inf, -np.inf], np.nan)
+    plot_df = plot_df.dropna(subset=["cost_of_transport", "wing_reynolds_over_nom_pct_a1", "eff_v"])
+    if plot_df.empty:
+        raise ValueError("No valid points available for CoT vs Reynolds-limit plot.")
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(9.5, 7.0))
+    scatter = ax.scatter(
+        plot_df["cost_of_transport"],
+        plot_df["wing_reynolds_over_nom_pct_a1"],
+        c=plot_df["eff_v"],
+        cmap="viridis",
+        s=30,
+        alpha=0.8,
+        edgecolors="black",
+        linewidths=0.3,
+    )
+    ax.set_xlabel("Cost Of Transport")
+    ax.set_ylabel("Wing Reynolds / Re_nom [%]")
+    ax.set_title("Final Global Pareto Front: CoT vs Wing Reynolds / Re_nom [%]")
+    ax.set_ylim(80.0, 300.0)
+    ax.grid(True, alpha=0.3)
+
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("eff_v")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+    csv_path = output_path.with_suffix(".csv")
+    plot_df.sort_values(["cost_of_transport", "wing_reynolds_over_nom_pct_a1", "eff_v"]).to_csv(csv_path, index=False)
+
+
+def plot_cot_vs_wing_chord(df: pd.DataFrame, output_path: Path) -> None:
+    re_df = _wing_reynolds_dataframe(df)
+    front_mask = pareto_mask_finite(re_df[FITNESS_COLUMNS].to_numpy(dtype=float))
+    re_df = re_df.loc[front_mask].copy()
+    plot_df = re_df[
+        [
+            "cost_of_transport",
+            "wing_chord",
+            "eff_v",
+            "wing_airfoil_code",
+            "wing_span",
+            "wing_aspect_ratio",
+            "wing_re_nom_a1",
+            "wing_reynolds_eff_v",
+            "wing_reynolds_over_nom_pct_a1",
+            "exp_name",
+        ]
+    ].copy()
+    plot_df = plot_df.replace([np.inf, -np.inf], np.nan)
+    plot_df = plot_df.dropna(subset=["cost_of_transport", "wing_chord", "eff_v"])
+    if plot_df.empty:
+        raise ValueError("No valid points available for CoT vs wing-chord plot.")
+
+    _apply_plot_style()
+    fig, ax = plt.subplots(figsize=(9.5, 7.0))
+    scatter = ax.scatter(
+        plot_df["cost_of_transport"],
+        plot_df["wing_chord"],
+        c=plot_df["eff_v"],
+        cmap="viridis",
+        s=30,
+        alpha=0.8,
+        edgecolors="black",
+        linewidths=0.3,
+    )
+    ax.set_xlabel("Cost Of Transport")
+    ax.set_ylabel("Wing chord [m]")
+    ax.set_title("Final Global Pareto Front: CoT vs Wing Chord")
+    ax.grid(True, alpha=0.3)
+
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("eff_v")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+    csv_path = output_path.with_suffix(".csv")
+    plot_df.sort_values(["cost_of_transport", "wing_chord", "eff_v"]).to_csv(csv_path, index=False)
+
 
 def _normalize_points(points: np.ndarray, mins: np.ndarray, ranges: np.ndarray) -> np.ndarray:
     safe_ranges = np.where(ranges == 0.0, 1.0, ranges)
@@ -1745,6 +2428,8 @@ def main() -> None:
         generation = args.generation
     plot_pareto_fronts(nsga_generated_valid, output_dir / "pareto_fronts.png", generation)
     plot_pareto_front_3d(nsga_generated_valid, output_dir / "pareto_front_3d.html")
+    plot_cot_vs_wing_reynolds(nsga_generated_valid, output_dir / "cot_vs_wing_reynolds.png")
+    plot_cot_vs_wing_chord(nsga_generated_valid, output_dir / "cot_vs_wing_chord.png")
     export_pareto_csv(nsga_generated_valid, output_dir / "pareto.csv")
     metrics_df = compute_evolutionary_metrics(df, output_dir / "evolutionary_metrics.csv")
     plot_evolutionary_metrics(metrics_df, output_dir / "evolutionary_metrics.png")
@@ -1762,9 +2447,21 @@ def main() -> None:
         nsga_generated_valid,
         output_dir / "newcomer_rank_distribution.png",
     )
+    plot_phylogenetic_tree_like(
+        nsga_generated_valid,
+        output_dir / "phylogenetic_tree_like.png",
+    )
+    plot_two_parent_genealogy(
+        nsga_generated_valid,
+        output_dir / "two_parent_genealogy.png",
+    )
+    plot_fractional_lineage_muller(
+        nsga_generated_valid,
+        output_dir / "lineage_muller_fractional.png",
+    )
     plot_genome_pca_generations(df, output_dir / "genome_pca_generations.png")
     plot_genome_fitness_correlation(df, output_dir / "genome_fitness_correlation.png")
-    plot_top5pct_gene_means(df, output_dir / "genome_top5pct_gene_means.png")
+    plot_top10pct_gene_means(df, output_dir / "genome_top10pct_gene_means.png")
 
 
 if __name__ == "__main__":

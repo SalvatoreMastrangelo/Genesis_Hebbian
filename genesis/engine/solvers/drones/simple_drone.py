@@ -36,6 +36,11 @@ class SimpleDroneAeroParameters:
     GLOBAL = {
         "rho": 1.225,
         "force_cap": 30.0,
+        "kV": 2300.0,
+        "prop_voltage_nominal": 7.4,
+        "prop_ct0": 0.093,
+        "prop_ct1": 0.0,
+        "prop_ct2": 2.148,
     }
 
     TYPES = {
@@ -216,6 +221,11 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         # Base values (per env, uniform at start)
         self._aero_base = dict(DroneAeroModel.DEFAULT_BASE_PARAMS)
         self._aero_base.setdefault("w", 0.0)
+        self._aero_base.setdefault("kV", 2300.0)
+        self._aero_base.setdefault("prop_voltage_nominal", 7.4)
+        self._aero_base.setdefault("prop_ct0", 0.093)
+        self._aero_base.setdefault("prop_ct1", 0.0)
+        self._aero_base.setdefault("prop_ct2", 2.148)
         self._ensure_wing_param_entries()
         self._ensure_elevator_param_entries()
         # Control which parameters are randomized (default: all base params).
@@ -385,6 +395,9 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         # Wing CL accumulator (left/right) and induced velocity at the prop
         self.cl_wing_b = ti.field(ti.f16, shape=(B, 2))
         self.v_ind = ti.field(ti.f16, shape=(B,))
+        self.prop_thrust_b = ti.field(ti.f32, shape=(B,))
+        self.prop_rpm_b = ti.field(ti.f32, shape=(B,))
+        self.prop_axial_speed_b = ti.field(ti.f32, shape=(B,))
 
     def _init_simple_fields(self, bound: BoundTarget) -> None:
         """
@@ -931,6 +944,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
     def _propeller_pass(self, rigid: ti.template(), b: int):
         # Speed clamp
         const_V_MAX = 40.0
+        const_EPS = 1e-6
 
         # Simple first-order low-pass on throttle (cutoff = prop_cutoff_hz)
         alpha_lpf = self._substep_dt / (
@@ -941,28 +955,56 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             float(self._thr_raw[b]) - float(self._thr_flt[b])
         )
 
-        # Max thrust and prop inflow speed
-        T_prop = float(self._thr_flt[b]) * self.max_thrust[b]
+        # Loaded prop model: throttle -> rpm -> J -> Ct(J) -> thrust
+        thr = ti.math.clamp(float(self._thr_flt[b]), 0.0, 1.0)
+        rho = ti.max(self.rho[b], const_EPS)
+        radius = ti.max(self.prop_radius, const_EPS)
+        diameter = 2.0 * radius
+        disk_area = ti.math.pi * radius * radius
+        kv_rpm_per_volt = ti.max(self.kV[b], const_EPS)
+        voltage_nominal = ti.max(self.prop_voltage_nominal[b], const_EPS)
+        ct0 = ti.max(self.prop_ct0[b], const_EPS)
+        ct1 = ti.max(self.prop_ct1[b], 0.0)
+        ct2 = ti.max(self.prop_ct2[b], 0.0)
+        static_thrust_max = ti.max(self.max_thrust[b], 0.0)
+
+        n_no_load_max = (kv_rpm_per_volt * voltage_nominal) / 60.0
+        n_static_target = ti.sqrt(
+            static_thrust_max / ti.max(rho * diameter * diameter * diameter * diameter * ct0, const_EPS)
+        )
+        n_loaded_max = ti.min(n_no_load_max, n_static_target)
+        n_prop = thr * n_loaded_max
+        rpm_prop = 60.0 * n_prop
         prop_idx = self._prop_link_idx[None]
 
         # Air velocity in prop frame (body frame)
         v_body_prop = self._get_wind_in_body(rigid, prop_idx, b)
 
-        # Axial forward speed along local axis (here aligned with z)
-        u = ti.abs(v_body_prop.z)
+        # Positive axial inflow reduces thrust; ignore beneficial negative inflow for conservatism.
+        V_n = ti.max(-float(self.prop_thrust_sign[b]) * v_body_prop.z, 0.0)
+        J = 0.0
+        if n_prop > const_EPS:
+            J = V_n / ti.max(n_prop * diameter, const_EPS)
 
-        # Induced velocity from momentum theory (Selig)
-        v_ind_val = (
-            -u
-            + ti.sqrt(
-                u * u
-                + 2.0
-                * T_prop
-                / (self.rho[b] * ti.math.pi * (self.prop_radius * self.prop_radius))
-            )
-        ) * 0.5
+        ct_scale = ti.max(0.0, 1.0 - ct1 * J - ct2 * J * J)
+        T_prop = rho * n_prop * n_prop * diameter * diameter * diameter * diameter * ct0 * ct_scale
+        T_prop = ti.math.clamp(T_prop, 0.0, static_thrust_max)
+
+        # Induced velocity from actuator-disk momentum theory using the final thrust.
+        v_ind_val = 0.0
+        if T_prop > const_EPS:
+            v_ind_val = (
+                -V_n
+                + ti.sqrt(
+                    V_n * V_n
+                    + 2.0 * T_prop / ti.max(rho * disk_area, const_EPS)
+                )
+            ) * 0.5
         v_ind_val = ti.math.clamp(v_ind_val, 0.0, const_V_MAX)
         self.v_ind[b] = ti.cast(v_ind_val, ti.f16)
+        self.prop_thrust_b[b] = T_prop
+        self.prop_rpm_b[b] = rpm_prop
+        self.prop_axial_speed_b[b] = V_n
 
     @ti.func
     def _main_surfaces_pass(self, rigid: ti.template(), b: int, l: int):
@@ -1031,8 +1073,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                 Fb = (
                     ti.Vector([0.0, 0.0, 1.0], dt=ti.f32)
                     * float(self.prop_thrust_sign[b])
-                    * float(self._thr_flt[b])
-                    * self.max_thrust[b]
+                    * self.prop_thrust_b[b]
                 )
             elif kind == 3:
                 # Rudder: forces in YZ plane
@@ -1083,7 +1124,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
                     self.lift_dbg[b, l] = ti.cast(0.0, ti.f16)
                     self.side_force_dbg[b, l] = ti.cast(L, ti.f16)
                 if kind == 4:
-                    self.drag_dbg[b, l] = ti.cast(self._thr_flt[b], ti.f16)
+                    self.drag_dbg[b, l] = ti.cast(self.prop_thrust_b[b], ti.f16)
 
     @ti.func
     def _tail_surfaces_pass(self, rigid: ti.template(), b: int, l: int):
