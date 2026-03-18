@@ -11,6 +11,13 @@ training:
   max_iterations: 20
   eval_interval: 100
 
+env:
+  dens_min: 0.0
+  dens_max: 4.0
+  dens_min_min: 0.0
+  dens_min_max: 3.0
+  growing_forest: true
+
 obs:
   add_genome_obs_actor: false
   add_genome_obs_critic: true

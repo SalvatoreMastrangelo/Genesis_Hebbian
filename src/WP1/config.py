@@ -257,6 +257,19 @@ class EnvConfig:
         Lateral corridor bounds (metres).
     forest_x_limit, x_upper : float
         Forward distance for the success condition (metres).
+    dens_min : float
+        Minimum tree density (trees/meter) at start of corridor.
+    dens_max : float
+        Maximum tree density (trees/meter) at end of corridor.
+    dens_min_min : Optional[float]
+        Lower bound for randomizing dens_min per forest during training.
+        If None, no randomization occurs.
+    dens_min_max : Optional[float]
+        Upper bound for randomizing dens_min per forest during training.
+        If None, no randomization occurs.
+    growing_forest : bool
+        Enable linearly increasing density profile. If False, use uniform
+        tree density with num_trees.
     aero_noise : bool
         Enable aerodynamic force / parameter noise.
     aero_noise_sigma0 : float
@@ -291,6 +304,11 @@ class EnvConfig:
     y_upper: float = 50.0
     forest_x_limit: float = 150.0
     x_upper: float = 150.0
+    dens_min: float = 0.0
+    dens_max: float = 4.0
+    dens_min_min: Optional[float] = None
+    dens_min_max: Optional[float] = None
+    growing_forest: bool = True
     aero_noise: bool = True
     aero_noise_sigma0: float = 0.05
     noise_sigma_param: float = 0.15

@@ -44,7 +44,6 @@ Or programmatically::
 from __future__ import annotations
 
 import builtins
-import gc
 import os
 import traceback
 from dataclasses import dataclass
@@ -240,10 +239,6 @@ def _worker_process(
                 shm["time_outs"].copy_(_to_cpu(time_outs).float())
                 shm["episode_length_buf"].copy_(_to_cpu(env.episode_length_buf))
 
-                # Clear GPU cache to prevent memory accumulation over thousands of steps
-                if torch.cuda.is_available():
-                    gc.collect()
-                    torch.cuda.empty_cache()
 
                 # Only the small episode dict travels over the Pipe
                 _reply(ok=True, event="step", episode=episode if isinstance(episode, dict) else None)
