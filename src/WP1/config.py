@@ -306,8 +306,8 @@ class ObsConfig:
 
     The observation layout (without genome) is::
 
-        [z_norm(1), quat(4), lin_vel(3), depth(20), last_actions(5), v_cmd(1)]
-        = 34 elements  (36 when depth has 22 sectors — see env)
+        [z_norm(1), quat(4), lin_vel(3), depth(20), last_actions(7), v_cmd(1)]
+        = 36 elements
 
     Attributes
     ----------

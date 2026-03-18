@@ -50,7 +50,7 @@ for YAML_PATH in "${YAMLS[@]}"; do
   REPEAT=$(grep -E '^repeat:' "${YAML_PATH}" | awk '{print $2}' || echo "1")
   REPEAT="${REPEAT:-1}"
 
-  for ((i = 1; i <= REPEAT; i++)); do
+  for ((i = 0; i < REPEAT; i++)); do
     RUN_TAG="wp1_${EXP_NAME}_r${i}"
 
     DEPENDENCY_ARG=""

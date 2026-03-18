@@ -549,6 +549,34 @@ class UrdfMaker:
             izz=f"{inertia_diag[2]:.6g}",
         )
 
+    def _add_collision_filter(
+        self,
+        collision_elem: ET.Element,
+        contype: int = 1,
+        conaffinity: int = 2,
+    ) -> None:
+        """
+        Add Genesis collision filtering to a collision element.
+
+        This prevents drones from colliding with each other while allowing
+        collisions with environment objects (cylinders).
+
+        Parameters
+        ----------
+        collision_elem : ET.Element
+            The <collision> element to add filtering to.
+        contype : int
+            Collision type for this drone (default 1).
+        conaffinity : int
+            Collision affinity mask. Use 2 for "collide only with cylinders".
+            Setting to 2 means this drone only collides with objects of type 2.
+        """
+        contact = ET.SubElement(collision_elem, "contact")
+        surface = ET.SubElement(contact, "surface")
+        contact_elem = ET.SubElement(surface, "contact")
+        ET.SubElement(contact_elem, "contype", value=str(contype))
+        ET.SubElement(contact_elem, "conaffinity", value=str(conaffinity))
+
     def _I_box(
         self,
         mass: float,
@@ -798,6 +826,7 @@ class UrdfMaker:
             "box",
             size=" ".join(f"{v:.12g}" for v in box_coll),
         )
+        self._add_collision_filter(coll)
 
         # Visual (mesh with scale)
         vis = ET.SubElement(fus, "visual", name="fuselage_visual_0")
@@ -893,6 +922,7 @@ class UrdfMaker:
             "box",
             size="0.2 0.2 0.005",
         )
+        self._add_collision_filter(coll)
 
     # ────────────────────────────────────────────────────────────────────
     # Wings (sweep & twist joints + LE shift for visuals/frames)
@@ -995,6 +1025,7 @@ class UrdfMaker:
                 "box",
                 size=" ".join(f"{v:.12g}" for v in coll_box),
             )
+            self._add_collision_filter(coll)
 
             # Aero frame anchored at CG (LE-based frame)
             ja = ET.SubElement(
@@ -1238,6 +1269,7 @@ class UrdfMaker:
                 "box",
                 size=" ".join(f"{v:.12g}" for v in box_half),
             )
+            self._add_collision_filter(coll)
 
     # ────────────────────────────────────────────────────────────────────
     # Rudder (yaw)
@@ -1303,6 +1335,7 @@ class UrdfMaker:
             "box",
             size=" ".join(f"{v:.12g}" for v in box_geom),
         )
+        self._add_collision_filter(coll)
 
         # Visual mesh
         vis = ET.SubElement(ln, "visual", name="rudder_visual_0")
