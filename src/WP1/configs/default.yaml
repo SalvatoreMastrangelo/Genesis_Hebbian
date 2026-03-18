@@ -71,6 +71,11 @@ env:
   y_upper: 50.0
   forest_x_limit: 150.0
   x_upper: 150.0
+  dens_min: 0.0
+  dens_max: 4.0
+  dens_min_min: 0.0
+  dens_min_max: 3.0
+  growing_forest: true
   aero_noise: true
   aero_noise_sigma0: 0.05
   noise_sigma_param: 0.15
