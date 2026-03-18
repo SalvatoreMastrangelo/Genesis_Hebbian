@@ -1,4 +1,4 @@
-name,type,mass,radius,max_thrust,kappa_prop,prop_cutoff_hz,c0,c1,c2,R,kV,kI,kp,kv,friction,damping
-morphing_prop,propeller,0.04,0.1,5.2,0.01,0.32,6.57,10.14,2.000,,,,,,,
-X10_servo,servo,0.025,,,,,,,,2.80,1.25,0.35,8.0,2.0,0.05,0.005
-X08_servo,servo,0.010,,,,,,,,8.84,1.39,0.55,8.0,2.0,0.1,0.01
+name,type,mass,radius,max_thrust,kappa_prop,prop_cutoff_hz,c0,c1,c2,R,kV,kI,prop_voltage_nominal,prop_ct0,prop_ct1,prop_ct2,prop_cp0,prop_cp1,prop_cp2,kp,kv,friction,damping
+morphing_prop,propeller,0.0415,0.1,5.2,0.01,0.32,6.57,10.14,2.000,,2300,,7.4,0.093,0.0,2.148,0.044,0.0,1.104,,,,
+X10_servo,servo,0.025,,,,,,,,,,,,,,,,,,8.0,2.0,0.05,0.005
+X08_servo,servo,0.010,,,,,,,,,,,,,,,,,,8.0,2.0,0.1,0.01

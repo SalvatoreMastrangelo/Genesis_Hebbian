@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus=4
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=25:00:00
+#SBATCH --time=26:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 #SBATCH --exclude=kl001
@@ -27,12 +27,12 @@ SRC="$HOME/binding/Genesis-dev"
 # ------------------------------------------------------------
 EXP_NAME=${EXP_NAME:-foundation-mixture}
 RUN_TAG=${RUN_TAG:-${EXP_NAME}_${SLURM_JOB_ID}}
-NUM_ENVS=${NUM_ENVS:-16384}
+NUM_ENVS=${NUM_ENVS:-65536} #32768  16384
 MAX_ITERS=${MAX_ITERS:-4000}
-N_URDF=${N_URDF:-256}
-URDF_SEED=${URDF_SEED:-0}
+N_URDF=${N_URDF:-200}
+URDF_SEED=${URDF_SEED:-10}
 LOGICAL_SUPER_SCENE=${LOGICAL_SUPER_SCENE:-1}
-URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-32}
+URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-50}
 NUM_WORKERS=${NUM_WORKERS:-0}
 COLLECTION_GPUS=${COLLECTION_GPUS:-${SLURM_GPUS_ON_NODE:-4}}
 VIS=${VIS:-0}

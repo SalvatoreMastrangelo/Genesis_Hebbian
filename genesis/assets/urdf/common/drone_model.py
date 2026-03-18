@@ -299,7 +299,7 @@ class DroneModel:
         """
         Load actuators.csv placed next to the URDF (same folder).
         Expected columns like:
-        name,type,mass,max_thrust,kappa_prop,prop_cutoff_hz,R,kV,kI,kp,kv
+        name,type,mass,max_thrust,kappa_prop,prop_cutoff_hz,R,kV,kI,prop_voltage_nominal,prop_ct0,prop_ct1,prop_ct2,kp,kv
         """
         csv_path = self.urdf_path.parent / "actuators.csv"
         if not csv_path.exists():
@@ -326,6 +326,10 @@ class DroneModel:
                     "R": fkey("R"),
                     "kV": fkey("kV"),
                     "kI": fkey("kI"),
+                    "prop_voltage_nominal": fkey("prop_voltage_nominal"),
+                    "prop_ct0": fkey("prop_ct0"),
+                    "prop_ct1": fkey("prop_ct1"),
+                    "prop_ct2": fkey("prop_ct2"),
                     "kp": fkey("kp"),
                     "kv": fkey("kv"),
                 }
@@ -403,6 +407,9 @@ class DroneModel:
                 surf.params["kappa_prop"] = float(row["kappa_prop"])
             if row.get("prop_cutoff_hz") is not None:
                 surf.params["prop_cutoff_hz"] = float(row["prop_cutoff_hz"])
+            for key in ("kV", "prop_voltage_nominal", "prop_ct0", "prop_ct1", "prop_ct2"):
+                if row.get(key) is not None:
+                    surf.params[key] = float(row[key])
 
             # (opzionale) massa prop se vuoi usarla altrove
             if row.get("mass") is not None:
@@ -718,6 +725,11 @@ class DroneModel:
                 ):
                     p[k] = v
 
+        if "re_nom" not in p and "re_nominal" in p:
+            p["re_nom"] = p["re_nominal"]
+        if "re_a" not in p and "a" in p:
+            p["re_a"] = p["a"]
+
         if "re_nom" in p:
             p["re_nom"] = float(p["re_nom"])
         if "re_a" in p:
@@ -932,7 +944,7 @@ class DroneAeroModel:
         # --- Prop “authoritative” params from per-surface (includes actuators.csv) ---
         for surf in self._surfaces:
             if surf.kind == SurfaceKind.PROPELLER:
-                for k in ("max_thrust", "kappa_prop", "prop_cutoff_hz"):
+                for k in ("max_thrust", "kappa_prop", "prop_cutoff_hz", "kV", "prop_voltage_nominal", "prop_ct0", "prop_ct1", "prop_ct2"):
                     if k in surf.params:
                         self.base_params[k] = float(surf.params[k])
                 break
@@ -1173,6 +1185,9 @@ class DroneAeroModel:
                 p["prop_cutoff_hz"] = float(prop["prop_cutoff_hz"])
             if "max_thrust" in prop:
                 p["max_thrust"] = float(prop["max_thrust"])
+            for key in ("kV", "prop_voltage_nominal", "prop_ct0", "prop_ct1", "prop_ct2"):
+                if key in prop:
+                    p[key] = float(prop[key])
 
         for key in ("rho", "force_cap"):
             if key not in p:

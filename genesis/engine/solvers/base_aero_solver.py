@@ -206,6 +206,8 @@ class BaseAeroSolver(Solver):
         self._thr_flt_buf = torch.empty((B,), device=self._aero_device, dtype=torch.float32)
         self._max_thrust_buf = torch.empty((B,), device=self._aero_device, dtype=torch.float32)
         self._thrust_n_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
+        self._prop_rpm_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
+        self._prop_axial_speed_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
         # Optional eval/debug cache: alpha/beta of first aero surface per env.
         self._alpha_dbg0_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
         self._beta_dbg0_buf = torch.zeros((B,), device=self._aero_device, dtype=torch.float32)
@@ -314,11 +316,19 @@ class BaseAeroSolver(Solver):
         # Refresh filtered throttle and max_thrust directly from Taichi fields,
         # then cache thrust in Newtons for consumers in `src/`.
         if hasattr(self, "max_thrust"):
-            self._copy_prop_state(self._thr_flt_buf, self._max_thrust_buf)
-            self._thrust_n_buf.copy_(self._thr_flt_buf)
-            self._thrust_n_buf.mul_(self._max_thrust_buf)
+            self._copy_prop_state(
+                self._thr_flt_buf,
+                self._max_thrust_buf,
+                self._prop_rpm_buf,
+                self._prop_axial_speed_buf,
+            )
+            self._thrust_n_buf.copy_(fb[:, -1, 2].abs())
             torch.nan_to_num_(self._thrust_n_buf, nan=0.0, posinf=0.0, neginf=0.0)
             self._thrust_n_buf.clamp_(min=0.0)
+            torch.nan_to_num_(self._prop_rpm_buf, nan=0.0, posinf=0.0, neginf=0.0)
+            self._prop_rpm_buf.clamp_(min=0.0)
+            torch.nan_to_num_(self._prop_axial_speed_buf, nan=0.0, posinf=0.0, neginf=0.0)
+            self._prop_axial_speed_buf.clamp_(min=0.0)
         if hasattr(self, "alpha_dbg") and hasattr(self, "beta_dbg"):
             self._copy_alpha_beta0(self._alpha_dbg0_buf, self._beta_dbg0_buf)
             torch.nan_to_num_(self._alpha_dbg0_buf, nan=0.0, posinf=0.0, neginf=0.0)
@@ -370,10 +380,18 @@ class BaseAeroSolver(Solver):
         self,
         out_thr_flt: ti.types.ndarray(dtype=ti.f32, ndim=1),
         out_max_thr: ti.types.ndarray(dtype=ti.f32, ndim=1),
+        out_rpm: ti.types.ndarray(dtype=ti.f32, ndim=1),
+        out_axial_speed: ti.types.ndarray(dtype=ti.f32, ndim=1),
     ):
         for b in range(self.B):
             out_thr_flt[b] = self._thr_flt[b]
             out_max_thr[b] = self.max_thrust[b]
+            out_rpm[b] = 0.0
+            out_axial_speed[b] = 0.0
+            if ti.static(hasattr(self, "prop_rpm_b")):
+                out_rpm[b] = self.prop_rpm_b[b]
+            if ti.static(hasattr(self, "prop_axial_speed_b")):
+                out_axial_speed[b] = self.prop_axial_speed_b[b]
 
     @ti.kernel
     def _copy_alpha_beta0(

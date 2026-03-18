@@ -34,6 +34,7 @@ def build_catalog(
     n: int,
     seed: int = 0,
     extra_genomes: Optional[Sequence[Sequence[float]]] = None,
+    include_standard_mydrone: bool = True,
 ) -> List[Path]:
     """
     Build a catalog of `n` unique URDFs and write `catalog.txt` in `catalog_dir`.
@@ -43,9 +44,9 @@ def build_catalog(
       - Chromosome_Drone.to_physical: mapping genome -> physical parameters
       - UrdfMaker:       physical parameters -> URDF file
 
-    A fixed "reasonable" baseline morphology is used for the first URDF,
-    then additional morphologies are sampled randomly from the continuous
-    design space.
+    Optionally includes a fixed "reasonable" baseline morphology as the
+    first URDF, then samples additional morphologies randomly from the
+    continuous design space.
 
     Parameters
     ----------
@@ -77,7 +78,7 @@ def build_catalog(
     while len(urdfs) < n and attempts < max_attempts:
         attempts += 1
 
-        if len(urdfs) == 0:
+        if include_standard_mydrone and len(urdfs) == 0:
             # A known "reasonable" baseline morphology expressed directly
             # in physical parameter space.
             phys_genome = list(STANDARD_MYDRONE_GENOME)

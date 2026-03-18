@@ -169,7 +169,12 @@ def train(
             f"[train] Building URDF catalog ({n_urdf} entries) "
             f"in {catalog_path} with seed={urdf_seed}"
         )
-        build_catalog(catalog_path, n=n_urdf, seed=urdf_seed)
+        build_catalog(
+            catalog_path,
+            n=n_urdf,
+            seed=urdf_seed,
+            include_standard_mydrone=False,
+        )
 
     use_mixture = bool(catalog_path and catalog_path.is_dir())
 
@@ -257,7 +262,7 @@ def train(
     # RSL-RL runner                                                      #
     # ------------------------------------------------------------------ #
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
-    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir)
+    rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=max_iterations)
     rl_logger.attach()
     try:
         runner.learn(

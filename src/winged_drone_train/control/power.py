@@ -10,9 +10,9 @@ This module is intentionally independent from Genesis internals.  It provides:
     adds Gaussian noise to the outputs.
 
 - compute_power_consumption:
-    Lightweight power consumption model for propellers and servos, based on
-    thrust and servo torque/velocity.  Designed to be called directly from
-    the environment using quantities already available there.
+    Lightweight power consumption model for propellers and servos. Propeller
+    power prefers an RPM/advance-ratio model when the needed states are
+    available, and falls back to a thrust polynomial otherwise.
 """
 
 from __future__ import annotations
@@ -381,6 +381,9 @@ def _read_actuator_catalog(path_str: str) -> dict[str, dict]:
                 "c2": fkey("c2"),
                 "max_thrust": fkey("max_thrust"),
                 "radius": fkey("radius"),
+                "prop_cp0": fkey("prop_cp0"),
+                "prop_cp1": fkey("prop_cp1"),
+                "prop_cp2": fkey("prop_cp2"),
             }
     return catalog
 
@@ -455,6 +458,63 @@ def _default_prop_coeffs(
     return coeffs
 
 
+def _default_prop_power_curve(
+    device: torch.device,
+    n_propellers: int,
+    *,
+    actuator_catalog_path: Optional[Path] = None,
+    aero_config: Optional[dict] = None,
+    propeller_names: Optional[Sequence[str]] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return prop power coefficients and diameters for RPM-based power.
+
+    The curve is:
+        P = rho * n^3 * D^5 * C_P(J)
+        C_P(J) = cp0 * max(0, 1 - cp1 * J - cp2 * J^2)
+
+    Returns:
+        (cp_coeffs, diameters)
+        cp_coeffs: (N, 3) tensor [cp0, cp1, cp2]
+        diameters: (N,) tensor in meters
+    """
+    cp_coeffs = torch.tensor([[0.043, 0.10, 0.80]], device=device, dtype=torch.float32)
+    cp_coeffs = cp_coeffs if n_propellers == 1 else cp_coeffs.expand(n_propellers, 3).clone()
+    diameters = torch.full((n_propellers,), 0.2, device=device, dtype=torch.float32)
+
+    if propeller_names:
+        names = [_clean_name(n) for n in propeller_names]
+        names = [n for n in names if n]
+    else:
+        names = list(_propeller_actuator_names_from_config(aero_config))
+
+    if not names:
+        return cp_coeffs, diameters
+
+    if len(names) < n_propellers:
+        names = names + [names[0]] * (n_propellers - len(names))
+    if len(names) > n_propellers:
+        names = names[:n_propellers]
+
+    csv_path = actuator_catalog_path or _default_catalog_path()
+    catalog = _read_actuator_catalog(str(csv_path))
+    for i, name in enumerate(names):
+        row = catalog.get(name)
+        if not row or row.get("type") != "propeller":
+            continue
+        cp0 = row.get("prop_cp0")
+        cp1 = row.get("prop_cp1")
+        cp2 = row.get("prop_cp2")
+        radius = row.get("radius")
+        if cp0 is not None and cp1 is not None and cp2 is not None:
+            cp_coeffs[i, 0] = cp0
+            cp_coeffs[i, 1] = cp1
+            cp_coeffs[i, 2] = cp2
+        if radius is not None and radius > 0.0:
+            diameters[i] = 2.0 * radius
+
+    return cp_coeffs, diameters
+
+
 def _default_servo_power_constants(
     drone_name: str, device: torch.device, n_servos: int
 ) -> torch.Tensor:
@@ -527,6 +587,11 @@ def compute_power_consumption(
     propeller_names: Optional[Sequence[str]] = None,
     servo_power_constants: Optional[torch.Tensor] = None,
     torque_multipliers: Optional[torch.Tensor] = None,
+    prop_rpm: Optional[torch.Tensor] = None,
+    prop_axial_speed: Optional[torch.Tensor] = None,
+    prop_cp_coefficients: Optional[torch.Tensor] = None,
+    prop_diameters: Optional[torch.Tensor] = None,
+    rho: float = 1.225,
     device: Optional[torch.device] = None,
     return_components: bool = False,
 ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -565,6 +630,19 @@ def compute_power_consumption(
             Optional (n_servos,) tensor. If None, defaults are chosen based on
             `drone_name` and the sweep/twist/tail multipliers. Interpreted as
             transmission ratios M (output/actuator).
+        prop_rpm:
+            Optional (B, n_prop) tensor with propeller RPM. When provided
+            together with `prop_axial_speed`, the RPM-based prop power model is used.
+        prop_axial_speed:
+            Optional (B, n_prop) tensor with positive axial inflow speed [m/s]
+            seen by each propeller.
+        prop_cp_coefficients:
+            Optional (n_prop, 3) tensor with [cp0, cp1, cp2] for the RPM-based
+            power model.
+        prop_diameters:
+            Optional (n_prop,) tensor with propeller diameters [m].
+        rho:
+            Air density for the RPM-based prop power model.
         device:
             Torch device. If None, inferred from `thrust`.
         return_components:
@@ -596,44 +674,100 @@ def compute_power_consumption(
     _, n_servos = servo_torque.shape
 
     # ------------------------------------------------------------------
-    # Propeller power: polynomial in thrust
+    # Propeller power: prefer RPM/advance-ratio model, fallback to P(T)
     # ------------------------------------------------------------------
-    if prop_coefficients is None:
+    use_rpm_model = prop_rpm is not None and prop_axial_speed is not None
+    if use_rpm_model:
+        if prop_rpm.device != device:
+            prop_rpm = prop_rpm.to(device)
+        if prop_axial_speed.device != device:
+            prop_axial_speed = prop_axial_speed.to(device)
+        if prop_rpm.shape != thrust.shape or prop_axial_speed.shape != thrust.shape:
+            raise ValueError("prop_rpm and prop_axial_speed must match thrust shape (B, n_prop).")
+
         csv_path = Path(actuator_catalog_path) if actuator_catalog_path is not None else None
-        if aero_config is None:
-            from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
+        if prop_cp_coefficients is None or prop_diameters is None:
+            if aero_config is None:
+                from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
 
-            aero_config = SimpleDroneAeroParameters.as_dict()
-        prop_coefficients = _default_prop_coeffs(
-            drone_name,
-            device,
-            n_prop,
-            actuator_catalog_path=csv_path,
-            aero_config=aero_config,
-            propeller_names=propeller_names,
-        )
-    else:
-        if prop_coefficients.device != device:
-            prop_coefficients = prop_coefficients.to(device)
-        if prop_coefficients.ndim != 2 or prop_coefficients.shape[1] != 3:
-            raise ValueError("prop_coefficients must have shape (N, 3).")
+                aero_config = SimpleDroneAeroParameters.as_dict()
+            cp_default, d_default = _default_prop_power_curve(
+                device,
+                n_prop,
+                actuator_catalog_path=csv_path,
+                aero_config=aero_config,
+                propeller_names=propeller_names,
+            )
+            if prop_cp_coefficients is None:
+                prop_cp_coefficients = cp_default
+            if prop_diameters is None:
+                prop_diameters = d_default
 
-        if prop_coefficients.shape[0] == 1 and n_prop > 1:
-            prop_coefficients = prop_coefficients.expand(n_prop, 3)
-        elif prop_coefficients.shape[0] != n_prop:
+        if prop_cp_coefficients.device != device:
+            prop_cp_coefficients = prop_cp_coefficients.to(device)
+        if prop_cp_coefficients.ndim != 2 or prop_cp_coefficients.shape[1] != 3:
+            raise ValueError("prop_cp_coefficients must have shape (N, 3).")
+        if prop_cp_coefficients.shape[0] == 1 and n_prop > 1:
+            prop_cp_coefficients = prop_cp_coefficients.expand(n_prop, 3)
+        elif prop_cp_coefficients.shape[0] != n_prop:
             raise ValueError(
-                f"prop_coefficients first dim must be 1 or n_prop={n_prop}, "
-                f"got {prop_coefficients.shape[0]}."
+                f"prop_cp_coefficients first dim must be 1 or n_prop={n_prop}, got {prop_cp_coefficients.shape[0]}."
             )
 
-    c0 = prop_coefficients[:, 0].view(1, n_prop)
-    c1 = prop_coefficients[:, 1].view(1, n_prop)
-    c2 = prop_coefficients[:, 2].view(1, n_prop)
+        if prop_diameters.device != device:
+            prop_diameters = prop_diameters.to(device)
+        if prop_diameters.ndim != 1 or prop_diameters.shape[0] != n_prop:
+            raise ValueError("prop_diameters must have shape (n_prop,).")
 
-    thrust_sq = thrust * thrust
-    cp_each = c0 + c1 * thrust + c2 * thrust_sq  # (B, n_prop)
-    cp_each = torch.clamp(cp_each, min=0.0)
-    prop_power = cp_each.sum(dim=1)  # (B,)
+        cp0 = prop_cp_coefficients[:, 0].view(1, n_prop)
+        cp1 = prop_cp_coefficients[:, 1].view(1, n_prop)
+        cp2 = prop_cp_coefficients[:, 2].view(1, n_prop)
+        D = prop_diameters.view(1, n_prop).clamp(min=1e-6)
+        n = (prop_rpm / 60.0).clamp(min=0.0)
+        denom = (n * D).clamp(min=1e-6)
+        J = prop_axial_speed.clamp(min=0.0) / denom
+        cp_scale = torch.clamp(1.0 - cp1 * J - cp2 * J * J, min=0.0)
+        cp_each = cp0 * cp_scale
+        prop_power_each = float(rho) * (n ** 3) * (D ** 5) * cp_each
+        prop_power_each = torch.clamp(prop_power_each, min=0.0)
+        prop_power = prop_power_each.sum(dim=1)
+    else:
+        if prop_coefficients is None:
+            csv_path = Path(actuator_catalog_path) if actuator_catalog_path is not None else None
+            if aero_config is None:
+                from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroParameters
+
+                aero_config = SimpleDroneAeroParameters.as_dict()
+            prop_coefficients = _default_prop_coeffs(
+                drone_name,
+                device,
+                n_prop,
+                actuator_catalog_path=csv_path,
+                aero_config=aero_config,
+                propeller_names=propeller_names,
+            )
+        else:
+            if prop_coefficients.device != device:
+                prop_coefficients = prop_coefficients.to(device)
+            if prop_coefficients.ndim != 2 or prop_coefficients.shape[1] != 3:
+                raise ValueError("prop_coefficients must have shape (N, 3).")
+
+            if prop_coefficients.shape[0] == 1 and n_prop > 1:
+                prop_coefficients = prop_coefficients.expand(n_prop, 3)
+            elif prop_coefficients.shape[0] != n_prop:
+                raise ValueError(
+                    f"prop_coefficients first dim must be 1 or n_prop={n_prop}, "
+                    f"got {prop_coefficients.shape[0]}."
+                )
+
+        c0 = prop_coefficients[:, 0].view(1, n_prop)
+        c1 = prop_coefficients[:, 1].view(1, n_prop)
+        c2 = prop_coefficients[:, 2].view(1, n_prop)
+
+        thrust_sq = thrust * thrust
+        cp_each = c0 + c1 * thrust + c2 * thrust_sq  # (B, n_prop)
+        cp_each = torch.clamp(cp_each, min=0.0)
+        prop_power = cp_each.sum(dim=1)  # (B,)
 
     # ------------------------------------------------------------------
     # Servo power: simple electric motor model

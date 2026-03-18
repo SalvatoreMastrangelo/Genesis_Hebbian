@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-node=5
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=4:00:00
+#SBATCH --time=1:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 #SBATCH --mail-user=salvatore.mastrangelo@epfl.ch
@@ -30,18 +30,18 @@ SRC="$HOME/binding/Genesis-dev"
 FOUNDATION_EXP=${FOUNDATION_EXP:-}
 EVAL_EXP=${EVAL_EXP:-eval_general_${SLURM_JOB_ID}}
 RUN_TAG=${RUN_TAG:-${EVAL_EXP}}
-EVAL_BASELINES=${EVAL_BASELINES:-1}
+EVAL_BASELINES=${EVAL_BASELINES:-0}
 
 EVAL_ENVS=${EVAL_ENVS:-8192}
-VMIN=${VMIN:-6.0}
-VMAX=${VMAX:-30.0}
+VMIN=${VMIN:-5.0}
+VMAX=${VMAX:-25.0}
 
 TRAIN_ENVS=${TRAIN_ENVS:-16384}
 TRAIN_ITERS=${TRAIN_ITERS:-850}
-TRAIN_REPEATS=${TRAIN_REPEATS:-0}
+TRAIN_REPEATS=${TRAIN_REPEATS:-5}
 DEVICE=${DEVICE:-cuda}
 GA_PARALLEL=${GA_PARALLEL:-auto}
-RAY_LOG_TO_DRIVER=${RAY_LOG_TO_DRIVER:-0}
+RAY_LOG_TO_DRIVER=${RAY_LOG_TO_DRIVER:-1}
 RAY_ADDRESS=${RAY_ADDRESS:-}
 RAY_MAX_CALLS=${RAY_MAX_CALLS:-0}
 RAY_TMPDIR=${RAY_TMPDIR:-}
@@ -50,7 +50,7 @@ WORKER_START_JITTER=${WORKER_START_JITTER:-2}
 
 N_URDF=${N_URDF:-50}
 URDF_SEED=${URDF_SEED:-1}
-MODEL_CKPT=${MODEL_CKPT:-2100}
+MODEL_CKPT=${MODEL_CKPT:-900}
 NSGA_CSV=${NSGA_CSV:-}
 
 # Optional: provide baseline logs dir explicitly or via FOUNDATION_RUN_DIR
@@ -65,7 +65,7 @@ MODEL_PATH4=${MODEL_PATH4:-}
 MODEL_PATH5=${MODEL_PATH5:-}
 MODEL_PATH6=${MODEL_PATH6:-}
 
-DEFAULT_MODEL_CLUSTER_1="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2590413/logs/ea/foundation-mixture/model_2100.pt"
+DEFAULT_MODEL_CLUSTER_1="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2638135/logs/ea/foundation-mixture/model_900.pt"
 DEFAULT_MODEL_CLUSTER_2="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2590414/logs/ea/foundation-mixture/model_2100.pt"
 DEFAULT_MODEL_CLUSTER_3="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2590415/logs/ea/foundation-mixture/model_2100.pt"
 DEFAULT_MODEL_CLUSTER_4="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2579212/logs/ea/foundation-mixture/model_1600.pt"
@@ -401,8 +401,8 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
   MODEL_ARGS=\"\"
   if [ \"${EVAL_BASELINES}\" -ne 0 ]; then
     if [ -n \"${MODEL_PATH1:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path1 /workspace/out/models/m1/${MODEL_BASE1}\"; fi
-    if [ -n \"${MODEL_PATH2:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path2 /workspace/out/models/m2/${MODEL_BASE2}\"; fi
-    if [ -n \"${MODEL_PATH3:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path3 /workspace/out/models/m3/${MODEL_BASE3}\"; fi
+    #if [ -n \"${MODEL_PATH2:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path2 /workspace/out/models/m2/${MODEL_BASE2}\"; fi
+    #if [ -n \"${MODEL_PATH3:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path3 /workspace/out/models/m3/${MODEL_BASE3}\"; fi
     #if [ -n \"${MODEL_PATH4:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path4 /workspace/out/models/m4/${MODEL_BASE4}\"; fi
     #if [ -n \"${MODEL_PATH5:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path5 /workspace/out/models/m5/${MODEL_BASE5}\"; fi
     #if [ -n \"${MODEL_PATH6:-}\" ]; then MODEL_ARGS=\"\$MODEL_ARGS --model-path6 /workspace/out/models/m6/${MODEL_BASE6}\"; fi

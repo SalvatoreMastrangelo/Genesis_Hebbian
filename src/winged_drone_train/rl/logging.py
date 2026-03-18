@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -7,12 +8,18 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 
 
+_TB_ADD_SCALAR_PATCHED = False
+_TB_ORIG_ADD_SCALAR = None
+_TB_LOGGER_BY_DIR: Dict[str, "RLTrainingLogger"] = {}
+
+
 class RLTrainingLogger:
     """Attach robust PPO diagnostics logging/printing to an RSL-RL runner."""
 
-    def __init__(self, runner: Any, log_dir: Path) -> None:
+    def __init__(self, runner: Any, log_dir: Path, max_iterations: Optional[int] = None) -> None:
         self.runner = runner
         self.log_dir = Path(log_dir)
+        self.max_iterations = int(max_iterations) if max_iterations is not None else 0
 
         self.writer = None
         self.owns_writer = False
@@ -21,6 +28,14 @@ class RLTrainingLogger:
         self.original_update = getattr(self.alg, "update", None) if self.alg is not None else None
         self.update_step = {"i": 0}
         self.cuda_mem_log_every = max(1, int(os.getenv("PPO_CUDA_MEM_LOG_EVERY", "5") or 5))
+        self.csv_path = self.log_dir / "tensorboard_1pct.csv"
+        self.current_scalars: Dict[str, float] = {}
+        self.pending_csv_step: Optional[int] = None
+        self.next_csv_percent = 1
+        self.csv_rows: list[Dict[str, float]] = []
+        self.csv_columns: list[str] = ["progress_pct", "step"]
+        self.csv_tag_columns: Dict[str, str] = {}
+        self.csv_column_counts: Dict[str, int] = {}
 
         self.internal_capture: Dict[str, Any] = {
             "enabled": False,
@@ -55,6 +70,10 @@ class RLTrainingLogger:
         except Exception:
             pass
         try:
+            self._flush_pending_csv_step()
+        except Exception:
+            pass
+        try:
             if self.actor_critic is not None and self.wrapped_get_actions_log_prob is not None:
                 self.actor_critic.get_actions_log_prob = self.wrapped_get_actions_log_prob
         except Exception:
@@ -65,6 +84,7 @@ class RLTrainingLogger:
                     setattr(self.storage_obj, method_name, method_orig)
         except Exception:
             pass
+        _TB_LOGGER_BY_DIR.pop(str(self.log_dir.resolve()), None)
         try:
             if self.owns_writer and self.writer is not None:
                 self.writer.close()
@@ -84,6 +104,133 @@ class RLTrainingLogger:
         except Exception:
             self.writer = None
             self.owns_writer = False
+        self._register_tensorboard_hook()
+
+    def _register_tensorboard_hook(self) -> None:
+        global _TB_ADD_SCALAR_PATCHED, _TB_ORIG_ADD_SCALAR
+        try:
+            resolved_log_dir = str(self.log_dir.resolve())
+        except Exception:
+            resolved_log_dir = str(self.log_dir)
+        _TB_LOGGER_BY_DIR[resolved_log_dir] = self
+        if _TB_ADD_SCALAR_PATCHED:
+            return
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+
+            _TB_ORIG_ADD_SCALAR = SummaryWriter.add_scalar
+
+            def _wrapped_add_scalar(writer_self: Any, tag: str, scalar_value: Any, global_step: Optional[int] = None, *args: Any, **kwargs: Any) -> Any:
+                out = _TB_ORIG_ADD_SCALAR(writer_self, tag, scalar_value, global_step, *args, **kwargs)
+                try:
+                    writer_log_dir = getattr(writer_self, "log_dir", None)
+                    if writer_log_dir is not None:
+                        logger = _TB_LOGGER_BY_DIR.get(str(Path(writer_log_dir).resolve()))
+                        if logger is not None:
+                            logger._track_scalar_for_csv(tag, scalar_value, global_step)
+                except Exception:
+                    pass
+                return out
+
+            SummaryWriter.add_scalar = _wrapped_add_scalar
+            _TB_ADD_SCALAR_PATCHED = True
+        except Exception:
+            pass
+
+    def _ensure_csv_file_parent(self) -> bool:
+        if self.max_iterations <= 0:
+            return False
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception:
+            return False
+
+    def _simplify_tag_name(self, tag: str) -> str:
+        txt = str(tag).strip().replace("\\", "/")
+        replacements = (
+            ("Episode/", "ep_"),
+            ("Train/", "train_"),
+            ("Loss/", "loss_"),
+            ("Policy/", "policy_"),
+            ("PPO/", "ppo_"),
+            ("Opt/", "opt_"),
+            ("Adv/", "adv_"),
+            ("CUDA/", "cuda_"),
+            ("Critic/", "critic_"),
+        )
+        for prefix, repl in replacements:
+            if txt.startswith(prefix):
+                txt = repl + txt[len(prefix):]
+                break
+        txt = txt.replace("/", "_").replace(".", "_").replace("-", "_").replace(" ", "_")
+        txt = "".join(ch.lower() if ch.isalnum() or ch == "_" else "_" for ch in txt)
+        while "__" in txt:
+            txt = txt.replace("__", "_")
+        txt = txt.strip("_") or "metric"
+        return txt
+
+    def _column_name_for_tag(self, tag: str) -> str:
+        existing = self.csv_tag_columns.get(tag)
+        if existing is not None:
+            return existing
+        base = self._simplify_tag_name(tag)
+        count = self.csv_column_counts.get(base, 0)
+        col = base if count == 0 else f"{base}_{count + 1}"
+        self.csv_column_counts[base] = count + 1
+        self.csv_tag_columns[tag] = col
+        if col not in self.csv_columns:
+            self.csv_columns.append(col)
+        return col
+
+    def _write_csv_snapshot_table(self) -> None:
+        if not self._ensure_csv_file_parent():
+            return
+        try:
+            with self.csv_path.open("w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=self.csv_columns, extrasaction="ignore")
+                writer.writeheader()
+                for row in self.csv_rows:
+                    writer.writerow(row)
+        except Exception:
+            pass
+
+    def _track_scalar_for_csv(self, tag: Any, scalar_value: Any, global_step: Optional[int]) -> None:
+        if self.max_iterations <= 0 or global_step is None:
+            return
+        try:
+            step = int(global_step)
+        except Exception:
+            return
+
+        scalar = self._to_float(scalar_value)
+        if scalar is None:
+            return
+
+        if self.pending_csv_step is not None and step != self.pending_csv_step:
+            self._flush_pending_csv_step()
+
+        self.pending_csv_step = step
+        self.current_scalars[str(tag)] = scalar
+
+    def _flush_pending_csv_step(self) -> None:
+        if self.pending_csv_step is None or self.max_iterations <= 0:
+            return
+
+        completed_pct = int(((self.pending_csv_step + 1) * 100) // max(1, self.max_iterations))
+        if completed_pct <= 0:
+            return
+
+        while self.next_csv_percent <= min(100, completed_pct):
+            row: Dict[str, float] = {
+                "progress_pct": float(self.next_csv_percent),
+                "step": float(self.pending_csv_step),
+            }
+            for tag in sorted(self.current_scalars):
+                row[self._column_name_for_tag(tag)] = self.current_scalars[tag]
+            self.csv_rows.append(row)
+            self.next_csv_percent += 1
+        self._write_csv_snapshot_table()
 
     def _to_float(self, val: Any) -> Optional[float]:
         try:

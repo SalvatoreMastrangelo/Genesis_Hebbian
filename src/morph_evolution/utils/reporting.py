@@ -235,6 +235,10 @@ class FitnessDB:
         row = df[df.chromosome == str(list(chromo))]
         if row.empty:
             return None
+        if "evaluated_fresh" in row.columns:
+            fresh = row[row["evaluated_fresh"].fillna(0).astype(int) == 1]
+            if not fresh.empty:
+                row = fresh
         return [row[f"ff_{i}"].min() for i in range(self.n_obj)]
 
     def insert(self, chromo: Sequence[float], ff: Sequence[float], meta: Dict[str, Any]) -> None:
@@ -274,6 +278,38 @@ class FitnessDB:
                 "parent_uid_b",
                 "parent_gen_a",
                 "parent_gen_b",
+                "lineage_id",
+                "lineage_root_uid",
+                "lineage_depth",
+                "primary_parent_uid",
+                "primary_parent_generation",
+                "reproduction_operator",
+                "crossover_applied",
+                "mutation_applied",
+                "mutation_changed_genome",
+                "topology_mutation",
+                "topology_mutation_magnitude",
+                "topology_signature",
+                "parent_a_topology_signature",
+                "parent_b_topology_signature",
+                "primary_parent_topology_signature",
+                "successful_topology_mutation",
+                "beneficial_topology_event",
+                "selected_next_generation",
+                "parent_best_scalar_fitness",
+                "offspring_scalar_fitness",
+                "lineage_event",
+                "parent_a_lineage_id",
+                "parent_b_lineage_id",
+                "cross_lineage_mating",
+                "airfoil_signature",
+                "parent_a_airfoil_signature",
+                "parent_b_airfoil_signature",
+                "primary_parent_airfoil_signature",
+                "airfoil_mutation",
+                "successful_airfoil_mutation",
+                "beneficial_airfoil_event",
+                "offspring_vs_best_parent_scalar_delta",
                 "row_kind",
                 "rep_idx",
                 "exp_name",
@@ -283,6 +319,8 @@ class FitnessDB:
                 "train_repetition",
                 "max_p",
                 "minimal_p",
+                "train_duration_s",
+                "eval_duration_s",
                 "vel_v",
                 "vel_E",
                 "vel_P",
@@ -308,6 +346,10 @@ class FitnessDB:
                 "final_reward",
                 "steps90_pct",
                 "eval_reward_mean",
+                "cache_hit",
+                "evaluated_fresh",
+                "cache_source_uid",
+                "cache_source_generation",
             ]
         )
         return pd.DataFrame(columns=cols)
@@ -336,6 +378,10 @@ class FitnessDB:
     def get_row(self, chromo: Sequence[float]) -> Optional[pd.Series]:
         df = self._filter_agg_rows(self.df)
         row = df[df.chromosome == str(list(chromo))]
+        if not row.empty and "evaluated_fresh" in row.columns:
+            fresh = row[row["evaluated_fresh"].fillna(0).astype(int) == 1]
+            if not fresh.empty:
+                row = fresh
         return None if row.empty else row.iloc[0]
 
 
@@ -377,80 +423,215 @@ def init_report_csvs(
     population_history_path: Path,
     pareto_history_path: Path,
     generation_summary_path: Path,
+    selection_pool_history_path: Path,
 ) -> None:
-    if not population_history_path.exists():
-        pd.DataFrame(
-            columns=[
-                "generation",
-                "uid",
-                "parent_uid_a",
-                "parent_uid_b",
-                "parent_gen_a",
-                "parent_gen_b",
-                "pareto_rank",
-                "is_pareto",
-                "chromosome",
-                "ff_0",
-                "ff_1",
-                "ff_2",
-                "max_p",
-                "exp_name",
-                "train_it",
-                "ckpt_idx",
-                "failed",
-                "fail_category",
-                "fail_reason",
-            ]
-        ).to_csv(population_history_path, index=False)
+    def _ensure_csv_columns(path: Path, columns: List[str]) -> None:
+        if not path.exists():
+            pd.DataFrame(columns=columns).to_csv(path, index=False)
+            return
+        df = pd.read_csv(path)
+        changed = False
+        for col in columns:
+            if col not in df.columns:
+                df[col] = np.nan
+                changed = True
+        if list(df.columns) != columns:
+            extra = [c for c in df.columns if c not in columns]
+            df = df[columns + extra]
+            changed = True
+        if changed:
+            df.to_csv(path, index=False)
 
-    if not pareto_history_path.exists():
-        pd.DataFrame(
-            columns=[
-                "generation",
-                "uid",
-                "parent_uid_a",
-                "parent_uid_b",
-                "parent_gen_a",
-                "parent_gen_b",
-                "chromosome",
-                "ff_0",
-                "ff_1",
-                "ff_2",
-                "max_p",
-                "exp_name",
-                "train_it",
-                "ckpt_idx",
-                "failed",
-                "fail_category",
-                "fail_reason",
-            ]
-        ).to_csv(pareto_history_path, index=False)
+    population_cols = [
+        "generation",
+        "uid",
+        "parent_uid_a",
+        "parent_uid_b",
+        "parent_gen_a",
+        "parent_gen_b",
+        "lineage_id",
+        "lineage_root_uid",
+        "lineage_depth",
+        "primary_parent_uid",
+        "primary_parent_generation",
+        "reproduction_operator",
+        "crossover_applied",
+        "mutation_applied",
+        "mutation_changed_genome",
+        "topology_mutation",
+        "topology_mutation_magnitude",
+        "topology_signature",
+        "parent_a_topology_signature",
+        "parent_b_topology_signature",
+        "primary_parent_topology_signature",
+        "successful_topology_mutation",
+        "beneficial_topology_event",
+        "selected_next_generation",
+        "parent_best_scalar_fitness",
+        "offspring_scalar_fitness",
+        "lineage_event",
+        "parent_a_lineage_id",
+        "parent_b_lineage_id",
+        "cross_lineage_mating",
+        "airfoil_signature",
+        "parent_a_airfoil_signature",
+        "parent_b_airfoil_signature",
+        "primary_parent_airfoil_signature",
+        "airfoil_mutation",
+        "successful_airfoil_mutation",
+        "beneficial_airfoil_event",
+        "offspring_vs_best_parent_scalar_delta",
+        "pareto_rank",
+        "is_pareto",
+        "chromosome",
+        "ff_0",
+        "ff_1",
+        "ff_2",
+        "max_p",
+        "exp_name",
+        "train_it",
+        "ckpt_idx",
+        "failed",
+        "fail_category",
+        "fail_reason",
+    ]
+    pareto_cols = [
+        "generation",
+        "uid",
+        "parent_uid_a",
+        "parent_uid_b",
+        "parent_gen_a",
+        "parent_gen_b",
+        "lineage_id",
+        "lineage_root_uid",
+        "lineage_depth",
+        "primary_parent_uid",
+        "primary_parent_generation",
+        "reproduction_operator",
+        "crossover_applied",
+        "mutation_applied",
+        "mutation_changed_genome",
+        "topology_mutation",
+        "topology_mutation_magnitude",
+        "topology_signature",
+        "parent_a_topology_signature",
+        "parent_b_topology_signature",
+        "primary_parent_topology_signature",
+        "successful_topology_mutation",
+        "beneficial_topology_event",
+        "selected_next_generation",
+        "parent_best_scalar_fitness",
+        "offspring_scalar_fitness",
+        "lineage_event",
+        "parent_a_lineage_id",
+        "parent_b_lineage_id",
+        "cross_lineage_mating",
+        "airfoil_signature",
+        "parent_a_airfoil_signature",
+        "parent_b_airfoil_signature",
+        "primary_parent_airfoil_signature",
+        "airfoil_mutation",
+        "successful_airfoil_mutation",
+        "beneficial_airfoil_event",
+        "offspring_vs_best_parent_scalar_delta",
+        "chromosome",
+        "ff_0",
+        "ff_1",
+        "ff_2",
+        "max_p",
+        "exp_name",
+        "train_it",
+        "ckpt_idx",
+        "failed",
+        "fail_category",
+        "fail_reason",
+    ]
+    summary_cols = [
+        "generation",
+        "population_size",
+        "valid_count",
+        "invalid_count",
+        "failure_count",
+        "failure_rate",
+        "pareto_size",
+        "minimal_p",
+        "best_vel",
+        "best_eff",
+        "best_prog",
+        "median_vel",
+        "median_eff",
+        "median_prog",
+        "q1_vel",
+        "q1_eff",
+        "q1_prog",
+        "q3_vel",
+        "q3_eff",
+        "q3_prog",
+    ]
+    selection_cols = [
+        "generation",
+        "uid",
+        "origin",
+        "selected",
+        "preselect_pareto_rank",
+        "preselect_is_pareto",
+        "parent_uid_a",
+        "parent_uid_b",
+        "parent_gen_a",
+        "parent_gen_b",
+        "lineage_id",
+        "lineage_root_uid",
+        "lineage_depth",
+        "primary_parent_uid",
+        "primary_parent_generation",
+        "reproduction_operator",
+        "crossover_applied",
+        "mutation_applied",
+        "mutation_changed_genome",
+        "topology_mutation",
+        "topology_mutation_magnitude",
+        "topology_signature",
+        "parent_a_topology_signature",
+        "parent_b_topology_signature",
+        "primary_parent_topology_signature",
+        "successful_topology_mutation",
+        "beneficial_topology_event",
+        "selected_next_generation",
+        "parent_best_scalar_fitness",
+        "offspring_scalar_fitness",
+        "lineage_event",
+        "parent_a_lineage_id",
+        "parent_b_lineage_id",
+        "cross_lineage_mating",
+        "airfoil_signature",
+        "parent_a_airfoil_signature",
+        "parent_b_airfoil_signature",
+        "primary_parent_airfoil_signature",
+        "airfoil_mutation",
+        "successful_airfoil_mutation",
+        "beneficial_airfoil_event",
+        "offspring_vs_best_parent_scalar_delta",
+        "chromosome",
+        "ff_0",
+        "ff_1",
+        "ff_2",
+        "max_p",
+        "exp_name",
+        "train_it",
+        "ckpt_idx",
+        "failed",
+        "fail_category",
+        "fail_reason",
+        "cache_hit",
+        "evaluated_fresh",
+        "cache_source_uid",
+        "cache_source_generation",
+    ]
 
-    if not generation_summary_path.exists():
-        pd.DataFrame(
-            columns=[
-                "generation",
-                "population_size",
-                "valid_count",
-                "invalid_count",
-                "failure_count",
-                "failure_rate",
-                "pareto_size",
-                "minimal_p",
-                "best_vel",
-                "best_eff",
-                "best_prog",
-                "median_vel",
-                "median_eff",
-                "median_prog",
-                "q1_vel",
-                "q1_eff",
-                "q1_prog",
-                "q3_vel",
-                "q3_eff",
-                "q3_prog",
-            ]
-        ).to_csv(generation_summary_path, index=False)
+    _ensure_csv_columns(population_history_path, population_cols)
+    _ensure_csv_columns(pareto_history_path, pareto_cols)
+    _ensure_csv_columns(generation_summary_path, summary_cols)
+    _ensure_csv_columns(selection_pool_history_path, selection_cols)
 
 
 def write_run_manifest(
@@ -546,6 +727,38 @@ def append_population_history(
                 parent_uid_b=getattr(ind, "parent_uid_b", -1),
                 parent_gen_a=getattr(ind, "parent_gen_a", -1),
                 parent_gen_b=getattr(ind, "parent_gen_b", -1),
+                lineage_id=getattr(ind, "lineage_id", -1),
+                lineage_root_uid=getattr(ind, "lineage_root_uid", -1),
+                lineage_depth=getattr(ind, "lineage_depth", -1),
+                primary_parent_uid=getattr(ind, "primary_parent_uid", -1),
+                primary_parent_generation=getattr(ind, "primary_parent_generation", -1),
+                reproduction_operator=getattr(ind, "reproduction_operator", ""),
+                crossover_applied=getattr(ind, "crossover_applied", 0),
+                mutation_applied=getattr(ind, "mutation_applied", 0),
+                mutation_changed_genome=getattr(ind, "mutation_changed_genome", 0),
+                topology_mutation=getattr(ind, "topology_mutation", 0),
+                topology_mutation_magnitude=getattr(ind, "topology_mutation_magnitude", 0),
+                topology_signature=getattr(ind, "topology_signature", ""),
+                parent_a_topology_signature=getattr(ind, "parent_a_topology_signature", ""),
+                parent_b_topology_signature=getattr(ind, "parent_b_topology_signature", ""),
+                primary_parent_topology_signature=getattr(ind, "primary_parent_topology_signature", ""),
+                successful_topology_mutation=getattr(ind, "successful_topology_mutation", 0),
+                beneficial_topology_event=getattr(ind, "beneficial_topology_event", 0),
+                selected_next_generation=getattr(ind, "selected_next_generation", 0),
+                parent_best_scalar_fitness=getattr(ind, "parent_best_scalar_fitness", np.nan),
+                offspring_scalar_fitness=getattr(ind, "offspring_scalar_fitness", np.nan),
+                lineage_event=getattr(ind, "lineage_event", ""),
+                parent_a_lineage_id=getattr(ind, "parent_a_lineage_id", -1),
+                parent_b_lineage_id=getattr(ind, "parent_b_lineage_id", -1),
+                cross_lineage_mating=getattr(ind, "cross_lineage_mating", 0),
+                airfoil_signature=getattr(ind, "airfoil_signature", ""),
+                parent_a_airfoil_signature=getattr(ind, "parent_a_airfoil_signature", ""),
+                parent_b_airfoil_signature=getattr(ind, "parent_b_airfoil_signature", ""),
+                primary_parent_airfoil_signature=getattr(ind, "primary_parent_airfoil_signature", ""),
+                airfoil_mutation=getattr(ind, "airfoil_mutation", 0),
+                successful_airfoil_mutation=getattr(ind, "successful_airfoil_mutation", 0),
+                beneficial_airfoil_event=getattr(ind, "beneficial_airfoil_event", 0),
+                offspring_vs_best_parent_scalar_delta=getattr(ind, "offspring_vs_best_parent_scalar_delta", np.nan),
                 pareto_rank=rank_map.get(id(ind), -1),
                 is_pareto=int(rank_map.get(id(ind), -1) == 0),
                 chromosome=str(list(ind)),
@@ -595,6 +808,38 @@ def append_pareto_history(
                 parent_uid_b=getattr(ind, "parent_uid_b", -1),
                 parent_gen_a=getattr(ind, "parent_gen_a", -1),
                 parent_gen_b=getattr(ind, "parent_gen_b", -1),
+                lineage_id=getattr(ind, "lineage_id", -1),
+                lineage_root_uid=getattr(ind, "lineage_root_uid", -1),
+                lineage_depth=getattr(ind, "lineage_depth", -1),
+                primary_parent_uid=getattr(ind, "primary_parent_uid", -1),
+                primary_parent_generation=getattr(ind, "primary_parent_generation", -1),
+                reproduction_operator=getattr(ind, "reproduction_operator", ""),
+                crossover_applied=getattr(ind, "crossover_applied", 0),
+                mutation_applied=getattr(ind, "mutation_applied", 0),
+                mutation_changed_genome=getattr(ind, "mutation_changed_genome", 0),
+                topology_mutation=getattr(ind, "topology_mutation", 0),
+                topology_mutation_magnitude=getattr(ind, "topology_mutation_magnitude", 0),
+                topology_signature=getattr(ind, "topology_signature", ""),
+                parent_a_topology_signature=getattr(ind, "parent_a_topology_signature", ""),
+                parent_b_topology_signature=getattr(ind, "parent_b_topology_signature", ""),
+                primary_parent_topology_signature=getattr(ind, "primary_parent_topology_signature", ""),
+                successful_topology_mutation=getattr(ind, "successful_topology_mutation", 0),
+                beneficial_topology_event=getattr(ind, "beneficial_topology_event", 0),
+                selected_next_generation=getattr(ind, "selected_next_generation", 0),
+                parent_best_scalar_fitness=getattr(ind, "parent_best_scalar_fitness", np.nan),
+                offspring_scalar_fitness=getattr(ind, "offspring_scalar_fitness", np.nan),
+                lineage_event=getattr(ind, "lineage_event", ""),
+                parent_a_lineage_id=getattr(ind, "parent_a_lineage_id", -1),
+                parent_b_lineage_id=getattr(ind, "parent_b_lineage_id", -1),
+                cross_lineage_mating=getattr(ind, "cross_lineage_mating", 0),
+                airfoil_signature=getattr(ind, "airfoil_signature", ""),
+                parent_a_airfoil_signature=getattr(ind, "parent_a_airfoil_signature", ""),
+                parent_b_airfoil_signature=getattr(ind, "parent_b_airfoil_signature", ""),
+                primary_parent_airfoil_signature=getattr(ind, "primary_parent_airfoil_signature", ""),
+                airfoil_mutation=getattr(ind, "airfoil_mutation", 0),
+                successful_airfoil_mutation=getattr(ind, "successful_airfoil_mutation", 0),
+                beneficial_airfoil_event=getattr(ind, "beneficial_airfoil_event", 0),
+                offspring_vs_best_parent_scalar_delta=getattr(ind, "offspring_vs_best_parent_scalar_delta", np.nan),
                 chromosome=str(list(ind)),
                 ff_0=ff[0],
                 ff_1=ff[1],
@@ -676,3 +921,101 @@ def append_generation_summary(
         header=False,
         index=False,
     )
+
+
+def append_selection_pool_history(
+    selection_pool_history_path: Path,
+    generation: int,
+    pool: Sequence[Any],
+    fronts: Sequence[Sequence[Any]],
+    selected_uids: Sequence[int],
+    origin_map: Dict[int, str],
+) -> None:
+    rank_map: Dict[int, int] = {}
+    for ridx, front in enumerate(fronts):
+        for ind in front:
+            rank_map[id(ind)] = ridx
+
+    selected_uid_set = {int(uid) for uid in selected_uids}
+    rows: List[Dict[str, Any]] = []
+    for ind in pool:
+        ff = list(ind.fitness.values)
+        train_it_raw = getattr(ind, "train_it", np.nan)
+        try:
+            ckpt_idx = ckpt_idx_from_train_it(train_it_raw)
+        except Exception:
+            ckpt_idx = np.nan
+        fail_reason = getattr(ind, "fail_reason", "")
+        fail_category = getattr(ind, "fail_category", "")
+        if not fail_category and fail_reason:
+            fail_category, fail_reason = parse_fail_reason(fail_reason)
+        uid = int(getattr(ind, "uid", -1))
+        rows.append(
+            dict(
+                generation=generation,
+                uid=uid,
+                origin=origin_map.get(id(ind), "unknown"),
+                selected=int(uid in selected_uid_set),
+                preselect_pareto_rank=rank_map.get(id(ind), -1),
+                preselect_is_pareto=int(rank_map.get(id(ind), -1) == 0),
+                parent_uid_a=getattr(ind, "parent_uid_a", -1),
+                parent_uid_b=getattr(ind, "parent_uid_b", -1),
+                parent_gen_a=getattr(ind, "parent_gen_a", -1),
+                parent_gen_b=getattr(ind, "parent_gen_b", -1),
+                lineage_id=getattr(ind, "lineage_id", -1),
+                lineage_root_uid=getattr(ind, "lineage_root_uid", -1),
+                lineage_depth=getattr(ind, "lineage_depth", -1),
+                primary_parent_uid=getattr(ind, "primary_parent_uid", -1),
+                primary_parent_generation=getattr(ind, "primary_parent_generation", -1),
+                reproduction_operator=getattr(ind, "reproduction_operator", ""),
+                crossover_applied=getattr(ind, "crossover_applied", 0),
+                mutation_applied=getattr(ind, "mutation_applied", 0),
+                mutation_changed_genome=getattr(ind, "mutation_changed_genome", 0),
+                topology_mutation=getattr(ind, "topology_mutation", 0),
+                topology_mutation_magnitude=getattr(ind, "topology_mutation_magnitude", 0),
+                topology_signature=getattr(ind, "topology_signature", ""),
+                parent_a_topology_signature=getattr(ind, "parent_a_topology_signature", ""),
+                parent_b_topology_signature=getattr(ind, "parent_b_topology_signature", ""),
+                primary_parent_topology_signature=getattr(ind, "primary_parent_topology_signature", ""),
+                successful_topology_mutation=getattr(ind, "successful_topology_mutation", 0),
+                beneficial_topology_event=getattr(ind, "beneficial_topology_event", 0),
+                selected_next_generation=getattr(ind, "selected_next_generation", 0),
+                parent_best_scalar_fitness=getattr(ind, "parent_best_scalar_fitness", np.nan),
+                offspring_scalar_fitness=getattr(ind, "offspring_scalar_fitness", np.nan),
+                lineage_event=getattr(ind, "lineage_event", ""),
+                parent_a_lineage_id=getattr(ind, "parent_a_lineage_id", -1),
+                parent_b_lineage_id=getattr(ind, "parent_b_lineage_id", -1),
+                cross_lineage_mating=getattr(ind, "cross_lineage_mating", 0),
+                airfoil_signature=getattr(ind, "airfoil_signature", ""),
+                parent_a_airfoil_signature=getattr(ind, "parent_a_airfoil_signature", ""),
+                parent_b_airfoil_signature=getattr(ind, "parent_b_airfoil_signature", ""),
+                primary_parent_airfoil_signature=getattr(ind, "primary_parent_airfoil_signature", ""),
+                airfoil_mutation=getattr(ind, "airfoil_mutation", 0),
+                successful_airfoil_mutation=getattr(ind, "successful_airfoil_mutation", 0),
+                beneficial_airfoil_event=getattr(ind, "beneficial_airfoil_event", 0),
+                offspring_vs_best_parent_scalar_delta=getattr(ind, "offspring_vs_best_parent_scalar_delta", np.nan),
+                chromosome=str(list(ind)),
+                ff_0=ff[0],
+                ff_1=ff[1],
+                ff_2=ff[2],
+                max_p=getattr(ind, "max_p", np.nan),
+                exp_name=getattr(ind, "exp_name", ""),
+                train_it=train_it_raw,
+                ckpt_idx=ckpt_idx,
+                failed=int(bool(getattr(ind, "_failed", False) or getattr(ind, "failed", False))),
+                fail_category=fail_category,
+                fail_reason=fail_reason,
+                cache_hit=int(bool(getattr(ind, "cache_hit", False))),
+                evaluated_fresh=int(bool(getattr(ind, "evaluated_fresh", False))),
+                cache_source_uid=getattr(ind, "cache_source_uid", -1),
+                cache_source_generation=getattr(ind, "cache_source_generation", -1),
+            )
+        )
+
+    if rows:
+        pd.DataFrame(rows).to_csv(
+            selection_pool_history_path,
+            mode="a",
+            header=False,
+            index=False,
+        )

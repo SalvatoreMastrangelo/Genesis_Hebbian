@@ -334,7 +334,7 @@ class WingedDroneEnv:
         self.show_viewer = bool(show_viewer)
         self.enable_rendering = bool(self.env_cfg.get("enable_rendering", True))
         self._tree_radius = float(self.env_cfg.get("tree_radius", 1.0))
-        self._collision_tol = 0.01 if self.evaluation else 0.1
+        self._collision_tol = 0.01 if self.evaluation else 0.2
         self._termination_abs_y_max = float(
             self.env_cfg.get("termination_if_y_greater_than", 100.0)
         )
@@ -362,8 +362,8 @@ class WingedDroneEnv:
             self.action_latency_max = 1
             self.action_latency_random_per_step = False
             if self.num_envs > 1:
-                v_min = float(self.command_cfg.get("min_speed", 8.0))
-                v_max = float(self.command_cfg.get("max_speed", 30.0))
+                v_min = float(self.command_cfg.get("min_speed", 5.0))
+                v_max = float(self.command_cfg.get("max_speed", 25.0))
                 self._eval_speed_grid = torch.linspace(
                     v_min, v_max, self.num_envs, device=self.device, dtype=torch.float32
                 )
@@ -640,6 +640,8 @@ class WingedDroneEnv:
         )
         self.rigid_solver = self.scene.sim.rigid_solver
         self.aero_solver = self.scene.sim.aero_solver
+        if hasattr(self.aero_solver, "_aero_log"):
+            self.aero_solver._aero_log = bool(self.evaluation or self.debug)
         self.aero_solver.add_target(self.drone, drone_model=self.drone_model)
         naca_code = self._naca_code or str(self.env_cfg.get("naca", "") or "").strip()
         if naca_code and hasattr(self.aero_solver, "apply_naca_wing_override"):
@@ -828,15 +830,18 @@ class WingedDroneEnv:
 
         # Logging extras
         self.thrust_log = torch.zeros((self.num_envs, 1), device=self.device)
+        self.prop_rpm_log = torch.zeros((self.num_envs, 1), device=self.device)
+        self.prop_axial_speed_log = torch.zeros((self.num_envs, 1), device=self.device)
         self.alpha = torch.zeros((self.num_envs, 1), device=self.device)
         self.beta = torch.zeros((self.num_envs, 1), device=self.device)
         self.d_cf_com_body = torch.zeros((self.num_envs, 3), device=self.device)
         self._thr_flt_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
         self._max_thr_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
         self._thrust_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._prop_rpm_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._prop_axial_speed_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._prop_diameter = torch.tensor([2.0 * float(self.aero_solver.prop_radius)], device=self.device, dtype=torch.float32)
 
-        if self.evaluation: 
-            self.aero_solver._aero_log = True
         # Episode bookkeeping
         self.episode_length_buf = torch.zeros((self.num_envs,), device=self.device, dtype=torch.long)
         self.reset_buf = torch.zeros((self.num_envs,), device=self.device, dtype=torch.bool)
@@ -1033,15 +1038,15 @@ class WingedDroneEnv:
         elif self.evaluation and self.num_envs > 1:
             # Linearly spaced fixed speeds for all eval envs.
             if self._eval_speed_grid is None or self._eval_speed_grid.shape[0] != self.num_envs:
-                v_min = float(self.command_cfg.get("min_speed", 8.0))
-                v_max = float(self.command_cfg.get("max_speed", 30.0))
+                v_min = float(self.command_cfg.get("min_speed", 5.0))
+                v_max = float(self.command_cfg.get("max_speed", 25.0))
                 self._eval_speed_grid = torch.linspace(
                     v_min, v_max, self.num_envs, device=self.device, dtype=torch.float32
                 )
             self.commands[env_ids, 0] = self._eval_speed_grid[env_ids]
         else:
-            v_min = float(self.command_cfg.get("min_speed", 6.0))
-            v_max = float(self.command_cfg.get("max_speed", 30.0))
+            v_min = float(self.command_cfg.get("min_speed", 5.0))
+            v_max = float(self.command_cfg.get("max_speed", 25.0))
             u = self._rand_scalar_scratch[: env_ids.numel()]
             u.uniform_(0.0, 1.0)
             self.commands[env_ids, 0] = v_min + (v_max - v_min) * u
@@ -1357,11 +1362,11 @@ class WingedDroneEnv:
         self.base_pos[env_ids, 1] += r * 80.0 - 40.0
         # Altitude
         r.uniform_(0.0, 1.0)
-        self.base_pos[env_ids, 2] += r * 20.0 - 10.0
+        self.base_pos[env_ids, 2] += r * 15.0 - 10.0
 
         # Forward speed
         r.uniform_(0.0, 1.0)
-        self.base_lin_vel[env_ids, 0] = r * 24.0 + 6.0
+        self.base_lin_vel[env_ids, 0] = r * 22.0 + 4.0
         # Lateral speed
         r.normal_()
         self.base_lin_vel[env_ids, 1] = torch.clamp(r * 2.0, min=-8.0, max=8.0)
@@ -1523,10 +1528,12 @@ class WingedDroneEnv:
         """
         Approximate total power consumption for current state.
 
-        - Propeller power: based on throttle fraction * max_thrust.
+        - Propeller power: RPM/advance-ratio model when solver states are available.
         - Servo power: torque * angular velocity.
         """
         self.thrust_log[:, 0].copy_(self.extract_thrust())  # (B, 1)
+        self.prop_rpm_log[:, 0].copy_(self.extract_prop_rpm())
+        self.prop_axial_speed_log[:, 0].copy_(self.extract_prop_axial_speed())
 
         prop_coeffs = self._power_prop_coeffs
         if prop_coeffs is None or prop_coeffs.shape[0] != self.thrust_log.shape[1]:
@@ -1562,6 +1569,9 @@ class WingedDroneEnv:
             drone_name=self.drone_name,
             aero_config=self._aero_config,
             prop_coefficients=prop_coeffs,
+            prop_rpm=self.prop_rpm_log,
+            prop_axial_speed=self.prop_axial_speed_log,
+            prop_diameters=self._prop_diameter,
             servo_power_constants=servo_constants,
             torque_multipliers=torque_multipliers,
             device=self.device,
@@ -1598,6 +1608,28 @@ class WingedDroneEnv:
         torch.nan_to_num_(self._thrust_buf, nan=0.0, posinf=0.0, neginf=0.0)
         self._thrust_buf.clamp_(min=0.0)
         return self._thrust_buf
+
+    def extract_prop_rpm(self) -> torch.Tensor:
+        """Extract the current propeller RPM from the AeroSolver cache."""
+        cached_rpm = getattr(self.aero_solver, "_prop_rpm_buf", None)
+        if torch.is_tensor(cached_rpm) and cached_rpm.shape[0] == self.num_envs:
+            self._prop_rpm_buf.copy_(cached_rpm)
+        else:
+            self._prop_rpm_buf.zero_()
+        torch.nan_to_num_(self._prop_rpm_buf, nan=0.0, posinf=0.0, neginf=0.0)
+        self._prop_rpm_buf.clamp_(min=0.0)
+        return self._prop_rpm_buf
+
+    def extract_prop_axial_speed(self) -> torch.Tensor:
+        """Extract the positive axial inflow speed seen by the propeller."""
+        cached_speed = getattr(self.aero_solver, "_prop_axial_speed_buf", None)
+        if torch.is_tensor(cached_speed) and cached_speed.shape[0] == self.num_envs:
+            self._prop_axial_speed_buf.copy_(cached_speed)
+        else:
+            self._prop_axial_speed_buf.zero_()
+        torch.nan_to_num_(self._prop_axial_speed_buf, nan=0.0, posinf=0.0, neginf=0.0)
+        self._prop_axial_speed_buf.clamp_(min=0.0)
+        return self._prop_axial_speed_buf
 
     # ---------------------------------------------------------------------- #
     # Convenience getters                                                    #

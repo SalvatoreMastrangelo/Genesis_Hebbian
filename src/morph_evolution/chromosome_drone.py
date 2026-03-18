@@ -92,19 +92,19 @@ class Chromosome_Drone:
     # List of ParamSpec for each gene in the *physical* genome.
     PARAMS: List[ParamSpec] = [
         # 0: wing_span (m) — intentionally narrow to keep wing area/AR stable
-        ParamSpec("wing_span", 0.45, 0.75),
+        ParamSpec("wing_span", 0.4, 0.9),
 
         # 1: wing_aspect_ratio (span / chord) — large AR spread implies large drag spread
         ParamSpec("wing_aspect_ratio", 1.5, 5.0),
 
         # 2: fuselage_length (m) — large variation shifts lever arm and static margin
-        ParamSpec("fus_length", 0.45, 0.75),
+        ParamSpec("fus_length", 0.4, 0.9),
 
         # 3: fuselage CG ratio (x_cg / fus_length) — excessive variation can make control unstable
-        ParamSpec("cg_x_ratio", 0.30, 0.50),
+        ParamSpec("cg_x_ratio", 0.30, 0.60),
 
         # 4: wing attach ratio — moderate variation is acceptable; large spread hurts stability
-        ParamSpec("attach_x_ratio", 0.30, 0.50),
+        ParamSpec("attach_x_ratio", 0.30, 0.60),
 
         # 5: elevator span (m) — too small reduces authority, too large can destabilize
         ParamSpec("elevator_span", 0.2, 0.6),
@@ -113,7 +113,7 @@ class Chromosome_Drone:
         ParamSpec("elevator_aspect_ratio", 1.5, 4.0),
 
         # 7: rudder span (m)
-        ParamSpec("rudder_span", 0.10, 0.30),
+        ParamSpec("rudder_span", 0.10, 0.40),
 
         # 8: rudder aspect ratio
         ParamSpec("rudder_aspect_ratio", 1.5, 4.0),
