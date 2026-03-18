@@ -44,6 +44,7 @@ Or programmatically::
 from __future__ import annotations
 
 import builtins
+import gc
 import os
 import traceback
 from dataclasses import dataclass
@@ -222,7 +223,8 @@ def _worker_process(
             elif msg.cmd == "step":
                 # Actions were already written into shm["actions"] by the coordinator
                 actions = shm["actions"].to(device)
-                obs, rew, done, info = env.step(actions)
+                with torch.no_grad():
+                    obs, rew, done, info = env.step(actions)
                 critic = info.get("observations", {}).get("critic")
                 if critic is None:
                     critic = env.privileged_obs_buf
@@ -240,6 +242,7 @@ def _worker_process(
 
                 # Clear GPU cache to prevent memory accumulation over thousands of steps
                 if torch.cuda.is_available():
+                    gc.collect()
                     torch.cuda.empty_cache()
 
                 # Only the small episode dict travels over the Pipe
