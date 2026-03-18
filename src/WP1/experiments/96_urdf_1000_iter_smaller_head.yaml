@@ -8,8 +8,8 @@
 # Only keys that differ from configs/default.yaml need to be specified.
 ##############################################################################
 
-exp_name: 200_urdf_1500_envs_smaller_head
-repeat: 10  # number of times to submit this config as independent jobs
+exp_name: 96_urdf_1000_iter_smaller_head
+repeat: 5  # number of times to submit this config as independent jobs
 
 ppo:
   clip_param: 0.15
@@ -39,8 +39,8 @@ policy:
   max_throttle: 1.0
 
 training:
-  num_envs: 32768
-  max_iterations: 1500
+  num_envs: 33600
+  max_iterations: 1000
   num_steps_per_env: 25
   save_interval: 100
   eval_interval: 200
@@ -109,6 +109,6 @@ command:
   num_commands: 1
 
 catalog:
-  n_urdf: 200
+  n_urdf: 96
   catalog_dir: null
   urdf_seed: 0

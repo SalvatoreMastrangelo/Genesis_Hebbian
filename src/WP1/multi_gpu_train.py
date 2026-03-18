@@ -1,28 +1,34 @@
 """
-Multi-GPU foundation training via per-GPU worker processes.
-===========================================================
+Multi-GPU foundation training via per-GPU worker processes (shared memory).
+===========================================================================
 
 Architecture
 ------------
 The URDF catalog is split evenly across N GPUs.  Each GPU runs a
-``Gen_Env`` in a dedicated subprocess (one ``gs.init()`` per process,
-which is the only safe way to use Genesis across multiple GPUs).
+``Gen_Env`` in a dedicated subprocess (one ``gs.init()`` per process).
 
 The *coordinator* (this process) owns the policy and the RSL-RL
-``OnPolicyRunner``.  It presents a ``MultiGPUEnv`` proxy to the runner —
-a standard VecEnv whose ``step()`` fans actions out to the workers and
-collects physics results back.  The policy, PPO algorithm, logging, and
-checkpointing all live in the coordinator.
+``OnPolicyRunner``.  It presents a ``MultiGPUEnv`` proxy to the runner.
+
+IPC design (shared-memory backed)
+----------------------------------
+- ``multiprocessing.Pipe`` carries only small control/metadata messages
+  (commands, episode dicts, errors).  No tensors travel over the Pipe.
+- All tensor data (obs, critic, rew, done, time_outs, actions) is passed
+  through ``torch.share_memory_()`` CPU buffers created once at startup.
 
 Data flow per step
 ------------------
-1. Coordinator calls ``runner.alg.act(obs, priv_obs)``  →  actions.
-2. ``MultiGPUEnv.step(actions)`` splits actions and puts them on each
-   worker's command queue (tensors sent on CPU to avoid CUDA IPC).
-3. Each worker runs ``env.step(actions)`` on its GPU and puts the result
-   on its result queue.
-4. ``MultiGPUEnv`` collects and merges results, returns to the runner.
-5. PPO storage is filled, ``alg.update()`` runs on the coordinator's GPU.
+1. Coordinator writes ``actions_cpu[sl]`` into each worker's shared
+   ``actions`` buffer via ``copy_()``.
+2. Coordinator sends a tiny ``_Cmd("step")`` to all workers via Pipe.
+3. Each worker reads actions from its shared buffer, runs ``env.step()``,
+   and writes all result tensors back into its shared buffers.
+4. Each worker sends a tiny ``_Reply`` (episode dict only) via Pipe.
+5. Coordinator reads results directly from shared buffers with per-slice
+   ``copy_()`` into pre-allocated GPU tensors — zero intermediate
+   allocation, no Queue serialisation, no redundant CPU copies.
+6. PPO storage is filled, ``alg.update()`` runs on the coordinator GPU.
 
 Usage
 -----
@@ -39,7 +45,8 @@ from __future__ import annotations
 
 import builtins
 import os
-import time
+import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -47,6 +54,61 @@ import torch
 import torch.multiprocessing as mp
 
 from WP1.config import RunConfig
+
+
+# ---------------------------------------------------------------------------
+# IPC types  (only metadata travels over the Pipe — no tensors)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _Cmd:
+    """Command sent from coordinator to worker via Pipe."""
+    cmd: str   # "reset" | "step" | "stop"
+
+
+@dataclass
+class _Reply:
+    """Reply sent from worker to coordinator via Pipe."""
+    ok: bool
+    event: str = ""
+    episode: Optional[Dict] = None
+    error: str = ""
+    meta: Optional[Dict] = None
+
+
+# ---------------------------------------------------------------------------
+# Shared-buffer factory
+# ---------------------------------------------------------------------------
+
+def _make_shared_buffers(
+    *,
+    num_envs: int,
+    num_obs: int,
+    num_privileged_obs: int,
+    num_actions: int,
+) -> Dict[str, torch.Tensor]:
+    """Allocate CPU shared-memory tensors that both processes can read/write.
+
+    ``device="cpu"`` is mandatory: after ``gs.init(backend=gs.gpu)`` Genesis
+    may set the default device to CUDA, causing bare ``torch.zeros(...)`` to
+    create GPU tensors.  GPU tensors use CUDA IPC (``_share_cuda_()``) which
+    is not supported across independent processes and raises
+    ``CUDA driver error: invalid argument``.
+    """
+    cpu = torch.device("cpu")
+    return {
+        "actions":           torch.zeros((num_envs, num_actions),         dtype=torch.float32, device=cpu).share_memory_(),
+        "obs":               torch.zeros((num_envs, num_obs),             dtype=torch.float32, device=cpu).share_memory_(),
+        "critic_obs":        torch.zeros((num_envs, num_privileged_obs),  dtype=torch.float32, device=cpu).share_memory_(),
+        "rew":               torch.zeros((num_envs,),                     dtype=torch.float32, device=cpu).share_memory_(),
+        "done":              torch.zeros((num_envs,),                     dtype=torch.int64,   device=cpu).share_memory_(),
+        "time_outs":         torch.zeros((num_envs,),                     dtype=torch.float32, device=cpu).share_memory_(),
+        "episode_length_buf":torch.zeros((num_envs,),                     dtype=torch.int64,   device=cpu).share_memory_(),
+    }
+
+
+def _to_cpu(t: torch.Tensor) -> torch.Tensor:
+    return t.detach().to("cpu", copy=True)
 
 
 # ---------------------------------------------------------------------------
@@ -62,230 +124,266 @@ def _worker_process(
     obs_cfg: dict,
     reward_cfg: dict,
     command_cfg: dict,
-    cmd_q: "mp.Queue[dict]",
-    result_q: "mp.Queue[dict]",
+    conn,  # child end of multiprocessing.Pipe
 ) -> None:
     """
     Runs in a subprocess.  Owns one GPU, builds Gen_Env, then serves
-    'reset' / 'step' / 'stop' commands from the coordinator.
+    reset / step / stop commands from the coordinator.
 
-    All tensors are transferred on CPU to avoid cross-process CUDA IPC
-    complexities.
+    Tensor data flows through shared memory buffers — the Pipe carries only
+    small control signals and episode dicts.
     """
-    # ------------------------------------------------------------------ #
-    # 1. Environment isolation                                           #
-    # ------------------------------------------------------------------ #
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    os.environ["GS_PARA_LEVEL"] = "4"
-    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("GS_HEADLESS_NO_GL", "1")
 
-    import genesis as gs  # imported after CUDA_VISIBLE_DEVICES is set
-    gs.init(logging_level="error", backend=gs.gpu)
+    def _reply(ok: bool, event: str = "", episode=None, error: str = "", meta=None):
+        try:
+            conn.send(_Reply(ok=ok, event=event, episode=episode, error=error, meta=meta))
+        except Exception:
+            pass
 
-    from winged_drone_train.train import configure_solver_noise
-    from general_policy.env_gen import Gen_Env
-
-    device = "cuda:0"  # single visible GPU in this process
-
-    env = Gen_Env(
-        num_envs=num_envs,
-        env_cfg=env_cfg,
-        obs_cfg=obs_cfg,
-        reward_cfg=reward_cfg,
-        command_cfg=command_cfg,
-        urdf_list=urdf_list,
-        device=device,
-    )
-    configure_solver_noise(env, env_cfg)
-
-    # ------------------------------------------------------------------ #
-    # 2. Signal ready and send metadata to coordinator                   #
-    # ------------------------------------------------------------------ #
-    result_q.put({
-        "type": "ready",
-        "num_envs": env.num_envs,
-        "num_obs": env.num_obs,
-        "num_actions": env.num_actions,
-        "num_privileged_obs": env.num_privileged_obs,
-        "dt": env.dt,
-        "max_episode_length": env.max_episode_length,
-    })
-
-    # ------------------------------------------------------------------ #
-    # 3. Serve requests                                                  #
-    # ------------------------------------------------------------------ #
-    while True:
-        cmd = cmd_q.get()
-
-        if cmd["type"] == "reset":
-            obs, info = env.reset()
-            result_q.put({
-                "type": "reset_result",
-                "obs": obs.cpu(),
-                "critic": _get_critic(info, env),
-                "episode_length_buf": env.episode_length_buf.cpu(),
-            })
-
-        elif cmd["type"] == "step":
-            actions = cmd["actions"].to(device)
-            obs, rew, done, info = env.step(actions)
-            result_q.put({
-                "type": "step_result",
-                "obs": obs.cpu(),
-                "rew": rew.cpu(),
-                "done": done.cpu(),
-                "critic": _get_critic(info, env),
-                "time_outs": info.get(
-                    "time_outs", torch.zeros(env.num_envs)
-                ).cpu(),
-                "episode": info.get("episode"),
-                "episode_length_buf": env.episode_length_buf.cpu(),
-            })
-
-        elif cmd["type"] == "stop":
-            break
-
+    env = None
     try:
-        gs.destroy()
-    except Exception:
-        pass
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        os.environ["GS_PARA_LEVEL"] = "4"
+        os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+        os.environ.setdefault("GS_HEADLESS_NO_GL", "1")
 
+        import genesis as gs
+        from winged_drone_train.train import configure_solver_noise
+        from general_policy.env_gen import Gen_Env
 
-def _get_critic(info: dict, env) -> Optional[torch.Tensor]:
-    """Extract critic obs from info, falling back to env buffer."""
-    critic = info.get("observations", {}).get("critic")
-    if critic is not None:
-        return critic.cpu()
-    return env.privileged_obs_buf.cpu()
+        gs.init(logging_level="error", backend=gs.gpu)
+
+        device = "cuda:0"  # CUDA_VISIBLE_DEVICES isolates to single GPU
+
+        env = Gen_Env(
+            num_envs=num_envs,
+            env_cfg=env_cfg,
+            obs_cfg=obs_cfg,
+            reward_cfg=reward_cfg,
+            command_cfg=command_cfg,
+            urdf_list=urdf_list,
+            device=device,
+        )
+        configure_solver_noise(env, env_cfg)
+
+        # Allocate shared buffers and do initial reset
+        shm = _make_shared_buffers(
+            num_envs=int(env.num_envs),
+            num_obs=int(env.num_obs),
+            num_privileged_obs=int(env.num_privileged_obs),
+            num_actions=int(env.num_actions),
+        )
+
+        obs, info = env.reset()
+        critic = info.get("observations", {}).get("critic")
+        if critic is None:
+            critic = env.privileged_obs_buf
+
+        shm["obs"].copy_(_to_cpu(obs))
+        shm["critic_obs"].copy_(_to_cpu(critic))
+        shm["episode_length_buf"].copy_(_to_cpu(env.episode_length_buf))
+
+        # Send ready signal + shared buffers in a single message (mirrors base
+        # code pattern — avoids race conditions with two separate sends).
+        conn.send({
+            "ok": True,
+            "event": "ready",
+            "meta": {
+                "num_envs":          int(env.num_envs),
+                "num_obs":           int(env.num_obs),
+                "num_privileged_obs":int(env.num_privileged_obs),
+                "num_actions":       int(env.num_actions),
+                "max_episode_length":int(env.max_episode_length),
+                "dt":                float(env.dt),
+            },
+            "shm": shm,
+        })
+
+        # Main command loop
+        while True:
+            msg = conn.recv()
+            if not isinstance(msg, _Cmd):
+                _reply(ok=False, error=f"Unexpected message type: {type(msg)}")
+                continue
+
+            if msg.cmd == "stop":
+                break
+
+            elif msg.cmd == "reset":
+                obs, info = env.reset()
+                critic = info.get("observations", {}).get("critic")
+                if critic is None:
+                    critic = env.privileged_obs_buf
+                shm["obs"].copy_(_to_cpu(obs))
+                shm["critic_obs"].copy_(_to_cpu(critic))
+                shm["episode_length_buf"].copy_(_to_cpu(env.episode_length_buf))
+                _reply(ok=True, event="reset")
+
+            elif msg.cmd == "step":
+                # Actions were already written into shm["actions"] by the coordinator
+                actions = shm["actions"].to(device)
+                obs, rew, done, info = env.step(actions)
+                critic = info.get("observations", {}).get("critic")
+                if critic is None:
+                    critic = env.privileged_obs_buf
+                time_outs = info.get("time_outs")
+                if time_outs is None:
+                    time_outs = torch.zeros_like(done, dtype=torch.float32)
+                episode = info.get("episode") if isinstance(info, dict) else None
+
+                shm["obs"].copy_(_to_cpu(obs))
+                shm["critic_obs"].copy_(_to_cpu(critic))
+                shm["rew"].copy_(_to_cpu(rew))
+                shm["done"].copy_(_to_cpu(done).long())
+                shm["time_outs"].copy_(_to_cpu(time_outs).float())
+                shm["episode_length_buf"].copy_(_to_cpu(env.episode_length_buf))
+
+                # Clear GPU cache to prevent memory accumulation over thousands of steps
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                # Only the small episode dict travels over the Pipe
+                _reply(ok=True, event="step", episode=episode if isinstance(episode, dict) else None)
+
+            else:
+                _reply(ok=False, error=f"Unknown command: {msg.cmd}")
+
+    except Exception as exc:
+        tb = traceback.format_exc()
+        try:
+            conn.send({"ok": False, "event": "error", "error": f"Worker crash: {exc}\n{tb}"})
+        except Exception:
+            pass
+
+    finally:
+        try:
+            if env is not None:
+                env.close()
+        except Exception:
+            pass
+        try:
+            import genesis as gs
+            gs.destroy()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
-# Coordinator-side proxy VecEnv
+# Coordinator-side worker handle
 # ---------------------------------------------------------------------------
 
-class _WorkerProxy:
-    """Handle on one worker: queues + cached metadata."""
+class _WorkerHandle:
+    """Coordinator-side handle: Pipe connection + shared buffer references."""
 
-    def __init__(self, cmd_q: "mp.Queue", result_q: "mp.Queue", meta: dict):
-        self.cmd_q = cmd_q
-        self.result_q = result_q
-        self.num_envs: int = meta["num_envs"]
-        self.num_obs: int = meta["num_obs"]
-        self.num_actions: int = meta["num_actions"]
-        self.num_privileged_obs: int = meta["num_privileged_obs"]
-        self.max_episode_length: int = meta["max_episode_length"]
-        self.dt: float = meta["dt"]
+    def __init__(self, conn, meta: dict, shm: Dict[str, torch.Tensor]):
+        self.conn = conn
+        self.num_envs: int          = meta["num_envs"]
+        self.num_obs: int           = meta["num_obs"]
+        self.num_actions: int       = meta["num_actions"]
+        self.num_privileged_obs: int= meta["num_privileged_obs"]
+        self.max_episode_length: int= meta["max_episode_length"]
+        self.dt: float              = meta["dt"]
+        self.shm = shm
 
+    def recv(self) -> _Reply:
+        msg = self.conn.recv()
+        if not isinstance(msg, _Reply):
+            return _Reply(ok=False, error=f"Unexpected message: {msg}")
+        return msg
+
+
+# ---------------------------------------------------------------------------
+# MultiGPUEnv proxy (shared-memory backed)
+# ---------------------------------------------------------------------------
 
 class MultiGPUEnv:
     """
-    Proxy VecEnv that fans step/reset calls across GPU worker processes.
+    Proxy VecEnv backed by shared-memory tensors from GPU workers.
 
-    Presented to RSL-RL's ``OnPolicyRunner`` as a standard VecEnv — the
-    runner does not need to know that physics runs on remote processes.
+    Tensor data (obs, rew, done, critic, time_outs) flows through shared CPU
+    memory: workers write into pre-allocated shared buffers, and the
+    coordinator copies directly from those buffers into pre-allocated GPU
+    tensors via per-slice ``copy_()`` — no Queue serialisation, no temporary
+    allocations, no redundant CPU copies.
     """
 
-    def __init__(self, proxies: List[_WorkerProxy], device: str) -> None:
-        self._proxies = proxies
+    def __init__(self, handles: List[_WorkerHandle], device: str) -> None:
+        self._handles = handles
         self.device = torch.device(device)
 
-        # Aggregate metadata
-        self.num_envs = sum(p.num_envs for p in proxies)
-        self.num_actions = proxies[0].num_actions
-        self.num_obs = proxies[0].num_obs
-        self.num_privileged_obs = proxies[0].num_privileged_obs
-        self.max_episode_length = proxies[0].max_episode_length
-        self.dt = proxies[0].dt
+        self.num_envs           = sum(h.num_envs for h in handles)
+        self.num_actions        = handles[0].num_actions
+        self.num_obs            = handles[0].num_obs
+        self.num_privileged_obs = handles[0].num_privileged_obs
+        self.max_episode_length = handles[0].max_episode_length
+        self.dt                 = handles[0].dt
 
-        # Slices: each proxy owns a contiguous block of env indices
+        # Contiguous index slices per worker
         self._slices: List[slice] = []
         offset = 0
-        for p in proxies:
-            self._slices.append(slice(offset, offset + p.num_envs))
-            offset += p.num_envs
+        for h in handles:
+            self._slices.append(slice(offset, offset + h.num_envs))
+            offset += h.num_envs
 
+        # Pre-allocated GPU buffers — workers write into shared CPU buffers,
+        # coordinator copies into these via per-slice copy_()
         B = self.num_envs
-        self.obs_buf = torch.zeros(B, self.num_obs, device=self.device)
-        self.privileged_obs_buf = torch.zeros(
-            B, self.num_privileged_obs, device=self.device
-        )
-        self.rew_buf = torch.zeros(B, device=self.device)
-        self.reset_buf = torch.ones(B, dtype=torch.int64, device=self.device)
-        self.episode_length_buf = torch.zeros(
-            B, dtype=torch.int64, device=self.device
-        )
+        self.obs_buf            = torch.zeros(B, self.num_obs,            device=self.device)
+        self.privileged_obs_buf = torch.zeros(B, self.num_privileged_obs, device=self.device)
+        self.rew_buf            = torch.zeros(B,                          device=self.device)
+        self.reset_buf          = torch.ones( B, dtype=torch.int64,       device=self.device)
+        self.episode_length_buf = torch.zeros(B, dtype=torch.int64,       device=self.device)
         self.extras: Dict = {
             "observations": {"critic": self.privileged_obs_buf},
-            "time_outs": torch.zeros(B, device=self.device),
+            "time_outs":    torch.zeros(B, device=self.device),
         }
 
-    # ------------------------------------------------------------------ #
-    # VecEnv API                                                         #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # VecEnv API
+    # ------------------------------------------------------------------
 
     def reset(self) -> Tuple[torch.Tensor, Dict]:
-        for p in self._proxies:
-            p.cmd_q.put({"type": "reset"})
-        results = [p.result_q.get() for p in self._proxies]
-        self._merge_reset(results)
+        for h in self._handles:
+            h.conn.send(_Cmd("reset"))
+        for h in self._handles:
+            rep = h.recv()
+            if not rep.ok:
+                raise RuntimeError(f"Worker error on reset: {rep.error}")
+        self._copy_obs_critic()
         self.reset_buf.fill_(1)
+        self.extras["time_outs"].zero_()
+        if "episode" in self.extras:
+            del self.extras["episode"]
         return self.obs_buf, self.extras
 
     def step(
         self, actions: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+        # Write actions into each worker's shared buffer (no Pipe overhead)
         actions_cpu = actions.cpu()
-        for p, sl in zip(self._proxies, self._slices):
-            p.cmd_q.put({"type": "step", "actions": actions_cpu[sl]})
-        results = [p.result_q.get() for p in self._proxies]
-        self._merge_step(results)
-        return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
+        for h, sl in zip(self._handles, self._slices):
+            h.shm["actions"].copy_(actions_cpu[sl])
 
-    def get_observations(self) -> Tuple[torch.Tensor, Dict]:
-        return self.obs_buf, dict(self.extras)
+        # Fan out step command — workers read actions from shared memory
+        for h in self._handles:
+            h.conn.send(_Cmd("step"))
 
-    def close(self) -> None:
-        for p in self._proxies:
-            try:
-                p.cmd_q.put({"type": "stop"})
-            except Exception:
-                pass
-
-    # ------------------------------------------------------------------ #
-    # Internal helpers                                                   #
-    # ------------------------------------------------------------------ #
-
-    def _merge_reset(self, results: List[dict]) -> None:
-        self.extras["time_outs"].zero_()
-        if "episode" in self.extras:
-            del self.extras["episode"]
-        for res, sl in zip(results, self._slices):
-            self.obs_buf[sl] = res["obs"].to(self.device)
-            if res["critic"] is not None:
-                self.privileged_obs_buf[sl] = res["critic"].to(self.device)
-            self.episode_length_buf[sl] = res["episode_length_buf"].to(self.device)
-
-    def _merge_step(self, results: List[dict]) -> None:
-        self.extras["time_outs"].zero_()
-        if "episode" in self.extras:
-            del self.extras["episode"]
-
+        # Collect tiny replies (episode dicts only — no tensors in Pipe)
         episodes: List[Tuple[dict, int]] = []
-        for res, sl in zip(results, self._slices):
-            self.obs_buf[sl] = res["obs"].to(self.device)
-            self.rew_buf[sl] = res["rew"].to(self.device)
-            self.reset_buf[sl] = res["done"].to(self.device)
-            if res["critic"] is not None:
-                self.privileged_obs_buf[sl] = res["critic"].to(self.device)
-            self.extras["time_outs"][sl] = res["time_outs"].to(self.device)
-            self.episode_length_buf[sl] = res["episode_length_buf"].to(
-                self.device
-            )
-            ep = res.get("episode")
-            if ep:
-                n = max(int(res["done"].sum().item()), 1)
-                episodes.append((ep, n))
+        for h in self._handles:
+            rep = h.recv()
+            if not rep.ok:
+                raise RuntimeError(f"Worker error on step: {rep.error}")
+            if rep.episode:
+                n = max(int(h.shm["done"].sum().item()), 1)
+                episodes.append((rep.episode, n))
+
+        # Bulk-copy all result tensors from shared memory → GPU (zero alloc)
+        self._copy_step_results()
 
         if episodes:
             merged: dict = {}
@@ -298,9 +396,42 @@ class MultiGPUEnv:
                     except Exception:
                         pass
             if total > 0:
-                self.extras["episode"] = {
-                    k: v / total for k, v in merged.items()
-                }
+                self.extras["episode"] = {k: v / total for k, v in merged.items()}
+        elif "episode" in self.extras:
+            del self.extras["episode"]
+
+        return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
+
+    def get_observations(self) -> Tuple[torch.Tensor, Dict]:
+        return self.obs_buf, dict(self.extras)
+
+    def close(self) -> None:
+        for h in self._handles:
+            try:
+                h.conn.send(_Cmd("stop"))
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Internal: direct shared-memory → GPU slice copies (no temporaries)
+    # ------------------------------------------------------------------
+
+    def _copy_obs_critic(self) -> None:
+        for h, sl in zip(self._handles, self._slices):
+            self.obs_buf[sl].copy_(h.shm["obs"])
+            self.privileged_obs_buf[sl].copy_(h.shm["critic_obs"])
+            self.episode_length_buf[sl].copy_(h.shm["episode_length_buf"])
+        self.extras["observations"]["critic"] = self.privileged_obs_buf
+
+    def _copy_step_results(self) -> None:
+        for h, sl in zip(self._handles, self._slices):
+            self.obs_buf[sl].copy_(h.shm["obs"])
+            self.privileged_obs_buf[sl].copy_(h.shm["critic_obs"])
+            self.rew_buf[sl].copy_(h.shm["rew"])
+            self.reset_buf[sl].copy_(h.shm["done"])
+            self.extras["time_outs"][sl].copy_(h.shm["time_outs"])
+            self.episode_length_buf[sl].copy_(h.shm["episode_length_buf"])
+        self.extras["observations"]["critic"] = self.privileged_obs_buf
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +447,9 @@ def train_multi_gpu(
     """
     Train a foundation policy with physics distributed across ``num_gpus`` GPUs.
 
+    Uses shared memory for zero-copy tensor passing between workers and
+    coordinator — eliminates the per-step CPU bottleneck from Queue transfers.
+
     Parameters
     ----------
     cfg : RunConfig
@@ -323,7 +457,6 @@ def train_multi_gpu(
         ``catalog.catalog_dir`` pointing to an existing URDF catalog.
     num_gpus : int
         Number of GPUs to use.  Must be <= ``torch.cuda.device_count()``.
-        The URDF catalog and ``num_envs`` are split evenly across GPUs.
     vis : bool
         Ignored (viewer not supported in multi-GPU mode).
     resume : bool
@@ -333,7 +466,6 @@ def train_multi_gpu(
     from winged_drone_train.rl.A2C_modified import ActorCriticTanh
     from winged_drone_train.rl.logging import RLTrainingLogger
     from winged_drone_train.train import _configure_cache_root
-    from winged_drone_train.runtime_random import seed_runtime_randomness
     from general_policy.catalog import build_catalog
     from WP1.run_manager import RunManager
     from WP1.csv_logger import CSVLogger
@@ -352,9 +484,9 @@ def train_multi_gpu(
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
 
-    # ------------------------------------------------------------------ #
-    # Validate GPU count                                                 #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Validate GPU count
+    # ------------------------------------------------------------------
     n_available = torch.cuda.device_count()
     if n_available < num_gpus:
         raise RuntimeError(
@@ -362,31 +494,26 @@ def train_multi_gpu(
             "available (check CUDA_VISIBLE_DEVICES)."
         )
 
-    # ------------------------------------------------------------------ #
-    # Run folder and config                                              #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Run folder and config
+    # ------------------------------------------------------------------
     run = RunManager(cfg, resume=resume)
     env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg.to_legacy_cfgs()
-    device = cfg.training.device  # coordinator device, e.g. "cuda:0"
+    device = cfg.training.device
 
-    # ------------------------------------------------------------------ #
-    # Build / locate URDF catalog                                        #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Build / locate URDF catalog
+    # ------------------------------------------------------------------
     catalog_path: Optional[Path] = None
     if cfg.catalog.catalog_dir is not None:
         catalog_path = Path(cfg.catalog.catalog_dir)
     if cfg.catalog.n_urdf is not None and cfg.catalog.n_urdf > 0:
         if catalog_path is None:
             catalog_path = run.run_dir / "catalog"
-        print(
-            f"[MultiGPU] Building catalog: "
-            f"n={cfg.catalog.n_urdf}, seed={cfg.catalog.urdf_seed}"
-        )
-        build_catalog(
-            catalog_path, n=cfg.catalog.n_urdf, seed=cfg.catalog.urdf_seed
-        )
+        print(f"[MultiGPU] Building catalog: n={cfg.catalog.n_urdf}, seed={cfg.catalog.urdf_seed}")
+        build_catalog(catalog_path, n=cfg.catalog.n_urdf, seed=cfg.catalog.urdf_seed)
     elif catalog_path is not None and catalog_path.is_dir():
-        pass  # existing catalog directory
+        pass
     else:
         raise RuntimeError(
             "[MultiGPU] Multi-GPU training requires a URDF catalog. "
@@ -395,7 +522,6 @@ def train_multi_gpu(
 
     run.save_catalog(catalog_path)
 
-    # Load full URDF list
     catalog_file = catalog_path / "catalog.txt"
     if catalog_file.exists():
         urdf_list = []
@@ -416,9 +542,9 @@ def train_multi_gpu(
             f"but catalog has only {len(urdf_list)}."
         )
 
-    # ------------------------------------------------------------------ #
-    # Split URDFs and num_envs across GPUs                              #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Split URDFs and num_envs across GPUs
+    # ------------------------------------------------------------------
     K = len(urdf_list)
     base_u, rem_u = divmod(K, num_gpus)
     urdf_shards: List[List[str]] = []
@@ -437,68 +563,70 @@ def train_multi_gpu(
         f"envs/GPU={env_counts}"
     )
 
-    # ------------------------------------------------------------------ #
-    # Spawn one worker process per GPU (parallel initialization)         #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Spawn one worker process per GPU
+    # ------------------------------------------------------------------
     ctx = mp.get_context("spawn")
-    proxies: List[_WorkerProxy] = []
-    processes: List[mp.Process] = []
+    pending: List[Tuple[int, mp.Process, object]] = []
 
-    # Start all worker processes
-    worker_queues: List[Tuple[int, "mp.Queue", "mp.Queue"]] = []
     for rank in range(num_gpus):
-        cmd_q: mp.Queue = ctx.Queue()
-        result_q: mp.Queue = ctx.Queue()
-
+        parent_conn, child_conn = ctx.Pipe()
         p = ctx.Process(
             target=_worker_process,
             args=(
                 rank,
-                rank,                  # physical GPU index
+                rank,               # physical GPU index
                 urdf_shards[rank],
                 env_counts[rank],
                 env_cfg,
                 obs_cfg,
                 reward_cfg,
                 command_cfg,
-                cmd_q,
-                result_q,
+                child_conn,
             ),
             daemon=True,
         )
         p.start()
-        processes.append(p)
-        worker_queues.append((rank, cmd_q, result_q))
+        pending.append((rank, p, parent_conn))
         print(f"[MultiGPU] Spawned worker {rank} (GPU {rank})")
 
-    # Collect ready messages from all workers (initialize in parallel)
+    # Collect ready messages + shared buffers
     print(f"[MultiGPU] Waiting for all {num_gpus} workers to initialise…")
-    for rank, cmd_q, result_q in worker_queues:
-        meta = result_q.get(timeout=6000)  # genesis scene build can be slow
-        if meta.get("type") != "ready":
-            raise RuntimeError(
-                f"[MultiGPU] Worker {rank} sent unexpected message: {meta}"
-            )
+    handles: List[_WorkerHandle] = []
+    processes: List[mp.Process] = []
 
-        proxy = _WorkerProxy(cmd_q, result_q, meta)
-        proxies.append(proxy)
+    for rank, p, parent_conn in pending:
+        # Single message: dict with "ok", "event", "meta", and "shm" keys
+        msg = parent_conn.recv()
+        if not isinstance(msg, dict) or not msg.get("ok") or msg.get("event") != "ready":
+            raise RuntimeError(
+                f"[MultiGPU] Worker {rank} failed to start: "
+                f"{msg.get('error', msg) if isinstance(msg, dict) else msg}"
+            )
+        shm = msg.get("shm")
+        if not isinstance(shm, dict):
+            raise RuntimeError(f"[MultiGPU] Worker {rank} did not include shared buffers")
+
+        handle = _WorkerHandle(conn=parent_conn, meta=msg["meta"], shm=shm)
+        handles.append(handle)
+        processes.append(p)
         print(
             f"[MultiGPU] Worker {rank} ready — "
-            f"{proxy.num_envs} envs, {len(urdf_shards[rank])} URDFs"
+            f"{handle.num_envs} envs, {len(urdf_shards[rank])} URDFs"
         )
 
-    # ------------------------------------------------------------------ #
-    # Build proxy env and RSL-RL runner                                  #
-    # ------------------------------------------------------------------ #
-    env = MultiGPUEnv(proxies, device=device)
+    # ------------------------------------------------------------------
+    # Build proxy env and RSL-RL runner
+    # ------------------------------------------------------------------
+    env = MultiGPUEnv(handles, device=device)
+
+    # Seed initial GPU buffers from the shared memory initial reset
+    env._copy_obs_critic()
 
     runner = OnPolicyRunner(env, train_cfg, str(run.log_dir), device=device)
 
-    # Optionally compile policy for faster forward passes
     try:
-        runner.alg.policy = torch.compile(
-            runner.alg.policy, mode="reduce-overhead"
-        )
+        runner.alg.policy = torch.compile(runner.alg.policy, mode="reduce-overhead")
         _orig_save = runner.save
 
         def _save_unwrapped(path, infos=None):
@@ -513,9 +641,9 @@ def train_multi_gpu(
     except Exception as e:
         print(f"[MultiGPU] torch.compile skipped: {e}")
 
-    # ------------------------------------------------------------------ #
-    # Logging                                                            #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
     rl_logger = RLTrainingLogger(runner=runner, log_dir=run.log_dir)
     rl_logger.attach()
     csv_logger = CSVLogger(run.eval_dir / "training_log.csv")
@@ -532,9 +660,7 @@ def train_multi_gpu(
             lb = getattr(runner, "lenbuffer", None)
             if lb and len(lb):
                 mean_ep_len = sum(lb) / len(lb)
-            csv_logger.log(
-                it, env.extras, mean_reward=mean_rew, mean_episode_length=mean_ep_len
-            )
+            csv_logger.log(it, env.extras, mean_reward=mean_rew, mean_episode_length=mean_ep_len)
         except Exception as exc:
             print(f"[MultiGPU] CSV log error at iter {it}: {exc}")
         _iter["i"] = it + 1
@@ -550,9 +676,9 @@ def train_multi_gpu(
 
         alg.update = _patched_update
 
-    # ------------------------------------------------------------------ #
-    # Training loop                                                      #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Training loop
+    # ------------------------------------------------------------------
     try:
         runner.learn(
             num_learning_iterations=cfg.training.max_iterations,
@@ -567,9 +693,9 @@ def train_multi_gpu(
             if p.is_alive():
                 p.terminate()
 
-    # ------------------------------------------------------------------ #
-    # Post-training artefacts                                            #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Post-training artefacts
+    # ------------------------------------------------------------------
     try:
         _enrich_csv_with_tensorboard_rewards(
             csv_path=run.eval_dir / "training_log.csv",

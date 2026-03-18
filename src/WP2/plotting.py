@@ -359,7 +359,7 @@ def plot_hebbian_distributions(run_dir: str | Path) -> None:
         return
 
     hebb_dim = cfg.hebbian_genome_dim()
-    n_weights = 320  # 64 * 5
+    n_weights = 448  # 64 * 7
 
     rows = _load_pop_history(run_dir)
     if not rows:

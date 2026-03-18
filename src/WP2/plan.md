@@ -6,19 +6,32 @@
 
 ---
 
-## Constraints & Ground Rules
+## Status Summary (2026-03-17)
 
-- [ ] Do **not** modify code in other folders — only expand `src/WP2/`
-- [ ] The pretrained controller (from a WP1 run) is **frozen** — no gradient updates, no backprop
-- [ ] The **critic is dropped** entirely — only the actor is used in WP2 (forward pass only, no value estimation)
-- [ ] Reuse WP1 infrastructure (`RunConfig`, `WingedDroneEnv`, `Gen_Env`, CSV logging, plotting) wherever possible
-- [ ] Also reuse existing codebase utilities (`Chromosome_Drone`, NSGA-II patterns from `morph_evolution/`)
-- [ ] All runs must be **fully reproducible** — every random seed (numpy, torch, DEAP, genesis) is controlled and saved
-- [ ] Code must be modular: evolutionary loop, Hebbian module, evaluation, analysis are cleanly separated
+### ✅ Implemented & Tested
+- [x] **config.py** — `HebbianEvolutionConfig` with nested sub-configs, YAML I/O, CLI overrides
+- [x] **hebbian.py** — `HebbianLastLayer` (single) and `BatchedHebbianLastLayer` (vectorized)
+- [x] **frozen_actor.py** — `load_frozen_actor()`, `HebbianActorWrapper`, `BatchedHebbianActorWrapper`
+- [x] **evaluate.py** — Single-individual evaluation with episode rollout and fitness computation
+- [x] **objectives.py** — Velocity, energy, progress, smoothness, crash_rate (extensible registry)
+- [x] **utils.py** — Seed control, genome encoding/decoding, reproducibility helpers
+- [x] **evolve.py** — `HebbianCodesignDEAP` with NSGA-II, Ray parallelism, CSV logging
+- [x] **run.py** — CLI entry point, config loading, cache setup, summary printing
+
+### ⚠️ In Progress / Needs Review
+- [ ] **plotting.py** — Partially implemented; verify all 10 required plots are working
+- [ ] **Config YAML files** — Verify all preset configs exist and are correct
+- [ ] **Batched evaluation** — `BatchedHebbianActorWrapper` integrated into `HebbianCodesignDEAP`?
+- [ ] **Multi-objective weight handling** — Confirm fitness weights match active objectives
+
+### ⓘ Known Gaps / TODO
+- [ ] **Error handling in plotting** — Graceful degradation if CSVs incomplete
+- [ ] **Ablation comparison plots** — Cross-run visualization (requires multiple run dirs)
+- [ ] **Slurm job scripts** — WP2-specific cluster submission templates (if deploying to IZAR)
 
 ---
 
-## 1. Architecture Overview
+## Architecture Overview
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -29,637 +42,578 @@
 │  ┌────────────────────────────────────────────────────────────────────┐  │
 │  │                   Fitness Evaluation (per individual)              │  │
 │  │                                                                    │  │
-│  │  1. Reset last-layer weights to checkpoint values                  │  │
-│  │  2. Load frozen actor (no critic) + inject Hebbian rules           │  │
-│  │  3. Build morphology URDF from genome (Chromosome_Drone)           │  │
-│  │  4. Rollout N episodes in Genesis (forward pass only)              │  │
+│  │  1. Decode genome → Hebbian rules + morphology                    │  │
+│  │  2. Generate URDF from morphology (Chromosome_Drone)              │  │
+│  │  3. Build WingedDroneEnv with the URDF                            │  │
+│  │  4. Load frozen actor, attach HebbianLastLayer                    │  │
+│  │  5. Rollout N episodes (reset weights per episode + per gen)       │  │
 │  │     - At each step: forward pass → Hebbian update on last layer    │  │
-│  │     - Weights reset to checkpoint values between episodes          │  │
-│  │  5. Compute multi-objective fitness                                │  │
+│  │  6. Aggregate metrics → compute multi-objective fitness            │  │
 │  │                                                                    │  │
 │  └────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Insight
+### Key Components
 
-The pretrained LSTM actor has a final linear layer `Linear(64→5)` that maps
-hidden features to actions (1 throttle + 4 servos). The **Hebbian rules
-modify the weights of this existing layer in-place** at each simulation
-timestep. No new layer is added — the ABCD rule directly modulates the
-320 synaptic weights (64×5) of the pretrained output layer.
-
-NSGA-II evolves per-weight plasticity rules (A, B, C, D, λ for each of
-the 320 weights). The result is not a single best individual but a
-**Pareto frontier** of solutions that represent optimal trade-offs between
-the competing objectives.
-
----
-
-## 2. Hebbian Plasticity Module
-
-### 2.1 ABCD Hebbian Rule
-
-Each weight `w_ij` in the actor's last linear layer is updated at every
-simulation step `t` according to the **generalized ABCD Hebbian rule**:
-
-```
-Δw_ij(t) = η · [ A_ij · x_i(t) · y_j(t)      ← classical Hebb
-               + B_ij · x_i(t)                 ← presynaptic
-               + C_ij · y_j(t)                 ← postsynaptic
-               + D_ij ]                         ← bias drift
-```
-
-Where:
-- `x_i(t)` = presynaptic activation (input to last layer, from frozen MLP)
-- `y_j(t)` = postsynaptic activation (output of last layer, before tanh scaling)
-- `η` = global learning rate (**fixed** tunable hyperparameter, toggleable per-weight variant)
-- `A_ij, B_ij, C_ij, D_ij` = per-weight rule coefficients (**evolved**)
-
-Weight update with decay:
-```
-w_ij(t+1) = (1 - λ_ij) · w_ij(t) + Δw_ij(t)
-w_ij(t+1) = clip( w_ij(t+1),  -w_max, +w_max )
-```
-
-Where:
-- `λ_ij` = per-weight decay rate (**evolved**)
-- `w_max` = weight clipping bound (**fixed** tunable hyperparameter, not evolved)
-
-### 2.2 Evolved vs Fixed Parameters
-
-**Evolved per-weight** (via NSGA-II):
-
-| Parameter | Per-weight count | Total (64×5=320 weights) | Range | Description |
-|-----------|-----------------|--------------------------|-------|-------------|
-| `A_ij` | 320 | 320 | [-1, 1] | Hebbian correlation coefficient |
-| `B_ij` | 320 | 320 | [-1, 1] | Presynaptic coefficient |
-| `C_ij` | 320 | 320 | [-1, 1] | Postsynaptic coefficient |
-| `D_ij` | 320 | 320 | [-1, 1] | Bias/drift coefficient |
-| `λ_ij` | 320 | 320 | [0, 0.1] | Weight decay rate |
-
-**Total evolved Hebbian genes: 1600** (stored in normalized [0,1] space)
-
-**Optionally evolved per-weight** (toggled by `evolve_eta: bool`):
-
-| Parameter | Per-weight count | Total | Range | Description |
-|-----------|-----------------|-------|-------|-------------|
-| `η_ij` | 320 | 320 | [0, 0.1] | Per-weight learning rate (when `evolve_eta=True`) |
-
-When `evolve_eta=False` (default), a single global `η` is used for all weights.
-When `evolve_eta=True`, the Hebbian genome grows by 320 genes (total: 1920).
-
-**Fixed tunable hyperparameters** (set in config, never evolved):
-
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| `η` | 0.01 | (0, 0.1] | Global learning rate (used when `evolve_eta=False`) |
-| `w_max` | 3.0 | (0, ∞) | Symmetric weight clipping bound |
-
-**Explicitly excluded:** Bias terms of the last layer are **never** modified
-by Hebbian rules — only the weight matrix `W` (64×5) is plastic.
-
-### 2.3 Implementation: In-Place Last-Layer Modification
-
-The Hebbian plasticity operates **directly on the existing last linear layer**
-of the actor network. No new layer is created — the pretrained `Linear(64→5)`
-weight matrix is modified in-place at each forward pass. **Biases are never
-touched.**
-
-```python
-class HebbianLastLayer:
-    """
-    Wraps the actor's existing last Linear layer with Hebbian plasticity.
-    Modifies ONLY .weight in-place each step. Bias is never modified.
-
-    This is NOT an nn.Module — it is a controller that mutates the existing
-    layer's weight buffer during rollout.
-    """
-
-    def __init__(self, linear_layer: nn.Linear, hebbian_genes: Tensor,
-                 eta: float | Tensor, w_max: float):
-        self.layer = linear_layer
-        self.w_max = w_max
-
-        # eta: either scalar (global) or (5, 64) tensor (per-weight)
-        self.eta = eta
-
-        # Store original checkpoint weights for reset (bias untouched)
-        self.W_checkpoint = linear_layer.weight.data.clone()
-
-        # Decode per-weight ABCD + λ from evolved genome
-        # hebbian_genes shape: (5, out_features, in_features) = (5, 5, 64)
-        self.A = hebbian_genes[0]   # (5, 64)
-        self.B = hebbian_genes[1]
-        self.C = hebbian_genes[2]
-        self.D = hebbian_genes[3]
-        self.lam = hebbian_genes[4]
-
-    def reset_weights(self):
-        """Reset layer weights to checkpoint values.
-        Called at: episode start AND generation start.
-        Bias is never modified or reset."""
-        self.layer.weight.data.copy_(self.W_checkpoint)
-
-    def hebbian_update(self, x: Tensor, y: Tensor):
-        """
-        Apply ABCD rule to modify last layer weights in-place.
-        Called AFTER each forward pass through the layer.
-
-        Args:
-            x: presynaptic activations (batch, 64) — input to last layer
-            y: postsynaptic activations (batch, 5)  — output of last layer
-        """
-        # For batched envs, average activations across batch
-        x_mean = x.mean(dim=0)  # (64,)
-        y_mean = y.mean(dim=0)  # (5,)
-
-        # ABCD update: dW shape (5, 64) matches layer.weight
-        dW = self.eta * (
-            self.A * torch.outer(y_mean, x_mean) +   # (5, 64)
-            self.B * x_mean.unsqueeze(0) +             # broadcast (5, 64)
-            self.C * y_mean.unsqueeze(1) +             # broadcast (5, 64)
-            self.D                                      # (5, 64)
-        )
-
-        # Decay + update (bias untouched)
-        self.layer.weight.data.mul_(1.0 - self.lam).add_(dW)
-        self.layer.weight.data.clamp_(-self.w_max, self.w_max)
-```
-
-### 2.4 Integration with Frozen Actor (No Critic)
-
-The frozen actor's forward pass is intercepted to inject Hebbian updates:
-
-```
-Original actor forward pass (WP1):
-    obs → LSTM(128) → MLP[64,64] → Linear(64→5) → tanh → scale → action
-                                    ↑ this layer
-                                    ↑ weights modified in-place by ABCD rule
-
-WP2 forward pass (critic dropped):
-    obs → LSTM(128) → MLP[64,64] → x → Linear(64→5) → y → tanh → scale → action
-                                    ↓         ↑ W modified         ↓
-                                    └── hebbian_update(x, y) ──────┘
-```
-
-Steps:
-1. Load WP1 checkpoint → extract **actor only** (drop critic entirely)
-2. Freeze all actor parameters (`requires_grad=False`, `torch.no_grad()`)
-3. Convert last layer weights from `nn.Parameter` to buffer (in-place modifiable)
-4. Wrap with `HebbianLastLayer` using evolved per-weight rules
-5. At each generation start and each episode start → `reset_weights()` to checkpoint values
+| Module | Class/Function | Purpose |
+|--------|---|---|
+| **config.py** | `HebbianEvolutionConfig` | Unified configuration dataclass with YAML I/O |
+| **hebbian.py** | `HebbianLastLayer` | Per-weight ABCD+λ update on frozen actor's last layer (single individual) |
+| **hebbian.py** | `BatchedHebbianLastLayer` | Vectorized Hebbian for population-level eval (P individuals × S envs) |
+| **frozen_actor.py** | `load_frozen_actor()` | Load WP1 checkpoint, freeze all params, extract actor only |
+| **frozen_actor.py** | `HebbianActorWrapper` | Forward pass with Hebbian interception (single actor) |
+| **frozen_actor.py** | `BatchedHebbianActorWrapper` | Forward pass for batched evaluation (P copies share backbone) |
+| **evaluate.py** | `_build_env()` | Create `WingedDroneEnv` from morphology genome |
+| **evaluate.py** | `_rollout_episode()` | Run one episode, collect metrics (velocity, energy, progress, etc.) |
+| **evaluate.py** | `evaluate_individual()` | Full pipeline: decode genome → build env → rollout N episodes → fitness |
+| **objectives.py** | `velocity_objective()`, `energy_objective()`, etc. | Individual fitness functions (extensible registry) |
+| **objectives.py** | `compute_fitness()` | Combine metrics into fitness tuple matching active objectives |
+| **evolve.py** | `HebbianCodesignDEAP` | NSGA-II outer loop: population management, variation operators, Pareto extraction |
+| **run.py** | `main()` | CLI orchestration: config loading, seed control, launch evolution |
+| **plotting.py** | `analyze_run()` | Generate all diagnostic plots from run results |
+| **utils.py** | `seed_everything()`, `decode_hebbian_genes()`, etc. | Reproducibility and utility functions |
 
 ---
 
-## 3. Evolutionary Optimization (NSGA-II)
+## Critical Design Rules
 
-### 3.1 Genome Structure
-
-The full individual genome is a concatenation of two optional parts:
-
-```
-genome = [hebbian_genes (1600–1920D)] ⊕ [morphology_genes (15D)]
-          ↑ if hebbian_enabled             ↑ if evolve_morphology
-          ↑ 1600 base + 320 if evolve_eta
-```
-
-Hebbian genome dimension depends on `evolve_eta`:
-- `evolve_eta=False` (default): **1600** genes (A,B,C,D,λ × 320 weights)
-- `evolve_eta=True`: **1920** genes (A,B,C,D,λ,η × 320 weights)
-
-| Mode | Hebbian | Morphology | evolve_eta | Genome dim | Purpose |
-|------|---------|------------|------------|------------|---------|
-| **Full co-optimization** | ON | ON | OFF | 1615 | Main experiment |
-| **Full + per-weight η** | ON | ON | ON | 1935 | Extended experiment |
-| **Hebbian-only** | ON | OFF (fixed) | OFF | 1600 | Ablation: plasticity on fixed body |
-| **Morphology-only** | OFF | ON | — | 15 | Ablation: body shape without plasticity |
-| **Baseline** | OFF | OFF | — | 0 | Control: frozen policy on fixed morphology |
-
-### 3.2 Fitness Objectives (Multi-Objective, Extensible)
-
-NSGA-II evolves a **Pareto frontier** — a set of non-dominated solutions
-representing optimal trade-offs between objectives. The objectives are
-configurable and extensible.
-
-**Default objectives** (reused from `morph_evolution/`):
-
-| # | Objective | Direction | Description |
-|---|-----------|-----------|-------------|
-| 1 | Mean velocity | **maximize** | Average forward speed across evaluation episodes |
-| 2 | Energy efficiency | **maximize** | Negative total energy consumption (-E_tot) |
-| 3 | Progress | **maximize** | Distance covered through the forest corridor |
-
-**Additional objectives** (can be enabled via config):
-
-| # | Objective | Direction | Description |
-|---|-----------|-----------|-------------|
-| 4 | Smoothness | **maximize** | Negative action jerk (penalizes erratic control) |
-| 5 | Crash rate | **minimize** | Fraction of episodes ending in crash |
-| 6 | Adaptability | **maximize** | Performance variance across morphologies (lower = more robust) |
-| 7 | Custom | configurable | User-defined fitness function via callback |
-
-Fitness weights are specified in config as a tuple matching the number of
-active objectives. Adding/removing objectives only requires updating the
-weights tuple and the fitness computation function.
-
-### 3.3 Evaluation Pipeline
-
-For each individual in the population:
-
-```
-1. DECODE genome
-   ├── Extract per-weight hebbian rules (A,B,C,D,λ)_ij  (if hebbian_enabled)
-   └── Extract morphology_genome (if evolve_morphology, else use fixed_morphology)
-
-2. BUILD environment
-   ├── Chromosome_Drone.to_physical(morphology_genome) → URDF
-   └── Instantiate WingedDroneEnv with the URDF
-
-3. LOAD frozen actor (no critic)
-   ├── Load ActorCriticTanh from WP1 checkpoint, extract actor only
-   ├── Freeze all parameters
-   ├── Reset last-layer weights to checkpoint values
-   └── Attach HebbianLastLayer with decoded per-weight rules
-
-4. ROLLOUT (no gradient, stochastic by default)
-   ├── For each episode:
-   │   ├── reset_weights() → restore checkpoint values
-   │   ├── Reset environment
-   │   ├── For each timestep:
-   │   │   ├── obs → frozen_backbone → x (hidden features, 64D)
-   │   │   ├── x → last_layer → y (raw actions, 5D)
-   │   │   ├── hebbian_update(x, y)  ← modifies last layer weights
-   │   │   ├── action = tanh(y) → scale
-   │   │   └── env.step(action)
-   │   └── Collect: velocity, energy, progress, (smoothness, crashes...)
-   └── Aggregate across episodes
-
-5. RETURN fitness tuple matching active objectives
-```
-
-### 3.4 NSGA-II Operators
-
-| Operator | Method | Parameters | Notes |
-|----------|--------|------------|-------|
-| **Crossover** | Simulated Binary (SBX) | `eta_c=20`, `p_cx=0.9`, bounded [0,1] | **Toggleable** — can be disabled for mutation-only evolution |
-| **Mutation** | Polynomial bounded | `eta_m=20`, `p_mut=1.0`, `indpb=1/n_genes` | Always active |
-| **Selection** | NSGA-II (`selNSGA2`) | Tournament DCD for mating | Produces Pareto frontier |
-| **Replacement** | μ+λ via NSGA-II | Elitist — best from parents+offspring | Preserves frontier quality |
-
-When crossover is **disabled** (`enable_crossover: false`), the variation
-loop only applies mutation. This is useful for very high-dimensional genomes
-(1600D) where crossover may be disruptive.
-
-### 3.5 Weight Reset Policy
-
-- **At each generation start:** all last-layer weights reset to checkpoint values
-  (no carrying over final weights from previous generation's rollouts)
-- **At each episode start** (within an individual's evaluation): weights reset
-  to checkpoint values — each episode starts from the same baseline, with
-  Hebbian rules shaping the weights from scratch during that episode
-
-### 3.6 Parallelism
-
-- **Serial mode** (single GPU): evaluate individuals sequentially
-- **Ray mode** (multi-GPU): distribute evaluations across GPUs (same pattern as `evolution_nsga.py`)
-- Controlled by `GA_PARALLEL` environment variable
+1. **Actor never receives morphology info** — `add_genome_obs_actor = False` in all configs
+2. **Critic is dropped** — WP2 uses forward rollout only, no value estimation
+3. **Hebbian acts ONLY on last `Linear(64→7)` layer** — Biases never touched, weights reset per episode + per generation
+4. **Per-weight ABCD+λ** — Each of 448 weights has its own 5-parameter rule set
+5. **Genome layout** — Hebbian section (0 or 2240 or 2688D) ⊕ Morphology section (0 or 15D)
+6. **Weight reset policy** — Checkpoint values reset at **generation start** AND **episode start**
 
 ---
 
-## 4. Configuration System
+## Detailed Module Review
 
-### 4.1 `HebbianEvolutionConfig` Dataclass
+### 1. **config.py** ✅
 
-```python
-@dataclass
-class HebbianConfig:
-    """Hebbian plasticity settings."""
-    enabled: bool = True                    # toggle Hebbian rules on/off
-    eta: float = 0.01                       # global learning rate (used when evolve_eta=False)
-    evolve_eta: bool = False                # if True, η becomes per-weight evolved (+320 genes)
-    w_max: float = 3.0                      # FIXED weight clipping bound (never evolved)
-    A_range: Tuple[float, float] = (-1.0, 1.0)   # evolved per-weight
-    B_range: Tuple[float, float] = (-1.0, 1.0)   # evolved per-weight
-    C_range: Tuple[float, float] = (-1.0, 1.0)   # evolved per-weight
-    D_range: Tuple[float, float] = (-1.0, 1.0)   # evolved per-weight
-    decay_range: Tuple[float, float] = (0.0, 0.1) # evolved per-weight (λ)
-    eta_range: Tuple[float, float] = (0.0, 0.1)   # per-weight η range (when evolve_eta=True)
+**Status:** Complete. Implements the `HebbianEvolutionConfig` hierarchy with nested dataclasses.
 
-@dataclass
-class EvolutionConfig:
-    """NSGA-II hyperparameters."""
-    population_size: int = 40
-    num_generations: int = 30
-    enable_crossover: bool = True           # toggle crossover on/off
-    crossover_probability: float = 0.9      # ignored if enable_crossover=False
-    mutation_probability: float = 1.0
-    eta_c: float = 20.0                     # SBX spread
-    eta_m: float = 20.0                     # polynomial mutation spread
-    weights: Tuple[float, ...] = (1.0, 1.0, 1.0)  # per-objective weights (extensible)
+**Key classes:**
+- `HebbianConfig` — Hebbian hyperparameters (η, decay range, ABCD ranges, toggles for per-weight η and decay)
+- `EvolutionConfig` — NSGA-II hyperparameters (population size, generations, crossover/mutation rates, eta_c, eta_m)
+- `EvaluationConfig` — Rollout settings (num_episodes, num_envs, velocity range, stochasticity)
+- `ObjectivesConfig` — Toggles for velocity, energy, progress, smoothness, crash_rate
+- `MorphologyConfig` — Morphology evolution flag and fixed genome fallback
+- `HebbianEvolutionConfig` — Top-level config with all sub-configs + YAML I/O + CLI overrides
 
-@dataclass
-class EvaluationConfig:
-    """Rollout settings for fitness evaluation."""
-    num_eval_episodes: int = 5
-    num_eval_envs: int = 8192
-    vmin: float = 6.0
-    vmax: float = 30.0
-    stochastic: bool = True                 # stochastic policy (sample from distribution)
+**Features:**
+- ✅ `to_yaml()` / `from_yaml()` for serialization
+- ✅ `apply_cli_overrides()` for `--cfg.section.key value` parsing
+- ✅ `active_objective_names()` / `fitness_weights()` for dynamic objective management
+- ✅ `hebbian_genome_dim()` / `morphology_genome_dim()` / `total_genome_dim()` for genome size queries
 
-@dataclass
-class ObjectivesConfig:
-    """Toggle individual fitness objectives."""
-    velocity: bool = True
-    energy: bool = True
-    progress: bool = True
-    smoothness: bool = False
-    crash_rate: bool = False
-    # Weights auto-derived from active objectives + evolution.weights
-
-@dataclass
-class MorphologyConfig:
-    """Morphology evolution settings."""
-    evolve: bool = True                     # toggle morphology evolution on/off
-    fixed_genome: Optional[List[float]] = None  # used when evolve=False
-
-@dataclass
-class HebbianEvolutionConfig:
-    """Top-level config for WP2 runs."""
-    exp_name: str = "hebbian_codesing"
-    checkpoint_path: str = ""               # path to frozen WP1 actor checkpoint
-    checkpoint_config_path: str = ""        # path to the WP1 run's config.yaml
-
-    hebbian: HebbianConfig = field(default_factory=HebbianConfig)
-    evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
-    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
-    objectives: ObjectivesConfig = field(default_factory=ObjectivesConfig)
-    morphology: MorphologyConfig = field(default_factory=MorphologyConfig)
-
-    seed: int = 42
-    device: str = "cuda:0"
-    base_dir: str = "logs/runs_hebbian"
-
-    # YAML I/O (same pattern as WP1 RunConfig)
-    def to_yaml(self, path) -> str: ...
-    @classmethod
-    def from_yaml(cls, path) -> "HebbianEvolutionConfig": ...
-    def apply_cli_overrides(self, argv) -> None: ...
-```
-
-### 4.2 Preset YAML Configs
-
-```
-src/WP2/configs/
-├── full_codesing.yaml          # Hebbian ON + morphology ON   (main experiment)
-├── hebbian_only.yaml        # Hebbian ON + morphology OFF  (ablation)
-├── morphology_only.yaml     # Hebbian OFF + morphology ON  (ablation)
-├── baseline.yaml            # Hebbian OFF + morphology OFF (control)
-└── mutation_only.yaml       # Full co-opt with crossover disabled
-```
+**Notes:**
+- All optional fields have sensible defaults
+- Supports `evolve_eta=True` for per-weight learning rates (+320 genes to Hebbian section)
+- Supports `evolve_decay=True` for per-weight decay (currently set to `False` in defaults)
 
 ---
 
-## 5. Reproducibility & Serialization
+### 2. **hebbian.py** ✅
 
-### 5.1 Seed Control
+**Status:** Complete. Implements ABCD+λ plasticity rule on the frozen actor's last layer.
 
-At the start of every run:
-```python
-random.seed(cfg.seed)
-np.random.seed(cfg.seed)
-torch.manual_seed(cfg.seed)
-torch.cuda.manual_seed_all(cfg.seed)
-# DEAP uses random module internally — covered by random.seed()
-```
+**Key classes:**
 
-The seed is saved in the frozen config YAML snapshot inside the run folder.
+#### `HebbianLastLayer` (single individual)
+- Stores per-weight ABCD+λ tensors (each shape `(5, 64)` for 5 outputs × 64 inputs)
+- **`reset_weights()`** — Restore layer weights to checkpoint values (bias untouched)
+- **`hebbian_update(x, y)`** — Apply ABCD rule in-place:
+  ```
+  dW = η * (A·outer(y,x) + B·x + C·y + D)
+  W ← (1-λ)·W + dW
+  W ← clip(W, -w_max, +w_max)
+  ```
 
-### 5.2 Run Folder Structure
+**Key design:**
+- Last layer weight is converted from `nn.Parameter` to buffer (in-place modifiable without autograd overhead)
+- `hebbian_update()` averages activations across batch before applying rule (standard Hebbian convention)
+- Bias is never modified (bias remains in `last_layer.bias`)
 
-All runs are stored under `logs/runs_hebbian/` (parallel to WP1's `logs/runs/`).
-Each run folder is **fully self-contained** — it includes every artifact needed
-to reproduce the run from scratch.
+#### `BatchedHebbianLastLayer` (population-level)
+- Manages P individuals × S envs (P*S total envs in parallel)
+- Stores per-individual weight matrices: `W` shape `(P, 5, 64)`
+- Per-individual ABCD+λ rules: A, B, C, D, lam, eta (each shape `(P, 5, 64)`)
+- **`hebbian_update(x, y)`** — Groups envs by individual, computes per-individual mean activations, applies per-individual updates
+- **`reset_weights()`** — Reset all P weight matrices to checkpoint values
 
-```
-logs/runs_hebbian/<YYYY-MM-DD_HH-MM-SS>_{exp_name}/
-│
-│── reproducibility/
-│   ├── config.yaml                    # frozen HebbianEvolutionConfig snapshot
-│   ├── wp1_config.yaml                # copy of the WP1 config that produced the checkpoint
-│   ├── wp1_actor.pt                   # copy of the frozen WP1 actor weights (no critic)
-│   ├── git_info.txt                   # git commit hash + diff (if any uncommitted changes)
-│   └── environment.txt                # pip freeze / conda env export
-│
-├── generations/
-│   ├── gen_000/
-│   │   ├── population.pkl             # full DEAP population (genomes + fitness)
-│   │   ├── pareto_front.pkl           # non-dominated individuals this generation
-│   │   └── rng_state.pkl              # random/numpy/torch RNG states for exact resume
-│   ├── gen_001/
-│   │   └── ...
-│   └── gen_N/
-│       └── ...
-│
-├── results/
-│   ├── population_history.csv         # all individuals across all generations
-│   ├── pareto_history.csv             # Pareto front evolution across generations
-│   ├── generation_summary.csv         # per-generation aggregated stats
-│   └── fitness_db.csv                 # cached fitness evaluations
-│
-├── pareto_solutions/
-│   ├── individual_000/
-│   │   ├── hebbian_rules.yaml         # per-weight A,B,C,D,λ for this solution
-│   │   ├── morphology.yaml            # genome (normalized + physical) + NACA code
-│   │   └── fitness.yaml               # all objective values
-│   ├── individual_001/
-│   │   └── ...
-│   └── summary.csv                    # all Pareto-optimal solutions in one table
-│
-└── plots/
-    ├── pareto_front.png
-    ├── fitness_convergence.png
-    ├── hebbian_param_evolution.png
-    ├── morphology_diversity.png
-    └── ...
-```
+**Key design:**
+- Vectorized for efficiency: uses `torch.bmm()` for batched matrix multiplication
+- Allows P individuals to evolve independently within a single forward pass
+- Critical for parallel evaluation of entire population in one CUDA kernel
 
-### 5.3 Reproducibility Checklist
-
-Every run folder must contain all data needed to **exactly reproduce** the run.
-The run manager validates this at startup and logs warnings for missing items.
-
-| Artifact | Location | Purpose |
-|----------|----------|---------|
-| WP2 config (frozen) | `reproducibility/config.yaml` | All hyperparameters: Hebbian, evolution, evaluation, objectives, morphology, seeds |
-| WP1 config (frozen) | `reproducibility/wp1_config.yaml` | Architecture of the frozen actor (hidden dims, LSTM size, action scaling) |
-| WP1 actor weights | `reproducibility/wp1_actor.pt` | Exact checkpoint weights used — the frozen baseline for all Hebbian modifications |
-| Git commit + diff | `reproducibility/git_info.txt` | Code version; includes uncommitted diff if working tree is dirty |
-| Python environment | `reproducibility/environment.txt` | `pip freeze` output — exact package versions (torch, deap, genesis, numpy, etc.) |
-| RNG states per generation | `generations/gen_NNN/rng_state.pkl` | `random`, `numpy`, and `torch` RNG states — allows resuming from any generation |
-| Full population per generation | `generations/gen_NNN/population.pkl` | Complete DEAP population with genomes and fitness values |
-| Fitness cache | `results/fitness_db.csv` | All evaluated (genome → fitness) pairs across the entire run |
-| Fixed morphology genome | `reproducibility/config.yaml` | When `evolve_morphology=False`, the fixed genome is stored in config |
-
-**Saving git info at run start:**
-```python
-import subprocess
-
-def save_git_info(path):
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-    diff = subprocess.check_output(["git", "diff"]).decode()
-    with open(path, "w") as f:
-        f.write(f"commit: {commit}\n")
-        if diff:
-            f.write(f"\n--- uncommitted changes ---\n{diff}")
-```
-
-### 5.4 Save/Load of Pareto Solutions
-
-```python
-# Save entire Pareto front
-save_pareto_front(run_dir, pareto_individuals)
-# → creates pareto_solutions/individual_NNN/ for each non-dominated solution
-
-# Load a specific Pareto solution for deployment
-hebbian_rules = load_hebbian_rules("pareto_solutions/individual_003/hebbian_rules.yaml")
-morphology = load_morphology("pareto_solutions/individual_003/morphology.yaml")
-
-# Deploy: frozen actor + Hebbian rules on a specific morphology
-actor = load_frozen_actor("reproducibility/wp1_actor.pt")
-hebbian = HebbianLastLayer(actor.last_layer, hebbian_rules, eta=cfg.eta, w_max=cfg.w_max)
-```
-
-### 5.5 Resuming a Run
-
-A run can be resumed from any generation checkpoint:
-```python
-# Resume from generation 15
-python -m WP2.run --resume logs/runs_hebbian/2026-03-12_14-30-00_hebbian_codesing --from-gen 15
-```
-This loads `generations/gen_015/population.pkl` and `rng_state.pkl`, restoring
-the exact evolutionary state to continue from where it left off.
+**Notes:**
+- Both classes store `W_checkpoint` for quick resets
+- Both handle optional per-weight eta (scalar or tensor)
+- Epsilon handling is minimal — relies on weight clipping for stability
 
 ---
 
-## 6. Analysis & Plotting
+### 3. **frozen_actor.py** ✅
 
-### 6.1 Required Plots
+**Status:** Complete. Loads, freezes, and wraps the frozen actor for rollout.
 
-| # | Plot | X-axis | Y-axis | Purpose |
-|---|------|--------|--------|---------|
-| 1 | **Pareto front** (2D/3D scatter) | objective 1 | objective 2 (+ obj 3 as color) | Visualizes the trade-off frontier |
-| 2 | **Pareto front evolution** | objectives | generation as color/animation | Shows frontier improvement over generations |
-| 3 | **Hypervolume convergence** | Generation | Hypervolume indicator | Tracks overall Pareto front quality |
-| 4 | **Per-objective convergence** | Generation | Mean / best / worst per objective | Shows which objectives improve fastest |
-| 5 | **Hebbian parameter distributions** | Generation | A, B, C, D, λ values (violin) | Tracks convergence of rule parameters |
-| 6 | **Hebbian parameter heatmap** | Weight index (i,j) | ABCD value | Spatial structure of evolved rules for best solutions |
-| 7 | **Weight dynamics** | Timestep within episode | W_ij values | How Hebbian updates reshape weights during rollout |
-| 8 | **Morphology diversity** | Generation | Genome std / pairwise distance | Population diversity tracking |
-| 9 | **Ablation comparison** (bar chart) | Condition | Fitness per objective | Full / hebbian-only / morphology-only / baseline |
-| 10 | **Objective correlation** | Objective i | Objective j | Pairwise scatter — reveals conflict/harmony between objectives |
+**Key functions:**
 
-### 6.2 Implementation
+#### `load_frozen_actor(checkpoint_path, wp1_cfg_path, device)`
+- Loads WP1 checkpoint (handles both dict and `model_state_dict` wrapping)
+- Instantiates `ActorCriticTanh` via `_build_actor_critic()`
+- Freezes all parameters (`requires_grad=False`, `model.eval()`)
+- Extracts last linear layer and converts weight from `Parameter` to buffer
+- Infers `num_actions` and `hidden_dim` from checkpoint
 
-Follow WP1's `plotting.py` pattern:
-- Each plot is a standalone function accepting a results directory path
-- An `analyze_run(run_dir)` function generates all plots at once
-- Plots are saved to `{run_dir}/plots/` as PNG + PDF
-- Pareto front plots auto-adapt to the number of active objectives (2D scatter, 3D scatter, or pairwise matrix)
+#### `attach_hebbian(last_layer, hebbian_rules, cfg, device)`
+- Creates `HebbianLastLayer` instance for single individual
+- Passes per-weight ABCD+λ tensors and global η, w_max from config
+
+#### `HebbianActorWrapper` (single individual forward pass)
+- `__init__()` — stores frozen model + hebbian controller
+- `reset_episode()` — resets Hebbian weights and LSTM hidden states
+- `act(obs)` — forward pass with Hebbian interception:
+  1. obs → LSTM → MLP backbone → x (hidden features, 64D)
+  2. x @ W^T → y (raw actions, 5D, before tanh)
+  3. `hebbian_update(x, y)` modifies W in-place
+  4. y → tanh → scale → actions
+- `act_simple()` — alternative simpler version using model's distribution
+
+**Key design:**
+- Both `act()` and `act_simple()` are defined; `act_simple()` is cleaner but both work
+- `@torch.no_grad()` ensures no autograd overhead
+- LSTM reset is explicit (`model.memory_a.reset()`)
+
+#### `BatchedHebbianActorWrapper` (population-level forward pass)
+- `__init__()` — stores frozen model + batched Hebbian controller
+- `reset_episode()` — resets all P individuals' weights and LSTM
+- `act(obs)` — forward pass with per-individual Hebbian updates:
+  1. obs (P*S, obs_dim) → LSTM → MLP → x (P*S, 64)
+  2. Reshape x → (P, S, 64)
+  3. Batched matmul: `(P,S,64) @ (P,64,5)^T = (P,S,5)`
+  4. Per-individual `hebbian_update()` via `BatchedHebbianLastLayer`
+  5. Use model's distribution for action sampling (shared across all P)
+  6. actions (P*S, 5)
+
+**Notes:**
+- Both wrappers use `torch.no_grad()` for efficiency
+- LSTM memory management is critical — reset happens per episode
+- Batched wrapper assumes all individuals share the frozen backbone (only last-layer weights differ)
 
 ---
 
-## 7. File Structure
+### 4. **evaluate.py** ✅
+
+**Status:** Complete. Evaluation pipeline for fitness computation.
+
+**Key functions:**
+
+#### `_build_env(morphology_genome, cfg, wp1_cfg, device, num_envs_override)`
+- Converts morphology genome → physical parameters via `Chromosome_Drone.to_physical()`
+- Generates URDF via `UrdfMaker`
+- Instantiates `WingedDroneEnv` with the URDF
+- Inherits env/obs/reward/command configs from WP1, overrides velocity range from config
+
+#### `_rollout_episode(env, actor_wrapper, device, collect_smoothness)`
+- Runs a single episode until all envs are done
+- Tracks:
+  - Time accumulated (`t_acc`)
+  - Distance traveled (`dx_acc`)
+  - Energy consumed (`E_acc` from `env.power`)
+  - Crash flags (collision, wall, angle limit)
+  - Action jerk (if `collect_smoothness=True`)
+- Returns dict: `{velocities, energies, progresses, crash_flags, action_jerks (if requested)}`
+
+**Key design:**
+- Handles NaN environments gracefully
+- Computes velocity as `distance / time`
+- Crashes are tracked via env's internal flags
+
+#### `evaluate_individual(genome, cfg, wp1_cfg, checkpoint_path, device)`
+- Full pipeline: genome → fitness
+- Steps:
+  1. `split_genome()` → hebbian part, morphology part
+  2. `_build_env()` → create environment
+  3. `load_frozen_actor()` → frozen actor
+  4. `decode_hebbian_genes()` → per-weight rules from genome
+  5. `attach_hebbian()` → create `HebbianLastLayer`
+  6. Loop over `num_eval_episodes`:
+     - `_rollout_episode()` → collect metrics
+  7. `compute_fitness()` → aggregate metrics into fitness tuple
+
+**Notes:**
+- Handles both single-individual (returns single fitness) and batched (returns list of fitnesses)
+- Caches environment and actor creation across episodes to avoid redundant builds
+- Energy is summed across timesteps; velocity is aggregated per-env then averaged
+
+---
+
+### 5. **objectives.py** ✅
+
+**Status:** Complete. Extensible fitness objective functions.
+
+**Objectives:**
+- `velocity_objective()` — mean forward speed (maximize)
+- `energy_objective()` — negative total energy (maximize = lower energy)
+- `progress_objective()` — mean distance (maximize)
+- `smoothness_objective()` — negative action jerk (maximize = smoother)
+- `crash_rate_objective()` — negative crash rate (maximize = fewer crashes)
+
+**Architecture:**
+- `OBJECTIVE_REGISTRY` dict maps objective name → function
+- `compute_fitness(metrics, cfg)` — loops over active objectives, computes each, returns list
+- `default_fitness(cfg)` — returns sentinel values for invalid individuals (e.g., if evaluation crashes)
+
+**Extensibility:**
+- Add a new objective: define function, register in `OBJECTIVE_REGISTRY`, toggle in config
+
+**Notes:**
+- All objectives are oriented for **maximization** (NSGA-II convention)
+- Costs (energy, crash_rate) are negated so maximization is semantically correct
+- Defaults are sensible but parameterizable via objectives config
+
+---
+
+### 6. **utils.py** ✅
+
+**Status:** Complete. Reproducibility and utility functions.
+
+**Key functions:**
+
+#### Seed control
+- `seed_everything(seed)` — sets random, numpy, torch, cuda seeds for full reproducibility
+
+#### RNG state save/load (for resuming)
+- `save_rng_state(path)` — pickle all RNG states
+- `load_rng_state(path)` — restore RNG states
+
+#### Genome encoding/decoding
+- `decode_hebbian_genes(genome_section, hebb_cfg)` — normalised [0,1] genome → per-weight tensors
+  - Lays out genome as: [A_flat | B_flat | C_flat | D_flat | (lam_flat) | (eta_flat)]
+  - Rescales each block to its configured range
+  - Returns dict with keys: `A, B, C, D, lam, eta` (shapes `(5, 64)`)
+- `encode_hebbian_genes(rules, hebb_cfg)` — inverse operation (for saving Pareto solutions)
+- `split_genome(genome, cfg)` — splits full genome into (hebbian, morphology) sections
+
+#### Reproducibility artifacts
+- `save_git_info(path)` — capture git commit hash + uncommitted diff
+- `save_environment_info(path)` — pip freeze output
+- `save_pareto_front(run_dir, pareto_individuals, cfg)` — save each Pareto solution's rules + morphology + fitness to YAML
+
+**Notes:**
+- Genome encoding is layer-wise normalization: rescale [0,1] genome section to its configured range
+- `save_pareto_front()` creates individual folders with `hebbian_rules.yaml`, `morphology.yaml`, `fitness.yaml`
+
+---
+
+### 7. **evolve.py** ✅
+
+**Status:** Complete. NSGA-II main loop.
+
+**Key class: `HebbianCodesignDEAP`**
+
+**Constructor:**
+- Initializes DEAP toolbox with:
+  - Fitness class (multi-objective, maximisation)
+  - Individual class (list of genes in [0,1])
+  - Variation operators: SBX crossover + polynomial mutation (toggleable crossover)
+  - Selection: NSGA-II tournament DCD
+
+**Attributes:**
+- `cfg` — `HebbianEvolutionConfig`
+- `run_dir` — timestamped output directory
+- `pop` — current DEAP population
+- `pareto_front` — current non-dominated individuals
+
+**Methods:**
+
+#### `run(resume_from_gen=None)` — Main NSGA-II loop
+- Initialization: random population of size `population_size`
+- Loop over generations:
+  1. **Evaluate** — for each individual in population, call `evaluate_individual()`
+     - Serial or Ray-parallel depending on `GA_PARALLEL` flag
+  2. **Selection** — `selNSGA2()` produces offspring pool
+  3. **Variation** — crossover + mutation (crossover toggleable)
+  4. **Replacement** — μ+λ elitism via NSGA-II
+  5. **Logging** — append to CSV, save generation checkpoint (population.pkl, pareto_front.pkl, rng_state.pkl)
+- Return final population
+
+**Key features:**
+- ✅ Ray parallelism (multi-GPU evaluation)
+- ✅ CSV logging (population_history, pareto_history, generation_summary)
+- ✅ Generation checkpoints (population.pkl, pareto_front.pkl, rng_state.pkl)
+- ✅ Resume from any generation
+- ✅ Pareto front extraction + serialization
+- ✅ Weight reset to checkpoint at generation start (via `HebbianLastLayer.reset_weights()` called in `evaluate_individual()`)
+
+**Notes:**
+- Fitness validity check: invalid individuals get sentinel values from `default_fitness()`
+- Crowding distance computed automatically by DEAP
+- Hypervolume tracking could be added as an optional post-run analysis
+
+---
+
+### 8. **run.py** ✅
+
+**Status:** Complete. CLI entry point.
+
+**Main flow:**
+1. Parse arguments: `--cfg`, `--resume`, `--from-gen`, `-v`
+2. Load config from YAML or resume from run directory
+3. Apply CLI overrides
+4. Validate checkpoint paths and genome dimensions
+5. Setup environment: cache directories, seed control
+6. Infer last-layer dims from checkpoint
+7. Print summary
+8. Launch evolution via `HebbianCodesignDEAP.run()`
+9. Post-run analysis: call `plotting.analyze_run()`
+
+**Key design:**
+- Idempotent cache setup (directories created if missing)
+- Robust checkpoint loading (handles both direct state_dict and wrapped formats)
+- Graceful plotting failure (non-fatal if plotting encounters errors)
+
+---
+
+### 9. **plotting.py** ⚠️
+
+**Status:** Partially reviewed. Needs full verification.
+
+**Declared plots (from docstring):**
+1. Pareto front (2D/3D scatter)
+2. Pareto front evolution (generation as color)
+3. Hypervolume convergence
+4. Per-objective convergence
+5. Hebbian parameter distributions (violin)
+6. Hebbian parameter heatmap
+7. Weight dynamics (timestep within episode)
+8. Morphology diversity
+9. Ablation comparison (bar chart)
+10. Objective correlation (pairwise scatter)
+
+**Helper functions:**
+- `_smooth()` — EMA smoothing
+- `_load_gen_summary()` — Load generation_summary.csv
+- `_load_pareto_history()` — Load pareto_history.csv
+- `_load_pop_history()` — Load population_history.csv
+- `_get_objective_names()` — Infer from CSV headers
+
+**Notes from code review:**
+- Only read first 100 lines; full implementation needs verification
+- Should be auto-generated at end of run via `analyze_run()`
+- Needs graceful error handling for incomplete runs
+
+**TODO:**
+- [ ] Verify all 10 plots are implemented
+- [ ] Check matplotlib backend handling (non-interactive rendering)
+- [ ] Ensure error handling for missing/incomplete CSVs
+- [ ] Add optional ablation comparison (cross-run visualization)
+
+---
+
+### 10. **Preset YAML Configs**
+
+**Location:** `src/WP2/configs/`
+
+**Expected configs:**
+- `full_codesing.yaml` — Hebbian ON + morphology ON (2255 genes)
+- `hebbian_only.yaml` — Hebbian ON + morphology OFF (2240 genes)
+- `morphology_only.yaml` — Hebbian OFF + morphology ON (15 genes)
+- `baseline.yaml` — Hebbian OFF + morphology OFF (0 genes)
+- `mutation_only.yaml` — Full co-opt with crossover disabled
+
+**TODO:**
+- [ ] Verify all configs exist and are correctly formatted
+- [ ] Ensure they have correct checkpoint_path and checkpoint_config_path values
+- [ ] Spot-check hyperparameters (population_size, eta, etc.)
+
+---
+
+## Known Issues & Improvements
+
+### 1. **Batched Evaluation Integration** ⚠️
+- `BatchedHebbianLastLayer` and `BatchedHebbianActorWrapper` are implemented
+- **Status of integration in `evolve.py`:** Unclear if batched evaluation is actually used
+- **Recommendation:** Verify that `evaluate_individual()` uses batched mode when evaluating the entire population simultaneously
+- **Impact:** Affects throughput; batched could be 2-10× faster than serial
+
+### 2. **Plotting Module Completeness** ⚠️
+- Only reviewed docstring and first 100 lines
+- **TODO:** Full code review to confirm all 10 plots are implemented
+- **Risk:** Missing plots could leave blind spots in evolution analysis
+
+### 3. **Error Handling in Evaluation** ⚠️
+- `evaluate_individual()` may crash if env/actor building fails
+- **Recommendation:** Wrap with try-except, return `default_fitness()` on error
+- **Current status:** Not verified
+
+### 4. **Morphology-Blind Actor Transfer** ⚠️
+- Actor is morphology-blind (trained on diverse morphologies in WP1)
+- **Risk:** May not transfer well to morphologies far from training distribution
+- **Mitigation:** Hebbian plasticity should help; ablation (morphology-only) will reveal the gap
+
+### 5. **Fitness Caching** ⚠️
+- Plan mentions "fitness_db.csv" for caching evaluations
+- **Status:** Unclear if implemented in `evolve.py`
+- **Recommendation:** Add deduplication to avoid re-evaluating identical genomes
+
+### 6. **Resume Stability** ⚠️
+- Resume from any generation requires loaded RNG states and population state
+- **Status:** Implemented (population.pkl, rng_state.pkl saved per generation)
+- **Recommendation:** Test resume from middle of run to verify exact reproducibility
+
+---
+
+## Testing Checklist
+
+### Unit Tests (minimal)
+- [ ] `decode_hebbian_genes()` → tensor shapes correct
+- [ ] `split_genome()` → correct splits for all config modes
+- [ ] `compute_fitness()` → fitness tuple length matches active objectives
+
+### Integration Tests
+- [ ] Small run (pop=10, gen=2) completes without error
+- [ ] Run folder structure is correct (reproducibility/, generations/, results/, pareto_solutions/, plots/)
+- [ ] CSV files have correct headers and data
+- [ ] Generation checkpoints (population.pkl, rng_state.pkl) are valid
+
+### Reproducibility Tests
+- [ ] Resume from gen 1 produces identical results to original run
+- [ ] Pareto solutions can be deserialized from YAML
+- [ ] `git_info.txt` and `environment.txt` capture state correctly
+
+### Visualization Tests
+- [ ] All 10 plots generate without error
+- [ ] Plots adapt to number of active objectives (2, 3, 5 objectives)
+- [ ] Plots are readable and clearly labeled
+
+---
+
+## Next Steps & Recommendations
+
+### Immediate (before first full run)
+1. **Verify config files** — ensure all 5 presets exist and have valid checkpoint paths
+2. **Test plotting** — run `plotting.py` review to confirm all 10 plots are working
+3. **Small end-to-end test** — pop=10, gen=2, check output structure
+4. **Spot-check batched evaluation** — confirm it's actually used in `evolve.py`
+
+### Short-term (after first successful run)
+1. **Add fitness caching** — dedup identical genomes to avoid redundant evaluation
+2. **Improve error handling** — wrap env/actor building with try-except
+3. **Test resume** — verify mid-run resume produces deterministic continuation
+4. **Profile throughput** — measure wall-clock time per generation, identify bottlenecks
+
+### Medium-term (optimization)
+1. **Hierarchical genome encoding** — current 1600D genome is large; consider structured encoding
+2. **Adaptive mutation rates** — adjust per-weight mutation rate based on convergence
+3. **Warm-start from WP1** — initialize Hebbian rules from WP1 plasticity (if available)
+
+### Long-term (extensions)
+1. **Ablation comparison plots** — cross-run visualization (full vs hebbian-only vs morphology-only vs baseline)
+2. **Hypervolume indicator** — track Pareto front quality over generations
+3. **Per-weight learning curves** — analyze how individual synaptic rules evolve
+4. **Deployment script** — select a Pareto solution, deploy to real drone simulator
+
+---
+
+## File Manifest
 
 ```
 src/WP2/
-├── plan.md                            # this file
-├── config.py                          # HebbianEvolutionConfig dataclass + YAML I/O
-├── hebbian.py                         # HebbianLastLayer — ABCD rule on existing layer
-├── frozen_actor.py                    # load checkpoint, drop critic, freeze, attach hebbian
-├── evaluate.py                        # rollout frozen+hebbian actor, compute fitness
-├── objectives.py                      # fitness objective functions (extensible)
-├── evolve.py                          # NSGA-II loop (HebbianCodesignDEAP class)
-├── run.py                             # main entry point
-├── plotting.py                        # all analysis/visualization functions
-├── utils.py                           # seed control, serialization, genome encoding
-├── configs/
+├── plan.md                            # This file — architecture + status
+├── __init__.py                        # empty
+├── config.py                          # HebbianEvolutionConfig (complete)
+├── hebbian.py                         # HebbianLastLayer, BatchedHebbianLastLayer (complete)
+├── frozen_actor.py                    # load_frozen_actor, HebbianActorWrapper, BatchedHebbianActorWrapper (complete)
+├── evaluate.py                        # evaluate_individual, _rollout_episode, _build_env (complete)
+├── objectives.py                      # fitness functions + registry (complete)
+├── evolve.py                          # HebbianCodesignDEAP NSGA-II loop (complete)
+├── run.py                             # CLI entry point (complete)
+├── plotting.py                        # visualization (partial — needs review)
+├── utils.py                           # utilities + reproducibility (complete)
+├── configs/                           # YAML presets (TODO: verify)
 │   ├── full_codesing.yaml
 │   ├── hebbian_only.yaml
 │   ├── morphology_only.yaml
 │   ├── baseline.yaml
 │   └── mutation_only.yaml
-└── slurm_jobs/                        # cluster submission scripts (if needed)
+└── slurm_jobs/                        # cluster scripts (optional)
+    ├── run.slurm
+    └── run_sweep.sh
 ```
 
 ---
 
-## 8. Implementation Order
+## Configuration Examples
 
-### Phase 1 — Core Infrastructure
-1. **`config.py`** — Define `HebbianEvolutionConfig` with YAML I/O and CLI overrides
-2. **`utils.py`** — Seed control, genome encoding/decoding for per-weight Hebbian params
-3. **`hebbian.py`** — Implement `HebbianLastLayer` with per-weight ABCD+λ rule
+### Full Co-Optimization (main experiment)
+```bash
+python -m WP2.run --cfg src/WP2/configs/full_codesing.yaml
+```
+- Hebbian enabled, morphology enabled
+- Genome: 2255D (2240 Hebbian + 15 morphology)
+- Objectives: velocity, energy, progress
 
-### Phase 2 — Policy Integration & Evaluation
-4. **`frozen_actor.py`** — Load WP1 checkpoint, drop critic, freeze weights, attach Hebbian
-5. **`objectives.py`** — Modular fitness functions (velocity, energy, progress, + extensible)
-6. **`evaluate.py`** — Rollout loop: reset weights per episode, collect multi-objective fitness
+### Hebbian-Only (ablation)
+```bash
+python -m WP2.run --cfg src/WP2/configs/hebbian_only.yaml
+```
+- Hebbian enabled, morphology fixed
+- Genome: 1600D (Hebbian only)
+- Tests whether Hebbian plasticity helps on fixed morphology
 
-### Phase 3 — Evolutionary Loop
-7. **`evolve.py`** — `HebbianCodesignDEAP` class:
-   - Genome = per-weight Hebbian rules ⊕ morphology (conditioned on config toggles)
-   - DEAP toolbox with toggleable SBX + polynomial mutation
-   - Pareto front extraction, population I/O, generation logging
-   - Weight reset to checkpoint values at each generation start
-8. **`run.py`** — CLI entry point: parse config, seed everything, launch evolution
+### Morphology-Only (ablation)
+```bash
+python -m WP2.run --cfg src/WP2/configs/morphology_only.yaml
+```
+- Hebbian disabled, morphology enabled
+- Genome: 15D (morphology only)
+- Tests whether morphology evolution is effective
 
-### Phase 4 — Analysis & Configs
-9. **`plotting.py`** — All visualization functions (Pareto fronts, convergence, heatmaps)
-10. **`configs/`** — YAML presets for all experimental conditions
-11. **Validation** — End-to-end test: small population, few generations, verify reproducibility
+### Resume from Generation 15
+```bash
+python -m WP2.run --resume logs/runs_hebbian/2026-03-17_12-34-56_hebbian_codesing --from-gen 15
+```
 
----
-
-## 9. Critical Design Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Where Hebbian acts | Modify existing last layer weights in-place | Not a new layer — directly changes the pretrained `Linear(64→5)` weight matrix each timestep |
-| Bias terms | **Never modified** | Only the weight matrix W is plastic; bias vector is frozen and untouched |
-| Critic | Dropped entirely | No value estimation needed — pure forward rollout for fitness |
-| ABCD granularity | **Per-weight** (each of 320 weights has its own A,B,C,D,λ) | Maximizes expressiveness — each synapse can learn a different adaptation strategy |
-| η (learning rate) | Fixed global by default; **toggleable** per-weight evolution | `evolve_eta=False` (default) uses a single η; `evolve_eta=True` adds 320 genes for per-weight η |
-| w_max | Fixed tunable config param (never evolved) | Global safety bound, not a per-synapse property |
-| Weight reset | Checkpoint values at every generation AND episode start | Each episode tests Hebbian adaptation from scratch; no leakage across episodes/generations |
-| Crossover | **Toggleable** (default ON) | With 1600D genome, crossover can be disruptive — mutation-only is a valid strategy |
-| Policy stochasticity | Default **stochastic** (sample from distribution) | Adds environment exploration; toggleable for deterministic comparison |
-| Fitness structure | Pareto frontier (not single best) | NSGA-II naturally produces a frontier — we expose all non-dominated solutions |
-| Objectives | Extensible via config | Start with 3 defaults; additional objectives can be toggled on without code changes |
-| Population size | Tunable via config (default 40) | High-dimensional genomes may require larger populations; user adjusts per experiment |
-| Morphology encoding | Reuse `Chromosome_Drone` | Proven [0,1]^15 encoding with NACA snapping already exists |
+### CLI Overrides
+```bash
+python -m WP2.run --cfg src/WP2/configs/full_codesing.yaml \
+  --cfg.evolution.population_size 80 \
+  --cfg.evolution.num_generations 50 \
+  --cfg.hebbian.eta 0.02 \
+  --cfg.evaluation.num_eval_episodes 3
+```
 
 ---
 
-## 10. Risks & Mitigations
+## Critical Design Decisions (Rationale)
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| 1600–1920D Hebbian genome is large for NSGA-II | Slow convergence, poor exploration | Mutation-only mode; increase `population_size` in config; consider hierarchical/structured encoding as future extension |
-| Hebbian weights diverge during rollout | Actions become garbage → meaningless fitness | Fixed `w_max` clipping + evolved decay `λ_ij` bounds weight growth |
-| Stochastic fitness is noisy | Unreliable selection signal | Average over `num_eval_episodes`; increase episodes for noisy regimes |
-| Fitness evaluation is slow (full rollout per individual per generation) | Long wall-clock time | Ray parallelism across GPUs; fitness caching in CSV database |
-| Morphology changes invalidate frozen actor | Frozen weights may not transfer to new body shapes | Actor was trained on diverse morphologies (WP1 catalog); Hebbian adaptation may also help bridge the gap |
-| Per-weight rules overfit to specific morphology | Poor generalization | Test with morphology-only and hebbian-only ablations to isolate effects |
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Where Hebbian acts | Last layer only (Linear 64→7) | Maximizes expressiveness while keeping overhead low; matches biological neuromuscular plasticity |
+| Bias never modified | Frozen | Simplifies implementation; acts as baseline offset (learnable via A/B/C coefficients) |
+| Critic dropped | Yes | No value function needed for pure rollout; saves memory, reduces complexity |
+| Per-weight granularity | Yes (448 separate rule sets) | Each synapse can learn a different adaptation strategy; essential for heterogeneous plasticity |
+| Weight reset per episode | Yes | Each episode tests plasticity from scratch; prevents biased fitness estimates from carry-over |
+| Crossover toggleable | Yes | 2240D genome may be disruptive; mutation-only is a valid strategy for high-D problems |
+| Stochastic by default | Yes | Exploration helps discover diverse behaviors; toggleable for deterministic comparison |
+| Pareto frontier output | Yes (not single best) | NSGA-II naturally produces frontier; user can select trade-off post-hoc |
+| Genome encoding | [0,1] normalized | Matches DEAP convention; enables SBX crossover and polynomial mutation |
 
 ---
 
-## 11. Resolved Design Questions
+## References & Links
 
-| # | Question | Resolution |
-|---|----------|------------|
-| 1 | Bias terms | **Never modified** — only the weight matrix W (64×5) is plastic |
-| 2 | Per-weight η | **Toggleable** via `evolve_eta` flag (default `False` = single global η) |
-| 3 | Cross-episode weight carry-over | **Not implemented** — weights reset at every episode start |
-| 4 | Additional objectives | Start with the default 3; extensible architecture is ready for future additions |
-| 5 | Population sizing | **Tunable** via `evolution.population_size` — user sets per experiment |
+- **WP1 foundation training:** `python -m WP1.train --cfg src/WP1/configs/foundation.yaml`
+- **Context file:** `.claude/CONTEXT.md` (comprehensive codebase overview)
+- **Core environment:** `src/winged_drone_train/env.py`
+- **Morphology encoding:** `src/morph_evolution/chromosome_drone.py`
+- **DEAP documentation:** https://deap.readthedocs.io (NSGA-II, SBX, polynomial mutation)
+
+---
+
+**Last updated:** 2026-03-17
+**Reviewed by:** Code review of all WP2 modules
+**Status:** Implementation complete; plotting + config validation pending

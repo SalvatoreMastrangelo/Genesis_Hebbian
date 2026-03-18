@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus=2
 #SBATCH --cpus-per-gpu=4
-#SBATCH --time=00:25:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 #SBATCH --mail-user=salvatore.mastrangelo@epfl.ch

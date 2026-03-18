@@ -84,7 +84,7 @@ def decode_hebbian_genes(
     Returns a dict with keys: A, B, C, D, lam, and optionally eta and decay.
     If ``evolve_decay=False``, lam is set to the midpoint of decay_range.
     """
-    n_weights = out_features * in_features  # 320
+    n_weights = out_features * in_features  # 448
     genes = np.asarray(genome_section, dtype=np.float32)
 
     def _rescale(block: np.ndarray, lo: float, hi: float) -> torch.Tensor:

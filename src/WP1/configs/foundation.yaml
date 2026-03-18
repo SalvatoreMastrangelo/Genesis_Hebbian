@@ -4,10 +4,10 @@
 # Uses Gen_Env with a URDF catalog.  Actor has NO genome access.
 ##############################################################################
 
-exp_name: 10_morph
+exp_name: 96_morph
 
 training:
-  num_envs: 16512
+  num_envs: 33600
   max_iterations: 20
   eval_interval: 100
 
@@ -16,6 +16,6 @@ obs:
   add_genome_obs_critic: true
 
 catalog:
-  n_urdf: 192
+  n_urdf: 96
   catalog_dir: null # Not needed anymore unless specified in the CLI
   urdf_seed: 11

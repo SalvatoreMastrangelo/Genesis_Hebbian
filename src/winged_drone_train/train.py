@@ -185,7 +185,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
     # --------------------------------------------------------------------- #
     env_cfg: Dict[str, Any] = {
         # Basic task / model selection
-        "num_actions": 5,              # throttle + 4 servos (kept for reference)
+        "num_actions": 7,              # throttle + 6 servos
         "dt": 0.01,                    # not used directly; env sets dt from control_hz
         "drone": "morphing_drone",
         "naca": "3416",
