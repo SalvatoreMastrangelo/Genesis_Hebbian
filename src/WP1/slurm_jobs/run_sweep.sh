@@ -49,9 +49,15 @@ for YAML_PATH in "${YAMLS[@]}"; do
   EXP_NAME="$(grep -E '^exp_name:' "${YAML_PATH}" | awk '{print $2}' || echo "$(basename "${YAML_PATH}" .yaml)")"
   REPEAT=$(grep -E '^repeat:' "${YAML_PATH}" | awk '{print $2}' || echo "1")
   REPEAT="${REPEAT:-1}"
+  BASE_TRAIN_SEED=$(grep -A 10 "^training:" "${YAML_PATH}" | grep "seed:" | awk '{print $2}' || echo "1")
+  BASE_TRAIN_SEED="${BASE_TRAIN_SEED:-1}"
+  BASE_URDF_SEED=$(grep -A 5 "^catalog:" "${YAML_PATH}" | grep "urdf_seed:" | awk '{print $2}' || echo "0")
+  BASE_URDF_SEED="${BASE_URDF_SEED:-0}"
 
   for ((i = 0; i < REPEAT; i++)); do
     RUN_TAG="wp1_${EXP_NAME}_r${i}"
+    TRAIN_SEED=$((BASE_TRAIN_SEED + i))
+    URDF_SEED=$((BASE_URDF_SEED + i))
 
     DEPENDENCY_ARG=""
     if [ -n "${PREV_JOB_ID}" ]; then
@@ -68,12 +74,12 @@ for YAML_PATH in "${YAMLS[@]}"; do
       --output="/home/%u/slurm_logs/${RUN_TAG}-%j.out" \
       --error="/home/%u/slurm_logs/${RUN_TAG}-%j.err" \
       ${DEPENDENCY_ARG} \
-      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}${MULTI_GPU_EXPORT}" \
+      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}",CLI_OVERRIDES="--cfg.training.seed ${TRAIN_SEED} --cfg.catalog.urdf_seed ${URDF_SEED}${MULTI_GPU_EXPORT}" \
       "$@" \
       "${SLURM_SCRIPT}" \
       | awk '{print $NF}')
 
-    echo "[SWEEP] Submitted job ${JOB_ID} <- ${CFG_FILE} (run ${i}/${REPEAT})"
+    echo "[SWEEP] Submitted job ${JOB_ID} <- ${CFG_FILE} (run ${i}/${REPEAT}, train_seed=${TRAIN_SEED}, urdf_seed=${URDF_SEED})"
     PREV_JOB_ID="${JOB_ID}"
   done
 done

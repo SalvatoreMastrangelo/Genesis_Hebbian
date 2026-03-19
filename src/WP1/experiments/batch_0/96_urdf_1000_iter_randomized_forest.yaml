@@ -8,7 +8,7 @@
 # Only keys that differ from configs/default.yaml need to be specified.
 ##############################################################################
 
-exp_name: 96_urdf_1000_iter
+exp_name: 96_urdf_1000_iter_randomized_forest
 repeat: 5  # number of times to submit this config as independent jobs
 
 ppo:
