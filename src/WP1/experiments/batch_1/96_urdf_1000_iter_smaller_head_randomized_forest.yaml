@@ -8,8 +8,8 @@
 # Only keys that differ from configs/default.yaml need to be specified.
 ##############################################################################
 
-exp_name: 96_urdf_1000_iter_smaller_head
-repeat: 5  # number of times to submit this config as independent jobs
+exp_name: 96_urdf_1000_iter_smaller_head_randomized_forest
+repeat: 3  # number of times to submit this config as independent jobs
 
 ppo:
   clip_param: 0.15
@@ -44,7 +44,7 @@ training:
   num_steps_per_env: 25
   save_interval: 100
   eval_interval: 200
-  seed: 1
+  seed: 10
   empirical_normalization: true
   device: "cuda:0"
 
@@ -116,4 +116,4 @@ command:
 catalog:
   n_urdf: 96
   catalog_dir: null
-  urdf_seed: 0
+  urdf_seed: 11
