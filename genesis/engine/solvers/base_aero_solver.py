@@ -22,6 +22,9 @@ class BaseAeroSolver(Solver):
     """
 
     def __init__(self, scene, sim, options=None):
+        if options is None:
+            from types import SimpleNamespace
+            options = SimpleNamespace(dt=sim._dt, gravity=None)
         super().__init__(scene, sim, options)
 
         # Reference to underlying rigid solver and timing

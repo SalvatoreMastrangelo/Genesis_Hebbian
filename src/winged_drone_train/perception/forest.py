@@ -279,8 +279,8 @@ def generate_forests(
         tree_height=float(cfg_dict.get("tree_height", 50.0)),
         dens_min=dens_min,
         dens_max=dens_max,
-        dens_min_min=float(cfg_dict["dens_min_min"]) if "dens_min_min" in cfg_dict else None,
-        dens_min_max=float(cfg_dict["dens_min_max"]) if "dens_min_max" in cfg_dict else None,
+        dens_min_min=float(cfg_dict["dens_min_min"]) if cfg_dict.get("dens_min_min") is not None else None,
+        dens_min_max=float(cfg_dict["dens_min_max"]) if cfg_dict.get("dens_min_max") is not None else None,
         num_trees=int(num_trees) if num_trees is not None else ForestConfig.num_trees,
     )
 
