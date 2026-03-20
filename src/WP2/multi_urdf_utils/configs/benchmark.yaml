@@ -1,0 +1,57 @@
+# WP2.5 Multi-Drone-Per-Scene Benchmark Configuration
+# ====================================================
+#
+# This config controls a single benchmark run. Use Slurm array jobs
+# or a bash loop to sweep N, S, E parameters.
+#
+# Usage:
+#   python -m WP2.multi_urdf_utils.run --cfg src/WP2/multi_urdf_utils/configs/benchmark.yaml
+#   python -m WP2.multi_urdf_utils.run --cfg src/WP2/multi_urdf_utils/configs/benchmark.yaml --cfg.benchmark.N 8
+
+exp_name: "multi_drone_benchmark"
+
+benchmark:
+  N: 1                    # URDFs per scene (keep ≤ 40 for Taichi limits)
+  S: 1                    # number of scenes
+  E: 256                  # environments per scene (shared by all N entities)
+  num_episodes: 3         # rollout episodes per benchmark
+  max_steps: 500          # max steps per episode
+  seed: 42
+  num_workers: 0               # parallel scene workers (0 = auto: cpu_count // cpu_threads_per_worker)
+  cpu_threads_per_worker: 2    # CPU threads per Taichi compiler (TI_NUM_THREADS)
+
+checkpoint:
+  # IMPORTANT: Set these to your WP1 checkpoint paths
+  model_path: "logs/runs/2026-03-11_16-52-48_lower_energy_penalty/tb/model_199.pt"          # e.g. "logs/runs/2026-03-15_foundation/tb/model_2000.pt"
+  config_path: "logs/runs/2026-03-11_16-52-48_lower_energy_penalty/config.yaml"         # e.g. "logs/runs/2026-03-15_foundation/config.yaml"
+
+hebbian:
+  enabled: false            # false = baseline frozen controller (no Hebbian plasticity)
+  eta: 0.01
+  w_max: 3000.0
+
+env:
+  dt: 0.04
+  substeps: 4
+  episode_length_s: 20.0  # shorter episodes for benchmarking
+  forest_density_min: 0.0
+  forest_density_max: 3.0
+  growing_forest: true
+  tree_radius: 0.75
+  tree_height: 100.0
+  base_init_pos: [-30.0, 0.0, 15.0]
+  base_init_quat: [1.0, 0.0, 0.0, 0.0]
+  y_lower: -50.0
+  y_upper: 50.0
+  forest_x_limit: 150.0
+  x_upper: 150.0
+  aero_noise: false       # disabled for deterministic benchmarking
+  vmin: 6.0
+  vmax: 30.0
+
+catalog:
+  catalog_dir: "src/WP2/multi_urdf_utils/test_catalog"
+  urdf_seed: 42
+
+device: "cuda:0"
+base_dir: "logs/runs_benchmark"
