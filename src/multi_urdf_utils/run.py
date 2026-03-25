@@ -6,10 +6,10 @@ Usage
 -----
 .. code-block:: bash
 
-    python -m WP2.multi_urdf_utils.run --cfg src/WP2/multi_urdf_utils/configs/benchmark.yaml
+    python -m multi_urdf_utils.run --cfg src/multi_urdf_utils/configs/benchmark.yaml
 
     # With CLI overrides
-    python -m WP2.multi_urdf_utils.run --cfg src/WP2/multi_urdf_utils/configs/benchmark.yaml \\
+    python -m multi_urdf_utils.run --cfg src/multi_urdf_utils/configs/benchmark.yaml \\
         --cfg.benchmark.N 8 --cfg.benchmark.S 5 --cfg.benchmark.E 128
 """
 
@@ -52,7 +52,7 @@ def main() -> None:
 
     args, remaining = parser.parse_known_args()
 
-    from WP2.multi_urdf_utils.config import BenchmarkConfig
+    from multi_urdf_utils.config import BenchmarkConfig
 
     if args.cfg:
         cfg = BenchmarkConfig.from_yaml(args.cfg)
@@ -85,7 +85,7 @@ def main() -> None:
     cfg.to_yaml(run_dir / "config.yaml")
 
     # Run benchmark
-    from WP2.multi_urdf_utils.benchmark import run_benchmark, save_results, save_table, print_results
+    from multi_urdf_utils.benchmark import run_benchmark, save_results, save_table, print_results
 
     results = run_benchmark(cfg)
     csv_path = save_results(results, run_dir)

@@ -154,3 +154,6 @@ dmypy.json
 
 # ClaudeAI
 .claude
+
+# Additional ignores
+**/test_catalog/

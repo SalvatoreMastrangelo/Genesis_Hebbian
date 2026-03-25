@@ -5,8 +5,8 @@
 # or a bash loop to sweep N, S, E parameters.
 #
 # Usage:
-#   python -m WP2.multi_urdf_utils.run --cfg src/WP2/multi_urdf_utils/configs/benchmark.yaml
-#   python -m WP2.multi_urdf_utils.run --cfg src/WP2/multi_urdf_utils/configs/benchmark.yaml --cfg.benchmark.N 8
+#   python -m multi_urdf_utils.run --cfg src/multi_urdf_utils/configs/benchmark.yaml
+#   python -m multi_urdf_utils.run --cfg src/multi_urdf_utils/configs/benchmark.yaml --cfg.benchmark.N 8
 
 exp_name: "multi_drone_benchmark"
 
@@ -16,14 +16,14 @@ benchmark:
   E: 256                  # environments per scene (shared by all N entities)
   num_episodes: 3         # rollout episodes per benchmark
   max_steps: 500          # max steps per episode
-  seed: 42
+  seed: 1
   num_workers: 0               # parallel scene workers (0 = auto: cpu_count // cpu_threads_per_worker)
   cpu_threads_per_worker: 2    # CPU threads per Taichi compiler (TI_NUM_THREADS)
 
 checkpoint:
   # IMPORTANT: Set these to your WP1 checkpoint paths
-  model_path: "logs/runs/2026-03-11_16-52-48_lower_energy_penalty/tb/model_199.pt"          # e.g. "logs/runs/2026-03-15_foundation/tb/model_2000.pt"
-  config_path: "logs/runs/2026-03-11_16-52-48_lower_energy_penalty/config.yaml"         # e.g. "logs/runs/2026-03-15_foundation/config.yaml"
+  model_path: "logs/remote/wp1_training/wp1_96_urdf_1000_iter_lower_energy_penalty_r3/logs/runs/2026-03-20_01-24-59_96_urdf_1000_iter_lower_energy_penalty/tb/model_999.pt"          # e.g. "logs/runs/2026-03-15_foundation/tb/model_2000.pt"
+  config_path: "logs/remote/wp1_training/wp1_96_urdf_1000_iter_lower_energy_penalty_r3/logs/runs/2026-03-20_01-24-59_96_urdf_1000_iter_lower_energy_penalty/config.yaml"         # e.g. "logs/runs/2026-03-15_foundation/config.yaml"
 
 hebbian:
   enabled: false            # false = baseline frozen controller (no Hebbian plasticity)
@@ -45,12 +45,12 @@ env:
   y_upper: 50.0
   forest_x_limit: 150.0
   x_upper: 150.0
-  aero_noise: false       # disabled for deterministic benchmarking
-  vmin: 6.0
-  vmax: 30.0
+  aero_noise: true       # disabled for deterministic benchmarking
+  vmin: 5.0
+  vmax: 25.0
 
 catalog:
-  catalog_dir: "src/WP2/multi_urdf_utils/test_catalog"
+  catalog_dir: "src/multi_urdf_utils/test_catalog"
   urdf_seed: 42
 
 device: "cuda:0"

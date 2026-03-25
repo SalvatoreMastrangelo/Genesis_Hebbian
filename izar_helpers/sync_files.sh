@@ -12,5 +12,6 @@ rsync -av \
   --exclude='slurm_logs/' \
   --exclude='my_container/' \
   --exclude='izar_helpers/' \
+  --exclude='src/WP2/multi_urdf_utils/test_catalog/' \
   /home/salvatore/Desktop/code/hebbian/Genesis_Hebbian/ \
   smastran@izar.hpc.epfl.ch:/home/smastran/Genesis-dev/

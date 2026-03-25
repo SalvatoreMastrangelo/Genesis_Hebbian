@@ -41,16 +41,8 @@ class BaselineActorWrapper:
 
     @torch.no_grad()
     def act(self, obs: Tensor) -> Tensor:
-        model = self.model
-        if hasattr(model, "memory_a") and model.recurrency:
-            inp = model.memory_a(obs)
-        else:
-            inp = obs
-        mlp_inp = inp.squeeze(0) if inp.dim() == 3 else inp
-        model.update_distribution(mlp_inp)
-        z = model.distribution.mean if not self.stochastic else model.distribution.rsample()
-        a = torch.tanh(z)
-        return model._scale(a)
+        """Forward pass: LSTM → MLP → tanh → _scale (deterministic)."""
+        return self.model.act_inference(obs)
 
 
 def random_hebbian_rules(
