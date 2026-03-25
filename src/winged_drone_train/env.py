@@ -1900,8 +1900,8 @@ class WingedDroneEnv:
         return torch.norm(self.base_ang_vel, dim=1)
 
     def _reward_stability(self) -> torch.Tensor:
-        """Penalize large roll/pitch angles."""
-        return torch.abs(self.base_euler[:, 0]) + torch.abs(self.base_euler[:, 1])
+        """Penalize large roll/pitch angles (quadratically)."""
+        return self.base_euler[:, 0]**2 + self.base_euler[:, 1]**2
 
     def _reward_crash(self) -> torch.Tensor:
         """Penalty for crash or collision (1 on crash/collision)."""

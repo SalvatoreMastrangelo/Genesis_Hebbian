@@ -17,7 +17,7 @@ Concurrency model
 
 Usage (from benchmark.py)
 --------------------------
-    from WP2.multi_urdf_utils.orchestrator import run_scenes_parallel
+    from multi_urdf_utils.orchestrator import run_scenes_parallel
     scene_metrics_list = run_scenes_parallel(scene_specs, cfg, hebb_cfg_dict)
 """
 
@@ -76,8 +76,8 @@ def _scene_worker(
     import genesis as gs
     from WP1.config import RunConfig
     from WP2.config import HebbianConfig
-    from WP2.multi_urdf_utils.multi_drone_env import MultiDroneEnv
-    from WP2.multi_urdf_utils.multi_drone_actor import MultiDroneActorManager, random_hebbian_rules
+    from multi_urdf_utils.multi_drone_env import MultiDroneEnv
+    from multi_urdf_utils.multi_drone_actor import MultiDroneActorManager, random_hebbian_rules
 
     # ---- rebuild configs from plain dicts --------------------------------- #
     wp1_cfg = RunConfig._from_dict(wp1_cfg_dict)

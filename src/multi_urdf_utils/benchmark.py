@@ -21,7 +21,7 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from WP2.multi_urdf_utils.config import BenchmarkConfig
+from multi_urdf_utils.config import BenchmarkConfig
 
 
 def _resolve_num_workers(cfg_num_workers: int, cpu_threads_per_worker: int) -> int:
@@ -78,6 +78,8 @@ def _build_scene_inputs(cfg, urdf_paths_str):
     wp1_cfg.env.base_init_quat = cfg.env.base_init_quat
     # Apply aero noise config from benchmark (may differ from training config)
     wp1_cfg.env.aero_noise = cfg.env.aero_noise
+    # Apply dt from benchmark config (overrides WP1 training value)
+    wp1_cfg.env.dt = cfg.env.dt
     wp1_cfg_dict = asdict(wp1_cfg)
 
     urdf_batches = [urdf_paths_str[i * N : (i + 1) * N] for i in range(S)]
@@ -160,7 +162,7 @@ def run_benchmark(cfg: BenchmarkConfig) -> Dict[str, float]:
         print(f"[Phase 2+3] Parallel mode: {num_workers} workers\n")
         t_phases_start = time.time()
 
-        from WP2.multi_urdf_utils.orchestrator import run_scenes_parallel
+        from multi_urdf_utils.orchestrator import run_scenes_parallel
         scene_results = run_scenes_parallel(
             urdf_batches=urdf_batches,
             E=E,
@@ -196,8 +198,8 @@ def run_benchmark(cfg: BenchmarkConfig) -> Dict[str, float]:
         print("[Phase 2+3] Sequential mode\n")
         from WP1.config import RunConfig
         from WP2.config import HebbianConfig
-        from WP2.multi_urdf_utils.multi_drone_env import MultiDroneEnv
-        from WP2.multi_urdf_utils.multi_drone_actor import MultiDroneActorManager, random_hebbian_rules
+        from multi_urdf_utils.multi_drone_env import MultiDroneEnv
+        from multi_urdf_utils.multi_drone_actor import MultiDroneActorManager, random_hebbian_rules
 
         # Rebuild objects in main process for sequential path
         from dataclasses import fields as dc_fields

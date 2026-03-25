@@ -62,7 +62,7 @@ for YAML_PATH in "${YAMLS[@]}"; do
       MULTI_GPU_EXPORT=",MULTI_GPU=${MULTI_GPU}"
     fi
 
-    JOB_ID=$(sbatch \
+    JOB_ID=$(sbatch -q long \
       --job-name="wp1_${EXP_NAME}_r${i}" \
       --output="/home/%u/slurm_logs/${RUN_TAG}-%j.out" \
       --error="/home/%u/slurm_logs/${RUN_TAG}-%j.err" \

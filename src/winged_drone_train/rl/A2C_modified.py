@@ -87,6 +87,15 @@ class ActorCriticTanh(ActorCriticRecurrent):
 
         return act
 
+    def act_inference(self, observations):
+        if self.recurrency:
+            inp = self.memory_a(observations)
+        else:
+            inp = observations
+        actions_mean = self.actor(inp.squeeze(0) if inp.dim() == 3 else inp)
+        a = torch.tanh(actions_mean)
+        return self._scale(a)
+
     def get_actions_log_prob(self, act):
         a  = self._inverse_scale(act)
         # atanh in forma stabile

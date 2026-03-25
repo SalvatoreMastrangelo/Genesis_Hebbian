@@ -82,12 +82,13 @@ class _DroneState:
         "servo_joint_names", "servo_dof_indices", "num_servos",
         "span", "nominal_mass", "naca_code",
         "base_pos", "base_quat", "base_euler", "base_lin_vel",
-        "last_actions", "power", "nan_envs",
+        "last_actions", "prev_actions", "power", "nan_envs",
         "episode_length", "done",
         "pre_collision", "pre_wall_crash", "pre_angle_limit",
         "cylinders_xy", "forest_ids",
         "commands", "obs",
         "obs_builder", "_joint_limits_max", "_joint_limits_min",
+        "actuator",
     )
 
 
@@ -135,12 +136,13 @@ class MultiDroneEnv:
         self.env_cfg = env_cfg
         self.obs_cfg = obs_cfg
 
-        # Use dt from WP1 config if available; fallback to 25 Hz (matches obs/activation sampling)
-        self.dt = float(env_cfg.get("dt", 0.04))
-
-        # Compute substeps from dt and desired physics rate (100 Hz = 0.01 s per physics step)
+        # WP1 WingedDroneEnv hardcodes control at 25 Hz (dt=0.04s, substeps=4) regardless of
+        # the "dt" field in env_cfg, which stores the *physics* timestep (0.01s), not the
+        # control timestep.  MultiDroneEnv must match WP1's control rate exactly.
         physics_dt = 0.01
-        substeps = max(1, round(self.dt / physics_dt))
+        control_hz = 25
+        self.dt = 1.0 / control_hz          # 0.04 s — matches WP1 hardcoded value
+        substeps = round(self.dt / physics_dt)  # 4 — matches WP1 hardcoded substeps
 
         episode_length_s = float(env_cfg.get("episode_length_s", 20.0))
         self.max_episode_length = math.ceil(episode_length_s / self.dt)
@@ -284,6 +286,20 @@ class MultiDroneEnv:
         # Spawn forest tree visuals (before scene.build())
         self._spawn_tree_visuals(env_cfg)
 
+        # Ground plane (visual only, for rendering)
+        x_min, x_max = -200.0, 1200.0
+        y_min, y_max = -200.0, 200.0
+        center = ((x_min + x_max) / 2.0, (y_min + y_max) / 2.0, 0.0)
+        size_xy = (x_max - x_min, y_max - y_min)
+        self.scene.add_entity(
+            gs.morphs.Box(
+                pos=center,
+                size=(size_xy[0], size_xy[1], 0.01),
+                collision=False,
+                fixed=True,
+            )
+        )
+
         # ------------------------------------------------------------------ #
         # Build scene (replicates all D entities × E envs)                   #
         # ------------------------------------------------------------------ #
@@ -341,6 +357,7 @@ class MultiDroneEnv:
             ds.base_euler = torch.zeros(self.E, 3, device=self.device)
             ds.base_lin_vel = torch.zeros(self.E, 3, device=self.device)
             ds.last_actions = torch.zeros(self.E, 1 + ds.num_servos, device=self.device)
+            ds.prev_actions = torch.zeros(self.E, 1 + ds.num_servos, device=self.device)
             ds.power = torch.zeros(self.E, device=self.device)
             ds.nan_envs = torch.zeros(self.E, dtype=torch.bool, device=self.device)
             ds.episode_length = torch.zeros(self.E, dtype=torch.long, device=self.device)
@@ -385,27 +402,37 @@ class MultiDroneEnv:
         # Obs dim from the ObservationBuilder (matches WP1 training)
         self.obs_dim = self.drones[0].obs_builder.actor_obs_dim
 
-        # Create shared ActuatorDynamics with WP1 default latency config
-        # (simulates realistic actuator response delays, matching WP1 training)
+        # Per-drone ActuatorDynamics (each with correct URDF joint limits)
         latency_cfg = LatencyConfig(
             simulate_latency=bool(env_cfg.get("simulate_action_latency", True)),
             latency_min=int(env_cfg.get("action_latency_min_steps", 0)),
             latency_max=int(env_cfg.get("action_latency_max_steps", 1)),
             random_latency_per_step=bool(env_cfg.get("action_latency_random_per_step", False)),
         )
-        self.actuator = ActuatorDynamics(
-            num_envs=self.D * self.E,
-            num_actions=self.num_actions,
-            throttle_limit=(0.0, 1.0),
-            joint_limits=None,  # will use defaults
-            latency_cfg=latency_cfg,
-            device=self.device,
-        )
+        for ds in self.drones:
+            # Pad joint limits to num_servos_max (uniform action dim)
+            jmin = ds._joint_limits_min
+            jmax = ds._joint_limits_max
+            if jmin.numel() < num_servos_max:
+                pad_min = -torch.ones(num_servos_max - jmin.numel(), device=self.device)
+                pad_max = torch.ones(num_servos_max - jmax.numel(), device=self.device)
+                jmin = torch.cat([jmin, pad_min])
+                jmax = torch.cat([jmax, pad_max])
+            ds.actuator = ActuatorDynamics(
+                num_envs=self.E,
+                num_actions=self.num_actions,
+                throttle_limit=(0.0, 1.0),
+                joint_limits=(jmin.tolist(), jmax.tolist()),
+                latency_cfg=latency_cfg,
+                device=self.device,
+            )
 
         # Allocate output buffers: (D, E, ...)
         self.obs_buf = torch.zeros(self.D, self.E, self.obs_dim, device=self.device)
         self.rew_buf = torch.zeros(self.D, self.E, device=self.device)
         self.done_buf = torch.zeros(self.D, self.E, dtype=torch.bool, device=self.device)
+        # Depth buffer for video rendering: (D, E, NUM_SECTORS)
+        self.depth_buf = torch.zeros(self.D, self.E, self.NUM_SECTORS, device=self.device)
 
         print(f"[MultiDroneEnv] Ready: {self.D} drones × {self.E} envs = "
               f"{self.D * self.E} instances")
@@ -431,37 +458,29 @@ class MultiDroneEnv:
         dones : (D, E) bool
         info : dict
         """
-        # 1. Flatten actions to (D*E, num_actions) for batch processing through ActuatorDynamics
-        B = self.D * self.E
-        actions_flat = actions.reshape(B, self.num_actions).to(self.device)
-
-        # Process all actions through ActuatorDynamics (applies scaling, clamping, and latency)
-        # Returns: (servo_targets, throttle) where servo_targets is (B, num_actions-1), throttle is (B,)
-        servo_targets_flat, throttle_flat = self.actuator.process_actions(actions_flat)
-
-        # Reshape back to (D, E, ...)
-        throttle = throttle_flat.reshape(self.D, self.E)
-        servo_targets = servo_targets_flat.reshape(self.D, self.E, -1)
-
-        # 2. Apply controls per drone
+        # 1. Per-drone action processing (each with its own joint limits)
         for i, ds in enumerate(self.drones):
-            thr_i = throttle[i]  # (E,)
-            servo_i = servo_targets[i]  # (E, num_actions-1) padded
+            raw_i = actions[i].to(self.device)  # (E, num_actions)
+
+            # Save previous actions for observation (matches WP1 timing)
+            ds.prev_actions.copy_(ds.last_actions)
+
+            # Process through per-drone ActuatorDynamics
+            servo_targets_i, throttle_i = ds.actuator.process_actions(raw_i)
 
             # Extract this drone's actual servo targets (without padding)
-            num_act_drone = 1 + ds.num_servos
-            servo_targets_drone = servo_i[:, :ds.num_servos]
+            servo_targets_drone = servo_targets_i[:, :ds.num_servos]
 
             # Apply to simulator
-            ds.aero_solver.set_throttle(thr_i)
+            ds.aero_solver.set_throttle(throttle_i)
             if ds.num_servos > 0:
                 ds.entity.control_dofs_position(servo_targets_drone, ds.servo_dof_indices)
 
-            # Store applied actions in physical range (throttle + servo angles)
+            # Store current applied actions in physical range
             ds.last_actions[:] = 0.0
-            ds.last_actions[:, 0] = thr_i
+            ds.last_actions[:, 0] = throttle_i
             if ds.num_servos > 0:
-                ds.last_actions[:, 1:] = servo_targets_drone
+                ds.last_actions[:, 1:1 + ds.num_servos] = servo_targets_drone
 
         # 2. Single physics step for ALL D×E instances
         self.scene.step()
@@ -512,6 +531,7 @@ class MultiDroneEnv:
             ds.done.zero_()
             ds.nan_envs.zero_()
             ds.last_actions.zero_()
+            ds.prev_actions.zero_()
             ds.pre_collision.zero_()
             ds.pre_wall_crash.zero_()
             ds.pre_angle_limit.zero_()
@@ -530,9 +550,10 @@ class MultiDroneEnv:
             self._update_state(ds)
             self._compute_obs(i, ds)
 
-        # Reset actuator dynamics for all envs
-        all_env_ids = torch.arange(self.D * self.E, device=self.device, dtype=torch.long)
-        self.actuator.reset_envs(all_env_ids)
+        # Reset per-drone actuator dynamics
+        all_env_ids = torch.arange(self.E, device=self.device, dtype=torch.long)
+        for ds in self.drones:
+            ds.actuator.reset_envs(all_env_ids)
 
         return self.obs_buf, {}
 
@@ -544,10 +565,10 @@ class MultiDroneEnv:
         """Extract entity position, orientation, velocity from rigid solver."""
         ds.base_pos[:] = ds.entity.get_pos()      # (E, 3)
         ds.base_quat[:] = ds.entity.get_quat()    # (E, 4)
-        ds.base_euler[:] = quat_to_xyz(ds.base_quat)
+        ds.base_euler[:] = quat_to_xyz(ds.base_quat, rpy=True, degrees=False)
 
-        # Velocity in world frame (matching WP1 training env convention)
-        ds.base_lin_vel[:] = ds.entity.get_vel()[:, :3]  # (E, 3)
+        # Velocity from DOF solver (matching WP1: rigid_solver.get_dofs_velocity()[:, :3])
+        ds.base_lin_vel[:] = ds.entity.get_dofs_velocity()[:, :3]  # (E, 3)
 
         # Check for NaN
         nan_mask = torch.isnan(ds.base_pos).any(dim=1) | torch.isnan(ds.base_quat).any(dim=1)
@@ -586,9 +607,12 @@ class MultiDroneEnv:
                 device=self.device, dtype=torch.float32,
             )
 
-        # Pad last_actions to uniform num_actions (throttle + max servos)
+        # Store depth for video rendering
+        self.depth_buf[drone_idx] = depth
+
+        # Use previous step's actions for observation (matches WP1 timing)
         la = torch.zeros(self.E, self.num_actions, device=self.device)
-        la[:, :ds.last_actions.shape[1]] = ds.last_actions
+        la[:, :ds.prev_actions.shape[1]] = ds.prev_actions
 
         obs_actor, _ = ds.obs_builder.build_observations(
             base_pos=ds.base_pos,

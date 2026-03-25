@@ -255,15 +255,9 @@ class HebbianActorWrapper:
         # --- Step 3: Hebbian update ---
         self.hebbian.hebbian_update(x, y)
 
-        # --- Step 4: Tanh scaling ---
-        # update_distribution runs the full actor MLP, so pass LSTM output (inp)
-        mlp_inp = inp.squeeze(0) if inp.dim() == 3 else inp
-        model.update_distribution(mlp_inp)
-        z = model.distribution.mean if not self.stochastic else model.distribution.rsample()
-        a = torch.tanh(z)
-        actions = model._scale(a)
-
-        return actions
+        # --- Step 4: Tanh + scale (reproducing training pipeline) ---
+        a = torch.tanh(y)
+        return self.model._scale(a)
 
     @torch.no_grad()
     def act_simple(self, obs: Tensor) -> Tensor:
@@ -298,18 +292,9 @@ class HebbianActorWrapper:
         # Hebbian update
         self.hebbian.hebbian_update(x, y)
 
-        # Use model's distribution for action sampling
-        # update_distribution runs the full actor MLP, so pass LSTM output (inp)
-        mlp_inp = inp.squeeze(0) if inp.dim() == 3 else inp
-        model.update_distribution(mlp_inp)
-        if self.stochastic:
-            z = model.distribution.rsample()
-        else:
-            z = model.distribution.mean
-        a = torch.tanh(z)
-        actions = model._scale(a)
-
-        return actions
+        # Tanh + scale (reproducing training pipeline)
+        a = torch.tanh(y)
+        return self.model._scale(a)
 
 
 class BatchedHebbianActorWrapper:
@@ -403,17 +388,6 @@ class BatchedHebbianActorWrapper:
         # --- Hebbian update ---
         self.hebbian.hebbian_update(x, y)
 
-        # --- Action distribution and sampling ---
-        # Use model's distribution logic (frozen, so deterministic)
-        mlp_inp = inp.squeeze(0) if inp.dim() == 3 else inp
-        model.update_distribution(mlp_inp)
-
-        if self.stochastic:
-            z = model.distribution.rsample()
-        else:
-            z = model.distribution.mean
-
-        a = torch.tanh(z)
-        actions = model._scale(a)
-
-        return actions
+        # Tanh + scale (reproducing training pipeline)
+        a = torch.tanh(y)
+        return self.model._scale(a)

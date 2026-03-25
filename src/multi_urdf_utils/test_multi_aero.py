@@ -5,7 +5,7 @@ in a single Genesis scene without Taichi field collisions or cross-contamination
 Run this BEFORE the full benchmark to validate the multi-solver approach.
 
 Usage:
-    python -m WP2.multi_urdf_utils.test_multi_aero --urdf-a <path> --urdf-b <path>
+    python -m multi_urdf_utils.test_multi_aero --urdf-a <path> --urdf-b <path>
 
 If no URDFs are provided, generates two random ones from the catalog.
 """
@@ -45,7 +45,7 @@ def test_multi_aero_independence(urdf_a: str, urdf_b: str, num_envs: int = 4):
     from genesis.assets.urdf.aero_model import DroneAeroModel
     from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroSolver
     from winged_drone_train.aero_profile import resolve_aero_config
-    from WP2.multi_urdf_utils.multi_drone_env import _resolve_servo_joint_names
+    from multi_urdf_utils.multi_drone_env import _resolve_servo_joint_names
     from morph_evolution.chromosome_drone import Chromosome_Drone
 
     print(f"[test] URDF A: {urdf_a}")
