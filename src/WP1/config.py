@@ -444,6 +444,46 @@ class CatalogConfig:
     urdf_seed: int = 0
 
 
+@dataclass
+class MultiSceneConfig:
+    """Parameters for multi-scene parallel PPO training.
+
+    When ``enabled=True``, ``S`` Genesis scenes are compiled simultaneously
+    in separate subprocesses and used as parallel environment sources for a
+    single PPO update.  The effective total number of environments is
+    ``S * E`` (``N=1`` per scene is currently supported; each scene uses one
+    URDF from the catalog, or the default URDF in single-morphology mode).
+
+    The ``training.num_envs`` field is *ignored* when multi-scene mode is
+    active; use ``E`` to control the per-scene environment count.
+
+    Attributes
+    ----------
+    enabled : bool
+        Activate multi-scene mode.  Default ``False`` (standard single-scene).
+    S : int
+        Number of parallel scenes (subprocesses).  Each compiles and runs
+        independently; all are synced at every PPO iteration boundary.
+    N : int
+        URDFs per scene.  Currently only ``N=1`` is supported (one
+        ``WingedDroneEnv`` per scene).  Reserved for future ``N>1`` via
+        ``MultiDroneEnv`` with reward computation.
+    E : int
+        Number of parallel environments *per scene*.  Total effective
+        ``num_envs = S * E``.
+    cpu_threads_per_worker : int
+        Taichi compiler threads given to each worker subprocess
+        (``TI_NUM_THREADS``).  Tune to balance compilation speed vs. CPU
+        contention when many workers share a machine.
+    """
+
+    enabled: bool = False
+    S: int = 2
+    N: int = 1
+    E: int = 512  # envs per scene (shared by N drones); total batch = S*N*E
+    cpu_threads_per_worker: int = 4
+
+
 # ============================================================================
 #  Top-level RunConfig
 # ============================================================================
@@ -496,6 +536,7 @@ class RunConfig:
     reward: RewardConfig = field(default_factory=RewardConfig)
     command: CommandConfig = field(default_factory=CommandConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
+    multi_scene: MultiSceneConfig = field(default_factory=MultiSceneConfig)
 
     # ------------------------------------------------------------------ #
     # Conversion helpers — produce the legacy dict format expected by
@@ -718,6 +759,7 @@ class RunConfig:
             "reward": RewardConfig,
             "command": CommandConfig,
             "catalog": CatalogConfig,
+            "multi_scene": MultiSceneConfig,
         }
         for key, val in data.items():
             if key in sub_map and isinstance(val, dict):

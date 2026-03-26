@@ -7,7 +7,7 @@
 exp_name: 96_morph
 
 training:
-  num_envs: 33600
+  num_envs: 5120
   max_iterations: 20
   eval_interval: 100
 
@@ -23,6 +23,6 @@ obs:
   add_genome_obs_critic: true
 
 catalog:
-  n_urdf: 96
+  n_urdf: 40
   catalog_dir: null # Not needed anymore unless specified in the CLI
   urdf_seed: 11
