@@ -210,7 +210,10 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
     """
     _configure_cache_root()
     _configure_torch_backends()
-    _init_genesis()
+    # In multi-scene mode Genesis runs only inside worker subprocesses;
+    # the main process must NOT call gs.init() (would conflict with workers).
+    if not cfg.multi_scene.enabled:
+        _init_genesis()
 
     # --- Run manager (creates timestamped folder) ---
     run = RunManager(cfg, resume=resume)
@@ -222,8 +225,17 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
     use_mixture = False
     catalog_path: Optional[Path] = None
 
+    print(f"[WP1.train] Config check: multi_scene.enabled={cfg.multi_scene.enabled}")
+    if cfg.multi_scene.enabled:
+        print(
+            f"[WP1.train] Multi-scene config: S={cfg.multi_scene.S}, "
+            f"N={cfg.multi_scene.N}, E={cfg.multi_scene.E}, "
+            f"cpu_threads_per_worker={cfg.multi_scene.cpu_threads_per_worker}"
+        )
+
     if cfg.catalog.catalog_dir is not None:
         catalog_path = Path(cfg.catalog.catalog_dir)
+        print(f"[WP1.train] Using existing catalog_dir: {catalog_path}")
     if cfg.catalog.n_urdf is not None and cfg.catalog.n_urdf > 0:
         if catalog_path is None:
             # Build new catalog inside the run folder
@@ -241,7 +253,19 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
 
     # --- Create environment ---
     t0 = time.perf_counter()
-    if use_mixture:
+    if cfg.multi_scene.enabled:
+        # Multi-scene mode: S parallel Genesis subprocesses, each with E envs.
+        # Genesis is NOT initialised in the main process — workers own it.
+        from WP1.virtual_env import VirtualMultiSceneEnv
+        ms = cfg.multi_scene
+        total_envs = ms.S * ms.N * ms.E
+        print(
+            f"[WP1.train] **MULTI-SCENE MODE ACTIVE**: S={ms.S} scenes × "
+            f"N={ms.N} URDFs × E={ms.E} envs = {total_envs} total envs"
+        )
+        print(f"[WP1.train] Catalog path for multi-scene: {catalog_path}")
+        env = VirtualMultiSceneEnv(cfg, catalog_path=catalog_path)
+    elif use_mixture:
         from general_policy.env_gen import Gen_Env
         print(f"[WP1.train] Mixture mode with catalog: {catalog_path}")
         env = Gen_Env(
@@ -273,7 +297,12 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
         configure_solver_noise(env, env_cfg)
 
     elapsed = time.perf_counter() - t0
-    print(f"[WP1.train] Env init: {elapsed:.2f}s ({cfg.training.num_envs} envs)")
+    num_envs_display = (
+        cfg.multi_scene.S * cfg.multi_scene.N * cfg.multi_scene.E
+        if cfg.multi_scene.enabled
+        else cfg.training.num_envs
+    )
+    print(f"[WP1.train] Env init: {elapsed:.2f}s ({num_envs_display} envs)")
 
     # --- RSL-RL runner ---
     runner = OnPolicyRunner(env, train_cfg, str(run.log_dir), device=cfg.training.device)
@@ -306,7 +335,12 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
     csv_logger = CSVLogger(run.eval_dir / "training_log.csv")
 
     # --- Hook into PPO update to capture metrics each iteration ---
-    _iter_counter = {"i": 0}
+    _iter_counter = {"i": 0, "last_tot_timesteps": 0, "iter_start_time": time.perf_counter()}
+
+    # Calculate multiplier for adjusted steps/s (multi-URDF case)
+    urdf_multiplier = 1
+    if cfg.multi_scene.enabled:
+        urdf_multiplier = cfg.multi_scene.S * cfg.multi_scene.N
 
     def _on_iteration_end() -> None:
         """Post-update callback: write one CSV row with current metrics."""
@@ -325,6 +359,23 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
                 mean_ep_len = sum(lenbuffer) / len(lenbuffer)
 
             csv_logger.log(it, extras, mean_reward=mean_rew, mean_episode_length=mean_ep_len)
+
+            # Log adjusted steps/s if using multi-URDF
+            if urdf_multiplier > 1:
+                try:
+                    tot_timesteps = getattr(runner, 'tot_timesteps', 0)
+                    iter_time = time.perf_counter() - _iter_counter["iter_start_time"]
+                    timesteps_this_iter = tot_timesteps - _iter_counter["last_tot_timesteps"]
+
+                    if iter_time > 0 and timesteps_this_iter > 0:
+                        steps_per_sec = timesteps_this_iter / iter_time
+                        adjusted_steps_per_sec = steps_per_sec * urdf_multiplier
+                        print(f"Adjusted steps/s (×{urdf_multiplier} URFDs, equivalent): {adjusted_steps_per_sec:.0f} steps/s")
+
+                    _iter_counter["last_tot_timesteps"] = tot_timesteps
+                    _iter_counter["iter_start_time"] = time.perf_counter()
+                except Exception as e:
+                    pass  # Silently fail if adjusted metric can't be computed
         except Exception as e:
             print(f"[WP1.train] CSV log error at iter {it}: {e}")
         _iter_counter["i"] = it + 1
@@ -371,10 +422,17 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
     print("[WP1.train] Generating plots...")
     plot_run(run.run_dir)
 
-    try:
-        gs.destroy()
-    except Exception:
-        pass
+    if not cfg.multi_scene.enabled:
+        try:
+            gs.destroy()
+        except Exception:
+            pass
+    else:
+        # Workers own Genesis; ask VirtualMultiSceneEnv to shut them down.
+        try:
+            env.close()
+        except Exception:
+            pass
 
     print(f"[WP1.train] Done. Results in: {run.run_dir}")
 
@@ -399,6 +457,18 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(description="WP1 training entry point.")
     parser.add_argument("--cfg", type=str, default=None, help="Path to YAML config file.")
+    parser.add_argument(
+        "--multi-scene-cfg",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a supplementary multi-scene YAML (e.g. "
+            "configs/multi_scene.yaml).  Its 'multi_scene:' section is "
+            "deep-merged on top of the base config, activating parallel "
+            "scene training without touching single-scene configs."
+        ),
+    )
     parser.add_argument("-v", "--vis", action="store_true", help="Enable viewer.")
     parser.add_argument("--resume", action="store_true", help="Resume from latest matching run.")
     parser.add_argument(
@@ -416,12 +486,22 @@ def main() -> None:
 
     # Build config
     if args.cfg is not None:
-        # Load base config from YAML, then merge with default for missing fields
-        base = RunConfig()
-        loaded = RunConfig.from_yaml(args.cfg)
-        cfg = loaded
+        cfg = RunConfig.from_yaml(args.cfg)
     else:
         cfg = RunConfig()
+
+    # Merge supplementary multi-scene config if provided
+    if args.multi_scene_cfg is not None:
+        import yaml as _yaml
+        with open(args.multi_scene_cfg, "r") as _f:
+            _ms_data = _yaml.safe_load(_f) or {}
+        if "multi_scene" in _ms_data and isinstance(_ms_data["multi_scene"], dict):
+            from WP1.config import MultiSceneConfig
+            ms = MultiSceneConfig()
+            for k, v in _ms_data["multi_scene"].items():
+                if hasattr(ms, k):
+                    setattr(ms, k, v)
+            cfg.multi_scene = ms
 
     # Apply CLI overrides like --cfg.ppo.learning_rate 3e-4
     cfg.apply_cli_overrides(remaining)
