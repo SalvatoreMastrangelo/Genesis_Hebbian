@@ -35,7 +35,7 @@ policy:
   max_throttle: 1.0
 
 training:
-  num_envs: 8192
+  num_envs: 16384
   max_iterations: 500
   num_steps_per_env: 25
   save_interval: 100
@@ -110,6 +110,6 @@ command:
   num_commands: 1
 
 catalog:
-  n_urdf: 40
+  n_urdf: 1
   catalog_dir: null
   urdf_seed: 0

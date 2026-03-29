@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -68,7 +69,7 @@ class VirtualMultiSceneEnv:
         When provided, URDFs are assigned round-robin across workers.
     """
 
-    def __init__(self, cfg, catalog_path: Optional[Path] = None) -> None:
+    def __init__(self, cfg, catalog_path: Optional[Path] = None, num_gpus: int = 1) -> None:
         from WP1.scene_worker_process import worker_main
         from winged_drone_train.defaults import default_mydrone_urdf_path
 
@@ -78,7 +79,14 @@ class VirtualMultiSceneEnv:
         E = ms.E
         device = cfg.training.device
 
+        # Multi-GPU: assign each scene worker to a GPU (round-robin)
+        self._num_gpus = num_gpus
+
         env_cfg, obs_cfg, reward_cfg, command_cfg, _ = cfg.to_legacy_cfgs()
+
+        # Ensure catalog_path is absolute (important for worker subprocesses with different CWD)
+        if catalog_path is not None and not catalog_path.is_absolute():
+            catalog_path = catalog_path.resolve()
 
         # ------------------------------------------------------------------ #
         # URDF assignment: S scenes × N URDFs each                           #
@@ -98,6 +106,15 @@ class VirtualMultiSceneEnv:
             print(f"  Scene {scene_idx}: {len(paths)} URDFs")
 
         # ------------------------------------------------------------------ #
+        # Benchmark instrumentation: record VRAM and wall-clock before spawn  #
+        # ------------------------------------------------------------------ #
+        try:
+            _vram_before_mb = torch.cuda.memory_allocated() / 1024 / 1024
+        except Exception:
+            _vram_before_mb = 0.0
+        _compile_wall_start = time.perf_counter()
+
+        # ------------------------------------------------------------------ #
         # Spawn workers                                                        #
         # ------------------------------------------------------------------ #
         src_dir = str(Path(__file__).resolve().parent.parent)  # …/src
@@ -114,6 +131,8 @@ class VirtualMultiSceneEnv:
         for i in range(S):
             in_q: mp.Queue = ctx.Queue()
             out_q: mp.Queue = ctx.Queue()
+            # Assign each scene to a GPU (round-robin if num_gpus > 1)
+            gpu_id = i % num_gpus
             kwargs: Dict[str, Any] = dict(
                 scene_idx=i,
                 urdf_paths=urdf_paths_per_scene[i],
@@ -127,6 +146,8 @@ class VirtualMultiSceneEnv:
                 in_q=in_q,
                 out_q=out_q,
                 cpu_threads_per_worker=ms.cpu_threads_per_worker,
+                gpu_id=gpu_id,
+                num_gpus=num_gpus,
             )
             # Pass full cfg only when N>1 (MultiDroneEnv needs it)
             if N > 1:
@@ -134,7 +155,8 @@ class VirtualMultiSceneEnv:
                 print(f"[VirtualMultiSceneEnv] Scene {i}: will use MultiDroneEnv (N>1)")
             p = ctx.Process(target=worker_main, kwargs=kwargs, daemon=True)
             p.start()
-            print(f"[VirtualMultiSceneEnv] Scene {i} process started (PID {p.pid})")
+            gpu_info = f" (GPU {gpu_id})" if num_gpus > 1 else ""
+            print(f"[VirtualMultiSceneEnv] Scene {i} process started (PID {p.pid}){gpu_info}")
             self._in_qs.append(in_q)
             self._out_qs.append(out_q)
             self._procs.append(p)
@@ -144,15 +166,26 @@ class VirtualMultiSceneEnv:
         # ------------------------------------------------------------------ #
         print(f"[VirtualMultiSceneEnv] Waiting for {S} scenes to compile ...")
         meta: Optional[Dict] = None
+        self._worker_ready_metas: List[Dict] = []
         for i, out_q in enumerate(self._out_qs):
             msg = out_q.get(timeout=900)  # 15-minute timeout for slow nodes
             if not isinstance(msg, dict) or msg.get("status") != "READY":
                 raise RuntimeError(
                     f"Worker {i} sent unexpected ready message: {msg}"
                 )
+            self._worker_ready_metas.append(msg)
             if meta is None:
                 meta = msg  # use first worker's metadata
             print(f"[VirtualMultiSceneEnv]  scene {i} ready")
+
+        # Record wall-clock compile time and VRAM delta
+        self._compile_wall_time_s: float = time.perf_counter() - _compile_wall_start
+        try:
+            _vram_after_mb = torch.cuda.memory_allocated() / 1024 / 1024
+        except Exception:
+            _vram_after_mb = _vram_before_mb
+        self._vram_allocated_after_compile_mb: float = _vram_after_mb
+        self._vram_delta_compile_mb: float = _vram_after_mb - _vram_before_mb
 
         print(f"[VirtualMultiSceneEnv] All {S} scenes compiled and ready.")
 
@@ -198,6 +231,11 @@ class VirtualMultiSceneEnv:
 
         for i, out_q in enumerate(self._out_qs):
             r = out_q.get()
+            # Check if worker encountered OOM
+            if r.get("status") == "OOM" or r.get("error") == "OOM":
+                raise RuntimeError(f"Worker {i} OOM: out of memory during reset")
+            if "error" in r and "OOM" in r.get("error", ""):
+                raise RuntimeError(f"Worker {i} OOM: {r.get('error')}")
             obs_list.append(r["obs"])
             priv_obs_list.append(r.get("priv_obs"))
 
@@ -248,6 +286,11 @@ class VirtualMultiSceneEnv:
 
         for i, out_q in enumerate(self._out_qs):
             r = out_q.get()
+            # Check if worker encountered OOM
+            if r.get("status") == "OOM" or r.get("error") == "OOM":
+                raise RuntimeError(f"Worker {i} OOM: out of memory during step")
+            if "error" in r and "OOM" in r.get("error", ""):
+                raise RuntimeError(f"Worker {i} OOM: {r.get('error')}")
             obs_list.append(r["obs"])
             rew_list.append(r["rew"])
             done_list.append(r["done"])
@@ -337,24 +380,33 @@ def _assign_urdfs(
     ``catalog.txt`` are assigned round-robin.  Otherwise all scenes use
     the default morphing-drone URDF.
     """
-    if catalog_path is not None and catalog_path.is_dir():
-        catalog_txt = catalog_path / "catalog.txt"
-        if catalog_txt.exists():
-            lines = [l.strip() for l in catalog_txt.read_text().splitlines() if l.strip()]
-            if lines:
-                # Lines may be bare filenames or full paths; resolve relative to catalog_path
-                resolved = []
-                for line in lines:
-                    p = Path(line)
-                    if not p.is_absolute():
-                        p = catalog_path / p
-                    resolved.append(str(p))
-                return [resolved[i % len(resolved)] for i in range(S)]
-        # Fall back: glob for URDF files
-        urdf_files = sorted(catalog_path.rglob("*.urdf"))
-        if urdf_files:
-            return [str(urdf_files[i % len(urdf_files)]) for i in range(S)]
+    if catalog_path is not None:
+        # Ensure catalog_path is absolute (important for worker subprocesses with different CWD)
+        if not catalog_path.is_absolute():
+            catalog_path = catalog_path.resolve()
+
+        if catalog_path.is_dir():
+            catalog_txt = catalog_path / "catalog.txt"
+            if catalog_txt.exists():
+                lines = [l.strip() for l in catalog_txt.read_text().splitlines() if l.strip()]
+                if lines:
+                    # Lines may be bare filenames or full paths; resolve relative to catalog_path
+                    resolved = []
+                    for line in lines:
+                        p = Path(line)
+                        if not p.is_absolute():
+                            p = catalog_path / p
+                        # Ensure each URDF path is absolute
+                        p = p.resolve()
+                        resolved.append(str(p))
+                    return [resolved[i % len(resolved)] for i in range(S)]
+            # Fall back: glob for URDF files
+            urdf_files = sorted(catalog_path.rglob("*.urdf"))
+            if urdf_files:
+                # Resolve all paths to absolute and round-robin assign to S scenes
+                resolved_paths = [str(urdf_file.resolve()) for urdf_file in urdf_files]
+                return [resolved_paths[i % len(resolved_paths)] for i in range(S)]
 
     # Single-morphology: all scenes use the same URDF
-    default_urdf = str(default_urdf_fn())
+    default_urdf = str(Path(default_urdf_fn()).resolve())
     return [default_urdf] * S

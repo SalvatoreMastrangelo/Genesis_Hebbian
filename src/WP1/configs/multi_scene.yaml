@@ -25,7 +25,7 @@
 
 multi_scene:
   enabled: true
-  S: 4                        # number of parallel scenes
-  N: 10                       # URDFs per scene  →  total envs = S * N * E
-  E: 512                      # environments per drone per scene
-  cpu_threads_per_worker: 4   # Taichi compiler threads per worker
+  S: 16                       # number of parallel scenes
+  N: 1                        # URDFs per scene  →  total envs = S * N * E
+  E: 800                      # environments per drone per scene
+  cpu_threads_per_worker: 2   # Taichi compiler threads per worker
