@@ -8,5 +8,7 @@ rsync -av \
   --exclude='*.egg-info' \
   --exclude='**/.cache' \
   --exclude='**/.mps' \
-  smastran@izar.hpc.epfl.ch:/home/smastran/genesis_runs/wp1_training \
+  --exclude='**/*.urdf' \
+  --exclude='**/*.stl' \
+  smastran@izar.hpc.epfl.ch:/home/smastran/genesis_runs/ \
   logs/remote/

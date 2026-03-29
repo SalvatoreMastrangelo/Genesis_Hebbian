@@ -107,7 +107,14 @@ if [ "${OMP_THREADS}" -lt 1 ]; then
   OMP_THREADS=1
 fi
 export OMP_NUM_THREADS="${OMP_THREADS}"
-echo "[RUNTIME] cpus_assigned=${CPUS_ASSIGNED} omp_processes=${OMP_PROCESSES} OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+# OpenBLAS threads: use conservative fraction to avoid pthread_create failures
+# IZAR has low nproc limits (4096), so cap per-process threads
+OPENBLAS_THREADS=$(( OMP_PROCESSES > 1 ? 2 : 4 ))
+if [ "$OPENBLAS_THREADS" -gt 8 ]; then
+  OPENBLAS_THREADS=8
+fi
+export OPENBLAS_NUM_THREADS="${OPENBLAS_THREADS}"
+echo "[RUNTIME] cpus_assigned=${CPUS_ASSIGNED} omp_processes=${OMP_PROCESSES} OMP_NUM_THREADS=${OMP_NUM_THREADS} OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS}"
 
 # ------------------------------------------------------------
 # Optional: start CUDA MPS daemon on host

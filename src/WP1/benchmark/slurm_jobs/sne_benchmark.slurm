@@ -1,51 +1,56 @@
 #!/bin/bash -l
-#SBATCH --job-name=wp1_foundation
+#SBATCH --job-name=sne_benchmark
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --array=0-7
 #SBATCH --gpus=2
-#SBATCH --mem=160G
-#SBATCH --cpus-per-gpu=4
-#SBATCH --time=100:00:00
-#SBATCH --output=/home/%u/slurm_logs/%x-%j.out
-#SBATCH --error=/home/%u/slurm_logs/%x-%j.err
+#SBATCH --mem=180G
+#SBATCH --cpus-per-gpu=20
+#SBATCH --time=72:00:00
+#SBATCH --output=/home/%u/slurm_logs/%x-%j_%a.out
+#SBATCH --error=/home/%u/slurm_logs/%x-%j_%a.err
 #SBATCH --mail-user=salvatore.mastrangelo@epfl.ch
-#SBATCH --mail-type=END
+#SBATCH --mail-type=END,FAIL
 
 set -euo pipefail
 
+# ============================================================
+# MODIFY THESE THREE ARRAYS TO DEFINE THE BENCHMARK GRID
+# Leave empty () to use the values from the YAML config file.
+# ============================================================
+S_VALUES=()
+N_VALUES=()
+E_VALUES=()
+# ============================================================
+
+# For multi-GPU runs: set --gpus=N above and GPU_COUNT=N here
+GPU_COUNT=${GPU_COUNT:-1}
+
+# Config file path (relative to repo root)
+CFG_FILE=${CFG_FILE:-src/WP1/benchmark/configs/sne_benchmark.yaml}
+
+# Number of array jobs (must match --array upper bound + 1)
+NUM_JOBS=8
+
 # ------------------------------------------------------------
-# Paths (adjust to your cluster layout)
+# Paths
 # ------------------------------------------------------------
-IMG="/scratch/izar/$USER/sif/mygenesis.sif"
+IMG="/scratch/izar/smastran/sif/mygenesis.sif"
 SRC="$HOME/Genesis-dev"
 
 # ------------------------------------------------------------
-# Run params (override via sbatch --export=...)
+# Output layout (mirrors train_foundation.slurm)
 # ------------------------------------------------------------
-CFG_FILE=${CFG_FILE:-configs/foundation.yaml}
-RUN_TAG=${RUN_TAG:-wp1_foundation_${SLURM_JOB_ID}}
-CLI_OVERRIDES=${CLI_OVERRIDES:-}
-
-# Multi-GPU: set MULTI_GPU=N to split the URDF catalog across N GPUs.
-# MULTI_GPU must be <= the number of --gpus requested above.
-# Example: sbatch --gpus=2 --export=ALL,MULTI_GPU=2,CFG_FILE=... train_foundation.slurm
-MULTI_GPU=${MULTI_GPU:-1}
-
-# CUDA MPS controls (for multi-GPU concurrency)
-ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-0}
-MPS_THREAD_PCT=${MPS_THREAD_PCT:-0}
-
-# ------------------------------------------------------------
-# Output layout
-# ------------------------------------------------------------
-OUT_BASE="/scratch/izar/$USER/genesis_runs"
-RUN_DIR="${RUN_DIR:-${OUT_BASE}/wp1_training/${RUN_TAG}}"
+OUT_BASE="/scratch/izar/smastran/genesis_runs"
+RUN_TAG="sne_benchmark_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+RUN_DIR="${OUT_BASE}/sne_benchmark/${RUN_TAG}"
 CACHE_DIR="${RUN_DIR}/.cache"
 
 mkdir -p "$RUN_DIR" "$CACHE_DIR"
-mkdir -p "${RUN_DIR}/.mps/pipe" "${RUN_DIR}/.mps/log"
 
+# ------------------------------------------------------------
 # Safety checks
+# ------------------------------------------------------------
 if [ ! -f "$IMG" ]; then
   echo "[ERROR] SIF not found: $IMG"
   exit 1
@@ -61,7 +66,7 @@ fi
 BINDS="--bind ${SRC}:/workspace/bind:ro,${RUN_DIR}:/workspace/out:rw"
 
 # ------------------------------------------------------------
-# Thread tuning
+# Thread tuning (mirrors train_foundation.slurm)
 # ------------------------------------------------------------
 CPUS_ASSIGNED=""
 if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
@@ -87,32 +92,33 @@ if [ "$OPENBLAS_THREADS" -gt 8 ]; then
   OPENBLAS_THREADS=8
 fi
 export OPENBLAS_NUM_THREADS="${OPENBLAS_THREADS}"
+
+# ------------------------------------------------------------
+# Print job info
+# ------------------------------------------------------------
+echo "============================================================"
+echo "SLURM job: $SLURM_JOB_ID  array task: $SLURM_ARRAY_TASK_ID"
+echo "Node: $SLURMD_NODENAME"
+echo "Date: $(date)"
+echo "Config: $CFG_FILE"
+echo "S_VALUES: ${S_VALUES[*]}"
+echo "N_VALUES: ${N_VALUES[*]}"
+echo "E_VALUES: ${E_VALUES[*]}"
+echo "GPU_COUNT: $GPU_COUNT"
+echo "RUN_DIR: $RUN_DIR"
 echo "[RUNTIME] cpus_assigned=${CPUS_ASSIGNED} OMP_NUM_THREADS=${OMP_NUM_THREADS} OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS}"
+echo "============================================================"
+
+mkdir -p "$HOME/slurm_logs"
 
 # ------------------------------------------------------------
-# Optional: CUDA MPS daemon
+# Build optional grid override args (only passed when non-empty,
+# so the YAML values are used when the arrays above are left as ())
 # ------------------------------------------------------------
-MPS_STARTED=0
-if [ "${ENABLE_CUDA_MPS}" -ne 0 ]; then
-  if command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
-    export CUDA_MPS_PIPE_DIRECTORY="${RUN_DIR}/.mps/pipe"
-    export CUDA_MPS_LOG_DIRECTORY="${RUN_DIR}/.mps/log"
-    rm -f "${CUDA_MPS_PIPE_DIRECTORY}/nvidia-cuda-mps-control" || true
-    nvidia-cuda-mps-control -d
-    MPS_STARTED=1
-    echo "[MPS] started (pipe=${CUDA_MPS_PIPE_DIRECTORY})"
-  else
-    echo "[WARN] nvidia-cuda-mps-control not found; running without MPS."
-  fi
-fi
-
-cleanup_mps() {
-  if [ "${MPS_STARTED}" -eq 1 ]; then
-    echo quit | nvidia-cuda-mps-control >/dev/null 2>&1 || true
-    echo "[MPS] stopped"
-  fi
-}
-trap cleanup_mps EXIT
+GRID_ARGS=""
+[ ${#S_VALUES[@]} -gt 0 ] && GRID_ARGS="${GRID_ARGS} --S-values ${S_VALUES[*]}"
+[ ${#N_VALUES[@]} -gt 0 ] && GRID_ARGS="${GRID_ARGS} --N-values ${N_VALUES[*]}"
+[ ${#E_VALUES[@]} -gt 0 ] && GRID_ARGS="${GRID_ARGS} --E-values ${E_VALUES[*]}"
 
 # ------------------------------------------------------------
 # Run
@@ -127,14 +133,7 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   export GSTAICHI_CACHE_DIR=/workspace/out/.cache/gstaichi
   export MPLCONFIGDIR=/workspace/out/.cache/mpl
 
-  if [ \"${ENABLE_CUDA_MPS}\" -ne 0 ]; then
-    export CUDA_MPS_PIPE_DIRECTORY=/workspace/out/.mps/pipe
-    export CUDA_MPS_LOG_DIRECTORY=/workspace/out/.mps/log
-    export LOGICAL_SUPER_SCENE_MPS_THREAD_PERCENT=${MPS_THREAD_PCT}
-  fi
-
   mkdir -p /workspace/out/.cache
-  cd /workspace/out
 
   echo \"[RUNTIME] Node: \$(hostname)\"
   echo \"[RUNTIME] CUDA_VISIBLE_DEVICES: \${CUDA_VISIBLE_DEVICES:-<unset>}\"
@@ -150,22 +149,24 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   for fname in aero_parameters.yaml actuators.csv; do
     if [ -f \"\${SRC_AERO_DIR}/\${fname}\" ]; then
       mkdir -p /workspace/out/urdf_generated
-      cp -r \"\${SRC_AERO_DIR}/\${fname}\" /workspace/out/urdf_generated/
+      cp \"\${SRC_AERO_DIR}/\${fname}\" /workspace/out/urdf_generated/
     fi
   done
 
-  if [ "${MULTI_GPU:-1}" -gt 1 ]; then
-    echo \"[RUNTIME] Multi-GPU mode: distributing across ${MULTI_GPU} GPUs\"
-    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} --multi-gpu ${MULTI_GPU} ${CLI_OVERRIDES}
-  else
-    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} ${CLI_OVERRIDES}
-  fi
+  cd /workspace/out
+
+  python -m WP1.benchmark.grid_search \
+    --cfg /workspace/bind/${CFG_FILE} \
+    --job-idx ${SLURM_ARRAY_TASK_ID} \
+    --num-jobs ${NUM_JOBS} \
+    --num-gpus ${GPU_COUNT} \
+    ${GRID_ARGS}
 "
 
 # ------------------------------------------------------------
 # Copy run output to home for long-term storage
 # ------------------------------------------------------------
-echo "[POST] Copying run to $HOME/genesis_runs/ ..."
-mkdir -p "$HOME/genesis_runs/wp1_training"
-cp -a "${RUN_DIR}" "$HOME/genesis_runs/wp1_training/"
-echo "[POST] Done: $HOME/genesis_runs/wp1_training/$(basename ${RUN_DIR})"
+echo "[POST] Copying results to $HOME/genesis_runs/sne_benchmark/ ..."
+mkdir -p "$HOME/genesis_runs/sne_benchmark"
+cp -a "${RUN_DIR}" "$HOME/genesis_runs/sne_benchmark/"
+echo "[POST] Done: $HOME/genesis_runs/sne_benchmark/${RUN_TAG}"

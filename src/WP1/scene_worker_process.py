@@ -44,6 +44,7 @@ from __future__ import annotations
 import os
 import sys
 import gc
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -62,6 +63,8 @@ def worker_main(
     out_q: Any,  # mp.Queue
     cpu_threads_per_worker: int,
     wp1_cfg: Optional[Any] = None,   # full RunConfig — required for MultiDroneEnv (N>1)
+    gpu_id: int = 0,                 # GPU index for this worker (multi-GPU mode)
+    num_gpus: int = 1,               # Total number of GPUs available
 ) -> None:
     """Long-running scene worker.  Runs inside a spawned subprocess.
 
@@ -89,10 +92,18 @@ def worker_main(
     wp1_cfg : RunConfig, optional
         Full WP1 configuration object.  Required when ``len(urdf_paths) > 1``
         to construct ``MultiDroneEnv``.
+    gpu_id : int
+        Index of the GPU assigned to this worker (0-based).
+    num_gpus : int
+        Total number of GPUs available.
     """
     # ------------------------------------------------------------------ #
     # Environment setup — must happen before any Genesis/Taichi import    #
     # ------------------------------------------------------------------ #
+    # Multi-GPU: assign this worker to its designated GPU
+    if num_gpus > 1:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
     os.environ["GS_PARA_LEVEL"] = "4"
     os.environ["TI_NUM_THREADS"] = str(cpu_threads_per_worker)
 
@@ -123,6 +134,7 @@ def worker_main(
     # ------------------------------------------------------------------ #
     # Compile scene (N=1 → WingedDroneEnv, N>1 → MultiDroneEnv)         #
     # ------------------------------------------------------------------ #
+    _compile_start = time.perf_counter()
     print(f"[worker {scene_idx}] Initializing Genesis...", flush=True)
     gs.init(logging_level="error", backend=gs.gpu)
 
@@ -168,6 +180,21 @@ def worker_main(
 
     # Signal ready and report env metadata so the coordinator can set up
     # VirtualMultiSceneEnv properties without instantiating an env itself.
+    _compile_time_s = time.perf_counter() - _compile_start
+
+    # Collect RAM and VRAM metrics for the benchmark.
+    try:
+        import psutil
+        _ram_mb = psutil.Process().memory_info().rss / 1024 / 1024
+    except Exception:
+        _ram_mb = None
+    try:
+        _vram_alloc_mb = torch.cuda.memory_allocated() / 1024 / 1024
+        _vram_reserved_mb = torch.cuda.memory_reserved() / 1024 / 1024
+    except Exception:
+        _vram_alloc_mb = None
+        _vram_reserved_mb = None
+
     print(f"[worker {scene_idx}] Sending READY signal...", flush=True)
     out_q.put({
         "status": "READY",
@@ -177,6 +204,10 @@ def worker_main(
         "max_episode_length": env.max_episode_length,
         "N": N,
         "E": E,
+        "compile_time_s": _compile_time_s,
+        "ram_mb": _ram_mb,
+        "vram_allocated_mb": _vram_alloc_mb,
+        "vram_reserved_mb": _vram_reserved_mb,
     })
 
     # ------------------------------------------------------------------ #
@@ -185,76 +216,106 @@ def worker_main(
     print(f"[worker {scene_idx}] Entering command loop...", flush=True)
     step_count = 0
     while True:
-        msg = in_q.get()
-        cmd = msg[0]
+        try:
+            msg = in_q.get()
+            cmd = msg[0]
 
-        if cmd == "RESET":
-            with torch.no_grad():
-                obs, extras = env.reset()
+            if cmd == "RESET":
+                try:
+                    with torch.no_grad():
+                        obs, extras = env.reset()
 
-            # MultiDroneEnv returns (D, E, obs_dim); flatten to (D*E, obs_dim)
-            if N > 1:
-                obs = obs.reshape(N * E, -1)
-            priv_obs: Optional[torch.Tensor] = (
-                extras.get("observations", {}).get("critic", None)
-            )
-            if priv_obs is not None and N > 1:
-                priv_obs = priv_obs.reshape(N * E, -1)
-            out_q.put({
-                "obs": obs.cpu(),
-                "priv_obs": priv_obs.cpu() if priv_obs is not None else None,
-            })
+                    # MultiDroneEnv returns (D, E, obs_dim); flatten to (D*E, obs_dim)
+                    if N > 1:
+                        obs = obs.reshape(N * E, -1)
+                    priv_obs: Optional[torch.Tensor] = (
+                        extras.get("observations", {}).get("critic", None)
+                    )
+                    if priv_obs is not None and N > 1:
+                        priv_obs = priv_obs.reshape(N * E, -1)
+                    out_q.put({
+                        "obs": obs.cpu(),
+                        "priv_obs": priv_obs.cpu() if priv_obs is not None else None,
+                    })
+                except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                    msg_str = str(e)
+                    if "out of memory" in msg_str.lower():
+                        print(f"[worker {scene_idx}] OOM in RESET: {e}", flush=True)
+                        out_q.put({"error": "OOM", "status": "OOM"})
+                    else:
+                        raise
 
-        elif cmd == "STEP":
-            step_count += 1
-            actions_flat = msg[1].to(device)   # (N*E, num_actions) from coordinator
-            # MultiDroneEnv expects (N, E, num_actions)
-            if N > 1:
-                actions_in = actions_flat.reshape(N, E, -1)
+            elif cmd == "STEP":
+                try:
+                    step_count += 1
+                    actions_flat = msg[1].to(device)   # (N*E, num_actions) from coordinator
+                    # MultiDroneEnv expects (N, E, num_actions)
+                    if N > 1:
+                        actions_in = actions_flat.reshape(N, E, -1)
+                    else:
+                        actions_in = actions_flat
+                    with torch.no_grad():
+                        obs, rew, done, extras = env.step(actions_in)
+
+                    # Flatten (D, E, *) → (D*E, *) for multi-drone
+                    if N > 1:
+                        obs = obs.reshape(N * E, -1)
+                        rew = rew.reshape(N * E)
+                        done = done.reshape(N * E)
+
+                    priv_obs = extras.get("observations", {}).get("critic", None)
+                    if priv_obs is not None and N > 1:
+                        priv_obs = priv_obs.reshape(N * E, -1)
+                    time_outs = extras.get("time_outs", None)
+                    if time_outs is not None and N > 1:
+                        time_outs = time_outs.reshape(N * E)
+
+                    # episode dict contains small scalar floats — safe to serialise
+                    episode: Dict[str, float] = {}
+                    if "episode" in extras:
+                        episode = {
+                            k: float(v) for k, v in extras["episode"].items()
+                        }
+
+                    out_q.put({
+                        "obs": obs.cpu(),
+                        "rew": rew.cpu(),
+                        "done": done.cpu(),
+                        "priv_obs": priv_obs.cpu() if priv_obs is not None else None,
+                        "time_outs": time_outs.cpu() if time_outs is not None else None,
+                        "episode": episode,
+                    })
+                except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                    msg_str = str(e)
+                    if "out of memory" in msg_str.lower():
+                        print(f"[worker {scene_idx}] OOM in STEP {step_count}: {e}", flush=True)
+                        out_q.put({"error": "OOM", "status": "OOM"})
+                    else:
+                        raise
+
+            elif cmd == "STOP":
+                print(f"[worker {scene_idx}] Shutting down...", flush=True)
+                try:
+                    gs.destroy()
+                except Exception:
+                    pass
+                del env
+                gc.collect()
+                break
+
             else:
-                actions_in = actions_flat
-            with torch.no_grad():
-                obs, rew, done, extras = env.step(actions_in)
+                # Unknown command — send error but keep running
+                out_q.put({"error": f"Unknown command: {cmd}"})
 
-            # Flatten (D, E, *) → (D*E, *) for multi-drone
-            if N > 1:
-                obs = obs.reshape(N * E, -1)
-                rew = rew.reshape(N * E)
-                done = done.reshape(N * E)
-
-            priv_obs = extras.get("observations", {}).get("critic", None)
-            if priv_obs is not None and N > 1:
-                priv_obs = priv_obs.reshape(N * E, -1)
-            time_outs = extras.get("time_outs", None)
-            if time_outs is not None and N > 1:
-                time_outs = time_outs.reshape(N * E)
-
-            # episode dict contains small scalar floats — safe to serialise
-            episode: Dict[str, float] = {}
-            if "episode" in extras:
-                episode = {
-                    k: float(v) for k, v in extras["episode"].items()
-                }
-
-            out_q.put({
-                "obs": obs.cpu(),
-                "rew": rew.cpu(),
-                "done": done.cpu(),
-                "priv_obs": priv_obs.cpu() if priv_obs is not None else None,
-                "time_outs": time_outs.cpu() if time_outs is not None else None,
-                "episode": episode,
-            })
-
-        elif cmd == "STOP":
-            print(f"[worker {scene_idx}] Shutting down...", flush=True)
-            try:
-                gs.destroy()
-            except Exception:
-                pass
-            del env
-            gc.collect()
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            msg_str = str(e)
+            if "out of memory" in msg_str.lower():
+                print(f"[worker {scene_idx}] OOM (outer): {e}", flush=True)
+                out_q.put({"error": "OOM", "status": "OOM"})
+                break
+            else:
+                raise
+        except Exception as e:
+            print(f"[worker {scene_idx}] Unexpected error: {e}", flush=True)
+            out_q.put({"error": str(e)})
             break
-
-        else:
-            # Unknown command — send error but keep running
-            out_q.put({"error": f"Unknown command: {cmd}"})
