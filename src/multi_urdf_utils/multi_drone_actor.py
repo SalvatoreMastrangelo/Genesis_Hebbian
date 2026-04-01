@@ -118,6 +118,7 @@ class MultiDroneActorManager:
                     hebbian_rules=hebbian_rules_list[i],
                     eta=hebb_cfg.eta,
                     w_max=hebb_cfg.w_max,
+                    use_oja_coefficient=hebb_cfg.use_oja_coefficient,
                     device=device,
                 )
                 wrapper = HebbianActorWrapper(model, hebbian, stochastic=stochastic)

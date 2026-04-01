@@ -98,7 +98,7 @@ def load_frozen_actor(
     model : ActorCriticTanh
         The full model with all parameters frozen.
     last_layer : nn.Linear
-        Reference to the actor's last linear layer (64 -> 5).
+        Reference to the actor's last linear layer (hidden_dim -> num_actions).
     """
     # Load checkpoint first to infer architecture
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -173,6 +173,7 @@ def attach_hebbian(
         hebbian_rules=hebbian_rules,
         eta=eta,
         w_max=cfg.hebbian.w_max,
+        use_oja_coefficient=cfg.hebbian.use_oja_coefficient,
         device=device,
     )
 
@@ -248,7 +249,7 @@ class HebbianActorWrapper:
 
         # x is now the presynaptic activation (batch, 64)
         last_layer = actor_layers[-1]
-        y = x @ last_layer.weight.t()  # (batch, 5) raw output
+        y = x @ last_layer.weight.t()  # (batch, num_actions) raw output
         if last_layer.bias is not None:
             y = y + last_layer.bias
 

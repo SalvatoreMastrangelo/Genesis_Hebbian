@@ -381,6 +381,34 @@ def main() -> None:
         elif proc.exitcode not in (0, None) and result.get("status") == "OK":
             # Subprocess crashed after putting result — trust the result dict
             print(f"[grid_search] WARNING: subprocess exitcode={proc.exitcode}")
+        elif proc.exitcode not in (0, None):
+            # Subprocess crashed but we don't have a result yet
+            print(
+                f"[grid_search] WARNING: subprocess crashed with exitcode={proc.exitcode} "
+                f"before result could be communicated"
+            )
+            if result is None:
+                result = {
+                    "status": "ERROR",
+                    "S": S,
+                    "N": N,
+                    "E": E,
+                    "total_envs": S * N * E,
+                    **{k: None for k in CSV_COLUMNS if k not in ("status", "S", "N", "E", "total_envs")},
+                    "error": f"Subprocess exited with code {proc.exitcode} before result could be communicated",
+                }
+
+        # Ensure result is always a valid dict
+        if result is None:
+            result = {
+                "status": "ERROR",
+                "S": S,
+                "N": N,
+                "E": E,
+                "total_envs": S * N * E,
+                **{k: None for k in CSV_COLUMNS if k not in ("status", "S", "N", "E", "total_envs")},
+                "error": "Unknown error: result dict was None",
+            }
 
         status = result.get("status", "ERROR")
         print(
@@ -391,6 +419,10 @@ def main() -> None:
             sps = result.get("steps_per_sec_avg")
             if sps is not None:
                 print(f"[grid_search]   steps/s avg = {sps:.0f}")
+        else:
+            error_msg = result.get("error", "No error message")
+            if error_msg:
+                print(f"[grid_search]   error: {error_msg[:200]}")  # First 200 chars
 
         _write_csv_row(csv_writer, result)
         csv_file.flush()

@@ -28,6 +28,7 @@ checkpoint:
 hebbian:
   enabled: false            # false = baseline frozen controller (no Hebbian plasticity)
   eta: 0.01
+  use_oja_coefficient: true
   w_max: 3000.0
 
 env:
@@ -45,7 +46,7 @@ env:
   y_upper: 50.0
   forest_x_limit: 150.0
   x_upper: 150.0
-  aero_noise: true       # disabled for deterministic benchmarking
+  aero_noise: true       # set to false for fully deterministic benchmarking
   vmin: 5.0
   vmax: 25.0
 

@@ -4,8 +4,9 @@ HebbianLastLayer — ABCD Hebbian plasticity rule on existing last layer.
 
 This module implements the generalised ABCD Hebbian update rule that
 modifies the **existing** last linear layer of the frozen actor in-place.
-No new layer is created — the pretrained ``Linear(64 -> 5)`` weight matrix
-is directly mutated at each simulation step.
+No new layer is created — the frozen ``Linear(hidden_dim -> num_actions)``
+weight matrix (typically ``Linear(64 -> 7)``) is directly mutated at each
+simulation step.
 
 Biases are **never** modified.
 """
@@ -29,12 +30,12 @@ class HebbianLastLayer:
     Parameters
     ----------
     linear_layer : nn.Linear
-        The actor's last linear layer (64 -> 5).
+        The actor's last linear layer (hidden_dim -> num_actions).
     hebbian_rules : dict
         Per-weight ABCD + lambda tensors from ``decode_hebbian_genes``.
         Keys: ``A, B, C, D, lam`` and optionally ``eta``.
     eta : float or Tensor
-        Global learning rate (scalar) or per-weight (5, 64) tensor.
+        Global learning rate (scalar) or per-weight (num_actions, hidden_dim) tensor.
     w_max : float
         Symmetric weight clipping bound.
     device : str or torch.device
@@ -47,10 +48,12 @@ class HebbianLastLayer:
         hebbian_rules: Dict[str, Tensor],
         eta: Union[float, Tensor] = 0.01,
         w_max: float = 3.0,
+        use_oja_coefficient: bool = True,
         device: str | torch.device = "cpu",
     ) -> None:
         self.layer = linear_layer
         self.w_max = w_max
+        self.use_oja_coefficient = use_oja_coefficient
         self.device = torch.device(device)
 
         # Store checkpoint weights (bias untouched throughout)
@@ -79,33 +82,48 @@ class HebbianLastLayer:
         """
         self.layer.weight.data.copy_(self.W_checkpoint)
 
-    def hebbian_update(self, x: Tensor, y: Tensor) -> None:
-        """Apply ABCD rule to modify last layer weights in-place.
+    def hebbian_update(self, x: Tensor, y: Tensor, eps: float = 1e-8) -> None:
+        """Apply ABCD rule modulated by Oja-like coefficient k.
 
         Called AFTER each forward pass through the layer.
 
         Parameters
         ----------
         x : Tensor
-            Presynaptic activations ``(batch, 64)`` — input to last layer.
+            Presynaptic activations ``(batch, hidden_dim)`` — input to last layer.
         y : Tensor
-            Postsynaptic activations ``(batch, 5)`` — output of last layer
-            (before tanh scaling).
+            Postsynaptic activations ``(batch, num_actions)`` — output of last
+            layer (before tanh scaling).
+        eps : float
+            Small constant for numerical stability in k computation.
         """
-        # For batched envs, average activations across batch
-        x_mean = x.mean(dim=0)  # (64,)
-        y_mean = y.mean(dim=0)  # (5,)
+        # For batched envs, average activations across the batch dimension
+        x_mean = x.mean(dim=0)  # (hidden_dim,)
+        y_mean = y.mean(dim=0)  # (num_actions,)
 
-        # ABCD update: dW shape (5, 64) matches layer.weight
-        dW = self.eta * (
-            self.A * torch.outer(y_mean, x_mean)       # classical Hebb  (5, 64)
-            + self.B * x_mean.unsqueeze(0)              # presynaptic     (5, 64)
-            + self.C * y_mean.unsqueeze(1)              # postsynaptic    (5, 64)
-            + self.D                                     # bias/drift      (5, 64)
+        # Classical Hebb term: (num_actions, hidden_dim)
+        xy = torch.outer(y_mean, x_mean)
+
+        # Compute coefficient k if enabled (element-wise normalized by Oja's rule)
+        # k_{i,j} = 1 - (y_j² · (w_{i,j} - w_checkpoint_{i,j})) / (x_i · y_j)
+        if self.use_oja_coefficient:
+            y2 = y_mean.unsqueeze(1) ** 2  # (num_actions, 1) for broadcasting
+            w_diff = self.layer.weight.data - self.W_checkpoint  # (num_actions, hidden_dim)
+            k = 1.0 - (y2 * w_diff) / (xy + eps)  # (num_actions, hidden_dim)
+        else:
+            k = 1.0  # Fall back to standard ABCD rule
+
+        # ABCD update modulated by k: dW shape (num_actions, hidden_dim)
+        dW = self.eta * k * (
+            self.A * xy                         # classical Hebb  (num_actions, hidden_dim)
+            + self.B * x_mean.unsqueeze(0)      # presynaptic     (num_actions, hidden_dim)
+            + self.C * y_mean.unsqueeze(1)      # postsynaptic    (num_actions, hidden_dim)
+            + self.D                             # bias/drift      (num_actions, hidden_dim)
         )
 
-        # Decay + update (bias untouched)
-        self.layer.weight.data.mul_(1.0 - self.lam).add_(dW)
+        # Decay (towards checkpoint) + Hebbian update (bias untouched)
+        # W = W * (1 - lambda) + lambda * W_checkpoint + dW
+        self.layer.weight.data.mul_(1.0 - self.lam).add_(dW).add_(self.lam * self.W_checkpoint)
         self.layer.weight.data.clamp_(-self.w_max, self.w_max)
 
     def get_weight_snapshot(self) -> Tensor:
@@ -149,12 +167,14 @@ class BatchedHebbianLastLayer:
         hebbian_rules_list: list,
         eta: Union[float, Tensor] = 0.01,
         w_max: float = 3.0,
+        use_oja_coefficient: bool = True,
         device: str | torch.device = "cpu",
         pop_size: int = 1,
         slice_size: int = 8192,
     ) -> None:
         self.linear_layer = linear_layer
         self.w_max = w_max
+        self.use_oja_coefficient = use_oja_coefficient
         self.device = torch.device(device)
         self.pop_size = pop_size
         self.slice_size = slice_size
@@ -187,8 +207,8 @@ class BatchedHebbianLastLayer:
         """Reset all per-individual weights to the frozen checkpoint."""
         self.W.copy_(self.W_checkpoint.unsqueeze(0).expand(self.pop_size, -1, -1))
 
-    def hebbian_update(self, x: Tensor, y: Tensor) -> None:
-        """Apply batched ABCD Hebbian update.
+    def hebbian_update(self, x: Tensor, y: Tensor, eps: float = 1e-8) -> None:
+        """Apply batched ABCD Hebbian update modulated by Oja-like coefficient k.
 
         Parameters
         ----------
@@ -196,6 +216,8 @@ class BatchedHebbianLastLayer:
             Presynaptic activations (P*S, in).
         y : Tensor
             Postsynaptic activations (P*S, out).
+        eps : float
+            Small constant for numerical stability in k computation.
         """
         P = self.pop_size
         S = self.slice_size
@@ -212,16 +234,25 @@ class BatchedHebbianLastLayer:
         # Classical Hebbian term via einsum: (P, out, in)
         outer = torch.einsum("pi,pj->pij", y_mean, x_mean)
 
-        # Compute delta W: (P, out, in)
-        dW = self.eta * (
+        # Compute coefficient k if enabled: per-individual, element-wise normalized by Oja's rule
+        # k_{p,i,j} = 1 - (y_{p,j}² · (w_{p,i,j} - w_checkpoint_{i,j})) / (x_{p,i} · y_{p,j})
+        if self.use_oja_coefficient:
+            y2 = y_mean.unsqueeze(2) ** 2  # (P, out, 1) for broadcasting
+            w_diff = self.W - self.W_checkpoint.unsqueeze(0)  # (P, out, in)
+            k = 1.0 - (y2 * w_diff) / (outer + eps)  # (P, out, in)
+        else:
+            k = 1.0  # Fall back to standard ABCD rule
+
+        # Compute delta W modulated by k: (P, out, in)
+        dW = self.eta * k * (
             self.A * outer
             + self.B * x_mean.unsqueeze(1)   # (P, 1, in) → broadcast to (P, out, in)
             + self.C * y_mean.unsqueeze(2)   # (P, out, 1) → broadcast to (P, out, in)
             + self.D
         )
 
-        # Update: W = W * (1 - lambda) + dW, then clamp
-        self.W.mul_(1.0 - self.lam).add_(dW)
+        # Update: W = W * (1 - lambda) + lambda * W_checkpoint + dW, then clamp
+        self.W.mul_(1.0 - self.lam).add_(dW).add_(self.lam * self.W_checkpoint.unsqueeze(0))
         self.W.clamp_(-self.w_max, self.w_max)
 
         # Write back the **first** individual's weights to the frozen linear_layer

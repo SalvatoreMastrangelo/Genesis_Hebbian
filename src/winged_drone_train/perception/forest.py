@@ -104,6 +104,9 @@ class ForestGenerator:
         Returns:
             Tensor of shape ``(F, num_trees, 3)`` with (x, y, z) centers.
         """
+        if F == 0:
+            return torch.zeros((0, 0, 3), device=self.device, dtype=torch.float32)
+
         c = self.config
         num_trees = int(c.num_trees)
         device = self.device
@@ -122,6 +125,9 @@ class ForestGenerator:
         ``x_lower`` to ``dens_max`` at ``x_upper``.  The expected total number
         of trees is approximated by trapezoidal integration and rounded up.
         """
+        if F == 0:
+            return torch.zeros((0, 0, 3), device=self.device, dtype=torch.float32)
+
         c = self.config
         device = self.device
 

@@ -7,10 +7,10 @@
 S_values: [1, 2, 4, 8, 10, 20, 32, 40, 80]
 
 # N: number of URDF morphologies per scene
-N_values: [1, 2, 4, 8, 10, 12, 16, 20, 32, 40, 64, 96, 128, 160]
+N_values: [1, 2, 4, 8, 10, 12, 16, 20, 32, 40, 42, 44, 46, 48, 64, 96, 128, 160]
 
 # E: number of environments per scene
-E_values: [32, 64, 128, 256, 384, 512, 1024, 2048, 4096]
+E_values: [32, 64, 128, 256, 384, 512, 1024, 2048, 4096, 8192]
 
 # Number of PPO training iterations per configuration
 num_iterations: 10
