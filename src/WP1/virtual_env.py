@@ -168,7 +168,7 @@ class VirtualMultiSceneEnv:
         meta: Optional[Dict] = None
         self._worker_ready_metas: List[Dict] = []
         for i, out_q in enumerate(self._out_qs):
-            msg = out_q.get(timeout=900)  # 15-minute timeout for slow nodes
+            msg = out_q.get(timeout=6000)  # 100-minute timeout for slow nodes (matches subprocess_timeout_s)
             if not isinstance(msg, dict) or msg.get("status") != "READY":
                 raise RuntimeError(
                     f"Worker {i} sent unexpected ready message: {msg}"

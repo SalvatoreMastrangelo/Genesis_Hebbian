@@ -1,5 +1,5 @@
 # Full co-opt with crossover DISABLED (mutation-only evolution)
-# Useful for very high-dimensional genomes (1600D) where crossover may be disruptive.
+# Useful for very high-dimensional genomes (2240D+ Hebbian genes) where crossover may be disruptive.
 exp_name: hebbian_codesing_mutation_only
 
 checkpoint_path: ""
@@ -10,6 +10,7 @@ hebbian:
   eta: 0.01
   evolve_eta: false
   decay: 0.01
+  use_oja_coefficient: true
   w_max: 3.0
 
 evolution:
@@ -20,6 +21,8 @@ evolution:
   mutation_probability: 1.0
   eta_c: 20.0
   eta_m: 20.0
+  mutation_operator: "polynomial"
+  mutation_sigma: 0.05
   weights: [1.0, 1.0, 1.0]
 
 evaluation:

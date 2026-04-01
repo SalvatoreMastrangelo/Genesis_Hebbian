@@ -660,6 +660,12 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self._geom = list(model.geom)
         self._aero_base = dict(model.base_params)
         self._aero_base.setdefault("w", 0.0)
+        # Ensure propeller parameters are always present
+        self._aero_base.setdefault("kV", 2300.0)
+        self._aero_base.setdefault("prop_voltage_nominal", 7.4)
+        self._aero_base.setdefault("prop_ct0", 0.093)
+        self._aero_base.setdefault("prop_ct1", 0.0)
+        self._aero_base.setdefault("prop_ct2", 2.148)
         self._ensure_wing_param_entries()
         self._ensure_elevator_param_entries()
         # Apply any per-link overrides (e.g., left/right wing slip factors)

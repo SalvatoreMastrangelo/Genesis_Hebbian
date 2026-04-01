@@ -55,7 +55,7 @@ Usage
 
     # Query derived properties
     print(cfg.active_objective_names())   # ['velocity', 'energy', 'progress']
-    print(cfg.total_genome_dim())         # 1600 + 15 = 1615
+    print(cfg.total_genome_dim())         # 2240 + 15 = 2255 (defaults: 7 actions, 64 hidden)
 """
 
 from __future__ import annotations
@@ -80,8 +80,8 @@ class HebbianConfig:
 
         dW = eta * (A * outer(y, x) + B * x + C * y + D) - lambda * W
 
-    where ``x`` is presynaptic activation (last hidden layer, shape 64),
-    ``y`` is postsynaptic activation (output before tanh, shape 5), and
+    where ``x`` is presynaptic activation (last hidden layer, shape ``hidden_dim``),
+    ``y`` is postsynaptic activation (output before tanh, shape ``num_actions``), and
     ``A``, ``B``, ``C``, ``D``, ``lambda`` are per-weight learned parameters.
 
     All parameters are stored in [0, 1] within the genome and rescaled to their
@@ -98,16 +98,23 @@ class HebbianConfig:
         ``evolve_eta=True`` (per-weight eta evolved instead).
     evolve_eta : bool
         Whether to evolve per-weight eta values (one per synaptic weight).
-        If True, genome includes an additional 320 genes for per-weight
-        learning rates rescaled from ``eta_range``.
+        If True, genome includes an additional ``n_weights`` genes
+        (``num_actions × hidden_dim``, 448 by default) for per-weight learning
+        rates rescaled from ``eta_range``.
     decay : float
         Global decay (lambda) coefficient for weight decay.  Typical range: 0.0-0.1.
         Ignored if ``evolve_decay=True`` (per-weight decay evolved instead).
     evolve_decay : bool
         Whether to evolve per-weight decay (lambda) values (one per synaptic weight).
-        If True, genome includes an additional 320 genes for per-weight decay
+        If True, genome includes an additional ``n_weights`` genes
+        (``num_actions × hidden_dim``, 448 by default) for per-weight decay
         rescaled from ``decay_range``. If False, all weights use the global
         decay value. Default False.
+    use_oja_coefficient : bool
+        Whether to apply Oja-like coefficient k to modulate Hebbian plasticity.
+        When True, dW = eta * k * [ABCD], where k accounts for weight drift from
+        the frozen base controller.  When False, k = 1 (standard ABCD rule).
+        Default True.
     w_max : float
         Symmetric weight clipping bound; weights are clamped to [-w_max, w_max]
         after each Hebbian update to prevent instability.  Typical: 3.0.
@@ -136,6 +143,7 @@ class HebbianConfig:
     evolve_eta: bool = False
     decay: float = 0.01
     evolve_decay: bool = False
+    use_oja_coefficient: bool = True
     num_actions: int = 7   # last-layer output dim (inferred from checkpoint)
     hidden_dim: int = 64   # last-layer input dim (actor MLP hidden size)
     w_max: float = 3.0
@@ -182,8 +190,14 @@ class EvolutionConfig:
         similar offspring are to their parents (lower → more variation).
         Typical: 10-30.  Default 20.0.
     eta_m : float
-        Distribution index for polynomial mutation.  Controls mutation step
-        sizes (lower → larger steps).  Typical: 10-30.  Default 20.0.
+        Distribution index for polynomial mutation (only used if operator="polynomial").
+        Controls mutation step sizes (lower → larger steps).  Typical: 10-30.  Default 20.0.
+    mutation_operator : str
+        Type of mutation operator: "polynomial" (eta-based) or "gaussian" (sigma-based).
+        Default "polynomial" (NSGA-II standard). Use "gaussian" for direct std dev control.
+    mutation_sigma : float
+        Standard deviation for Gaussian mutation (only used if operator="gaussian").
+        Controls mutation step sizes. Typical: 0.01-0.1.  Default 0.05.
     weights : Tuple[float, ...]
         Fitness weights for DEAP fitness objects (all maximisation by
         convention).  Must have at least as many entries as the number of
@@ -198,6 +212,8 @@ class EvolutionConfig:
     mutation_probability: float = 1.0
     eta_c: float = 20.0
     eta_m: float = 20.0
+    mutation_operator: str = "polynomial"
+    mutation_sigma: float = 0.05
     weights: Tuple[float, ...] = (1.0, 1.0, 1.0)
 
 
@@ -433,18 +449,23 @@ class HebbianEvolutionConfig:
     def hebbian_genome_dim(self) -> int:
         """Number of Hebbian genes per individual.
 
-        The Hebbian genome encodes per-weight ABCD+lambda rules for the
-        last-layer weights (5 outputs × 64 inputs = 320 weights).  Each
-        weight has 5 base genes (A, B, C, D, lambda); optionally additional genes
-        for per-weight eta (if ``evolve_eta=True``) and per-weight decay
-        (if ``evolve_decay=True``).
+        The Hebbian genome encodes per-weight ABCD+lambda rules for every
+        weight in the frozen last layer (``num_actions`` outputs ×
+        ``hidden_dim`` inputs = ``n_weights`` weights; 7 × 64 = 448 with
+        defaults).  Each weight contributes 5 base genes (A, B, C, D, lambda),
+        plus optionally one gene for per-weight eta (if ``evolve_eta=True``)
+        and one for per-weight decay (if ``evolve_decay=True``).
 
         Returns
         -------
         int
             Genome section size.  0 if Hebbian plasticity is disabled;
-            1600 (5 × 320) if enabled; 1920 (6 × 320) if eta is evolved;
-            1920 (6 × 320) if decay is evolved; 2240 (7 × 320) if both are evolved.
+            2240 (5 × 448) with defaults if enabled;
+            2688 (6 × 448) if eta is evolved;
+            2688 (6 × 448) if decay is evolved;
+            3136 (7 × 448) if both eta and decay are evolved.
+            (Values scale proportionally when ``num_actions`` or ``hidden_dim``
+            differ from the 7 × 64 defaults.)
         """
         if not self.hebbian.enabled:
             return 0
@@ -478,12 +499,15 @@ class HebbianEvolutionConfig:
         """Total genome dimension across all sections.
 
         The full genome is laid out as:
-            [Hebbian genes (0 or 1600 or 1920) | Morphology genes (0 or 15)]
+            [Hebbian genes (0 or 2240 or 2688 or 3136) | Morphology genes (0 or 15)]
+
+        With default settings (num_actions=7, hidden_dim=64, evolve_eta=False,
+        evolve_decay=False, morphology.evolve=True): 2240 + 15 = 2255.
 
         Returns
         -------
         int
-            Total number of genes per individual (range: 0-1935).
+            Total number of genes per individual (range: 0–3151 with defaults).
         """
         return self.hebbian_genome_dim() + self.morphology_genome_dim()
 

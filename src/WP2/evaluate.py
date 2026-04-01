@@ -385,7 +385,9 @@ def evaluate_population_batched(
     cfg: HebbianEvolutionConfig,
     model_and_layer=None,
     wp1_cfg=None,
-) -> None:
+    existing_env=None,
+    keep_env_alive=False,
+) -> Optional[Tuple]:
     """Evaluate all invalid individuals simultaneously via vectorized rollout.
 
     All individuals evaluate in parallel using shared Genesis environments.
@@ -401,6 +403,18 @@ def evaluate_population_batched(
         Pre-loaded (model, last_layer, num_actions, hidden_dim).
     wp1_cfg : RunConfig, optional
         Pre-loaded WP1 config.
+    existing_env : tuple, optional
+        Pre-built (env, urdf_path) to reuse across evaluations.
+        If provided and morphologies match, reuses the environment.
+    keep_env_alive : bool, optional
+        If True, returns (env, urdf_path, morph_genome) instead of destroying.
+        If False (default), destroys the environment and returns None.
+
+    Returns
+    -------
+    tuple or None
+        If keep_env_alive=True: (env, urdf_path, morph_genome)
+        If keep_env_alive=False: None
     """
     import genesis as gs
     from WP2.hebbian import BatchedHebbianLastLayer
@@ -420,6 +434,12 @@ def evaluate_population_batched(
     actual_envs = S * P                          # may differ from total_envs if not divisible
 
     print(f"  Total envs: {total_envs}, Population: {P}, Envs/ind: {S}, Actual total: {actual_envs}")
+
+    # If no environments available per individual, fall back to serial evaluation
+    if actual_envs == 0:
+        print(f"[evaluate_population_batched] Not enough environments ({total_envs}) for population ({P}); falling back to serial evaluation")
+        evaluate_population_serial(population, cfg, model_and_layer, wp1_cfg)
+        return
 
     # Load WP1 config if needed
     if wp1_cfg is None:
@@ -469,6 +489,7 @@ def evaluate_population_batched(
         hebbian_rules_list,
         eta=cfg.hebbian.eta,
         w_max=cfg.hebbian.w_max,
+        use_oja_coefficient=cfg.hebbian.use_oja_coefficient,
         device=cfg.device,
         pop_size=P,
         slice_size=S,
@@ -477,16 +498,33 @@ def evaluate_population_batched(
     # Create batched actor wrapper
     wrapper = BatchedHebbianActorWrapper(model, batched_hebbian, stochastic=cfg.evaluation.stochastic)
 
-    # Build environment with actual_envs
-    try:
-        if not gs._initialized:
-            gs.init(logging_level="error", backend=gs.gpu)
-        env, urdf_path = _build_env(morph_genome, cfg, wp1_cfg, cfg.device, num_envs_override=actual_envs)
-    except Exception as exc:
-        print(f"[evaluate_population_batched] env build failed: {exc}")
-        # Fall back to serial
-        evaluate_population_serial(population, cfg, model_and_layer, wp1_cfg)
-        return
+    # Determine if we can reuse existing environment
+    env = None
+    urdf_path = None
+    env_was_reused = False
+
+    if existing_env is not None:
+        existing_env_obj, existing_urdf_path = existing_env
+        # Check if environment dimensions match
+        if existing_env_obj.num_envs == actual_envs:
+            env = existing_env_obj
+            urdf_path = existing_urdf_path
+            env_was_reused = True
+            print(f"[evaluate_population_batched] Reusing environment (num_envs={actual_envs})")
+        else:
+            print(f"[evaluate_population_batched] Environment size mismatch (expected {actual_envs}, got {existing_env_obj.num_envs}); rebuilding")
+
+    # Build new environment if needed
+    if env is None:
+        try:
+            if not gs._initialized:
+                gs.init(logging_level="error", backend=gs.gpu)
+            env, urdf_path = _build_env(morph_genome, cfg, wp1_cfg, cfg.device, num_envs_override=actual_envs)
+        except Exception as exc:
+            print(f"[evaluate_population_batched] env build failed: {exc}")
+            # Fall back to serial
+            evaluate_population_serial(population, cfg, model_and_layer, wp1_cfg)
+            return
 
     # Collect metrics over multiple episodes
     collect_smoothness = cfg.objectives.smoothness
@@ -520,12 +558,15 @@ def evaluate_population_batched(
 
     except Exception as exc:
         print(f"[evaluate_population_batched] rollout failed: {exc}")
-        gs.destroy()
+        if not keep_env_alive:
+            gs.destroy()
         # Fall back to serial
         evaluate_population_serial(population, cfg, model_and_layer, wp1_cfg)
         return
 
-    gs.destroy()
+    # Only destroy if not keeping alive
+    if not keep_env_alive:
+        gs.destroy()
 
     # Aggregate metrics across episodes: (num_episodes, P) -> (P,)
     aggregated_per_ind = {}
@@ -548,3 +589,7 @@ def evaluate_population_batched(
             ind.metrics = {k: aggregated_per_ind[k][i] for k in aggregated_per_ind}
         except Exception as exc:
             ind.fitness.values = tuple(default_fitness(cfg))
+
+    # Return environment if requested
+    if keep_env_alive:
+        return (env, urdf_path, morph_genome)

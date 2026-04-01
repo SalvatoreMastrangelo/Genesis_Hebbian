@@ -360,6 +360,12 @@ class HebbianCodesignDEAP:
         self._low = [0.0] * n_genes
         self._up = [1.0] * n_genes
 
+        # Environment management for reuse across generations
+        self._current_env = None
+        self._current_env_urdf = None
+        self._current_env_morph = None
+        self._current_env_size = None
+
         # Toolbox
         self.tb = base.Toolbox()
         self.tb.register("attr_float", random.random)
@@ -374,14 +380,24 @@ class HebbianCodesignDEAP:
             up=self._up,
             eta=self.cfg.evolution.eta_c,
         )
-        self.tb.register(
-            "mutate",
-            tools.mutPolynomialBounded,
-            low=self._low,
-            up=self._up,
-            eta=self.cfg.evolution.eta_m,
-            indpb=1.0 / n_genes,
-        )
+        # Register mutation operator based on config
+        if self.cfg.evolution.mutation_operator == "gaussian":
+            self.tb.register(
+                "mutate",
+                tools.mutGaussian,
+                mu=0.0,
+                sigma=self.cfg.evolution.mutation_sigma,
+                indpb=1.0 / n_genes,
+            )
+        else:  # polynomial (default)
+            self.tb.register(
+                "mutate",
+                tools.mutPolynomialBounded,
+                low=self._low,
+                up=self._up,
+                eta=self.cfg.evolution.eta_m,
+                indpb=1.0 / n_genes,
+            )
         self.tb.register("select", tools.selNSGA2)
 
     # ------------------------------------------------------------------
@@ -397,6 +413,50 @@ class HebbianCodesignDEAP:
         for ind in population:
             if not hasattr(ind, "uid") or ind.uid is None:
                 self._assign_uid(ind)
+
+    # ------------------------------------------------------------------
+    #  Environment management for reuse
+    # ------------------------------------------------------------------
+
+    def _get_population_morphology(self, population: list):
+        """Extract morphology genome from population (assumes all same if batched)."""
+        if not population:
+            return None
+        from WP2.utils import split_genome
+        # Get morphology from first individual
+        hebb_part, morph_part = split_genome(list(population[0]), self.cfg)
+        return morph_part
+
+    def _destroy_current_env(self) -> None:
+        """Destroy the current environment if it exists."""
+        if self._current_env is not None:
+            import genesis as gs
+            try:
+                gs.destroy()
+                self._current_env = None
+                self._current_env_urdf = None
+                self._current_env_morph = None
+                self._current_env_size = None
+                print("[evolve] Destroyed current environment")
+            except Exception as exc:
+                print(f"[evolve] Warning: Failed to destroy environment: {exc}")
+
+    def _should_rebuild_env(self, population: list, num_envs: int) -> bool:
+        """Check if environment needs to be rebuilt."""
+        if self._current_env is None:
+            return True
+
+        # Check if population morphology changed
+        if self.cfg.morphology.evolve:
+            morph = self._get_population_morphology(population)
+            if morph != self._current_env_morph:
+                return True
+
+        # Check if environment size changed
+        if self._current_env_size != num_envs:
+            return True
+
+        return False
 
     # ------------------------------------------------------------------
     #  Evaluation
@@ -428,7 +488,41 @@ class HebbianCodesignDEAP:
 
         # Use batched evaluation (all invalid individuals in parallel)
         model_and_layer = (self._model, self._last_layer, self.cfg.hebbian.num_actions, self.cfg.hebbian.hidden_dim)
-        evaluate_population_batched(population, self.cfg, model_and_layer, self._wp1_cfg)
+
+        # Determine expected environment size
+        invalid = [ind for ind in population if not ind.fitness.valid]
+        P = len(invalid)
+        if P == 0:
+            return
+
+        total_envs = self.cfg.evaluation.num_eval_envs
+        S = total_envs // P
+        actual_envs = S * P
+
+        # Check if we need to rebuild environment
+        if self._should_rebuild_env(population, actual_envs):
+            self._destroy_current_env()
+
+        # Prepare environment tuple for reuse
+        existing_env = None
+        if self._current_env is not None:
+            existing_env = (self._current_env, self._current_env_urdf)
+
+        # Evaluate with environment reuse
+        result = evaluate_population_batched(
+            population, self.cfg, model_and_layer, self._wp1_cfg,
+            existing_env=existing_env,
+            keep_env_alive=True,  # Keep environment alive for next generation
+        )
+
+        # Store environment for next generation
+        if result is not None:
+            env, urdf_path, morph_genome = result
+            self._current_env = env
+            self._current_env_urdf = urdf_path
+            self._current_env_morph = morph_genome
+            self._current_env_size = actual_envs
+            print(f"[evolve] Stored environment for reuse (morph={morph_genome is not None}, size={actual_envs})")
 
     def _evaluate_population_serial(self, population: list) -> None:
         """Evaluate sequentially (single GPU)."""
@@ -677,5 +771,8 @@ class HebbianCodesignDEAP:
         save_pareto_front(self.run_dir, front0, self.cfg)
         print(f"\n[HebbianCodesignDEAP] Done. Final Pareto front: {len(front0)} solutions.")
         print(f"[HebbianCodesignDEAP] Results saved to: {self.run_dir}")
+
+        # Clean up environment
+        self._destroy_current_env()
 
         return pop

@@ -70,21 +70,43 @@ def load_rng_state(path: Path) -> None:
 def decode_hebbian_genes(
     genome_section: Sequence[float],
     hebb_cfg: HebbianConfig,
-    out_features: int = 5,
+    out_features: int = 7,
     in_features: int = 64,
 ) -> Dict[str, torch.Tensor]:
     """Decode a normalised [0,1] Hebbian genome section into per-weight tensors.
 
-    The genome is laid out as blocks of ``out_features * in_features`` values:
-        [A_flat | B_flat | C_flat | D_flat | (lam_flat) | (eta_flat) | (decay_flat)]
+    The genome section is laid out as consecutive blocks of
+    ``n_weights = out_features * in_features`` values (typically 7 × 64 = 448):
+        [A_flat | B_flat | C_flat | D_flat | (lam_flat) | (eta_flat)]
 
-    Each block is rescaled from [0,1] to the configured range. The lam block is only
-    included if ``evolve_decay=True``.
+    Block order:
+    - A, B, C, D are always present (4 × n_weights genes).
+    - lam is present only when ``evolve_decay=True``; otherwise all weights
+      use the scalar ``hebb_cfg.decay`` via a constant tensor at the midpoint
+      of ``decay_range``.
+    - eta is present only when ``evolve_eta=True``; otherwise the global scalar
+      ``hebb_cfg.eta`` is used.
 
-    Returns a dict with keys: A, B, C, D, lam, and optionally eta and decay.
-    If ``evolve_decay=False``, lam is set to the midpoint of decay_range.
+    Each block is rescaled from [0,1] to the configured range (e.g. A_range).
+
+    Parameters
+    ----------
+    genome_section : sequence of float
+        Flat gene values in [0,1], length = ``hebbian_genome_dim()`` from config.
+    hebb_cfg : HebbianConfig
+        Provides range bounds (A_range, B_range, …) and evolve_* flags.
+    out_features : int
+        Last-layer output dimension (num_actions).  Default 7.
+    in_features : int
+        Last-layer input dimension (hidden_dim).  Default 64.
+
+    Returns
+    -------
+    dict
+        Keys: ``A``, ``B``, ``C``, ``D``, ``lam`` (each shape ``(out, in)``),
+        and optionally ``eta`` if ``evolve_eta=True``.
     """
-    n_weights = out_features * in_features  # 448
+    n_weights = out_features * in_features  # e.g. 448 when out_features=7, in_features=64
     genes = np.asarray(genome_section, dtype=np.float32)
 
     def _rescale(block: np.ndarray, lo: float, hi: float) -> torch.Tensor:

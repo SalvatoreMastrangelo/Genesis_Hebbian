@@ -313,7 +313,28 @@ def run_sne_config(
             except Exception:
                 pass
 
-    result_queue.put(result)
+    # Ensure result is always put in queue, with fallback logging
+    try:
+        result_queue.put(result)
+        print(
+            f"[benchmark S={S},N={N},E={E}] Result put in queue: status={result.get('status', 'UNKNOWN')}",
+            flush=True,
+        )
+    except Exception as queue_err:
+        print(
+            f"[benchmark S={S},N={N},E={E}] CRITICAL: Failed to put result in queue: {queue_err}",
+            flush=True,
+        )
+        # Fallback: write error to a file so it's not lost
+        try:
+            error_log_path = f"/tmp/benchmark_error_S{S}_N{N}_E{E}_{int(time.time())}.txt"
+            with open(error_log_path, "w") as f:
+                f.write(f"Config: S={S}, N={N}, E={E}\n")
+                f.write(f"Status: {result.get('status', 'UNKNOWN')}\n")
+                f.write(f"Error: {result.get('error', 'No error captured')}\n")
+            print(f"[benchmark S={S},N={N},E={E}] Error logged to fallback file: {error_log_path}", flush=True)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +350,21 @@ def _error_result(
 ) -> Dict[str, Any]:
     """Build a uniform error-result dict with all numeric fields set to None."""
     tb = traceback.format_exc()
-    print(f"[benchmark S={S},N={N},E={E}] {status}: {exc}\n{tb}")
+
+    # Build a comprehensive error message (exc message can be empty)
+    exc_type = type(exc).__name__
+    exc_msg = str(exc).strip()
+    if not exc_msg:
+        exc_msg = f"{exc_type} with no message"
+    error_message = f"{exc_type}: {exc_msg}\n{tb}"
+
+    # Always print to stdout so it appears in logs
+    print(f"[benchmark S={S},N={N},E={E}] {status}")
+    print(f"[benchmark S={S},N={N},E={E}] Exception type: {exc_type}")
+    print(f"[benchmark S={S},N={N},E={E}] Exception message: {exc_msg}")
+    print(f"[benchmark S={S},N={N},E={E}] Full traceback:\n{tb}")
+    print(f"[benchmark S={S},N={N},E={E}] === END OF ERROR REPORT ===", flush=True)
+
     return {
         "status": status,
         "S": S,
@@ -356,5 +391,5 @@ def _error_result(
         "vram_allocated_total_mb": None,
         "vram_reserved_per_scene_mean_mb": None,
         "vram_reserved_per_scene_max_mb": None,
-        "error": str(exc),
+        "error": error_message,
     }
