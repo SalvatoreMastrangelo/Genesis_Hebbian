@@ -1056,6 +1056,7 @@ def _process_urdf_impl(
     train_iters: int,
     train_repeats: int,
     device: str,
+    train_init_policy: Optional[Path],
 ) -> Dict[str, Any]:
     device = _prepare_device_env(device)
     csv_writer = (
@@ -1147,6 +1148,11 @@ def _process_urdf_impl(
         rep_reward: float
         rep_reward_curve: Dict[str, float] = {}
         try:
+            init_policy_literal = (
+                repr(str(train_init_policy))
+                if train_init_policy is not None
+                else "None"
+            )
             cmd = [
                 "python",
                 "-c",
@@ -1155,7 +1161,7 @@ def _process_urdf_impl(
                     f"training(exp_name={exp_train!r}, urdf_file={str(urdf)!r}, "
                     f"num_envs={int(train_envs)}, max_iterations={int(train_iters)}, "
                     "parent_exp=None, parent_ckpt=None, "
-                    f"device={device!r})"
+                    f"device={device!r}, init_policy_path={init_policy_literal})"
                 ),
             ]
             env = os.environ.copy()
@@ -1310,6 +1316,7 @@ def run_pipeline(
     train_iters,
     train_repeats,
     device,
+    train_init_policy: Optional[Path],
 ) -> None:
     """
     Full end-to-end workflow.
@@ -1411,12 +1418,18 @@ def run_pipeline(
         baseline_models = []
     else:
         baseline_models = [p.expanduser().resolve() for p in baseline_models]
+    if train_init_policy is not None:
+        train_init_policy = train_init_policy.expanduser().resolve()
+        if not train_init_policy.is_file():
+            raise FileNotFoundError(f"Warm-start checkpoint not found: {train_init_policy}")
     if baseline_models and cfg_dir is None:
         cfg_dir = baseline_models[0].parent
 
     if eval_baselines:
         print(f"[eval_gen] Baseline logs loaded from: {EA_ROOT / exp_name}")
     print(f"[eval_gen] Evaluation artifacts will be copied to: {get_eval_root(saving_path)}")
+    if train_init_policy is not None:
+        print(f"[eval_gen] Per-URDF training will warm-start from: {train_init_policy}")
 
     # Baseline checkpoints: read-only, no staging
     staged = []
@@ -1478,6 +1491,7 @@ def run_pipeline(
                 train_iters=int(train_iters),
                 train_repeats=int(train_repeats),
                 device=str(device),
+                train_init_policy=train_init_policy,
             )
             refs.append(ref)
 
@@ -1507,6 +1521,7 @@ def run_pipeline(
             train_iters=int(train_iters),
             train_repeats=int(train_repeats),
             device=str(device),
+            train_init_policy=train_init_policy,
         )
 
     logger.info("Pipeline finished successfully.")
@@ -1661,6 +1676,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Number of independent training runs per URDF.",
     )
     parser.add_argument(
+        "--train-init-policy",
+        type=Path,
+        default=None,
+        help=(
+            "Optional checkpoint path used to warm-start each per-URDF training run "
+            "before applying --train-iters PPO updates."
+        ),
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda:0",
@@ -1718,6 +1742,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         train_iters=int(args.train_iters),
         train_repeats=int(args.train_repeats),
         device=str(args.device),
+        train_init_policy=args.train_init_policy,
     )
 
 

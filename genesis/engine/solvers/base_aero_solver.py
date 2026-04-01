@@ -296,25 +296,30 @@ class BaseAeroSolver(Solver):
         This function:
         1. Launches the Taichi kernel `_aero_compute_kernel` to populate
            per-link forces (`force_b`) and application points (`cp_b`).
-        2. Converts those fields to torch tensors.
-        3. Computes the propeller reaction torque.
-        4. Clamps forces/torques for numerical stability.
-        5. Applies them to the RigidSolver in link-local coordinates.
+        2. Applies them directly to the RigidSolver in Taichi, preserving the
+           same link-frame semantics as the previous Torch bridge.
+        3. Refreshes cached Torch views used by logging/observations.
         """
         if not self._aero_targets:
             return
 
         # 1) compute forces/torques in Taichi
         self._aero_compute_kernel(self._rigid_solver)
+        if not hasattr(self, "_aero_links_idx_buf") or self._aero_links_idx_buf.shape[0] != len(self._aero_link_idx):
+            self._aero_links_idx_buf = torch.as_tensor(
+                self._aero_link_idx, device=self._aero_device, dtype=torch.int32
+            ).contiguous()
 
-        # 2) fetch Fb and cp into persistent torch buffers (link frame)
-        self._copy_force_cp(self._force_buf, self._cp_buf)
-        L = len(self._aero_link_idx)
-        fb = self._force_buf[:, :L, :]  # (B, L, 3)
-        cp = self._cp_buf[:, :L, :]     # (B, L, 3)
+        # 2) apply forces/torques to Genesis' rigid solver directly in Taichi
+        self._rigid_solver.apply_aero_wrenches_link_frame(
+            force_field=self.force_b,
+            cp_field=self.cp_b,
+            links_idx=self._aero_links_idx_buf,
+            kappa_prop_field=self.kappa_prop,
+            force_cap_field=self.force_cap,
+        )
 
-        # Refresh filtered throttle and max_thrust directly from Taichi fields,
-        # then cache thrust in Newtons for consumers in `src/`.
+        # 3) refresh cached Torch views used outside the solver.
         if hasattr(self, "max_thrust"):
             self._copy_prop_state(
                 self._thr_flt_buf,
@@ -322,7 +327,7 @@ class BaseAeroSolver(Solver):
                 self._prop_rpm_buf,
                 self._prop_axial_speed_buf,
             )
-            self._thrust_n_buf.copy_(fb[:, -1, 2].abs())
+            self._copy_prop_thrust(self._thrust_n_buf)
             torch.nan_to_num_(self._thrust_n_buf, nan=0.0, posinf=0.0, neginf=0.0)
             self._thrust_n_buf.clamp_(min=0.0)
             torch.nan_to_num_(self._prop_rpm_buf, nan=0.0, posinf=0.0, neginf=0.0)
@@ -333,33 +338,6 @@ class BaseAeroSolver(Solver):
             self._copy_alpha_beta0(self._alpha_dbg0_buf, self._beta_dbg0_buf)
             torch.nan_to_num_(self._alpha_dbg0_buf, nan=0.0, posinf=0.0, neginf=0.0)
             torch.nan_to_num_(self._beta_dbg0_buf, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # 3) prop reaction torque (about prop z-axis, link frame)
-        tq = self._tq_buf[:, :L, :]
-        tq.zero_()
-        thrust = fb[:, -1, 2]  # z-component of last surface (prop) in its frame
-        tq[:, -1, 2] = -self._kappa_buf * thrust
-        # 4) clamp and clean numerical issues
-        cap = self._fcap_buf
-
-        torch.nan_to_num_(fb)
-        torch.nan_to_num_(cp)
-        torch.nan_to_num_(tq)
-        fb.clamp_(min=-cap, max=cap)
-        tq.clamp_(min=-cap, max=cap)
-
-        # 5) apply forces and torques to Genesis' rigid solver
-        self._rigid_solver.apply_links_force_at_point_link_frame(
-            pos=cp,
-            force=fb,
-            links_idx=self._aero_link_idx,
-        )
-        self._rigid_solver.apply_links_coupling_torque(
-            torque=tq,
-            links_idx=self._aero_link_idx,
-            ref="link_origin",
-            local=True,
-        )
 
     @ti.kernel
     def _copy_force_cp(
@@ -392,6 +370,18 @@ class BaseAeroSolver(Solver):
                 out_rpm[b] = self.prop_rpm_b[b]
             if ti.static(hasattr(self, "prop_axial_speed_b")):
                 out_axial_speed[b] = self.prop_axial_speed_b[b]
+
+    @ti.kernel
+    def _copy_prop_thrust(
+        self,
+        out_thrust: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    ):
+        prop_idx = ti.max(0, self.L - 1)
+        for b in range(self.B):
+            thrust = ti.abs(self.force_b[b, prop_idx][2])
+            if ti.math.isnan(thrust) or ti.math.isinf(thrust):
+                thrust = 0.0
+            out_thrust[b] = thrust
 
     @ti.kernel
     def _copy_alpha_beta0(

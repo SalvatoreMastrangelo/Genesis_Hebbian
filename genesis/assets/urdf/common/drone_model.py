@@ -279,9 +279,6 @@ class DroneModel:
         self._validate_prop_parameters()
         # Optional debug data
         self._compute_debug_dims(root)
-        for s in self.surfaces:
-            if s.kind == SurfaceKind.PROPELLER:
-                print("[PROP PARAMS]", s.frame_name, s.params.get("max_thrust"), s.params.get("prop_cutoff_hz"), s.params.get("kappa_prop"))
 
 
 
@@ -688,8 +685,6 @@ class DroneModel:
             raise ValueError(
                 f"Invalid geometry for '{frame}': S={area}, chord={chord}, AR={ar}, span={span}"
             )
-
-        print(f"Computed geom for {frame}: S={area}, chord={chord}, AR={ar}, span={span}")
 
         return area, ar, chord, span
 

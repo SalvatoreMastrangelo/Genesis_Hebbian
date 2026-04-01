@@ -1,8 +1,8 @@
 """Observation construction utilities for RL control of a winged drone.
 
-This module focuses on building compact, well–structured observations for
+This module focuses on building compact, well-structured observations for
 policy (actor) and critic networks.  It is intentionally decoupled from the
-rest of the environment so that it can be reused or unit–tested independently.
+rest of the environment so that it can be reused or unit-tested independently.
 """
 
 from __future__ import annotations
@@ -34,6 +34,16 @@ class ObsScaling:
     max_depth: float = 30.0
 
 
+@dataclass
+class PrivilegedObsScaling:
+    """Scaling parameters for critic-only privileged features."""
+
+    base_ang_vel: float = 5.0
+    joint_position: float = 1.0
+    joint_velocity: float = 5.0
+    actual_thrust: str | float = "max_thrust"
+
+
 class ObservationBuilder:
     """Build observations for actor and critic networks.
 
@@ -49,7 +59,8 @@ class ObservationBuilder:
     Optionally, a genome vector of dimension ``G`` can be appended at the end
     of both actor and critic observations.
 
-    The critic observation mirrors the actor observation but without noise.
+    The critic observation mirrors the actor observation but without noise and
+    may append extra privileged features configured through ``obs_cfg``.
     """
 
     def __init__(
@@ -89,6 +100,21 @@ class ObservationBuilder:
         cfg = {} if obs_cfg is None else dict(obs_cfg)
         self.add_noise: bool = bool(cfg.get("add_noise", False))
         self.noise_std: Dict[str, float] = dict(cfg.get("noise_std", {}))
+        priv_cfg = dict(cfg.get("privileged_obs", {}))
+        self.include_priv_base_ang_vel = bool(priv_cfg.get("base_ang_vel", False))
+        self.include_priv_joint_position = bool(priv_cfg.get("joint_position", False))
+        self.include_priv_joint_velocity = bool(priv_cfg.get("joint_velocity", False))
+        self.include_priv_actual_thrust = bool(priv_cfg.get("actual_thrust", False))
+        priv_scaling_cfg = dict(cfg.get("privileged_scaling", {}))
+        self.priv_scaling = PrivilegedObsScaling(
+            base_ang_vel=float(priv_scaling_cfg.get("base_ang_vel", 5.0)),
+            joint_position=float(priv_scaling_cfg.get("joint_position", 1.0)),
+            joint_velocity=float(priv_scaling_cfg.get("joint_velocity", 5.0)),
+            actual_thrust=priv_scaling_cfg.get("actual_thrust", "max_thrust"),
+        )
+        self._inv_priv_base_ang_vel_scale = 1.0 / max(1e-6, self.priv_scaling.base_ang_vel)
+        self._inv_priv_joint_position_scale = 1.0 / max(1e-6, self.priv_scaling.joint_position)
+        self._inv_priv_joint_velocity_scale = 1.0 / max(1e-6, self.priv_scaling.joint_velocity)
 
         # Feature scaling parameters
         scaling_cfg = cfg.get("scaling", {})
@@ -148,10 +174,21 @@ class ObservationBuilder:
 
         self.actor_obs_dim = base_kin_dim + depth_dim_actor + last_act_dim + cmd_dim
         self.priv_obs_dim = self.actor_obs_dim
+        if self.include_priv_base_ang_vel:
+            self.priv_obs_dim += 3
+        if self.include_priv_joint_position:
+            self.priv_obs_dim += self.num_actions - 1
+        if self.include_priv_joint_velocity:
+            self.priv_obs_dim += self.num_actions - 1
+        if self.include_priv_actual_thrust:
+            self.priv_obs_dim += 1
 
         if self.add_genome_obs and self.genome_dim is not None:
             self.actor_obs_dim += self.genome_dim
             self.priv_obs_dim += self.genome_dim
+        self._base_actor_obs_dim = base_kin_dim + depth_dim_actor + last_act_dim + cmd_dim
+        self._actor_scratch: Optional[torch.Tensor] = None
+        self._critic_scratch: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -166,6 +203,11 @@ class ObservationBuilder:
         commands: torch.Tensor,
         *,
         depth_actor: Optional[torch.Tensor] = None,
+        base_ang_vel: Optional[torch.Tensor] = None,
+        joint_position: Optional[torch.Tensor] = None,
+        joint_velocity: Optional[torch.Tensor] = None,
+        actual_thrust: Optional[torch.Tensor] = None,
+        actual_thrust_scale: Optional[torch.Tensor] = None,
         genome_vec: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Construct actor and critic observations.
@@ -181,7 +223,16 @@ class ObservationBuilder:
                 accepted for future extensions.
             depth_actor: Optional ``(B, num_actor_sectors)`` tensor with depth
                 readings in meters for the actor FOV.
-
+            base_ang_vel: Optional ``(B, 3)`` body-frame angular velocity used
+                only for privileged critic features when enabled.
+            joint_position: Optional ``(B, num_actions - 1)`` servo positions
+                used only for privileged critic features when enabled.
+            joint_velocity: Optional ``(B, num_actions - 1)`` servo velocities
+                used only for privileged critic features when enabled.
+            actual_thrust: Optional ``(B, 1)`` or ``(B,)`` tensor with the real
+                generated thrust used only for privileged critic features.
+            actual_thrust_scale: Optional ``(B, 1)`` or ``(B,)`` scale tensor
+                used to normalize ``actual_thrust`` when configured.
             genome_vec: Optional ``(B, G)`` genome tensor.  If provided, it
                 overrides the genome passed at construction time.
 
@@ -202,6 +253,16 @@ class ObservationBuilder:
         if depth_actor is not None:
             if depth_actor.device != device:
                 depth_actor = depth_actor.to(device)
+        if base_ang_vel is not None and base_ang_vel.device != device:
+            base_ang_vel = base_ang_vel.to(device)
+        if joint_position is not None and joint_position.device != device:
+            joint_position = joint_position.to(device)
+        if joint_velocity is not None and joint_velocity.device != device:
+            joint_velocity = joint_velocity.to(device)
+        if actual_thrust is not None and actual_thrust.device != device:
+            actual_thrust = actual_thrust.to(device)
+        if actual_thrust_scale is not None and actual_thrust_scale.device != device:
+            actual_thrust_scale = actual_thrust_scale.to(device)
         if genome_vec is not None:
             self.genome_vec = genome_vec if genome_vec.device == device else genome_vec.to(device)
 
@@ -246,20 +307,33 @@ class ObservationBuilder:
         v_tgt = commands[:, 0].unsqueeze(1)
         v_tgt_norm = v_tgt * self._inv_command_speed_scale
 
-        # ---------------------- Assemble clean features ---------------------
-        components = [z_norm, quat, vx_norm, vy_norm, vz_norm]
+        obs_actor, obs_critic = self._ensure_obs_scratch(B, device)
+        idx = 0
+        obs_actor[:, idx : idx + 1].copy_(z_norm)
+        idx += 1
+        obs_actor[:, idx : idx + 4].copy_(quat)
+        idx += 4
+        obs_actor[:, idx : idx + 1].copy_(vx_norm)
+        idx += 1
+        obs_actor[:, idx : idx + 1].copy_(vy_norm)
+        idx += 1
+        obs_actor[:, idx : idx + 1].copy_(vz_norm)
+        idx += 1
         if depth_feat_actor is not None:
-            components.append(depth_feat_actor)
-        components += [last_thr, last_jnts, v_tgt_norm]
-
-        obs_clean = torch.cat(components, dim=1)
+            depth_dim = depth_feat_actor.shape[1]
+            obs_actor[:, idx : idx + depth_dim].copy_(depth_feat_actor)
+            idx += depth_dim
+        obs_actor[:, idx : idx + 1].copy_(last_thr)
+        idx += 1
+        if self.num_actions > 1:
+            obs_actor[:, idx : idx + self.num_actions - 1].copy_(last_jnts)
+        idx += self.num_actions - 1
+        obs_actor[:, idx : idx + 1].copy_(v_tgt_norm)
         # --------------------------- Add noise ------------------------------
-        obs_actor = obs_clean
         if self.add_noise and self.noise_std:
-            obs_actor = obs_clean.clone()
             std_cfg = self.noise_std
             idx = 0
-            noise_buf = self._get_noise_scratch(B, obs_clean.shape[1], device)
+            noise_buf = self._get_noise_scratch(B, self._base_actor_obs_dim, device)
 
             # z_norm
             if std_cfg.get("z", 0.0) > 0.0:
@@ -312,8 +386,70 @@ class ObservationBuilder:
                 obs_actor[:, idx : idx + 1] += noise
             idx += 1
 
-        # Critic gets clean observation; it may also see extra depth sectors.
-        obs_critic = obs_clean
+        # Critic gets clean observation and can optionally append privileged features.
+        idx = 0
+        obs_critic[:, idx : idx + 1].copy_(z_norm)
+        idx += 1
+        obs_critic[:, idx : idx + 4].copy_(quat)
+        idx += 4
+        obs_critic[:, idx : idx + 1].copy_(vx_norm)
+        idx += 1
+        obs_critic[:, idx : idx + 1].copy_(vy_norm)
+        idx += 1
+        obs_critic[:, idx : idx + 1].copy_(vz_norm)
+        idx += 1
+        if depth_feat_actor is not None:
+            depth_dim = depth_feat_actor.shape[1]
+            obs_critic[:, idx : idx + depth_dim].copy_(depth_feat_actor)
+            idx += depth_dim
+        obs_critic[:, idx : idx + 1].copy_(last_thr)
+        idx += 1
+        if self.num_actions > 1:
+            obs_critic[:, idx : idx + self.num_actions - 1].copy_(last_jnts)
+        idx += self.num_actions - 1
+        obs_critic[:, idx : idx + 1].copy_(v_tgt_norm)
+
+        critic_idx = self._base_actor_obs_dim
+
+        if self.include_priv_base_ang_vel:
+            if base_ang_vel is None:
+                raise RuntimeError("privileged base_ang_vel enabled but no tensor was provided.")
+            obs_critic[:, critic_idx : critic_idx + 3].copy_(base_ang_vel * self._inv_priv_base_ang_vel_scale)
+            critic_idx += 3
+
+        if self.include_priv_joint_position:
+            if joint_position is None:
+                raise RuntimeError("privileged joint_position enabled but no tensor was provided.")
+            dim = joint_position.shape[1]
+            obs_critic[:, critic_idx : critic_idx + dim].copy_(joint_position * self._inv_priv_joint_position_scale)
+            critic_idx += dim
+
+        if self.include_priv_joint_velocity:
+            if joint_velocity is None:
+                raise RuntimeError("privileged joint_velocity enabled but no tensor was provided.")
+            dim = joint_velocity.shape[1]
+            obs_critic[:, critic_idx : critic_idx + dim].copy_(joint_velocity * self._inv_priv_joint_velocity_scale)
+            critic_idx += dim
+
+        if self.include_priv_actual_thrust:
+            if actual_thrust is None:
+                raise RuntimeError("privileged actual_thrust enabled but no tensor was provided.")
+            thrust = actual_thrust
+            if thrust.ndim == 1:
+                thrust = thrust.unsqueeze(1)
+            thrust_scale_cfg = self.priv_scaling.actual_thrust
+            if isinstance(thrust_scale_cfg, str):
+                if thrust_scale_cfg != "max_thrust":
+                    raise ValueError(f"Unsupported privileged actual_thrust scaling mode: {thrust_scale_cfg}")
+                if actual_thrust_scale is None:
+                    raise RuntimeError("actual_thrust privileged normalization requires actual_thrust_scale.")
+                thrust_scale = actual_thrust_scale
+                if thrust_scale.ndim == 1:
+                    thrust_scale = thrust_scale.unsqueeze(1)
+            else:
+                thrust_scale = torch.full_like(thrust, float(thrust_scale_cfg))
+            obs_critic[:, critic_idx : critic_idx + 1].copy_(thrust / thrust_scale.clamp(min=1e-6))
+            critic_idx += 1
 
         # ------------------------- Genome features --------------------------
         if self.add_genome_obs:
@@ -343,8 +479,8 @@ class ObservationBuilder:
 
             genome_actor = genome_norm
 
-            obs_actor = torch.cat((obs_actor, genome_actor), dim=1)
-            obs_critic = torch.cat((obs_critic, genome_norm), dim=1)
+            obs_actor[:, self._base_actor_obs_dim : self._base_actor_obs_dim + self.genome_dim].copy_(genome_actor)
+            obs_critic[:, critic_idx : critic_idx + self.genome_dim].copy_(genome_norm)
 
             # print each different observation component of the first env separately for debugging
             '''
@@ -367,6 +503,21 @@ class ObservationBuilder:
             print(f" genome: {obs_actor[0, idx:idx+self.genome_dim].cpu().numpy()}")
             '''
         return obs_actor, obs_critic
+
+    def _ensure_obs_scratch(self, B: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        if (
+            self._actor_scratch is None
+            or self._actor_scratch.shape != (B, self.actor_obs_dim)
+            or self._actor_scratch.device != device
+        ):
+            self._actor_scratch = torch.empty((B, self.actor_obs_dim), device=device, dtype=torch.float32)
+        if (
+            self._critic_scratch is None
+            or self._critic_scratch.shape != (B, self.priv_obs_dim)
+            or self._critic_scratch.device != device
+        ):
+            self._critic_scratch = torch.empty((B, self.priv_obs_dim), device=device, dtype=torch.float32)
+        return self._actor_scratch, self._critic_scratch
 
     def _get_noise_scratch(self, B: int, D: int, device: torch.device) -> torch.Tensor:
         if (

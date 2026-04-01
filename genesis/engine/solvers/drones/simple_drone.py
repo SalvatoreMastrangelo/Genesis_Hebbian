@@ -45,7 +45,7 @@ class SimpleDroneAeroParameters:
 
     TYPES = {
         "fuselage": {
-            "cd0": 0.65,
+            "cd0": 0.35,
             "k_slip_fus": 0.0,
             "cp_start": 0.0,
             "cp_end": 0.5,
@@ -138,8 +138,8 @@ class SimpleDroneAeroParameters:
         "sigma_mag": 0.05,
         "sigma_dir": 0.05,
         "sigma_param": 0.15,
-        "sigma_cp": 0.05,
-        "mass_shift": 0.15,
+        "sigma_cp": 0.01,
+        "mass_shift": 0.02,
         "com_shift": 0.01,
     }
 
@@ -703,15 +703,6 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         if not dims:
             return
 
-        print("[AeroSolver]: Parsed URDF geometry:")
-        if "c_fus" in dims and "l_fus" in dims:
-            print(f"  Fuselage C={dims['c_fus']:.4f} m, L={dims['l_fus']:.4f} m")
-        if "c_w" in dims and "l_w" in dims:
-            print(f"  Wing C={dims['c_w']:.4f} m, L={dims['l_w']:.4f} m")
-        if "c_e" in dims and "l_e" in dims:
-            print(f"  Elevator C={dims['c_e']:.4f} m, L={dims['l_e']:.4f} m")
-        if "c_r" in dims and "l_r" in dims:
-            print(f"  Rudder C={dims['c_r']:.4f} m, L={dims['l_r']:.4f} m")
 
     def _wing_side_keys(self, name: str) -> tuple[str, str]:
         """Return canonical (left, right) keys for a wing parameter name."""

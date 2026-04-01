@@ -5,12 +5,14 @@ import csv
 import math
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Tuple, Sequence, Optional, List
 
 import torch
 import genesis as gs
+from genesis.utils import geom as gu
 from genesis.utils.geom import quat_to_xyz, transform_by_quat, inv_quat, xyz_to_quat
 from genesis.assets.urdf.aero_model import DroneAeroModel, SurfaceKind
 
@@ -309,6 +311,7 @@ class WingedDroneEnv:
         eval: bool = False,
         device: str = "cuda",
     ) -> None:
+        env_init_start = time.perf_counter()
         self.aero_solver_kind = str(env_cfg.get("aero_solver_kind", "simple")).strip().lower()
         # ------------------------------------------------------------------ #
         # Basic configuration                                               #
@@ -551,8 +554,16 @@ class WingedDroneEnv:
         # ------------------------------------------------------------------ #
         self.add_genome_obs = bool(self.obs_cfg.get("add_genome_obs", False))
         self._genome_vec: Optional[torch.Tensor] = None
+        self._genome_base_vec: Optional[torch.Tensor] = None
+        self._genome_obs_scratch: Optional[torch.Tensor] = None
         self.noise_std = self.obs_cfg.get("noise_std", {})
         self._naca_code: Optional[str] = None
+        genome_noise_cfg = self.obs_cfg.get("genome_obs_noise", {}) or {}
+        self._genome_episode_noise_std = float(genome_noise_cfg.get("episode_std", 0.0) or 0.0)
+        self._genome_step_noise_std = float(genome_noise_cfg.get("step_std", 0.0) or 0.0)
+        self._genome_min_tensor = torch.tensor(self.GENOME_MIN, device=self.device, dtype=torch.float32)
+        self._genome_max_tensor = torch.tensor(self.GENOME_MAX, device=self.device, dtype=torch.float32)
+        self._genome_span_tensor = self._genome_max_tensor - self._genome_min_tensor
 
         if self.urdf_file:
             match = re.search(r"\[([^\]]+)\]\.urdf$", self.urdf_file)
@@ -562,36 +573,20 @@ class WingedDroneEnv:
                     self._naca_code = Chromosome_Drone.naca_from_physical(values)
                     g = torch.tensor(values, dtype=torch.float32, device=self.device)
                     self._genome_vec = g.unsqueeze(0).repeat(self.num_envs, 1)
+                    self._genome_base_vec = self._genome_vec.clone()
                 except Exception:
                     self._genome_vec = None
-
-        if self._genome_vec is not None and not self.evaluation:
-            # Simple domain randomization of genome parameters during training
-            noise_std = self.noise_std.get("genome", 0.1)
-            noise = torch.randn_like(self._genome_vec) * noise_std
-            gmin = torch.tensor(self.GENOME_MIN, device=self.device)
-            gmax = torch.tensor(self.GENOME_MAX, device=self.device)
-            noise *= (gmax - gmin).unsqueeze(0)
-            for idx in Chromosome_Drone.NACA_GENE_INDICES:
-                if idx < noise.shape[1]:
-                    noise[:, idx] = 0.0
-            self._genome_vec += noise
-            self._genome_vec = torch.max(torch.min(self._genome_vec, gmax), gmin)
 
         # ------------------------------------------------------------------ #
         # Build scene and get solvers                                       #
         # ------------------------------------------------------------------ #
+        scene_build_start = time.perf_counter()
         self.scene.build(n_envs=self.num_envs)
-        print(
-            f"[Scene] n_envs={self.num_envs} n_links={self.drone.n_links} "
-            f"n_dofs={self.drone.n_dofs}"
-        )
+        self.scene_build_elapsed = time.perf_counter() - scene_build_start
+
         if hasattr(self.scene.sim, "rigid_solver"):
             rigid_solver = self.scene.sim.rigid_solver
-            print(
-                f"[Visual] n_vverts={rigid_solver.n_vverts} "
-                f"n_vgeoms={len(rigid_solver.vgeoms)}"
-            )
+
         self.servo_dof_indices = []
         for name in self.servo_joint_names:
             joint = self.drone.get_joint(name)
@@ -603,11 +598,10 @@ class WingedDroneEnv:
             if idx is None:
                 raise ValueError(f"Joint '{name}' has no DOF index.")
             self.servo_dof_indices.append(int(idx))
-        if self.servo_dof_indices:
-            print(
-                f"[DOF] servo_dof_indices={self.servo_dof_indices} "
-                f"max={max(self.servo_dof_indices)} n_dofs={self.drone.n_dofs}"
-            )
+        self._servo_dof_idx_tensor = torch.as_tensor(
+            self.servo_dof_indices, device=self.device, dtype=torch.long
+        ).contiguous()
+
 
         # Throttle + servos
         self.THROTTLE_SIZE = 1
@@ -660,14 +654,6 @@ class WingedDroneEnv:
         self._com_shift_scratch = torch.empty(
             (self.num_envs, n_links, 3), device=self.device, dtype=torch.float32
         )
-
-        print(f"[WingedDroneEnv] Created with {self.num_envs} envs, drone '{self.drone_name}'")
-        print(f"  - Action space size: {self.num_actions} (throttle + {self.num_servos} servos)")
-        print(f"  - Drone span: {self.span:.3f} m")
-        print(f"  - Nominal mass: {self.nominal_mass:.3f} kg")
-        if any(float(v) > 0.0 for v in self._property_rand_cfg.values()):
-            print(f"  - Property randomization stds: {self._property_rand_cfg}")
-
         # ------------------------------------------------------------------ #
         # Setup drone actuators                                          #
         # ------------------------------------------------------------------ #
@@ -699,8 +685,6 @@ class WingedDroneEnv:
         self.base_kp = kp.clone()
         self.base_kv = kv.clone()
         if self.num_servos > 0:
-            print(f"[WingedDroneEnv] Servo gains (kp): {kp.cpu().numpy()}")
-            print(f"[WingedDroneEnv] Servo gains (kv): {kv.cpu().numpy()}")
             self.drone.set_dofs_kp(kp, self.servo_dof_indices)
             self.drone.set_dofs_kv(kv, self.servo_dof_indices)
 
@@ -720,6 +704,7 @@ class WingedDroneEnv:
             y_lower=y_lower,
             y_upper=y_upper,
             torch_device=self.device,
+            backend=self.obs_cfg.get("depth_backend", "torch"),
         )
 
         # Torch copy of ray directions (for obstacle reward, no Taichi needed)
@@ -795,9 +780,11 @@ class WingedDroneEnv:
         # Core state
         self.base_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.base_quat = torch.zeros((self.num_envs, 4), device=self.device)
+        self._base_quat_inv_buf = torch.empty((self.num_envs, 4), device=self.device)
         self.base_euler = torch.zeros((self.num_envs, 3), device=self.device)
         self.base_lin_vel = torch.zeros((self.num_envs, 3), device=self.device)
         self.base_ang_vel = torch.zeros((self.num_envs, 3), device=self.device)
+        self._base_ang_vel_body_buf = torch.empty((self.num_envs, 3), device=self.device)
         self.accelerations = torch.zeros((self.num_envs, 6), device=self.device)
         # Reused at every reset to avoid repeated tensor allocations.
         self._reset_lin_vel = torch.tensor([15.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
@@ -811,6 +798,7 @@ class WingedDroneEnv:
         self.joint_position = torch.zeros((self.num_envs, self.num_servos), device=self.device)
         self.joint_velocity = torch.zeros((self.num_envs, self.num_servos), device=self.device)
         self.torque = torch.zeros((self.num_envs, self.num_servos), device=self.device)
+        self._dofs_pos_buf = torch.empty((self.num_envs, self.drone.n_dofs), device=self.device, dtype=torch.float32)
         # Scratch buffers reused on reset to avoid per-reset `torch.cat` allocations.
         self._reset_pos_scratch = torch.empty(
             (self.num_envs, 6 + self.num_servos), device=self.device, dtype=torch.float32
@@ -881,7 +869,12 @@ class WingedDroneEnv:
         # Extras dictionary for logging (RSL-RL convention)
         self.extras: Dict = {"observations": {}}
         self._video_on = False
+        self._refresh_max_thrust_cache()
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
+        if bool(self.env_cfg.get("warmup_runtime_kernels", False)):
+            self._warmup_runtime_kernels()
+        self.scene_init_elapsed = time.perf_counter() - env_init_start
+
     # ---------------------------------------------------------------------- #
     # Video recording                                                      #
     # ---------------------------------------------------------------------- #
@@ -1171,6 +1164,7 @@ class WingedDroneEnv:
         state used for the next action.
         """
         depth_actor = self.depth if self.include_depth else None
+        genome_vec = self._get_genome_obs_tensor()
 
         obs_actor, obs_critic = self.obs_builder.build_observations(
             base_pos=self.base_pos,
@@ -1179,12 +1173,80 @@ class WingedDroneEnv:
             last_actions=self.last_actions,
             commands=self.commands,
             depth_actor=depth_actor,
+            base_ang_vel=self.base_ang_vel,
+            joint_position=self.joint_position,
+            joint_velocity=self.joint_velocity,
+            actual_thrust=self.thrust_log,
+            actual_thrust_scale=self._max_thr_buf,
+            genome_vec=genome_vec,
         )
 
         self.obs_buf.copy_(obs_actor)
         self.privileged_obs_buf.copy_(obs_critic)
         self._flag_nonfinite_rows(self.obs_buf)
         self._flag_nonfinite_rows(self.privileged_obs_buf)
+
+    def _apply_genome_noise_(self, genome: torch.Tensor, noise_std: float) -> torch.Tensor:
+        if noise_std <= 0.0 or genome.numel() == 0:
+            return genome
+        noise = torch.randn_like(genome) * noise_std
+        noise *= self._genome_span_tensor.unsqueeze(0)
+        for idx in Chromosome_Drone.NACA_GENE_INDICES:
+            if idx < noise.shape[1]:
+                noise[:, idx] = 0.0
+        genome.add_(noise)
+        genome.clamp_(min=self._genome_min_tensor, max=self._genome_max_tensor)
+        return genome
+
+    def _resample_genome_episode_noise(self, env_ids: torch.Tensor) -> None:
+        if (
+            self._genome_vec is None
+            or self._genome_base_vec is None
+            or self.evaluation
+            or env_ids.numel() == 0
+        ):
+            return
+        genome = self._genome_base_vec[env_ids].clone()
+        self._apply_genome_noise_(genome, self._genome_episode_noise_std)
+        self._genome_vec[env_ids] = genome
+
+    def _get_genome_obs_tensor(self) -> Optional[torch.Tensor]:
+        if self._genome_vec is None:
+            return None
+        if self.evaluation or self._genome_step_noise_std <= 0.0:
+            return self._genome_vec
+        if (
+            self._genome_obs_scratch is None
+            or self._genome_obs_scratch.shape != self._genome_vec.shape
+            or self._genome_obs_scratch.device != self._genome_vec.device
+        ):
+            self._genome_obs_scratch = torch.empty_like(self._genome_vec)
+        self._genome_obs_scratch.copy_(self._genome_vec)
+        self._apply_genome_noise_(self._genome_obs_scratch, self._genome_step_noise_std)
+        return self._genome_obs_scratch
+
+    def _warmup_runtime_kernels(self) -> None:
+        """
+        Compile late-bound runtime kernels once during env construction.
+
+        This avoids paying first-use compilation during the first rollout step
+        while keeping the simulator state unchanged.
+        """
+        zero_throttle = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
+        self.aero_solver.set_throttle(zero_throttle)
+        self.aero_solver._aero_step()
+        self.rigid_solver.clear_external_force()
+
+        cyl_xy = self.cylinders_xy
+        if cyl_xy is None and self.cylinders_array is not None:
+            cyl_xy = self.cylinders_array[self.forest_ids, :, :2]
+        self.depth_solver.compute_depth(
+            base_pos=self.base_pos,
+            base_euler=self.base_euler,
+            cyl_xy_b=cyl_xy,
+            noise_std=0.0,
+        )
+        self.depth.fill_(self.MAX_DISTANCE)
 
     # ---------------------------------------------------------------------- #
     # Step function                                                          #
@@ -1227,7 +1289,17 @@ class WingedDroneEnv:
         self.scene.step()
 
         # NaN check (simulation instability)
-        dofs_pos = self.drone.get_dofs_position()
+        self.rigid_solver.export_winged_drone_state(
+            dofs_pos=self._dofs_pos_buf,
+            base_quat=self.base_quat,
+            base_lin_vel=self.base_lin_vel,
+            base_ang_vel=self.base_ang_vel,
+            joint_vel=self.joint_velocity,
+            control_force=self.torque,
+            servo_dofs_idx=self._servo_dof_idx_tensor,
+            base_link_idx=self.drone.base_link_idx,
+        )
+        dofs_pos = self._dofs_pos_buf
         if not torch.isfinite(dofs_pos).all():
             nan_idx = torch.isnan(dofs_pos).any(dim=1).nonzero(as_tuple=False).flatten()
             if nan_idx.numel() > 0:
@@ -1240,7 +1312,6 @@ class WingedDroneEnv:
         # ------------------------- State update ---------------------------- #
         # Base pose
         self.base_pos[:] = dofs_pos[:, :3]
-        self.base_quat[:] = self.drone.get_quat()
         self.base_euler[:] = quat_to_xyz(self.base_quat, rpy=True, degrees=False)
         self._flag_nonfinite_rows(self.base_quat)
         self._flag_nonfinite_rows(self.base_euler)
@@ -1248,16 +1319,15 @@ class WingedDroneEnv:
         # Joint state
         if self.num_servos > 0:
             self.joint_position[:] = dofs_pos[:, self.servo_dof_indices]
-            self.joint_velocity[:] = self.drone.get_dofs_velocity()[:, self.servo_dof_indices]
-            self.torque[:] = self.drone.get_dofs_control_force(self.servo_dof_indices)
             self._flag_nonfinite_rows(self.joint_position)
             self._flag_nonfinite_rows(self.joint_velocity)
             self._flag_nonfinite_rows(self.torque)
 
         # Velocities (world/body)
-        inv_base = inv_quat(self.base_quat)
-        self.base_lin_vel[:] = self.rigid_solver.get_dofs_velocity()[:, :3]
-        self.base_ang_vel[:] = transform_by_quat(self.drone.get_ang(), inv_base)
+        self._base_quat_inv_buf.copy_(self.base_quat)
+        self._base_quat_inv_buf[:, 1:].neg_()
+        gu._tc_transform_by_quat(self.base_ang_vel, self._base_quat_inv_buf, out=self._base_ang_vel_body_buf)
+        self.base_ang_vel.copy_(self._base_ang_vel_body_buf)
         self._flag_nonfinite_rows(self.base_lin_vel)
         self._flag_nonfinite_rows(self.base_ang_vel)
 
@@ -1469,11 +1539,13 @@ class WingedDroneEnv:
         self.rigid_solver.set_dofs_velocity(initial_vel, envs_idx=env_ids)
 
         self._apply_dynamics_noise(env_ids)
+        self._resample_genome_episode_noise(env_ids)
 
         # Optional aero parameter randomization
         if hasattr(self.aero_solver, "_enable_noise"):
             if hasattr(self.aero_solver, "randomize_aero_params"):
                 self.aero_solver.randomize_aero_params(env_ids)
+        self._refresh_max_thrust_cache(env_ids)
 
         # Reset actuator dynamics state (latency buffer)
         self.actuator.reset_envs(env_ids)
@@ -1497,6 +1569,7 @@ class WingedDroneEnv:
 
         # Depth default: no obstacles seen at reset
         self.depth.fill_(self.MAX_DISTANCE)
+        genome_vec = self._get_genome_obs_tensor()
 
         depth_actor = self.depth if self.include_depth else None
 
@@ -1507,6 +1580,12 @@ class WingedDroneEnv:
             last_actions=self.last_actions,
             commands=self.commands,
             depth_actor=depth_actor,
+            base_ang_vel=self.base_ang_vel,
+            joint_position=self.joint_position,
+            joint_velocity=self.joint_velocity,
+            actual_thrust=self.thrust_log,
+            actual_thrust_scale=self._max_thr_buf,
+            genome_vec=genome_vec,
         )
 
         self.obs_buf.copy_(obs_actor)
@@ -1606,6 +1685,30 @@ class WingedDroneEnv:
         torch.nan_to_num_(self._thrust_buf, nan=0.0, posinf=0.0, neginf=0.0)
         self._thrust_buf.clamp_(min=0.0)
         return self._thrust_buf
+
+    def extract_max_thrust(self) -> torch.Tensor:
+        """Extract the per-env maximum propeller thrust used for normalization."""
+        if not torch.isfinite(self._max_thr_buf).all():
+            self._refresh_max_thrust_cache()
+        torch.nan_to_num_(self._max_thr_buf, nan=0.0, posinf=0.0, neginf=0.0)
+        self._max_thr_buf.clamp_(min=1e-6)
+        return self._max_thr_buf
+
+    def _refresh_max_thrust_cache(self, env_ids: Optional[torch.Tensor] = None) -> None:
+        cached_max = getattr(self.aero_solver, "_max_thrust_buf", None)
+        if torch.is_tensor(cached_max) and cached_max.shape[0] == self.num_envs:
+            if env_ids is None:
+                self._max_thr_buf.copy_(cached_max)
+            elif env_ids.numel() > 0:
+                self._max_thr_buf[env_ids] = cached_max[env_ids]
+        else:
+            max_thrust = self.aero_solver.max_thrust.to_torch(device=self.device)
+            if env_ids is None:
+                self._max_thr_buf.copy_(max_thrust)
+            elif env_ids.numel() > 0:
+                self._max_thr_buf[env_ids] = max_thrust[env_ids]
+        torch.nan_to_num_(self._max_thr_buf, nan=0.0, posinf=0.0, neginf=0.0)
+        self._max_thr_buf.clamp_(min=1e-6)
 
     def extract_prop_rpm(self) -> torch.Tensor:
         """Extract the current propeller RPM from the AeroSolver cache."""

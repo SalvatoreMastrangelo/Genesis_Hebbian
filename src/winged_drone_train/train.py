@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
-os.environ["GS_PARA_LEVEL"] = "3"
+os.environ.setdefault("GS_PARA_LEVEL", "3")
 import pickle
 import shutil
 import time
@@ -32,15 +32,16 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import genesis as gs
+import torch
 
 from rsl_rl.runners import OnPolicyRunner
 from winged_drone_train.analysis.eval_plotter import EvaluationPlotter
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh
 from winged_drone_train.rl.logging import RLTrainingLogger
-from winged_drone_train.defaults import default_mydrone_urdf_path
 from winged_drone_train.env import WingedDroneEnv
 from winged_drone_train.noise_config import configure_solver_noise
 from winged_drone_train.runtime_random import seed_runtime_randomness
+from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
 
 import builtins
 
@@ -102,7 +103,7 @@ def get_train_cfg(exp_name: str, max_iterations: int, seed: int) -> Dict[str, An
     train_cfg_dict: Dict[str, Any] = {
         # Rollout length
         "num_steps_per_env": 25,       # T in PPO (steps per env per iteration)
-        "save_interval": 100,           # checkpoint every N iterations
+        "save_interval": 200,           # checkpoint every N iterations
 
         # Runner / logging
         "runner_class_name": "OnPolicyRunner",
@@ -134,7 +135,7 @@ def get_train_cfg(exp_name: str, max_iterations: int, seed: int) -> Dict[str, An
         # Policy network configuration
         "policy": {
             "class_name": "ActorCriticTanh",   # our custom policy
-            "activation": "elu",
+            "activation": "elu", # `elu`, `selu`, `relu`, `crelu` (= CELU), `lrelu`, `tanh`, `sigmoid`, `identity`.
             "actor_hidden_dims": [64, 64],
             "critic_hidden_dims": [64, 64],
             "init_noise_std": 0.3,
@@ -242,6 +243,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "mass_shift_std": 0.02,      # additive std scaled by nominal link mass
             "com_shift_std": 0.004,       # additive std in meters
         },
+        "warmup_runtime_kernels": False,
 
     }
 
@@ -255,7 +257,20 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         # Whether to add Gaussian noise to actor observations
         "add_noise": True,
         "add_genome_obs": False,
-
+        "privileged_obs": {
+            "base_ang_vel": True,
+            "joint_position": True,
+            "joint_velocity": True,
+            "actual_thrust": True,
+        },
+        "depth_backend": "taichi",  # "taichi" or "cpu" (Taichi is faster but may cause OOM on large batches)
+        # Genome-observation noise.
+        # `episode_std` is sampled once at every reset and persists for the
+        # whole episode. `step_std` is sampled fresh every observation build.
+        "genome_obs_noise": {
+            "episode_std": 0.1,
+            "step_std": 0.02,
+        },
         # Per-feature noise standard deviations.
         # The keys are understood by the current ObservationBuilder / helper functions.
         "noise_std": {
@@ -266,7 +281,6 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "last_thr": 0.0,
             "last_jnts": 0.0,
             "v_tgt": 0.0,
-            "genome": 0.1,
         },
     }
 
@@ -279,9 +293,9 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "angular": -5e-3,
             "crash": -10.0,
             "obstacle": -0.1,
-            "energy": -2e-3,#-5e-4,   
+            "energy": -1e-3,#-5e-4,   
             "progress": 5e-1,
-            "height": -5e-3, #-5e-3,
+            "height": -3e-3, #-5e-3,
             "success": 0.0,
             "cosmetic": -1.0,
             "stability": -0,
@@ -323,6 +337,81 @@ def _build_runner(
     return OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
 
 
+def _extract_model_state_dict(checkpoint: Any) -> Dict[str, torch.Tensor]:
+    """Extract a model state_dict from the checkpoint formats used in this repo."""
+    if isinstance(checkpoint, dict):
+        for key in (
+            "model_state_dict",
+            "state_dict",
+            "actor_critic_state_dict",
+            "policy_state_dict",
+        ):
+            value = checkpoint.get(key)
+            if isinstance(value, dict):
+                return value
+        if checkpoint and all(isinstance(k, str) for k in checkpoint.keys()):
+            maybe_tensor_values = any(torch.is_tensor(v) for v in checkpoint.values())
+            if maybe_tensor_values:
+                return checkpoint
+    raise RuntimeError("Unsupported checkpoint format: could not extract a model state_dict.")
+
+
+def _load_checkpoint_compatible(
+    runner: OnPolicyRunner,
+    checkpoint_path: str | Path,
+    tag: str,
+) -> Dict[str, Any]:
+    """
+    Load a checkpoint strictly when possible, otherwise copy only shape-compatible tensors.
+
+    This keeps warm-start robust when the source policy was trained with a slightly
+    different observation space, for example a foundation policy with genome inputs.
+    """
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+
+    try:
+        runner.load(str(checkpoint_path))
+        return {
+            "mode": "strict",
+            "matched_keys": "all",
+            "skipped_keys": [],
+        }
+    except Exception as exc:
+        print(f"[{tag}] strict load failed for {checkpoint_path}: {exc}")
+
+    checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+    source_state = _extract_model_state_dict(checkpoint)
+    target_model = runner.alg.actor_critic
+    target_state = target_model.state_dict()
+
+    matched: Dict[str, torch.Tensor] = {}
+    skipped: list[str] = []
+
+    for key, value in source_state.items():
+        if key not in target_state:
+            skipped.append(f"{key}:missing")
+            continue
+        if tuple(target_state[key].shape) != tuple(value.shape):
+            skipped.append(
+                f"{key}:shape {tuple(value.shape)} -> {tuple(target_state[key].shape)}"
+            )
+            continue
+        matched[key] = value
+
+    if not matched:
+        raise RuntimeError(
+            "Checkpoint is incompatible with the target network: no parameter tensors matched."
+        )
+
+    target_state.update(matched)
+    target_model.load_state_dict(target_state, strict=False)
+    return {
+        "mode": "compatible",
+        "matched_keys": len(matched),
+        "skipped_keys": skipped,
+    }
+
+
 def _maybe_load_parent_checkpoint(
     runner: OnPolicyRunner,
     parent_exp: Optional[str],
@@ -342,6 +431,19 @@ def _maybe_load_parent_checkpoint(
         print(f"[{tag}] ⚠ checkpoint {ckpt_path} not found – starting from scratch.")
 
 
+def _maybe_load_init_checkpoint(
+    runner: OnPolicyRunner,
+    init_policy_path: Optional[str],
+    tag: str,
+) -> None:
+    """Optionally warm-start a runner from an arbitrary checkpoint path."""
+    if init_policy_path is None:
+        return
+    load_report = _load_checkpoint_compatible(runner, init_policy_path, tag=tag)
+    print(f"[{tag}] Warm-started weights from {Path(init_policy_path).expanduser().resolve()}")
+    print(f"[{tag}] Load report: {load_report}")
+
+
 def training(
     exp_name: str,
     urdf_file: str,
@@ -350,6 +452,7 @@ def training(
     parent_exp: Optional[str] = None,
     parent_ckpt: Optional[int] = None,
     device: str = "cuda:0",
+    init_policy_path: Optional[str] = None,
 ) -> None:
     """
     Programmatic training entry point used by the evolutionary algorithm.
@@ -359,6 +462,11 @@ def training(
         eval.evaluation() can find the runs consistently.
       - Fully parameterized (no argparse).
     """
+    if init_policy_path is not None and (parent_exp is not None or parent_ckpt is not None):
+        raise ValueError(
+            "init_policy_path is mutually exclusive with parent_exp/parent_ckpt."
+        )
+
     _configure_cache_root()
     # Genesis init
     _init_genesis_with_retry()
@@ -397,13 +505,20 @@ def training(
     configure_solver_noise(env, env_cfg)
 
     runner = _build_runner(env, train_cfg, log_dir, device=device)
-    _maybe_load_parent_checkpoint(
-        runner,
-        parent_exp=parent_exp,
-        parent_ckpt=parent_ckpt,
-        parent_root=Path("logs") / "ea",
-        tag="train_single",
-    )
+    if init_policy_path is not None:
+        _maybe_load_init_checkpoint(
+            runner,
+            init_policy_path=init_policy_path,
+            tag="train_single",
+        )
+    else:
+        _maybe_load_parent_checkpoint(
+            runner,
+            parent_exp=parent_exp,
+            parent_ckpt=parent_ckpt,
+            parent_root=Path("logs") / "ea",
+            tag="train_single",
+        )
     rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=max_iterations)
     rl_logger.attach()
     try:
@@ -457,10 +572,34 @@ def main() -> None:
         help="Parent checkpoint number for policy inheritance.",
     )
     parser.add_argument(
+        "--init-policy-path",
+        type=str,
+        default=None,
+        help=(
+            "Optional checkpoint path used to warm-start this run. "
+            "When set, it overrides --parent_exp/--parent_ckpt."
+        ),
+    )
+    parser.add_argument(
         "--debug", action="store_true", default=False,
         help="Enable debug prints in the environment.",
     )
-
+    parser.add_argument(
+        "--drone",
+        type=str,
+        default=None,
+        help="Drone key for a known default URDF, e.g. 'mydrone' or 'lisparrow'.",
+    )
+    parser.add_argument(
+        "--urdf-file",
+        type=str,
+        default=None,
+        help="Explicit URDF path. Overrides --drone if both are provided.",
+    )
+    # fastest urdf [0.483543, 3.94355, 0.646855, 0.384346, 0.386289, 0.209037, 3.22566, 0.194493, 3.78274, 1.26071, 2.8838, 1.8765, 4, 3, 20]
+    # most efficient urdf [0.877019, 3.58858, 0.86315, 0.456303, 0.384385, 0.258249, 2.98578, 0.201869, 3.60696, 0.788425, 2.77441, 1.89443, 4, 3, 16]
+    # most progress maker urdf [0.479983, 2.74563, 0.66078, 0.384355, 0.416095, 0.351919, 2.98202, 0.326091, 3.43132, 1.25988, 2.54392, 1.79791, 4, 4, 20]
+    # bad drone example [0.700882, 4.69207, 0.642027, 0.587554, 0.473013, 0.211098, 3.34718, 0.35842, 1.74638, 3.70754, 2.62685, 2.9814, 1, 5, 17]
     args = parser.parse_args()
 
     # --------------------------------------------------------------------- #
@@ -486,6 +625,8 @@ def main() -> None:
     # --------------------------------------------------------------------- #
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
     env_cfg["debug"] = bool(args.debug)
+    if args.drone:
+        env_cfg["drone"] = args.drone
 
     train_cfg = get_train_cfg(args.exp_name, args.max_iterations, runtime_seed)
 
@@ -493,7 +634,10 @@ def main() -> None:
     cfg_path = log_dir / "cfgs.pkl"
     _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg)
     
-    urdf_file = str(default_mydrone_urdf_path())
+    urdf_file = resolve_or_generate_urdf(
+        urdf_file=args.urdf_file,
+        drone_key=args.drone or env_cfg.get("drone"),
+    )
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #
@@ -518,13 +662,24 @@ def main() -> None:
     #  Runner setup                                                        #
     # --------------------------------------------------------------------- #
     runner = _build_runner(env, train_cfg, log_dir, device=gs.device)
-    _maybe_load_parent_checkpoint(
-        runner,
-        parent_exp=args.parent_exp,
-        parent_ckpt=args.parent_ckpt,
-        parent_root=Path("logs"),
-        tag="train",
-    )
+    if args.init_policy_path is not None:
+        if args.parent_exp is not None or args.parent_ckpt is not None:
+            raise ValueError(
+                "--init-policy-path cannot be combined with --parent_exp/--parent_ckpt."
+            )
+        _maybe_load_init_checkpoint(
+            runner,
+            init_policy_path=args.init_policy_path,
+            tag="train",
+        )
+    else:
+        _maybe_load_parent_checkpoint(
+            runner,
+            parent_exp=args.parent_exp,
+            parent_ckpt=args.parent_ckpt,
+            parent_root=Path("logs"),
+            tag="train",
+        )
 
     # --------------------------------------------------------------------- #
     #  Training loop                                                       #

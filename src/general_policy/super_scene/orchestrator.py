@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import time
 from dataclasses import dataclass
+from multiprocessing.connection import wait
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -53,6 +55,7 @@ class LogicalSuperSceneOrchestrator:
             raise RuntimeError("shards and worker_devices must have same length")
 
         self.device = torch.device(device)
+        self._device_is_cuda = self.device.type == "cuda"
         self._workers: List[WorkerHandle] = []
         self._worker_slices: List[slice] = []
         self.use_shared_memory = bool(use_shared_memory)
@@ -69,7 +72,10 @@ class LogicalSuperSceneOrchestrator:
         for dev in worker_devices:
             workers_per_device[dev] = workers_per_device.get(dev, 0) + 1
 
-        pending_workers: List[Tuple[int, str, Sequence[str], any, mp.Process]] = []
+        total_cpu = max(1, int(os.cpu_count() or 1))
+        cpu_threads_per_worker = max(1, total_cpu // max(1, len(worker_devices)) // 2)
+
+        pending_workers: Dict[any, Tuple[int, str, Sequence[str], mp.Process]] = {}
 
         for i, (urdfs_i, n_env_i, worker_device) in enumerate(zip(shards, shard_env_counts, worker_devices)):
             if n_env_i <= 0:
@@ -98,6 +104,7 @@ class LogicalSuperSceneOrchestrator:
                     "show_viewer": bool(show_viewer and i == 0),
                     "use_shared_memory": self.use_shared_memory,
                     "mps_active_thread_percentage": per_worker_pct,
+                    "cpu_threads": cpu_threads_per_worker,
                 },
                 daemon=True,
             )
@@ -108,9 +115,10 @@ class LogicalSuperSceneOrchestrator:
                 "[logical-super-scene] "
                 f"launched worker={i} pid={p.pid} device={worker_device} "
                 f"target_envs={int(n_env_i)} urdfs={len(urdfs_i)} "
-                f"mps_thread_pct={per_worker_pct} launch_s={time.perf_counter() - launch_t0:.3f}"
+                f"mps_thread_pct={per_worker_pct} cpu_threads={cpu_threads_per_worker} "
+                f"launch_s={time.perf_counter() - launch_t0:.3f}"
             )
-            pending_workers.append((i, worker_device, urdfs_i, parent_conn, p))
+            pending_workers[parent_conn] = (i, worker_device, urdfs_i, p)
 
         print(
             "[logical-super-scene] "
@@ -119,49 +127,86 @@ class LogicalSuperSceneOrchestrator:
         )
 
         ready_wait_t0 = time.perf_counter()
-        for i, worker_device, urdfs_i, parent_conn, p in pending_workers:
-            reply_wait_t0 = time.perf_counter()
-            reply = self._recv_reply(parent_conn, worker_idx=i, process=p)
-            if not reply.ok:
-                raise RuntimeError(reply.error or f"Worker {i} failed to start")
-            if reply.payload.get("event") != "ready":
-                raise RuntimeError(f"Worker {i} returned unexpected startup event")
+        total_scenes = int(sum(len(shard) for shard in shards))
+        completed_scenes = 0
+        worker_scene_counts: Dict[int, int] = {}
+        while pending_workers:
+            for parent_conn in wait(list(pending_workers.keys())):
+                i, worker_device, urdfs_i, p = pending_workers[parent_conn]
+                reply_wait_t0 = time.perf_counter()
+                reply = self._recv_reply(parent_conn, worker_idx=i, process=p)
+                if not reply.ok:
+                    raise RuntimeError(reply.error or f"Worker {i} failed to start")
 
-            meta = dict(reply.payload["meta"])
-            metas.append(meta)
+                event = str(reply.payload.get("event", ""))
+                if event == "init_progress":
+                    local_completed = int(reply.payload.get("local_completed_scenes", 0))
+                    prev_completed = worker_scene_counts.get(i, 0)
+                    if local_completed > prev_completed:
+                        completed_scenes += local_completed - prev_completed
+                        worker_scene_counts[i] = local_completed
+                    print(
+                        "[logical-super-scene] "
+                        f"init progress scenes={completed_scenes}/{total_scenes} "
+                        f"worker={i} local={local_completed}/{int(reply.payload.get('local_total_scenes', len(urdfs_i)))} "
+                        f"last_scene_s={float(reply.payload.get('scene_init_s', 0.0)):.3f} "
+                        f"last_build_s={float(reply.payload.get('scene_build_s', 0.0)):.3f} "
+                        f"urdf='{str(reply.payload.get('urdf', ''))}'"
+                    )
+                    continue
 
-            shm = reply.payload.get("shared_buffers")
-            if self.use_shared_memory and not isinstance(shm, dict):
-                raise RuntimeError(f"Worker {i} did not provide shared buffers")
+                if event != "ready":
+                    raise RuntimeError(f"Worker {i} returned unexpected startup event '{event}'")
 
-            if shm is not None:
-                initial_obs_cpu.append(shm["obs"])
-                initial_critic_cpu.append(shm["critic_obs"])
-            else:
-                initial_obs_cpu.append(reply.payload["obs"])
-                initial_critic_cpu.append(reply.payload["critic_obs"])
+                pending_workers.pop(parent_conn, None)
+                prev_completed = worker_scene_counts.get(i, 0)
+                if len(urdfs_i) > prev_completed:
+                    completed_scenes += len(urdfs_i) - prev_completed
+                    worker_scene_counts[i] = len(urdfs_i)
+                meta = dict(reply.payload["meta"])
+                metas.append(meta)
 
-            stop = start + int(meta["num_envs"])
-            sl = slice(start, stop)
-            self._worker_slices.append(sl)
-            self._workers.append(
-                WorkerHandle(
-                    process=p,
-                    conn=parent_conn,
-                    num_envs=int(meta["num_envs"]),
-                    sl=sl,
-                    shm=shm if isinstance(shm, dict) else None,
-                    worker_idx=i,
-                    worker_device=worker_device,
+                shm = reply.payload.get("shared_buffers")
+                if self.use_shared_memory and not isinstance(shm, dict):
+                    raise RuntimeError(f"Worker {i} did not provide shared buffers")
+
+                if shm is not None:
+                    initial_obs_cpu.append(shm["obs"])
+                    initial_critic_cpu.append(shm["critic_obs"])
+                else:
+                    initial_obs_cpu.append(reply.payload["obs"])
+                    initial_critic_cpu.append(reply.payload["critic_obs"])
+
+                stop = start + int(meta["num_envs"])
+                sl = slice(start, stop)
+                self._worker_slices.append(sl)
+                self._workers.append(
+                    WorkerHandle(
+                        process=p,
+                        conn=parent_conn,
+                        num_envs=int(meta["num_envs"]),
+                        sl=sl,
+                        shm=shm if isinstance(shm, dict) else None,
+                        worker_idx=i,
+                        worker_device=worker_device,
+                    )
                 )
-            )
-            start = stop
+                start = stop
 
-            print(
-                "[logical-super-scene] "
-                f"ready worker={i} pid={p.pid} device={worker_device} envs={int(meta['num_envs'])} "
-                f"urdfs={len(urdfs_i)} ready_wait_s={time.perf_counter() - reply_wait_t0:.3f}"
-            )
+                print(
+                    "[logical-super-scene] "
+                    f"ready worker={i} pid={p.pid} device={worker_device} envs={int(meta['num_envs'])} "
+                    f"urdfs={len(urdfs_i)} ready_wait_s={time.perf_counter() - reply_wait_t0:.3f} "
+                    f"worker_ready_s={float(meta.get('worker_ready_s', 0.0)):.3f} "
+                    f"gs_init_s={float(meta.get('gs_init_s', 0.0)):.3f} "
+                    f"gen_env_build_s={float(meta.get('gen_env_build_s', 0.0)):.3f} "
+                    f"initial_reset_s={float(meta.get('initial_reset_s', 0.0)):.3f} "
+                    f"shm_export_s={float(meta.get('shm_export_s', 0.0)):.3f} "
+                    f"scene_init_total_s={float(meta.get('scene_init_total_s', 0.0)):.3f} "
+                    f"scene_build_total_s={float(meta.get('scene_build_total_s', 0.0)):.3f} "
+                    f"slowest_scene_s={float(meta.get('slowest_scene_s', 0.0)):.3f} "
+                    f"slowest_scene_urdf='{str(meta.get('slowest_scene_urdf', ''))}'"
+                )
 
         print(
             "[logical-super-scene] "
@@ -184,8 +229,23 @@ class LogicalSuperSceneOrchestrator:
             if int(m["num_actions"]) != self.num_actions:
                 raise RuntimeError("Incompatible shard action dimensions")
 
-        self._obs = torch.cat(initial_obs_cpu, dim=0).to(self.device)
-        self._critic = torch.cat(initial_critic_cpu, dim=0).to(self.device)
+        self._obs = torch.empty((self.num_envs, self.num_obs), device=self.device, dtype=torch.float32)
+        self._critic = torch.empty(
+            (self.num_envs, self.num_privileged_obs),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._rew = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._done = torch.empty((self.num_envs,), device=self.device, dtype=torch.long)
+        self._time_outs = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
+        self._actions_host = self._make_host_buffer((self.num_envs, self.num_actions), dtype=torch.float32)
+
+        for w, obs_cpu, critic_cpu in zip(self._workers, initial_obs_cpu, initial_critic_cpu):
+            self._copy_chunk_into_global_buffers(
+                w=w,
+                obs_src=obs_cpu,
+                critic_src=critic_cpu,
+            )
 
     def _recv_reply(self, conn, worker_idx: Optional[int] = None, process: Optional[mp.Process] = None) -> WorkerReply:
         try:
@@ -212,6 +272,56 @@ class LogicalSuperSceneOrchestrator:
                 f"Worker process died before {phase} (pid={w.process.pid}, exitcode={w.process.exitcode})."
             )
 
+    def _make_host_buffer(self, shape: Tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
+        if self._device_is_cuda:
+            return torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
+        return torch.empty(shape, dtype=dtype, device="cpu")
+
+    def _copy_to_device_slice(self, dst: torch.Tensor, sl: slice, src: torch.Tensor) -> None:
+        non_blocking = self._device_is_cuda and bool(getattr(src, "is_pinned", lambda: False)())
+        dst[sl].copy_(src, non_blocking=non_blocking)
+
+    def _copy_chunk_into_global_buffers(
+        self,
+        *,
+        w: WorkerHandle,
+        obs_src: torch.Tensor,
+        critic_src: torch.Tensor,
+        rew_src: Optional[torch.Tensor] = None,
+        done_src: Optional[torch.Tensor] = None,
+        time_outs_src: Optional[torch.Tensor] = None,
+    ) -> None:
+        self._copy_to_device_slice(self._obs, w.sl, obs_src)
+        self._copy_to_device_slice(self._critic, w.sl, critic_src)
+        if rew_src is not None:
+            self._copy_to_device_slice(self._rew, w.sl, rew_src.float())
+        if done_src is not None:
+            done_view = done_src if done_src.dtype in (torch.long, torch.int64) else done_src.long()
+            self._copy_to_device_slice(self._done, w.sl, done_view)
+        if time_outs_src is not None:
+            self._copy_to_device_slice(self._time_outs, w.sl, time_outs_src.float())
+
+    def _gather_replies(
+        self,
+        *,
+        event_name: str,
+    ) -> List[Tuple[WorkerHandle, WorkerReply]]:
+        pending = {w.conn: w for w in self._workers}
+        replies: List[Tuple[WorkerHandle, WorkerReply]] = []
+        while pending:
+            for conn in wait(list(pending.keys())):
+                w = pending.pop(conn)
+                rep = self._recv_reply(w.conn, worker_idx=w.worker_idx, process=w.process)
+                if not rep.ok:
+                    raise RuntimeError(rep.error)
+                event = rep.payload.get("event")
+                if event_name and event not in (None, event_name):
+                    raise RuntimeError(
+                        f"Worker {w.worker_idx} returned unexpected event '{event}' during '{event_name}'."
+                    )
+                replies.append((w, rep))
+        return replies
+
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
         for w in self._workers:
             self._assert_worker_alive(w, "reset send")
@@ -222,22 +332,28 @@ class LogicalSuperSceneOrchestrator:
                     f"Broken pipe sending reset to worker (pid={w.process.pid}, exitcode={w.process.exitcode})."
                 ) from exc
 
-        obs_chunks: List[torch.Tensor] = []
-        critic_chunks: List[torch.Tensor] = []
-        for w in self._workers:
-            rep = self._recv_reply(w.conn, worker_idx=w.worker_idx, process=w.process)
-            if not rep.ok:
-                raise RuntimeError(rep.error)
+        for w, rep in self._gather_replies(event_name="reset"):
             if w.shm is not None:
-                obs_chunks.append(w.shm["obs"])
-                critic_chunks.append(w.shm["critic_obs"])
+                obs_src = w.shm["obs"]
+                critic_src = w.shm["critic_obs"]
             else:
-                obs_chunks.append(rep.payload["obs"])
-                critic_chunks.append(rep.payload["critic_obs"])
+                obs_src = rep.payload["obs"]
+                critic_src = rep.payload["critic_obs"]
+            self._copy_chunk_into_global_buffers(
+                w=w,
+                obs_src=obs_src,
+                critic_src=critic_src,
+            )
 
-        self._obs = torch.cat(obs_chunks, dim=0).to(self.device)
-        self._critic = torch.cat(critic_chunks, dim=0).to(self.device)
         return self._obs, self._critic
+
+    def _stage_actions_to_host(self, actions: torch.Tensor) -> torch.Tensor:
+        if self._device_is_cuda:
+            self._actions_host.copy_(actions.detach(), non_blocking=True)
+            torch.cuda.current_stream(device=self.device).synchronize()
+            return self._actions_host
+        self._actions_host.copy_(actions.detach().to("cpu"))
+        return self._actions_host
 
     def step(self, actions: torch.Tensor):
         if actions.shape != (self.num_envs, self.num_actions):
@@ -245,14 +361,17 @@ class LogicalSuperSceneOrchestrator:
                 f"Expected actions shape {(self.num_envs, self.num_actions)}, got {tuple(actions.shape)}"
             )
 
-        actions_cpu = actions.detach().to("cpu")
+        if actions.device != self.device:
+            actions = actions.to(self.device)
+        actions_host = self._stage_actions_to_host(actions)
+
         for w in self._workers:
             self._assert_worker_alive(w, "step send")
             if w.shm is not None:
-                w.shm["actions"].copy_(actions_cpu[w.sl])
+                w.shm["actions"].copy_(actions_host[w.sl])
                 payload = {}
             else:
-                payload = {"actions": actions_cpu[w.sl].contiguous()}
+                payload = {"actions": actions_host[w.sl].contiguous()}
             try:
                 w.conn.send(WorkerCommand(cmd="step", payload=payload))
             except BrokenPipeError as exc:
@@ -260,32 +379,32 @@ class LogicalSuperSceneOrchestrator:
                     f"Broken pipe sending step to worker (pid={w.process.pid}, exitcode={w.process.exitcode})."
                 ) from exc
 
-        obs_chunks: List[torch.Tensor] = []
-        critic_chunks: List[torch.Tensor] = []
-        rew_chunks: List[torch.Tensor] = []
-        done_chunks: List[torch.Tensor] = []
-        timeout_chunks: List[torch.Tensor] = []
         episodes: List[Tuple[Dict, int]] = []
-
-        for w in self._workers:
-            rep = self._recv_reply(w.conn, worker_idx=w.worker_idx, process=w.process)
-            if not rep.ok:
-                raise RuntimeError(rep.error)
+        for w, rep in self._gather_replies(event_name="step"):
             if w.shm is not None:
-                obs_chunks.append(w.shm["obs"])
-                critic_chunks.append(w.shm["critic_obs"])
-                rew_chunks.append(w.shm["rew"])
-                done_chunks.append(w.shm["done"])
-                timeout_chunks.append(w.shm["time_outs"])
-                done_local = w.shm["done"]
+                obs_src = w.shm["obs"]
+                critic_src = w.shm["critic_obs"]
+                rew_src = w.shm["rew"]
+                done_src = w.shm["done"]
+                time_outs_src = w.shm["time_outs"]
+                done_local = done_src
             else:
                 payload = rep.payload
-                obs_chunks.append(payload["obs"])
-                critic_chunks.append(payload["critic_obs"])
-                rew_chunks.append(payload["rew"])
-                done_chunks.append(payload["done"])
-                timeout_chunks.append(payload["time_outs"])
-                done_local = payload["done"]
+                obs_src = payload["obs"]
+                critic_src = payload["critic_obs"]
+                rew_src = payload["rew"]
+                done_src = payload["done"]
+                time_outs_src = payload["time_outs"]
+                done_local = done_src
+
+            self._copy_chunk_into_global_buffers(
+                w=w,
+                obs_src=obs_src,
+                critic_src=critic_src,
+                rew_src=rew_src,
+                done_src=done_src,
+                time_outs_src=time_outs_src,
+            )
 
             ep = rep.payload.get("episode")
             if isinstance(ep, dict):
@@ -295,17 +414,9 @@ class LogicalSuperSceneOrchestrator:
                     ep_count = 1
                 episodes.append((ep, max(ep_count, 1)))
 
-        obs = torch.cat(obs_chunks, dim=0).to(self.device)
-        critic = torch.cat(critic_chunks, dim=0).to(self.device)
-        rew = torch.cat(rew_chunks, dim=0).to(self.device).float()
-        done = torch.cat(done_chunks, dim=0).to(self.device)
-        if done.dtype != torch.long and done.dtype != torch.int64:
-            done = done.long()
-        time_outs = torch.cat(timeout_chunks, dim=0).to(self.device).float()
-
         extras = {
-            "observations": {"critic": critic},
-            "time_outs": time_outs,
+            "observations": {"critic": self._critic},
+            "time_outs": self._time_outs,
         }
         if episodes:
             agg: Dict[str, float] = {}
@@ -322,9 +433,7 @@ class LogicalSuperSceneOrchestrator:
                     agg[k] /= float(total_weight)
                 extras["episode"] = agg
 
-        self._obs = obs
-        self._critic = critic
-        return obs, critic, rew, done, extras
+        return self._obs, self._critic, self._rew, self._done, extras
 
     def close(self) -> None:
         for w in self._workers:

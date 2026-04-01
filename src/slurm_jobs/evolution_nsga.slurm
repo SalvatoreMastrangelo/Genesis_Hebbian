@@ -3,9 +3,9 @@
 #SBATCH --partition=l40s
 #SBATCH --nodes=2
 #SBATCH --ntasks=2
-#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-node=5
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=5:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 
@@ -22,7 +22,7 @@ SRC="$HOME/binding/Genesis-dev"
 # ------------------------------------------------------------
 POP_SIZE=${POP_SIZE:-40}
 NUM_GEN=${NUM_GEN:-25}
-TRAIN_ITERS=${TRAIN_ITERS:-850}
+TRAIN_ITERS=${TRAIN_ITERS:-750}
 TRAIN_REPETITION=${TRAIN_REPETITION:-0}
 RUN_TAG=${RUN_TAG:-nsga_${SLURM_JOB_ID}}
 RUN_NAME=${RUN_NAME:-${RUN_TAG}}
@@ -30,21 +30,45 @@ DEVICE=${DEVICE:-cuda:0}
 GA_PARALLEL=${GA_PARALLEL:-1}
 GEN_POLICY=${GEN_POLICY:-1}
 POLICY_PATH=${POLICY_PATH:-}
+RESUME_FROM=${RESUME_FROM:-}
+RESUME_SUFFIX=${RESUME_SUFFIX:-second}
 
-DEFAULT_POLICY_CLUSTER="/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2636928/logs/ea/foundation-mixture/model_1400.pt"
+DEFAULT_POLICY_CLUSTER_1=${DEFAULT_POLICY_CLUSTER_1:-"/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2655024/logs/ea/foundation-mixture/model_1900.pt"}
+DEFAULT_POLICY_CLUSTER_2=${DEFAULT_POLICY_CLUSTER_2:-"/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2663796/logs/ea/foundation-mixture/model_1900.pt"}
+DEFAULT_POLICY_CLUSTER_3=${DEFAULT_POLICY_CLUSTER_3:-"/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2663633/logs/ea/foundation-mixture/model_1900.pt"}
+
 if [ "${GEN_POLICY}" != "0" ] && [ -z "${POLICY_PATH}" ]; then
-  if [ -f "${DEFAULT_POLICY_CLUSTER}" ]; then
-    POLICY_PATH="${DEFAULT_POLICY_CLUSTER}"
-  fi
+  POLICY_PATHS=""
+  for DEFAULT_POLICY in \
+    "${DEFAULT_POLICY_CLUSTER_1}" \
+    "${DEFAULT_POLICY_CLUSTER_2}" \
+    "${DEFAULT_POLICY_CLUSTER_3}"; do
+    if [ -n "${DEFAULT_POLICY}" ] && [ -f "${DEFAULT_POLICY}" ]; then
+      POLICY_PATHS="${POLICY_PATHS} ${DEFAULT_POLICY}"
+    fi
+  done
+  POLICY_PATHS="${POLICY_PATHS# }"
 fi
 
 POLICY_BIND=""
 POLICY_PATH_INNER=""
+POLICY_PATHS_INNER=""
 if [ -n "${POLICY_PATH}" ]; then
   POLICY_DIR="$(dirname "$POLICY_PATH")"
   POLICY_BASE="$(basename "$POLICY_PATH")"
   POLICY_BIND=",${POLICY_DIR}:/workspace/policy:ro"
   POLICY_PATH_INNER="/workspace/policy/${POLICY_BASE}"
+elif [ -n "${POLICY_PATHS_INNER:-}" ] || [ -n "${POLICY_PATHS:-}" ]; then
+  POLICY_IDX=0
+  for RAW_POLICY_PATH in ${POLICY_PATHS}; do
+    POLICY_DIR="$(dirname "$RAW_POLICY_PATH")"
+    POLICY_BASE="$(basename "$RAW_POLICY_PATH")"
+    POLICY_MOUNT="/workspace/policy_${POLICY_IDX}"
+    POLICY_BIND="${POLICY_BIND},${POLICY_DIR}:${POLICY_MOUNT}:ro"
+    POLICY_PATHS_INNER="${POLICY_PATHS_INNER} ${POLICY_MOUNT}/${POLICY_BASE}"
+    POLICY_IDX=$((POLICY_IDX + 1))
+  done
+  POLICY_PATHS_INNER="${POLICY_PATHS_INNER# }"
 fi
 
 # ------------------------------------------------------------
@@ -59,6 +83,24 @@ URDF_DIR="${RUN_ROOT}/urdf_generated"
 ANALYSIS_DIR="${RUN_ROOT}/analysis"
 CACHE_DIR="${RUN_ROOT}/.cache"
 
+RESUME_FROM_INNER=""
+if [ -n "${RESUME_FROM}" ]; then
+  if [ ! -d "${RESUME_FROM}" ]; then
+    echo "[ERROR] RESUME_FROM directory not found: ${RESUME_FROM}"
+    exit 1
+  fi
+
+  case "${RESUME_FROM}" in
+    "${RUN_DIR}"/*)
+      RESUME_FROM_INNER="/workspace/out/${RESUME_FROM#${RUN_DIR}/}"
+      ;;
+    *)
+      echo "[ERROR] RESUME_FROM must be inside RUN_DIR=${RUN_DIR}"
+      exit 1
+      ;;
+  esac
+fi
+
 # ------------------------------------------------------------
 # Safety checks
 # ------------------------------------------------------------
@@ -70,13 +112,26 @@ if [ ! -d "$SRC" ]; then
   echo "[ERROR] Bind source directory not found: $SRC"
   exit 1
 fi
-if [ "${GEN_POLICY}" != "0" ] && [ -z "${POLICY_PATH}" ]; then
-  echo "[ERROR] POLICY_PATH is required when GEN_POLICY is enabled"
+if [ "${GEN_POLICY}" != "0" ] && [ -z "${POLICY_PATH}" ] && [ -z "${POLICY_PATHS:-}" ]; then
+  echo "[ERROR] No valid default policies found and POLICY_PATH is empty"
   exit 1
 fi
 if [ -n "${POLICY_PATH}" ] && [ ! -f "${POLICY_PATH}" ]; then
   echo "[ERROR] POLICY_PATH not found: ${POLICY_PATH}"
   exit 1
+fi
+if [ -n "${POLICY_PATHS:-}" ]; then
+  for RAW_POLICY_PATH in ${POLICY_PATHS}; do
+    if [ ! -f "${RAW_POLICY_PATH}" ]; then
+      echo "[ERROR] Default policy not found: ${RAW_POLICY_PATH}"
+      exit 1
+    fi
+    POLICY_CFG="$(dirname "${RAW_POLICY_PATH}")/cfgs.pkl"
+    if [ ! -f "${POLICY_CFG}" ]; then
+      echo "[ERROR] cfgs.pkl not found next to policy: ${POLICY_CFG}"
+      exit 1
+    fi
+  done
 fi
 if [ "${GEN_POLICY}" != "0" ] && [ -n "${POLICY_PATH}" ]; then
   POLICY_CFG="${POLICY_DIR}/cfgs.pkl"
@@ -218,13 +273,19 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
     sleep 5
 
     GEN_POLICY_ARGS=\"--gen_policy ${GEN_POLICY}\"
-    if [ \"${GEN_POLICY}\" != \"0\" ] && [ -n \"${POLICY_PATH_INNER}\" ]; then
+    if [ \"${GEN_POLICY}\" != \"0\" ] && [ -n \"${POLICY_PATH}\" ]; then
       GEN_POLICY_ARGS=\"\$GEN_POLICY_ARGS --policy_path ${POLICY_PATH_INNER}\"
+    elif [ \"${GEN_POLICY}\" != \"0\" ] && [ -n \"${POLICY_PATHS_INNER}\" ]; then
+      GEN_POLICY_ARGS=\"\$GEN_POLICY_ARGS --policy_paths ${POLICY_PATHS_INNER}\"
     fi
 
-    mkdir -p /workspace/out/${RUN_NAME}/logs /workspace/out/${RUN_NAME}/analysis \
-      /workspace/out/${RUN_NAME}/urdf_generated /workspace/out/${RUN_NAME}/.cache
-    cd /workspace/out/${RUN_NAME}
+    RESUME_ARGS=\"\"
+    if [ -n \"${RESUME_FROM_INNER}\" ]; then
+      RESUME_ARGS=\"--resume_from ${RESUME_FROM_INNER} --resume_suffix ${RESUME_SUFFIX}\"
+    fi
+
+    mkdir -p /workspace/out
+    cd /workspace/out
 
     python /workspace/bind/src/morph_evolution/evolution_nsga.py \
       --pop \"${POP_SIZE}\" \
@@ -234,7 +295,8 @@ srun --nodes=${JOB_NODES} --ntasks=${JOB_NODES} --ntasks-per-node=1 apptainer ex
       --run_name \"${RUN_NAME}\" \
       --base_dir /workspace/out \
       --device \"${DEVICE}\" \
-      \$GEN_POLICY_ARGS
+      \$GEN_POLICY_ARGS \
+      \$RESUME_ARGS
   else
     ray stop --force >/dev/null 2>&1 || true
     rm -rf \"\${RAY_TMPDIR}\" || true

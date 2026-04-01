@@ -1171,6 +1171,36 @@ class RigidSolver(Solver):
             self.links_state, self._static_rigid_sim_config
         )
 
+    def apply_aero_wrenches_link_frame(
+        self,
+        force_field,
+        cp_field,
+        links_idx,
+        kappa_prop_field,
+        force_cap_field,
+        envs_idx=None,
+        *,
+        unsafe=False,
+    ):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx, unsafe=unsafe)
+        links_idx = torch.as_tensor(links_idx, dtype=gs.tc_int, device=gs.device).contiguous()
+        if not unsafe:
+            links_idx = torch.atleast_1d(links_idx)
+            if links_idx.ndim != 1:
+                gs.raise_exception("Expecting 1D tensor for `links_idx`.")
+            if not ((0 <= links_idx).all() and (links_idx < self.n_links).all()):
+                gs.raise_exception("`links_idx` is out-of-range.")
+        kernel_apply_aero_wrenches_link_frame(
+            force_field,
+            cp_field,
+            links_idx,
+            envs_idx,
+            kappa_prop_field,
+            force_cap_field,
+            self.links_state,
+            self._static_rigid_sim_config,
+        )
+
     def substep_pre_coupling(self, f):
         if self.is_active:
             # Skip rigid body computation when using IPCCoupler (IPC handles rigid simulation)
@@ -2144,6 +2174,64 @@ class RigidSolver(Solver):
     def get_qpos(self, qs_idx=None, envs_idx=None, *, unsafe=False):
         tensor = ti_to_torch(self.qpos, envs_idx, qs_idx, transpose=True, unsafe=unsafe)
         return tensor[0] if self.n_envs == 0 else tensor
+
+    def export_winged_drone_state(
+        self,
+        dofs_pos,
+        base_quat,
+        base_lin_vel,
+        base_ang_vel,
+        joint_vel,
+        control_force,
+        servo_dofs_idx,
+        base_link_idx,
+        envs_idx=None,
+        *,
+        unsafe=False,
+    ):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx, unsafe=unsafe)
+        servo_dofs_idx = torch.as_tensor(servo_dofs_idx, dtype=gs.tc_int, device=gs.device).contiguous()
+
+        def _sanitize_export_tensor(tensor, last_dim, name):
+            out = torch.as_tensor(tensor, dtype=gs.tc_float, device=gs.device).contiguous()
+            if not unsafe:
+                expected_shape = (len(envs_idx), last_dim) if self.n_envs > 0 else (last_dim,)
+                if tuple(out.shape) != tuple(expected_shape):
+                    gs.raise_exception(
+                        f"Invalid shape for `{name}`: got {tuple(out.shape)}, expected {tuple(expected_shape)}."
+                    )
+            return out
+
+        dofs_pos = _sanitize_export_tensor(dofs_pos, self.n_dofs, "dofs_pos")
+        base_quat = _sanitize_export_tensor(base_quat, 4, "base_quat")
+        base_lin_vel = _sanitize_export_tensor(base_lin_vel, 3, "base_lin_vel")
+        base_ang_vel = _sanitize_export_tensor(base_ang_vel, 3, "base_ang_vel")
+        joint_vel = _sanitize_export_tensor(joint_vel, len(servo_dofs_idx), "joint_vel")
+        control_force = _sanitize_export_tensor(control_force, len(servo_dofs_idx), "control_force")
+
+        if self.n_envs == 0:
+            dofs_pos = dofs_pos.unsqueeze(0)
+            base_quat = base_quat.unsqueeze(0)
+            base_lin_vel = base_lin_vel.unsqueeze(0)
+            base_ang_vel = base_ang_vel.unsqueeze(0)
+            joint_vel = joint_vel.unsqueeze(0)
+            control_force = control_force.unsqueeze(0)
+
+        kernel_export_winged_drone_state(
+            dofs_pos,
+            base_quat,
+            base_lin_vel,
+            base_ang_vel,
+            joint_vel,
+            control_force,
+            servo_dofs_idx,
+            envs_idx,
+            int(base_link_idx),
+            self.dofs_state,
+            self.dofs_info,
+            self.links_state,
+            self._static_rigid_sim_config,
+        )
 
     def get_dofs_control_force(self, dofs_idx=None, envs_idx=None, *, unsafe=False):
         _tensor, dofs_idx, envs_idx = self._sanitize_1D_io_variables(
@@ -5416,6 +5504,65 @@ def func_apply_force_at_link_point_local(
 
     func_apply_coupling_force(pos_world, force_world, link, env, ls)
 
+
+@ti.func
+def func_finite_or_zero_scalar(x):
+    out = x
+    if ti.math.isnan(out) or ti.math.isinf(out):
+        out = 0.0
+    return out
+
+
+@ti.func
+def func_sanitize_vec3(v):
+    return ti.Vector(
+        [
+            func_finite_or_zero_scalar(v[0]),
+            func_finite_or_zero_scalar(v[1]),
+            func_finite_or_zero_scalar(v[2]),
+        ],
+        dt=gs.ti_float,
+    )
+
+
+@ti.kernel(fastcache=gs.use_fastcache)
+def kernel_apply_aero_wrenches_link_frame(
+    force_field: ti.template(),
+    cp_field: ti.template(),
+    links_idx: ti.types.ndarray(),
+    envs_idx: ti.types.ndarray(),
+    kappa_prop_field: ti.template(),
+    force_cap_field: ti.template(),
+    links_state: array_class.LinksState,
+    cfg: ti.template(),
+):
+    ti.loop_config(serialize=ti.static(cfg.para_level < gs.PARA_LEVEL.PARTIAL))
+
+    L = links_idx.shape[0]
+    B = envs_idx.shape[0]
+
+    for i_l, i_b in ti.ndrange(L, B):
+        link = links_idx[i_l]
+        env = envs_idx[i_b]
+
+        force_local = func_sanitize_vec3(force_field[env, i_l])
+        cp_local = func_sanitize_vec3(cp_field[env, i_l])
+
+        cap = func_finite_or_zero_scalar(force_cap_field[env])
+        if cap < 0.0:
+            cap = -cap
+        for j in ti.static(range(3)):
+            force_local[j] = ti.math.clamp(force_local[j], -cap, cap)
+
+        func_apply_force_at_link_point_local(cp_local, force_local, link, env, links_state)
+
+        tq_local = ti.Vector([0.0, 0.0, 0.0], dt=gs.ti_float)
+        if i_l == L - 1:
+            tq_local[2] = func_finite_or_zero_scalar(-kappa_prop_field[env] * force_local[2])
+            tq_local[2] = ti.math.clamp(tq_local[2], -cap, cap)
+            tq_world = gu.ti_transform_by_quat(tq_local, links_state.quat[link, env])
+            func_apply_coupling_torque(tq_world, link, env, links_state)
+
 @ti.func
 def func_apply_link_external_force(
     force,
@@ -7003,6 +7150,58 @@ def kernel_get_dofs_control_force(
                 I_d
             ] * (dofs_state.ctrl_vel[i_d, i_b] - dofs_state.vel[i_d, i_b])
         tensor[i_b_, i_d_] = ti.math.clamp(
+            force,
+            dofs_info.force_range[I_d][0],
+            dofs_info.force_range[I_d][1],
+        )
+
+
+@ti.kernel(fastcache=gs.use_fastcache)
+def kernel_export_winged_drone_state(
+    dofs_pos: ti.types.ndarray(),
+    base_quat: ti.types.ndarray(),
+    base_lin_vel: ti.types.ndarray(),
+    base_ang_vel: ti.types.ndarray(),
+    joint_vel: ti.types.ndarray(),
+    control_force: ti.types.ndarray(),
+    servo_dofs_idx: ti.types.ndarray(),
+    envs_idx: ti.types.ndarray(),
+    base_link_idx: ti.i32,
+    dofs_state: array_class.DofsState,
+    dofs_info: array_class.DofsInfo,
+    links_state: array_class.LinksState,
+    static_rigid_sim_config: ti.template(),
+):
+    ti.loop_config(serialize=ti.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    for i_d_, i_b_ in ti.ndrange(dofs_pos.shape[1], envs_idx.shape[0]):
+        dofs_pos[i_b_, i_d_] = dofs_state.pos[i_d_, envs_idx[i_b_]]
+
+    ti.loop_config(serialize=ti.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    for i_b_ in range(envs_idx.shape[0]):
+        i_b = envs_idx[i_b_]
+        for j in ti.static(range(4)):
+            base_quat[i_b_, j] = links_state.quat[base_link_idx, i_b][j]
+        for j in ti.static(range(3)):
+            base_lin_vel[i_b_, j] = dofs_state.vel[j, i_b]
+            base_ang_vel[i_b_, j] = links_state.cd_ang[base_link_idx, i_b][j]
+
+    ti.loop_config(serialize=ti.static(static_rigid_sim_config.para_level < gs.PARA_LEVEL.ALL))
+    for i_s_, i_b_ in ti.ndrange(servo_dofs_idx.shape[0], envs_idx.shape[0]):
+        i_d = servo_dofs_idx[i_s_]
+        i_b = envs_idx[i_b_]
+        I_d = [i_d, i_b] if ti.static(static_rigid_sim_config.batch_dofs_info) else i_d
+        force = gs.ti_float(0.0)
+        if dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.FORCE:
+            force = dofs_state.ctrl_force[i_d, i_b]
+        elif dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.VELOCITY:
+            force = dofs_info.kv[I_d] * (dofs_state.ctrl_vel[i_d, i_b] - dofs_state.vel[i_d, i_b])
+        elif dofs_state.ctrl_mode[i_d, i_b] == gs.CTRL_MODE.POSITION:
+            force = dofs_info.kp[I_d] * (dofs_state.ctrl_pos[i_d, i_b] - dofs_state.pos[i_d, i_b]) + dofs_info.kv[
+                I_d
+            ] * (dofs_state.ctrl_vel[i_d, i_b] - dofs_state.vel[i_d, i_b])
+
+        joint_vel[i_b_, i_s_] = dofs_state.vel[i_d, i_b]
+        control_force[i_b_, i_s_] = ti.math.clamp(
             force,
             dofs_info.force_range[I_d][0],
             dofs_info.force_range[I_d][1],

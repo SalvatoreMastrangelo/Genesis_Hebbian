@@ -19,14 +19,18 @@ The genome lives in [0, 1]^D and is mapped to physical parameters by
 from __future__ import annotations
 
 import argparse
+import ast
 import datetime
 import os
+import pickle
 import random
-from dataclasses import asdict, dataclass
+import shutil
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 import numpy as np
+import pandas as pd
 import torch
 from deap import base, creator, tools
 
@@ -60,6 +64,14 @@ from morph_evolution.utils.runtime import resolve_urdf_dir as _resolve_urdf_dir
 # =============================================================================
 
 
+DEFAULT_RESUME_SUFFIX = "second"
+DEFAULT_POLICY_PATHS = [
+    "/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2655024/logs/ea/foundation-mixture/model_1900.pt",
+    "/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2663796/logs/ea/1/model_1900.pt",
+    "/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2663633/logs/ea/1/model_1900.pt",
+]
+
+
 @dataclass
 class GAConfig:
     """
@@ -83,6 +95,7 @@ class GAConfig:
     # --- RL training / evaluation -----------------------------------------
     gen_policy: bool = False
     policy_path: Optional[str] = None  # path to initial policy checkpoint
+    policy_paths: List[str] = field(default_factory=lambda: list(DEFAULT_POLICY_PATHS))
     train_iters_new: int = 850       # iterations for NEW morphologies
     train_iters_inherit: int = 200  # iterations when inheriting from a parent
     train_repetition: int = 1       # repeat train+eval N times (gen_policy=0)
@@ -108,6 +121,8 @@ class GAConfig:
     run_name: Optional[str] = None   # Optional custom run name (defaults to timestamp)
     base_dir: str = "nsga"           # Root directory for all artifacts
     device: str = "cuda:0"           # Device passed to training/evaluation
+    resume_from: Optional[str] = None  # Existing run folder to resume from
+    resume_suffix: str = DEFAULT_RESUME_SUFFIX        # Suffix for the copied resume folder
 
 
 # Default config used when no custom config is provided
@@ -289,10 +304,26 @@ class CodesignDEAP:
 
         self.gen_policy = self.cfg.gen_policy
         self.policy_path = self.cfg.policy_path
+        self.policy_paths = [str(p) for p in (self.cfg.policy_paths or []) if str(p).strip()]
+        if not self.policy_paths and self.policy_path:
+            self.policy_paths = [self.policy_path]
+        if self.policy_paths:
+            self.policy_path = self.policy_paths[0]
 
         self.tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_name = self.cfg.run_name or self.tag
-        self.base_dir = (Path(self.cfg.base_dir) / self.run_name).expanduser().resolve()
+        self.resume_source_dir: Optional[Path] = None
+        self.resume_start_generation: Optional[int] = None
+        self._resume_population: Optional[List["IndType"]] = None
+        self._is_resume = bool(self.cfg.resume_from)
+
+        if self._is_resume:
+            self.resume_source_dir = Path(str(self.cfg.resume_from)).expanduser().resolve()
+            self._validate_resume_source(self.resume_source_dir)
+            self.base_dir = self._prepare_resume_directory(self.resume_source_dir)
+            self.run_name = self.base_dir.name
+        else:
+            self.run_name = self.cfg.run_name or self.tag
+            self.base_dir = (Path(self.cfg.base_dir) / self.run_name).expanduser().resolve()
         self.urdf_dir = self.base_dir / "urdf_generated"
         self.logs_dir = self.base_dir / "logs"
         self.analysis_dir = self.base_dir / "analysis"
@@ -310,6 +341,9 @@ class CodesignDEAP:
         self.selection_pool_history_path = (self.analysis_dir / "selection_pool_history.csv").resolve()
         self._last_minimal_p = float(self.cfg.fixed_p)
         self._init_report_csvs()
+        if self._is_resume:
+            self.resume_start_generation = self._find_last_completed_generation()
+            self._prune_truncated_resume_rows(int(self.resume_start_generation))
 
         self.db = FitnessDB(self.cfg.csv_basename, 3, root=self.analysis_dir)
         self.stats = Stats(self.n_pop, self.n_gen, 3)
@@ -332,6 +366,8 @@ class CodesignDEAP:
         self.n_genes = n_genes
         self.mutation_indpb = min(1.0, float(self.cfg.mutation_indpb_numerator) / float(n_genes))
         self._write_run_manifest()
+        if self._is_resume:
+            self._resume_population, self.resume_start_generation = self._load_resume_population()
 
         # DEAP toolbox
         self.tb = base.Toolbox()
@@ -357,6 +393,306 @@ class CodesignDEAP:
         )
         self.tb.register("select", tools.selNSGA2)
         self.tb.register("evaluate", self._evaluate)
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int = -1) -> int:
+        try:
+            if pd.isna(value):
+                return default
+        except Exception:
+            pass
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float = np.nan) -> float:
+        try:
+            if pd.isna(value):
+                return default
+        except Exception:
+            pass
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _coerce_str(value: Any, default: str = "") -> str:
+        try:
+            if pd.isna(value):
+                return default
+        except Exception:
+            pass
+        if value is None:
+            return default
+        return str(value)
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        try:
+            if pd.isna(value):
+                return default
+        except Exception:
+            pass
+        if isinstance(value, str):
+            txt = value.strip().lower()
+            if txt in ("1", "true", "yes"):
+                return True
+            if txt in ("0", "false", "no", ""):
+                return False
+        try:
+            return bool(int(value))
+        except Exception:
+            return bool(value) if value is not None else default
+
+    def _validate_resume_source(self, source_dir: Path) -> None:
+        if not source_dir.is_dir():
+            raise FileNotFoundError(f"resume_from directory not found: {source_dir}")
+
+        required_paths = (
+            source_dir / "analysis" / "run_manifest.csv",
+            source_dir / "analysis" / "nsga.csv",
+            source_dir / "analysis" / "population_history.csv",
+            source_dir / "analysis" / "selection_pool_history.csv",
+        )
+        missing = [str(path) for path in required_paths if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                "resume_from is missing required files: " + ", ".join(missing)
+            )
+
+    def _prepare_resume_directory(self, source_dir: Path) -> Path:
+        suffix = (self.cfg.resume_suffix or "second").strip() or "second"
+        requested_name = (self.cfg.run_name or "").strip()
+        if requested_name:
+            target_name = requested_name
+        else:
+            target_name = f"{source_dir.name}_{suffix}"
+
+        target_dir = source_dir.parent / target_name
+        counter = 2
+        while target_dir.exists():
+            target_dir = source_dir.parent / f"{target_name}_{counter}"
+            counter += 1
+
+        shutil.copytree(source_dir, target_dir)
+        return target_dir.resolve()
+
+    def _load_resume_population(self) -> Tuple[List["IndType"], int]:
+        last_generation = int(
+            self.resume_start_generation
+            if self.resume_start_generation is not None
+            else self._find_last_completed_generation()
+        )
+        if last_generation >= self.n_gen:
+            raise ValueError(
+                "Resume source already reached the configured num_generations: "
+                f"last_completed_generation={last_generation}, num_generations={self.n_gen}"
+            )
+
+        population = self._rebuild_population_from_history(last_generation)
+        self._restore_stats_from_history(last_generation)
+        return population, last_generation
+
+    def _find_last_completed_generation(self) -> int:
+        selection_df = pd.read_csv(self.selection_pool_history_path)
+        if selection_df.empty:
+            raise ValueError("selection_pool_history.csv is empty; cannot resume")
+
+        selection_df["generation"] = pd.to_numeric(selection_df["generation"], errors="coerce")
+        selection_df["selected"] = pd.to_numeric(selection_df["selected"], errors="coerce").fillna(0).astype(int)
+        valid_selection = selection_df.dropna(subset=["generation"]).copy()
+        valid_selection["generation"] = valid_selection["generation"].astype(int)
+        selected_counts = valid_selection.groupby("generation")["selected"].sum()
+        completed_gens = selected_counts[selected_counts == self.n_pop].index.tolist()
+        if not completed_gens:
+            raise ValueError("No completed generation found in selection_pool_history.csv")
+
+        last_generation = int(max(completed_gens))
+
+        population_df = pd.read_csv(self.population_history_path)
+        if population_df.empty:
+            raise ValueError("population_history.csv is empty; cannot resume")
+        population_df["generation"] = pd.to_numeric(population_df["generation"], errors="coerce")
+        pop_count = int((population_df["generation"] == last_generation).sum())
+        if pop_count != self.n_pop:
+            raise ValueError(
+                "Inconsistent population_history.csv for resume: "
+                f"generation {last_generation} has {pop_count} rows, expected {self.n_pop}"
+            )
+
+        summary_df = pd.read_csv(self.generation_summary_path)
+        if summary_df.empty:
+            raise ValueError("generation_summary.csv is empty; cannot resume")
+        summary_df["generation"] = pd.to_numeric(summary_df["generation"], errors="coerce")
+        if int((summary_df["generation"] == last_generation).sum()) != 1:
+            raise ValueError(
+                "Inconsistent generation_summary.csv for resume: "
+                f"generation {last_generation} not found exactly once"
+            )
+
+        return last_generation
+
+    def _prune_truncated_resume_rows(self, last_completed_generation: int) -> None:
+        analysis_csvs = [
+            self.analysis_dir / f"{self.cfg.csv_basename}.csv",
+            self.population_history_path,
+            self.pareto_history_path,
+            self.generation_summary_path,
+            self.selection_pool_history_path,
+        ]
+        for csv_path in analysis_csvs:
+            if not csv_path.is_file():
+                continue
+            df = pd.read_csv(csv_path)
+            if df.empty or "generation" not in df.columns:
+                continue
+            gens = pd.to_numeric(df["generation"], errors="coerce")
+            keep_mask = gens.isna() | (gens <= int(last_completed_generation))
+            if bool((~keep_mask).any()):
+                df.loc[keep_mask].to_csv(csv_path, index=False)
+
+    def _rebuild_population_from_history(self, generation: int) -> List["IndType"]:
+        population_df = pd.read_csv(self.population_history_path)
+        population_df["generation"] = pd.to_numeric(population_df["generation"], errors="coerce")
+        gen_df = population_df[population_df["generation"] == generation].copy()
+        if len(gen_df) != self.n_pop:
+            raise ValueError(
+                f"Cannot rebuild generation {generation}: found {len(gen_df)} rows, expected {self.n_pop}"
+            )
+
+        pop: List["IndType"] = []
+        max_uid = 0
+        for row in gen_df.itertuples(index=False):
+            try:
+                chromo = ast.literal_eval(str(row.chromosome))
+            except Exception as exc:
+                raise ValueError(
+                    f"Failed to parse chromosome for generation {generation}, uid={getattr(row, 'uid', 'NA')}: {exc}"
+                ) from exc
+
+            ind = self.IndType(chromo)
+            ind.fitness.values = (
+                self._coerce_float(getattr(row, "ff_0", np.nan)),
+                self._coerce_float(getattr(row, "ff_1", np.nan)),
+                self._coerce_float(getattr(row, "ff_2", np.nan)),
+            )
+            ind.uid = self._coerce_int(getattr(row, "uid", -1))
+            ind.parent_uid_a = self._coerce_int(getattr(row, "parent_uid_a", -1))
+            ind.parent_uid_b = self._coerce_int(getattr(row, "parent_uid_b", -1))
+            ind.parent_gen_a = self._coerce_int(getattr(row, "parent_gen_a", -1))
+            ind.parent_gen_b = self._coerce_int(getattr(row, "parent_gen_b", -1))
+            ind.lineage_id = self._coerce_int(getattr(row, "lineage_id", -1))
+            ind.lineage_root_uid = self._coerce_int(getattr(row, "lineage_root_uid", -1))
+            ind.lineage_depth = self._coerce_int(getattr(row, "lineage_depth", -1))
+            ind.primary_parent_uid = self._coerce_int(getattr(row, "primary_parent_uid", -1))
+            ind.primary_parent_generation = self._coerce_int(getattr(row, "primary_parent_generation", -1))
+            ind.reproduction_operator = self._coerce_str(getattr(row, "reproduction_operator", ""))
+            ind.crossover_applied = self._coerce_int(getattr(row, "crossover_applied", 0), default=0)
+            ind.mutation_applied = self._coerce_int(getattr(row, "mutation_applied", 0), default=0)
+            ind.mutation_changed_genome = self._coerce_int(getattr(row, "mutation_changed_genome", 0), default=0)
+            ind.topology_mutation = self._coerce_int(getattr(row, "topology_mutation", 0), default=0)
+            ind.topology_mutation_magnitude = self._coerce_int(
+                getattr(row, "topology_mutation_magnitude", 0), default=0
+            )
+            ind.topology_signature = self._coerce_str(getattr(row, "topology_signature", ""))
+            ind.parent_a_topology_signature = self._coerce_str(
+                getattr(row, "parent_a_topology_signature", "")
+            )
+            ind.parent_b_topology_signature = self._coerce_str(
+                getattr(row, "parent_b_topology_signature", "")
+            )
+            ind.primary_parent_topology_signature = self._coerce_str(
+                getattr(row, "primary_parent_topology_signature", "")
+            )
+            ind.successful_topology_mutation = self._coerce_int(
+                getattr(row, "successful_topology_mutation", 0), default=0
+            )
+            ind.beneficial_topology_event = self._coerce_int(
+                getattr(row, "beneficial_topology_event", 0), default=0
+            )
+            ind.selected_next_generation = self._coerce_int(getattr(row, "selected_next_generation", 1), default=1)
+            ind.parent_best_scalar_fitness = self._coerce_float(
+                getattr(row, "parent_best_scalar_fitness", np.nan)
+            )
+            ind.offspring_scalar_fitness = self._coerce_float(
+                getattr(row, "offspring_scalar_fitness", np.nan)
+            )
+            ind.lineage_event = self._coerce_str(getattr(row, "lineage_event", ""))
+            ind.parent_a_lineage_id = self._coerce_int(getattr(row, "parent_a_lineage_id", -1))
+            ind.parent_b_lineage_id = self._coerce_int(getattr(row, "parent_b_lineage_id", -1))
+            ind.cross_lineage_mating = self._coerce_int(getattr(row, "cross_lineage_mating", 0), default=0)
+            ind.airfoil_signature = self._coerce_str(getattr(row, "airfoil_signature", ""))
+            ind.parent_a_airfoil_signature = self._coerce_str(
+                getattr(row, "parent_a_airfoil_signature", "")
+            )
+            ind.parent_b_airfoil_signature = self._coerce_str(
+                getattr(row, "parent_b_airfoil_signature", "")
+            )
+            ind.primary_parent_airfoil_signature = self._coerce_str(
+                getattr(row, "primary_parent_airfoil_signature", "")
+            )
+            ind.airfoil_mutation = self._coerce_int(getattr(row, "airfoil_mutation", 0), default=0)
+            ind.successful_airfoil_mutation = self._coerce_int(
+                getattr(row, "successful_airfoil_mutation", 0), default=0
+            )
+            ind.beneficial_airfoil_event = self._coerce_int(
+                getattr(row, "beneficial_airfoil_event", 0), default=0
+            )
+            ind.offspring_vs_best_parent_scalar_delta = self._coerce_float(
+                getattr(row, "offspring_vs_best_parent_scalar_delta", np.nan)
+            )
+            ind.max_p = self._coerce_float(getattr(row, "max_p", np.nan))
+            ind.exp_name = self._coerce_str(getattr(row, "exp_name", ""))
+            ind.train_it = self._coerce_int(getattr(row, "train_it", self.cfg.train_iters_new), self.cfg.train_iters_new)
+            ind.failed = self._coerce_bool(getattr(row, "failed", False))
+            ind._failed = bool(ind.failed)
+            ind.fail_category = self._coerce_str(getattr(row, "fail_category", ""))
+            ind.fail_reason = self._coerce_str(getattr(row, "fail_reason", ""))
+            ind.cache_hit = False
+            ind.evaluated_fresh = False
+            ind.cache_source_uid = -1
+            ind.cache_source_generation = -1
+            ind.generation_origin = generation
+            ind.parent_idx_a = -1
+            ind.parent_idx_b = -1
+            pop.append(ind)
+            max_uid = max(max_uid, int(ind.uid))
+
+        self._uid_counter = max(self._uid_counter, max_uid)
+        self._ensure_uids(pop)
+        return pop
+
+    def _restore_stats_from_history(self, last_generation: int) -> None:
+        stats_loaded = False
+        if self.stats_path.is_file():
+            try:
+                with self.stats_path.open("rb") as f:
+                    old_stats = pickle.load(f)
+                arr = np.asarray(getattr(old_stats, "arr", np.array([])))
+                if arr.ndim == 3 and arr.shape[0] == 3 and arr.shape[2] == self.n_pop:
+                    max_gen = min(arr.shape[1], self.stats.arr.shape[1], last_generation + 1)
+                    self.stats.arr[:, :max_gen, :] = arr[:, :max_gen, :]
+                    stats_loaded = True
+            except Exception:
+                stats_loaded = False
+
+        if stats_loaded:
+            return
+
+        population_df = pd.read_csv(self.population_history_path)
+        population_df["generation"] = pd.to_numeric(population_df["generation"], errors="coerce")
+        for gen in range(0, last_generation + 1):
+            gen_df = population_df[population_df["generation"] == gen].copy()
+            if len(gen_df) != self.n_pop:
+                raise ValueError(
+                    f"Cannot restore stats: generation {gen} has {len(gen_df)} rows, expected {self.n_pop}"
+                )
+            self.stats.arr[0, gen, :] = gen_df["ff_0"].to_numpy(dtype=float)
+            self.stats.arr[1, gen, :] = gen_df["ff_1"].to_numpy(dtype=float)
+            self.stats.arr[2, gen, :] = gen_df["ff_2"].to_numpy(dtype=float)
 
     def _init_report_csvs(self) -> None:
         init_report_csvs(
@@ -685,12 +1021,17 @@ class CodesignDEAP:
             f"chr={chromo}"
         )
 
-        if self.gen_policy and not self.policy_path:
-            raise ValueError("gen_policy requires a valid --policy_path")
+        if self.gen_policy and not self.policy_paths:
+            raise ValueError("gen_policy requires --policy_path or --policy_paths")
         if self.gen_policy and self.cfg.train_repetition > 1:
             print(
                 "   ↪ GEN_POLICY active → train_repetition ignored "
                 f"(cfg={self.cfg.train_repetition})"
+            )
+        if self.gen_policy and len(self.policy_paths) > 1:
+            print(
+                "   ↪ GEN_POLICY active → averaging over "
+                f"{len(self.policy_paths)} provided policies"
             )
         try:
             cfg_reps = int(self.cfg.train_repetition)
@@ -837,7 +1178,7 @@ class CodesignDEAP:
         if USE_PARALLEL:
             if self.gen_policy:
                 print("   ↪ Ray eval-only job launched")
-                fut = eval_only_remote.remote(chromo, self.policy_path, self.tag, cfg, True)
+                fut = eval_only_remote.remote(chromo, self.policy_paths, self.tag, cfg, True)
             else:
                 fut = train_and_eval_remote.remote(chromo, parent_info, self.tag, cfg, True)
             indiv._pending_future = fut
@@ -845,11 +1186,14 @@ class CodesignDEAP:
             return (0.0, 0.0, 0.0)
 
         if self.gen_policy:
-            print(f"   ↪ GEN_POLICY active → skipping training (policy={self.policy_path})")
+            print(
+                "   ↪ GEN_POLICY active → skipping training "
+                f"(policies={len(self.policy_paths)})"
+            )
             
             ff, meta, extra = _eval_only_custom(
                 chromo,
-                self.policy_path,
+                self.policy_paths,
                 self.tag,
                 cfg,
                 return_arrays=True,
@@ -857,7 +1201,11 @@ class CodesignDEAP:
             print(f"   ✔ sync-eval ff={ff} max_p={meta['max_p']:.2f}")
 
             indiv._meta_raw = meta
-            indiv._failed = bool(meta.get("failed"))
+            if extra and "rep_payloads" in extra:
+                indiv._rep_payloads = extra["rep_payloads"]
+                indiv._failed = False
+            else:
+                indiv._failed = bool(meta.get("failed"))
             indiv.max_p = meta["max_p"]
             indiv.exp_name = meta["exp_name"]
             indiv.train_it = meta["train_it"]
@@ -866,7 +1214,7 @@ class CodesignDEAP:
             indiv.cache_source_uid = -1
             indiv.cache_source_generation = -1
             
-            if extra:
+            if extra and "rep_payloads" not in extra:
                 indiv._p_s = extra["p_s"]
                 indiv._v_s = extra["v_s"]
                 indiv._E_s = extra["E_s"]
@@ -1374,18 +1722,23 @@ class CodesignDEAP:
           - computing minimal_p,
           - finalizing and logging fitness values.
         """
+        minimal_p_fixed = float(self.cfg.fixed_p)
+        minimal_p_known = not self.cfg.use_dynamic_p
+
         # 1) Launch training/evaluation where needed
         for ind in population:
             if not ind.fitness.valid:
                 ind.fitness.values = self.tb.evaluate(ind)
+                if not USE_PARALLEL and minimal_p_known:
+                    self._finalize_and_persist(ind, minimal_p_fixed)
+                    ind._persisted = True
+                    self._cleanup_individual_payloads(ind)
 
         # 2) Wait for Ray jobs
         if USE_PARALLEL:
             pend = [ind for ind in population if hasattr(ind, "_pending_future")]
             if pend:
                 print(f"  ⏳ waiting for {len(pend)} Ray jobs…")
-                minimal_p_fixed = float(self.cfg.fixed_p)
-                minimal_p_known = not self.cfg.use_dynamic_p
                 fail_cfg = dict(
                     TRAIN_ITERS=self.cfg.train_iters_new,
                     TRAIN_REPETITION=self.cfg.train_repetition,
@@ -1648,34 +2001,49 @@ class CodesignDEAP:
         """
         print(f"[setup] Run directory: {self.base_dir}")
         print(f"[setup] CSV cache: {self.db.path}")
+        if self._is_resume:
+            print(f"[setup] Resume source: {self.resume_source_dir}")
+            print(
+                "[setup] Resume mode: continuing from generation "
+                f"{self.resume_start_generation} into copied run directory"
+            )
 
-        # GEN 0
-        pop = self.tb.pop(self.n_pop)
-        self._ensure_uids(pop)
-        for ind in pop:
-            ind[:] = Chromosome_Drone.snap_genome_norm(ind)
-            ind.parent_idx_a = -1
-            ind.parent_idx_b = -1
-            ind.parent_uid_a = -1
-            ind.parent_uid_b = -1
-            ind.parent_gen_a = -1
-            ind.parent_gen_b = -1
-            ind.generation_origin = 0
-            self._init_founder_logging(ind)
-        self._gen = 0
-        self._train_eval_population(pop)
-        gen0_fronts = tools.sortNondominated(pop, len(pop), first_front_only=False)
-        pop = tools.selNSGA2(pop, self.n_pop)
-        self._append_selection_pool_history(
-            pop,
-            gen0_fronts,
-            pop,
-            {id(ind): "initial" for ind in pop},
-        )
-        self._after_generation(pop)
+        if self._is_resume:
+            if self._resume_population is None or self.resume_start_generation is None:
+                raise RuntimeError("Resume state was not initialized correctly")
+            # Rebuild DEAP's transient NSGA-II attributes (e.g. crowding_dist)
+            # before the first resumed tournament selection.
+            pop = tools.selNSGA2(self._resume_population, self.n_pop)
+            start_generation = int(self.resume_start_generation) + 1
+        else:
+            # GEN 0
+            pop = self.tb.pop(self.n_pop)
+            self._ensure_uids(pop)
+            for ind in pop:
+                ind[:] = Chromosome_Drone.snap_genome_norm(ind)
+                ind.parent_idx_a = -1
+                ind.parent_idx_b = -1
+                ind.parent_uid_a = -1
+                ind.parent_uid_b = -1
+                ind.parent_gen_a = -1
+                ind.parent_gen_b = -1
+                ind.generation_origin = 0
+                self._init_founder_logging(ind)
+            self._gen = 0
+            self._train_eval_population(pop)
+            gen0_fronts = tools.sortNondominated(pop, len(pop), first_front_only=False)
+            pop = tools.selNSGA2(pop, self.n_pop)
+            self._append_selection_pool_history(
+                pop,
+                gen0_fronts,
+                pop,
+                {id(ind): "initial" for ind in pop},
+            )
+            self._after_generation(pop)
+            start_generation = 1
 
-        # GEN ≥ 1
-        for g in range(1, self.n_gen + 1):
+        # GEN ≥ 1 or resumed generation
+        for g in range(start_generation, self.n_gen + 1):
             self._gen = g
             print(f"\n════════ Generation {g}/{self.n_gen} ════════")
             self._ensure_uids(pop)
@@ -1723,18 +2091,18 @@ class CodesignDEAP:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pop", type=int, default=4, help="Population size.")
-    parser.add_argument("--gen", type=int, default=2, help="Number of generations.")
+    parser.add_argument("--pop", type=int, default=40, help="Population size.")
+    parser.add_argument("--gen", type=int, default=25, help="Number of generations.")
     parser.add_argument(
         "--train_it",
         type=int,
-        default=50,
+        default=750,
         help="Training iterations for NEW morphologies.",
     )
     parser.add_argument(
         "--train_repetition",
         type=int,
-        default=1,
+        default=0,
         help="Repeat train+eval N times (gen_policy=0) and average final fitness.",
     )
     parser.add_argument(
@@ -1789,12 +2157,19 @@ def main() -> None:
         "--gen_policy",
         type=int,
         choices=(0, 1),
-        default=0,
+        default=1,
         help="0=train+eval, 1=eval-only with a custom pre-trained policy",
     )
     parser.add_argument(
         "--policy_path", type=str, default=None,
         help="Path to a pre-trained policy to use together with --gen_policy"
+    )
+    parser.add_argument(
+        "--policy_paths",
+        type=str,
+        nargs="+",
+        default=list(DEFAULT_POLICY_PATHS),
+        help="Optional list of pre-trained policies to average in eval-only mode.",
     )
     parser.add_argument(
         "--run_name",
@@ -1805,7 +2180,7 @@ def main() -> None:
     parser.add_argument(
         "--base_dir",
         type=str,
-        default=None,
+        default="/home/andrea/Documents/Genesis/src/data_processing",
         help="Root directory for artifacts (defaults to cfg.base_dir).",
     )
     parser.add_argument(
@@ -1813,6 +2188,18 @@ def main() -> None:
         type=str,
         default="cuda:0",
         help="Device for training/eval (e.g., cuda:0 or cpu).",
+    )
+    parser.add_argument(
+        "--resume_from",
+        type=str,
+        default=None,
+        help="Resume from an existing run folder by copying it and continuing from the last completed generation.",
+    )
+    parser.add_argument(
+        "--resume_suffix",
+        type=str,
+        default=DEFAULT_RESUME_SUFFIX,
+        help="Suffix used for the copied run folder when resuming.",
     )
 
     args = parser.parse_args()
@@ -1839,10 +2226,13 @@ def main() -> None:
     cfg.pct_above = args.pct_above
     cfg.gen_policy = bool(args.gen_policy)
     cfg.policy_path = args.policy_path
+    cfg.policy_paths = args.policy_paths
     cfg.run_name = args.run_name
     if args.base_dir is not None:
         cfg.base_dir = args.base_dir
     cfg.device = args.device
+    cfg.resume_from = args.resume_from
+    cfg.resume_suffix = args.resume_suffix
 
     ga = CodesignDEAP(cfg)
     ga.run()

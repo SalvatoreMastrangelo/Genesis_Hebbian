@@ -260,7 +260,23 @@ def extract_reward_curve(
     return out
 
 
-def eval_only_custom(
+def _normalize_policy_paths(policy_path: str | Sequence[str]) -> List[Path]:
+    if isinstance(policy_path, (str, Path)):
+        raw_paths = [policy_path]
+    else:
+        raw_paths = list(policy_path)
+
+    out: List[Path] = []
+    for raw_path in raw_paths:
+        path = Path(raw_path).expanduser().resolve()
+        if path not in out:
+            out.append(path)
+    if not out:
+        raise ValueError("at least one policy path is required for eval-only mode")
+    return out
+
+
+def _eval_only_custom_single(
     genome_norm,
     policy_path,
     tag,
@@ -268,6 +284,7 @@ def eval_only_custom(
     invalid_v: set[float],
     invalid_e: set[float],
     invalid_p: set[float],
+    exp_name_suffix: str = "",
     return_arrays=True,
 ):
     set_thread_envs()
@@ -302,6 +319,8 @@ def eval_only_custom(
             exp_name = f"{gen_prefix}-{exp_name}"
     elif cfg.get("EXP_PREFIX"):
         exp_name = f"{cfg['EXP_PREFIX']}-{exp_name}"
+    if exp_name_suffix:
+        exp_name = f"{exp_name}{exp_name_suffix}"
 
     prepare_device_env(cfg.get("DEVICE", "cuda:0"))
     base_dir = Path(cfg["BASE_DIR"]).expanduser().resolve()
@@ -398,6 +417,85 @@ def eval_only_custom(
     print(f"[eval_only] done exp={exp_name} ff={ff} max_p={max_p:.2f}")
 
     return ff, meta, extra
+
+
+def eval_only_custom(
+    genome_norm,
+    policy_path,
+    tag,
+    cfg,
+    invalid_v: set[float],
+    invalid_e: set[float],
+    invalid_p: set[float],
+    return_arrays=True,
+):
+    policy_paths = _normalize_policy_paths(policy_path)
+    if len(policy_paths) == 1:
+        return _eval_only_custom_single(
+            genome_norm,
+            str(policy_paths[0]),
+            tag,
+            cfg,
+            invalid_v,
+            invalid_e,
+            invalid_p,
+            return_arrays=return_arrays,
+        )
+
+    rep_payloads: List[Dict[str, Any]] = []
+    rep_exp_names: List[str] = []
+    raw_ffs: List[List[float]] = []
+    max_p_vals: List[float] = []
+
+    for rep_idx, current_policy_path in enumerate(policy_paths):
+        print(
+            f"[eval_only] policy {rep_idx + 1}/{len(policy_paths)} "
+            f"path={current_policy_path}"
+        )
+        ff, meta, extra = _eval_only_custom_single(
+            genome_norm,
+            str(current_policy_path),
+            tag,
+            cfg,
+            invalid_v,
+            invalid_e,
+            invalid_p,
+            exp_name_suffix=f"_p{rep_idx + 1:02d}",
+            return_arrays=return_arrays,
+        )
+        rep_payloads.append(dict(rep_idx=rep_idx, meta=meta, extra=extra))
+
+        rep_exp_name = meta.get("exp_name", None)
+        if rep_exp_name:
+            rep_exp_names.append(str(rep_exp_name))
+
+        if meta.get("failed"):
+            raw_ffs.append(default_fitness(invalid_v, invalid_e, invalid_p))
+        else:
+            raw_ffs.append(ff)
+        try:
+            max_p_vals.append(float(meta.get("max_p", np.nan)))
+        except Exception:
+            pass
+
+    if raw_ffs:
+        ff_mean = np.nanmean(np.asarray(raw_ffs, dtype=float), axis=0).tolist()
+    else:
+        ff_mean = default_fitness(invalid_v, invalid_e, invalid_p)
+
+    max_p_mean = float(np.nanmean(max_p_vals)) if max_p_vals else float("nan")
+    meta = dict(
+        exp_name=rep_exp_names[0] if rep_exp_names else "eval_only_multi",
+        train_it=0,
+        ckpt_idx=-1,
+        train_repetition=len(policy_paths),
+        rep_exp_names="|".join(rep_exp_names),
+        max_p=max_p_mean,
+        train_duration_s=0.0,
+        eval_duration_s=0.0,
+    )
+    extra = dict(rep_payloads=rep_payloads)
+    return ff_mean, meta, extra
 
 
 def train_and_eval_sync(

@@ -14,7 +14,7 @@ Workflow:
 import argparse
 import os
 import sys
-os.environ["GS_PARA_LEVEL"] = "2"
+os.environ.setdefault("GS_PARA_LEVEL", "3")
 import pickle
 import shutil
 import time
@@ -25,7 +25,12 @@ import torch
 import genesis as gs
 from rsl_rl.runners import OnPolicyRunner
 
-from winged_drone_train.train import get_cfgs, get_train_cfg
+from winged_drone_train.train import (
+    _configure_cache_root,
+    _init_genesis_with_retry,
+    get_cfgs,
+    get_train_cfg,
+)
 from winged_drone_train.env import WingedDroneEnv
 from winged_drone_train.noise_config import configure_solver_noise
 from winged_drone_train.rl.logging import RLTrainingLogger
@@ -33,6 +38,32 @@ from winged_drone_train.runtime_random import seed_runtime_randomness
 from general_policy.env_gen import Gen_Env
 from general_policy.catalog import build_catalog
 from general_policy.super_scene import run_logical_super_scene_training
+
+
+def _apply_train_cfg_overrides(
+    train_cfg: dict,
+    num_mini_batches: Optional[int] = None,
+    actor_hidden_dims: Optional[list[int]] = None,
+    critic_hidden_dims: Optional[list[int]] = None,
+    rnn_hidden_size: Optional[int] = None,
+) -> None:
+    """
+    Apply optional hardcoded overrides to the train configuration in-place.
+    """
+    algorithm_cfg = train_cfg.setdefault("algorithm", {})
+    policy_cfg = train_cfg.setdefault("policy", {})
+
+    if num_mini_batches is not None:
+        algorithm_cfg["num_mini_batches"] = int(num_mini_batches)
+
+    if actor_hidden_dims is not None:
+        policy_cfg["actor_hidden_dims"] = [int(dim) for dim in actor_hidden_dims]
+
+    if critic_hidden_dims is not None:
+        policy_cfg["critic_hidden_dims"] = [int(dim) for dim in critic_hidden_dims]
+
+    if rnn_hidden_size is not None:
+        policy_cfg["rnn_hidden_size"] = int(rnn_hidden_size)
 
 
 # --------------------------------------------------------------------------- #
@@ -92,6 +123,7 @@ def train(
     # ------------------------------------------------------------------ #
     # Device & Genesis initialization                                    #
     # ------------------------------------------------------------------ #
+    _configure_cache_root()
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
     # Helps reduce CUDA allocator fragmentation in long PPO runs.
@@ -137,6 +169,19 @@ def train(
         env_cfg["enable_rendering"] = False
     runtime_seed = seed_runtime_randomness(f"train_gen:{experiment_name}")
     train_cfg = get_train_cfg(experiment_name, max_iterations, runtime_seed)
+    train_cfg_overrides = {
+        "num_mini_batches": None,
+        "actor_hidden_dims": [128, 128], 
+        "critic_hidden_dims": [128, 128],
+        "rnn_hidden_size": 128,
+    }
+    _apply_train_cfg_overrides(
+        train_cfg,
+        num_mini_batches=train_cfg_overrides["num_mini_batches"],
+        actor_hidden_dims=train_cfg_overrides["actor_hidden_dims"],
+        critic_hidden_dims=train_cfg_overrides["critic_hidden_dims"],
+        rnn_hidden_size=train_cfg_overrides["rnn_hidden_size"],
+    )
 
     obs_cfg["add_genome_obs"] = True  # Always include genome observation
 
@@ -206,7 +251,7 @@ def train(
         return
 
     # Standard path keeps original behavior.
-    gs.init(logging_level="error", backend=gs.gpu)
+    _init_genesis_with_retry()
 
     # ------------------------------------------------------------------ #
     # Environment creation                                               #
@@ -291,7 +336,7 @@ def _parse_args() -> argparse.Namespace:
         "--exp-name",
         "-e",
         type=str,
-        default="foundation-mixture",
+        default="foundation-mixture7",
         help="Name of the experiment (used for the log directory).",
     )
     parser.add_argument(
@@ -360,7 +405,8 @@ def _parse_args() -> argparse.Namespace:
         default=0,
         help=(
             "Number of worker processes in logical-super-scene mode. "
-            "If 0, auto-uses one worker per shard."
+            "If 0, auto-uses a conservative number of workers "
+            "(typically 1 per rollout GPU, or 1 on CPU-only setups)."
         ),
     )
     parser.add_argument(

@@ -39,11 +39,11 @@ from rsl_rl.runners import OnPolicyRunner
 # Local imports: environment + policy
 try:
     from winged_drone_train.env import WingedDroneEnv
-    from winged_drone_train.defaults import default_mydrone_urdf_path
+    from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
 except ModuleNotFoundError:
     # Backward-compatible path when running this file directly.
     from env import WingedDroneEnv  # type: ignore
-    from defaults import default_mydrone_urdf_path  # type: ignore
+    from urdf_resolver import resolve_or_generate_urdf  # type: ignore
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh  # same as in train.py
 
 import builtins
@@ -150,6 +150,25 @@ def _print_aero_step_debug(env: WingedDroneEnv, step_idx: int) -> None:
     )
 
 
+def _extract_filtered_throttle(env: WingedDroneEnv) -> torch.Tensor:
+    """Extract the actual filtered prop throttle from the AeroSolver."""
+    if not hasattr(env, "aero_solver"):
+        raise RuntimeError("AeroSolver not initialized in this environment.")
+
+    cached_thr = getattr(env.aero_solver, "_thr_flt_buf", None)
+    if torch.is_tensor(cached_thr) and cached_thr.shape[0] == env.num_envs:
+        env._thr_flt_buf.copy_(cached_thr.to(device=env.device))
+    else:
+        thr_flt_field = getattr(env.aero_solver, "_thr_flt", None)
+        if thr_flt_field is None:
+            raise RuntimeError("AeroSolver._thr_flt not found (did you call add_target?).")
+        env._thr_flt_buf.copy_(thr_flt_field.to_torch(device=env.device))
+
+    torch.nan_to_num_(env._thr_flt_buf, nan=0.0, posinf=0.0, neginf=0.0)
+    env._thr_flt_buf.clamp_(min=0.0, max=1.0)
+    return env._thr_flt_buf
+
+
 # ---------------------------------------------------------------------------
 # Geometry helper
 # ---------------------------------------------------------------------------
@@ -210,9 +229,9 @@ def create_topdown_video_multi(
     Create a top-down video with one or more trajectories overlaid on the forest.
 
     The figure is tightly cropped to the forest bounding box and has:
-      - no axes
-      - no titles
       - minimal margins
+      - a metric x axis for forward progress
+      - reference lines at 50 m and 250 m
 
     Args:
         env: Environment instance (used to get forest layout and dt).
@@ -221,25 +240,45 @@ def create_topdown_video_multi(
         dpi: figure DPI for matplotlib.
         scale_px_per_m: conversion from meters to "pixels" for figure size.
     """
-    x0, x1 = -40.0, env.env_cfg.get("x_upper", 400.0)
+    x_world0, x_world1 = -40.0, env.env_cfg.get("x_upper", 400.0)
+    x_offset = -x_world0
+    x0, x1 = 0.0, 650.0
     y0 = env.env_cfg.get("y_lower", -60.0)
     y1 = env.env_cfg.get("y_upper", 60.0)
     W, H = (x1 - x0), (y1 - y0)
     fig_w, fig_h = W / scale_px_per_m, H / scale_px_per_m
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
-    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+    fig.subplots_adjust(left=0.018, right=0.995, bottom=0.125, top=0.995)
     ax.set_aspect("equal", "box")
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
-    ax.axis("off")
+    ax.set_xlabel("x [m]", fontsize=16, labelpad=8)
+    ax.set_yticks([])
+    ax.set_xticks([0, 100, 200, 300, 400, 500, 600, 650])
+    ax.tick_params(axis="x", labelsize=13, width=1.2, length=5)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_alpha(0.5)
+    ax.spines["bottom"].set_linewidth(1.2)
+
+    for x_ref in (50.0, 250.0):
+        if x0 <= x_ref <= x1:
+            ax.axvline(
+                x_ref,
+                color="limegreen",
+                linestyle="--",
+                linewidth=3.4,
+                alpha=0.95,
+                zorder=0,
+            )
 
     # Forest obstacles (cylinders)
     cyl = env.cylinders_array.detach().cpu().numpy()
     obstacles = cyl[0] if cyl.ndim == 3 else cyl
     tree_r = 1.5
     for cx, cy, _ in obstacles:
-        ax.add_patch(Circle((cx, cy), tree_r, color="green", alpha=0.60, linewidth=0))
+        ax.add_patch(Circle((cx + x_offset, cy), tree_r, color="green", alpha=0.60, linewidth=0))
 
     # Trajectory plots
     N = len(trajectories)
@@ -272,12 +311,14 @@ def create_topdown_video_multi(
                     continue
                 idx = max(np.searchsorted(ts, t) - 1, 0)
                 pos = tr["positions"]
+                pos_plot = pos.copy()
+                pos_plot[:, 0] += x_offset
                 yaw = tr["yaw"][idx]
                 roll = tr["roll"][idx]
 
-                lines[i].set_data(pos[: idx + 1, 0], pos[: idx + 1, 1])
-                markers[i].set_data([pos[idx, 0]], [pos[idx, 1]])
-                polys[i].set_xy(compute_fov(pos[idx], yaw, roll))
+                lines[i].set_data(pos_plot[: idx + 1, 0], pos_plot[: idx + 1, 1])
+                markers[i].set_data([pos_plot[idx, 0]], [pos_plot[idx, 1]])
+                polys[i].set_xy(compute_fov(pos_plot[idx], yaw, roll))
             writer.grab_frame()
 
     plt.close(fig)
@@ -355,7 +396,7 @@ def create_overlay_video(
     """
     Create a composite video with:
       - Left column: camera view, depth squares, top-down render.
-      - Right column: time-series plots (thrust, joints, velocity, alpha/beta).
+      - Right column: time-series plots (throttle + thrust, joints, velocity, alpha/beta).
 
     Args:
         cam_mp4: path to camera video.
@@ -390,58 +431,101 @@ def create_overlay_video(
 
     # Time-series data
     t_all = traj["time_steps"]
-    thr_sum = traj["thrust"].sum(axis=1)
+    throttle_series = traj.get("throttle", None)
+    thrust_n_series = traj.get("thrust_n", None)
+    # Backward compatibility with older trajectories where "thrust" actually
+    # stored applied throttle fraction.
+    if throttle_series is None and "thrust" in traj:
+        throttle_series = traj["thrust"]
+    if throttle_series is not None:
+        throttle_sum = np.asarray(throttle_series).sum(axis=1)
+    else:
+        throttle_sum = np.zeros_like(t_all, dtype=np.float32)
+    if thrust_n_series is not None:
+        thrust_n_sum = np.asarray(thrust_n_series).sum(axis=1)
+    else:
+        thrust_n_sum = None
     jp = traj["joint_positions"]
     vlin = traj["lin_vel"]
     alpha_deg = traj.get("alpha_deg", None)
     beta_deg = traj.get("beta_deg", None)
     vel_commanded = np.full_like(t_all, v_commanded, dtype=np.float32)
 
-    # Layout: 7 rows x 3 columns (left: videos, right: plots)
     fig = plt.figure(figsize=(16, 9), dpi=dpi)
-    gs = GridSpec(
-        nrows=7,
-        ncols=3,
-        width_ratios=[1.8, 0.06, 1.0],
-        height_ratios=[1.3, 1.3, 1.3, 1.0, 1.0, 0.7, 0.2],
-        wspace=0.08,
-        hspace=0.30,
+    gs = GridSpec(nrows=1, ncols=2, width_ratios=[2.50, 1.24], wspace=0.08)
+    fig.subplots_adjust(left=0.012, right=0.995, top=0.988, bottom=0.042)
+
+    left_gs = gs[0, 0].subgridspec(
+        nrows=3,
+        ncols=1,
+        height_ratios=[5.9, 0.78, 2.42],
+        hspace=0.012,
+    )
+    right_gs = gs[0, 1].subgridspec(
+        nrows=6,
+        ncols=1,
+        hspace=0.24,
     )
 
     # Left column: camera / depth / top-down
-    ax_cam = fig.add_subplot(gs[0:3, 0])
+    ax_cam = fig.add_subplot(left_gs[0, 0])
     ax_cam.axis("off")
-    ax_depth = fig.add_subplot(gs[3:4, 0])
+    ax_depth = fig.add_subplot(left_gs[1, 0])
     ax_depth.axis("off")
-    ax_td = fig.add_subplot(gs[4:6, 0])
+    ax_td = fig.add_subplot(left_gs[2, 0])
     ax_td.axis("off")
 
     # Right column: time-series
-    ax_T = fig.add_subplot(gs[0, 2])
-    ax_J01 = fig.add_subplot(gs[1, 2])
-    ax_J23 = fig.add_subplot(gs[2, 2])
-    ax_J45 = fig.add_subplot(gs[3, 2])
-    ax_VLIN = fig.add_subplot(gs[4, 2])
-    ax_aero = fig.add_subplot(gs[5, 2])
+    ax_T = fig.add_subplot(right_gs[0, 0])
+    ax_J01 = fig.add_subplot(right_gs[1, 0])
+    ax_J23 = fig.add_subplot(right_gs[2, 0])
+    ax_J45 = fig.add_subplot(right_gs[3, 0])
+    ax_VLIN = fig.add_subplot(right_gs[4, 0])
+    ax_aero = fig.add_subplot(right_gs[5, 0])
     ts_axes = [ax_T, ax_J01, ax_J23, ax_J45, ax_VLIN, ax_aero]
 
     # Axis limits and grids
-    ax_T.set_ylim(0, 5)
+    ax_T.set_ylim(0.0, 1.0)
+    ax_T.set_ylabel("Throttle [-]")
+    ax_T_right = ax_T.twinx()
+    thrust_n_limit = traj.get("max_thrust", None)
+    if thrust_n_limit is not None:
+        thrust_n_limit = float(np.asarray(thrust_n_limit).reshape(-1)[0])
+    if thrust_n_limit is not None and np.isfinite(thrust_n_limit) and thrust_n_limit > 0.0:
+        ax_T_right.set_ylim(0.0, thrust_n_limit)
+    elif thrust_n_sum is not None and thrust_n_sum.size:
+        thrust_n_max = float(np.nanmax(thrust_n_sum))
+        ax_T_right.set_ylim(0.0, max(1.0, thrust_n_max))
+    else:
+        ax_T_right.set_ylim(0.0, 1.0)
+    ax_T_right.set_ylabel("Thrust [N]", labelpad=10)
     for ax in (ax_J01, ax_J23, ax_J45):
         ax.set_ylim(-0.3, 0.3)
     ax_VLIN.set_ylim(-2, v_commanded + 3)
-    ax_VLIN.grid(True, lw=0.3, alpha=0.4)
-    ax_VLIN.set_xlabel("t [s]")
 
     ax_aero.set_ylim(-10, 30)
-    ax_aero.grid(True, lw=0.3, alpha=0.4)
     ax_aero.set_xlabel("t [s]")
 
-    for ax in (ax_T, ax_J01, ax_J23, ax_J45):
-        ax.grid(True, lw=0.3, alpha=0.4)
+    for ax in ts_axes:
+        ax.grid(True, lw=0.35, alpha=0.35)
+        ax.tick_params(labelsize=9)
+    ax_T_right.grid(False)
+    ax_T_right.tick_params(labelsize=9)
+
+    for ax in ts_axes[:-1]:
+        ax.tick_params(labelbottom=False)
+
+    # Keep the full right column allocation, but shrink each plot a bit inside
+    # that column so the right-side thrust label is not clipped.
+    for ax in ts_axes:
+        pos = ax.get_position()
+        ax.set_position([pos.x0, pos.y0, pos.width * 0.92, pos.height])
 
     # Time series lines
-    lnT, = ax_T.plot([], [], lw=2.0, label="Σ thrust")
+    lnThrCmd, = ax_T.plot([], [], lw=2.0, color="tab:blue", label="Throttle")
+    lnThrustN = None
+    if thrust_n_sum is not None:
+        lnThrustN, = ax_T_right.plot([], [], lw=2.0, color="tab:red", label="Thrust [N]")
     lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Mean")
     lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Diff")
     lnJ2, = ax_J23.plot([], [], lw=1.6, label="Twist Mean")
@@ -460,8 +544,13 @@ def create_overlay_video(
     if beta_deg is not None:
         ln_beta, = ax_aero.plot([], [], lw=2.0, label="Beta [deg]")
 
-    for ax in ts_axes:
-        ax.legend(fontsize=9, frameon=False, loc="upper right", ncol=2)
+    for ax in ts_axes[1:]:
+        ax.legend(fontsize=8.5, frameon=False, loc="upper right", ncol=2, handlelength=1.8, columnspacing=1.0)
+    thrust_handles = [lnThrCmd]
+    if lnThrustN is not None:
+        thrust_handles.append(lnThrustN)
+    thrust_labels = [h.get_label() for h in thrust_handles]
+    ax_T.legend(thrust_handles, thrust_labels, fontsize=8.5, frameon=False, loc="upper left")
 
     # First frames
     okC, frm_cam = cap_cam.read()
@@ -500,7 +589,9 @@ def create_overlay_video(
             idx = max(np.searchsorted(t_all, t_now) - 1, 0)
 
             # Update time series
-            lnT.set_data(t_all[: idx + 1], thr_sum[: idx + 1])
+            lnThrCmd.set_data(t_all[: idx + 1], throttle_sum[: idx + 1])
+            if lnThrustN is not None and thrust_n_sum is not None:
+                lnThrustN.set_data(t_all[: idx + 1], thrust_n_sum[: idx + 1])
 
             lnJ0.set_data(t_all[: idx + 1], (jp[: idx + 1, 0] - jp[: idx + 1, 1]) / 2)
             lnJ1.set_data(t_all[: idx + 1], (jp[: idx + 1, 0] + jp[: idx + 1, 1]))
@@ -521,6 +612,106 @@ def create_overlay_video(
 
             for ax in ts_axes:
                 ax.set_xlim(0, t_all[idx])
+            ax_T_right.set_xlim(0, t_all[idx])
+
+            writer.grab_frame()
+
+    cap_cam.release()
+    cap_td.release()
+    if cap_dp:
+        cap_dp.release()
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Video generation: left column only (camera + depth + top-down)
+# ---------------------------------------------------------------------------
+
+def create_left_column_video(
+    cam_mp4: str,
+    td_mp4: str,
+    out_mp4: str,
+    depth_mp4: Optional[str] = None,
+    dpi: int = 240,
+) -> None:
+    """
+    Create a composite video with only the left overlay column:
+      - top: camera view
+      - middle: depth squares
+      - bottom: top-down render
+
+    Args:
+        cam_mp4: path to camera video.
+        td_mp4: path to top-down video.
+        out_mp4: path to output MP4.
+        depth_mp4: optional path to depth video; if None, depth panel is blank.
+        dpi: DPI for matplotlib.
+    """
+    import cv2
+    from matplotlib.gridspec import GridSpec
+
+    cap_cam = cv2.VideoCapture(cam_mp4)
+    cap_td = cv2.VideoCapture(td_mp4)
+    cap_dp = cv2.VideoCapture(depth_mp4) if depth_mp4 else None
+
+    fps_cam = cap_cam.get(cv2.CAP_PROP_FPS) or 25.0
+    nF_list = [
+        int(cap_cam.get(cv2.CAP_PROP_FRAME_COUNT) or 1),
+        int(cap_td.get(cv2.CAP_PROP_FRAME_COUNT) or 1),
+    ]
+    if cap_dp:
+        nF_list.append(int(cap_dp.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+    nF = min(nF_list)
+
+    fig = plt.figure(figsize=(8.0, 9.0), dpi=dpi)
+    gs = GridSpec(
+        nrows=3,
+        ncols=1,
+        height_ratios=[5.9, 0.78, 2.42],
+        hspace=0.012,
+    )
+    fig.subplots_adjust(left=0.012, right=0.995, top=0.988, bottom=0.042)
+
+    ax_cam = fig.add_subplot(gs[0, 0])
+    ax_cam.axis("off")
+    ax_depth = fig.add_subplot(gs[1, 0])
+    ax_depth.axis("off")
+    ax_td = fig.add_subplot(gs[2, 0])
+    ax_td.axis("off")
+
+    okC, frm_cam = cap_cam.read()
+    okT, frm_td = cap_td.read()
+    if not (okC and okT):
+        raise RuntimeError("Cannot read first frames from camera/top-down videos.")
+    im_cam = ax_cam.imshow(cv2.cvtColor(frm_cam, cv2.COLOR_BGR2RGB))
+    im_td = ax_td.imshow(cv2.cvtColor(frm_td, cv2.COLOR_BGR2RGB))
+
+    im_depth = None
+    if cap_dp:
+        okD, frm_dp = cap_dp.read()
+        if not okD:
+            raise RuntimeError("Cannot read first frame from depth video.")
+        im_depth = ax_depth.imshow(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
+    else:
+        blank_depth = np.ones((48, 320, 3), dtype=np.uint8) * 255
+        im_depth = ax_depth.imshow(blank_depth)
+
+    writer = FFMpegWriter(fps=fps_cam, metadata=dict(artist="winged-drone"))
+    with writer.saving(fig, out_mp4, dpi=dpi):
+        for k in range(nF):
+            if k:
+                rC, frm_cam = cap_cam.read()
+                rT, frm_td = cap_td.read()
+                if not (rC and rT):
+                    break
+                im_cam.set_data(cv2.cvtColor(frm_cam, cv2.COLOR_BGR2RGB))
+                im_td.set_data(cv2.cvtColor(frm_td, cv2.COLOR_BGR2RGB))
+
+                if cap_dp:
+                    rD, frm_dp = cap_dp.read()
+                    if not rD:
+                        break
+                    im_depth.set_data(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
 
             writer.grab_frame()
 
@@ -670,7 +861,7 @@ def run_and_record(env,
     Roll out ONE evaluation episode (usually with num_envs = 1) and:
     - collect trajectory data (positions, velocities, joints, depth)
     - compute alpha / beta directly here
-    - extract thrust directly from env.throttle (true applied throttle)
+    - extract both applied throttle and physical thrust in Newtons
     - optionally record the drone camera video
 
     Returns:
@@ -699,7 +890,8 @@ def run_and_record(env,
     # Per-step trajectory buffers (used only when B == 1, i.e. single-env video)
     if B == 1:
         pos_b, yaw_b, roll_b, t_b = [], [], [], []
-        thrust_b = []             # true applied throttle (fraction 0..1)
+        throttle_b = []           # applied throttle (fraction 0..1)
+        thrust_n_b = []           # physical thrust [N]
         joint_positions_b = []
         lin_vel_b = []
         alpha_deg_b, beta_deg_b = [], []
@@ -746,17 +938,30 @@ def run_and_record(env,
             beta_deg_b.append(env.beta.detach().cpu().item() * 180.0 / math.pi)
 
             # ----------------------------------------------------------
-            #  Thrust: use env.throttle (true applied throttle), NOT actions
-            # ----------------------------------------------------------
-            if hasattr(env, "thrust_log"):
-                th = env.thrust_log
-                if isinstance(th, torch.Tensor):
-                    # handle shapes (B,) or (B,1)
-                    th_val = float(th[0].detach().cpu().reshape(-1)[0])
+            #  Log propulsion state: applied throttle and physical thrust [N]
+            # --------------------------------------------------------------
+            throttle_val = 0.0
+            try:
+                throttle_filtered = _extract_filtered_throttle(env)
+                if isinstance(throttle_filtered, torch.Tensor):
+                    throttle_val = float(throttle_filtered[0].detach().cpu().reshape(-1)[0])
                 else:
-                    th_val = float(th)
+                    throttle_val = float(throttle_filtered)
+            except Exception:
+                throttle_val = 0.0
 
-            thrust_b.append(np.array([th_val], dtype=np.float32))
+            thrust_n_val = 0.0
+            try:
+                thrust_n = env.extract_thrust()
+                if isinstance(thrust_n, torch.Tensor):
+                    thrust_n_val = float(thrust_n[0].detach().cpu().reshape(-1)[0])
+                else:
+                    thrust_n_val = float(thrust_n)
+            except Exception:
+                thrust_n_val = 0.0
+
+            throttle_b.append(np.array([throttle_val], dtype=np.float32))
+            thrust_n_b.append(np.array([thrust_n_val], dtype=np.float32))
 
             # Depth sectors (if present in the env)
             if getattr(env, "depth", None) is not None:
@@ -921,7 +1126,13 @@ def run_and_record(env,
             positions=np.vstack(pos_b),
             yaw=np.array(yaw_b, dtype=np.float32),
             roll=np.array(roll_b, dtype=np.float32),
-            thrust=np.vstack(thrust_b).astype(np.float32),  # (T, 1) true throttle fraction
+            thrust=np.vstack(throttle_b).astype(np.float32),  # backward-compatible alias
+            throttle=np.vstack(throttle_b).astype(np.float32),  # (T, 1) applied throttle fraction
+            thrust_n=np.vstack(thrust_n_b).astype(np.float32),  # (T, 1) physical thrust [N]
+            max_thrust=np.array(
+                [float(env.aero_solver.max_thrust.to_torch(device=device)[0].detach().cpu().item())],
+                dtype=np.float32,
+            ),
             joint_positions=np.vstack(joint_positions_b).astype(np.float32),
             lin_vel=np.vstack(lin_vel_b).astype(np.float32),
             time_steps=np.array(t_b, dtype=np.float32),
@@ -994,6 +1205,18 @@ def main() -> None:
         default=12.0,
         help="Commanded target Velocity.",
     )
+    parser.add_argument(
+        "--drone",
+        type=str,
+        default=None,
+        help="Drone key for a known default URDF, e.g. 'mydrone' or 'lisparrow'.",
+    )
+    parser.add_argument(
+        "--urdf-file",
+        type=str,
+        default=None,
+        help="Explicit URDF path. Overrides --drone if both are provided.",
+    )
     args = parser.parse_args()
 
     # Initialize Genesis in high-performance mode (same backend as training)
@@ -1002,7 +1225,7 @@ def main() -> None:
     # Paths: training logs and evaluation outputs
     train_log_dir = os.path.join("logs", args.exp_name)
     # Overwrite log_dir if needed coming from cluster
-    #train_log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2563547/logs/ea/{args.exp_name}"
+    #train_log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2663796/logs/ea/{args.exp_name}"
     eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
 
@@ -1014,12 +1237,18 @@ def main() -> None:
     with open(cfg_path, "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
-    urdf_file = str(default_mydrone_urdf_path())
+    urdf_file = resolve_or_generate_urdf(
+        urdf_file=args.urdf_file,
+        drone_key=args.drone,
+    )
 
     # Build evaluation-specific environment config (do not modify original dict)
     env_cfg_eval = dict(env_cfg)
     env_cfg_eval.update(
         dict(
+            # eval_visual exists to render videos, so keep rendering enabled here
+            # regardless of how the training config was saved.
+            enable_rendering=True,
             visualize_camera=False,
             visualize_target=False,
             max_visualize_FPS=25,
@@ -1035,6 +1264,8 @@ def main() -> None:
             noise_sigma_param=0.0,
         )
     )
+    if args.drone:
+        env_cfg_eval["drone"] = args.drone
     command_cfg["eval_speed"] = args.vtgt
 
     obs_cfg_eval = dict(obs_cfg)
@@ -1119,6 +1350,16 @@ def main() -> None:
 
     # Overlay video (camera + HUD)
     if cam_saved:
+        left_column_mp4 = os.path.join(eval_log_dir, "left_column.mp4")
+        print("Rendering left-column video …")
+        create_left_column_video(
+            cam_mp4=cam_mp4,
+            td_mp4=topdown_mp4,
+            out_mp4=left_column_mp4,
+            depth_mp4=depth_video_path,
+        )
+        print(f"✅ Left-column video saved to: {left_column_mp4}")
+
         overlay_mp4 = os.path.join(eval_log_dir, "overlay.mp4")
         # Commanded speed: for compatibility, try commands[:,2], else [:,0]
         if hasattr(env, "commands") and env.commands.shape[1] >= 3:

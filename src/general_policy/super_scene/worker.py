@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import time
 import traceback
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -40,10 +42,56 @@ def _bind_process_to_device(device: str) -> str:
     except Exception:
         gpu_idx = 0
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
+    inherited_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if inherited_visible:
+        visible_list = [item.strip() for item in inherited_visible.split(",") if item.strip()]
+        if 0 <= gpu_idx < len(visible_list):
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_list[gpu_idx]
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
     if torch.cuda.is_available():
         torch.cuda.set_device(0)
     return "cuda:0"
+
+
+def _configure_worker_cache_root() -> Path:
+    """
+    Force Taichi/genesis cache into a writable shared location for worker processes.
+    """
+    cache_root = (Path("logs") / ".cache" / "gstaichi").expanduser().resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    for env_key in ("XDG_CACHE_HOME", "TI_CACHE_DIR", "TAICHI_CACHE_DIR", "GSTAICHI_CACHE_DIR"):
+        os.environ[env_key] = str(cache_root)
+    mpl_dir = cache_root / "mpl"
+    mpl_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
+    return cache_root
+
+
+def _configure_worker_cpu_threads(cpu_threads: Optional[int] = None) -> int:
+    if cpu_threads is None:
+        cpu_threads = int(os.getenv("LOGICAL_SUPER_SCENE_CPU_THREADS", "1"))
+    cpu_threads = max(1, int(cpu_threads))
+    for env_key in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    ):
+        os.environ.setdefault(env_key, str(cpu_threads))
+    try:
+        torch.set_num_threads(cpu_threads)
+    except Exception:
+        pass
+    try:
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+    return cpu_threads
 
 
 def _make_shared_buffers(
@@ -76,6 +124,7 @@ def worker_main(
     show_viewer: bool,
     use_shared_memory: bool = True,
     mps_active_thread_percentage: Optional[int] = None,
+    cpu_threads: Optional[int] = None,
 ) -> None:
     """
     Worker process: owns one Gen_Env shard and performs env stepping commands.
@@ -83,9 +132,12 @@ def worker_main(
     env = None
     shared_buffers: Optional[Dict[str, torch.Tensor]] = None
     try:
+        worker_start_t0 = time.perf_counter()
         # Ensure headless rendering path in workers by default.
         os.environ.setdefault("GS_HEADLESS_NO_GL", "1")
-        os.environ.setdefault("GS_PARA_LEVEL", "2")
+        os.environ.setdefault("GS_PARA_LEVEL", "3")
+        _configure_worker_cache_root()
+        cpu_threads = _configure_worker_cpu_threads(cpu_threads)
         if mps_active_thread_percentage is not None and int(mps_active_thread_percentage) > 0:
             os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(int(mps_active_thread_percentage))
         local_device = _bind_process_to_device(device)
@@ -94,8 +146,24 @@ def worker_main(
         import genesis as gs
         from general_policy.env_gen import Gen_Env
 
+        gs_init_start = time.perf_counter()
         gs.init(logging_level="error", backend=gs.gpu)
+        gs_init_elapsed = time.perf_counter() - gs_init_start
 
+        worker_total_scenes = len(urdf_list)
+
+        def _report_init_progress(payload: Dict[str, Any]) -> None:
+            _safe_reply(
+                conn,
+                ok=True,
+                payload={
+                    "event": "init_progress",
+                    "worker_total_scenes": int(worker_total_scenes),
+                    **payload,
+                },
+            )
+
+        gen_env_build_start = time.perf_counter()
         env = Gen_Env(
             num_envs=num_envs,
             env_cfg=env_cfg,
@@ -107,15 +175,27 @@ def worker_main(
             show_viewer=show_viewer,
             eval=False,
             device=local_device,
+            progress_callback=_report_init_progress,
         )
         configure_solver_noise(env, env_cfg)
+        gen_env_build_elapsed = time.perf_counter() - gen_env_build_start
 
+        initial_reset_start = time.perf_counter()
         obs, info = env.reset()
         critic = info.get("observations", {}).get("critic")
         if critic is None:
             critic = env.privileged_obs_buf
+        initial_reset_elapsed = time.perf_counter() - initial_reset_start
+
+        shm_export_elapsed = 0.0
+        worker_ready_elapsed = time.perf_counter() - worker_start_t0
+        scene_init_total_s = float(getattr(env, "scene_init_total_s", 0.0))
+        scene_build_total_s = float(getattr(env, "scene_build_total_s", 0.0))
+        slowest_scene_s = float(getattr(env, "slowest_scene_init_s", 0.0))
+        slowest_scene_urdf = str(getattr(env, "slowest_scene_urdf", ""))
 
         if use_shared_memory:
+            shm_export_start = time.perf_counter()
             shared_buffers = _make_shared_buffers(
                 num_envs=int(env.num_envs),
                 num_obs=int(env.num_obs),
@@ -124,6 +204,19 @@ def worker_main(
             )
             shared_buffers["obs"].copy_(_to_cpu(obs))
             shared_buffers["critic_obs"].copy_(_to_cpu(critic))
+            shm_export_elapsed = time.perf_counter() - shm_export_start
+
+        worker_ready_elapsed = time.perf_counter() - worker_start_t0
+        print(
+            "[logical-super-scene][worker] "
+            f"device={local_device} envs={int(env.num_envs)} urdfs={len(urdf_list)} "
+            f"cpu_threads={cpu_threads} "
+            f"ready_s={worker_ready_elapsed:.3f} gs_init_s={gs_init_elapsed:.3f} "
+            f"gen_env_build_s={gen_env_build_elapsed:.3f} initial_reset_s={initial_reset_elapsed:.3f} "
+            f"shm_export_s={shm_export_elapsed:.3f} "
+            f"scene_init_total_s={scene_init_total_s:.3f} scene_build_total_s={scene_build_total_s:.3f} "
+            f"slowest_scene_s={slowest_scene_s:.3f} slowest_scene_urdf='{slowest_scene_urdf}'"
+        )
 
         _safe_reply(
             conn,
@@ -137,6 +230,15 @@ def worker_main(
                     "num_actions": int(env.num_actions),
                     "max_episode_length": int(env.max_episode_length),
                     "dt": float(env.dt),
+                    "worker_ready_s": float(worker_ready_elapsed),
+                    "gs_init_s": float(gs_init_elapsed),
+                    "gen_env_build_s": float(gen_env_build_elapsed),
+                    "initial_reset_s": float(initial_reset_elapsed),
+                    "shm_export_s": float(shm_export_elapsed),
+                    "scene_init_total_s": scene_init_total_s,
+                    "scene_build_total_s": scene_build_total_s,
+                    "slowest_scene_s": slowest_scene_s,
+                    "slowest_scene_urdf": slowest_scene_urdf,
                 },
                 "obs": _to_cpu(obs) if not use_shared_memory else None,
                 "critic_obs": _to_cpu(critic) if not use_shared_memory else None,

@@ -38,6 +38,7 @@ class DepthSolver:
         y_lower: float = -50.0,
         y_upper: float = 50.0,
         torch_device: torch.device | str = "cuda",
+        backend: str = "torch",
     ) -> None:
         if num_sectors <= 0:
             raise ValueError("num_sectors must be positive")
@@ -45,6 +46,15 @@ class DepthSolver:
         self.S = int(num_sectors)
         self.cone_angle_deg = float(cone_angle_deg)
         self._torch_device = torch.device(torch_device)
+        self.backend = str(backend).strip().lower()
+        if self.backend not in {"torch", "taichi"}:
+            raise ValueError("DepthSolver backend must be either 'torch' or 'taichi'")
+        self._max_distance_value = float(max_distance)
+        self._short_range_value = float(short_range)
+        self._tree_radius_value = float(tree_radius)
+        self._y_lower_value = float(y_lower)
+        self._y_upper_value = float(y_upper)
+        self._half_cone_nom_value = 0.5 * math.radians(self.cone_angle_deg)
 
         # Scalar params (kernel-friendly 0D fields)
         self.max_distance = ti.field(dtype=ti.f32, shape=())
@@ -66,6 +76,16 @@ class DepthSolver:
         # Precomputed body-frame ray directions (cos θ, sin θ)
         self.rays_body = ti.Vector.field(2, dtype=ti.f32, shape=(self.S,))
         self._init_ray_dirs()
+        angles = torch.linspace(
+            -self._half_cone_nom_value,
+            self._half_cone_nom_value,
+            self.S,
+            device=self._torch_device,
+            dtype=torch.float32,
+        )
+        self._ray_dx_t = torch.cos(angles)
+        self._ray_dy_t = torch.sin(angles)
+        self._sector_idx_t = torch.arange(self.S, device=self._torch_device, dtype=torch.long).view(1, 1, self.S)
 
         # Input fields (allocated per (B, T))
         self.pos_x_f = None   # (B,)
@@ -101,6 +121,9 @@ class DepthSolver:
             raise ValueError("base_pos must be (B, 3)")
         if base_euler.ndim != 2 or base_euler.shape[1] != 3:
             raise ValueError("base_euler must be (B, 3)")
+
+        if self.backend == "torch":
+            return self._compute_depth_torch(base_pos, base_euler, cyl_xy_b=cyl_xy_b, noise_std=noise_std)
 
         B = int(base_pos.shape[0])
         T = 0 if cyl_xy_b is None else int(cyl_xy_b.shape[1])
@@ -149,6 +172,107 @@ class DepthSolver:
             depth.add_(self._noise_t, alpha=float(noise_std))
             depth.clamp_(min=0.0, max=float(self.max_distance[None]))
         return depth
+
+    @torch.no_grad()
+    def _compute_depth_torch(
+        self,
+        base_pos: torch.Tensor,
+        base_euler: torch.Tensor,
+        *,
+        cyl_xy_b: Optional[torch.Tensor],
+        noise_std: float,
+    ) -> torch.Tensor:
+        device = self._torch_device
+        base_pos = base_pos if base_pos.device == device else base_pos.to(device=device)
+        base_euler = base_euler if base_euler.device == device else base_euler.to(device=device)
+        if base_pos.dtype != torch.float32:
+            base_pos = base_pos.to(dtype=torch.float32)
+        if base_euler.dtype != torch.float32:
+            base_euler = base_euler.to(dtype=torch.float32)
+
+        B = int(base_pos.shape[0])
+        self._ensure_buffers(B)
+
+        pos_x = base_pos[:, 0]
+        pos_y = base_pos[:, 1]
+        roll = base_euler[:, 0]
+        yaw = base_euler[:, 2]
+
+        dx_b = self._ray_dx_t.view(1, self.S)
+        dy_b = self._ray_dy_t.view(1, self.S)
+
+        cy = torch.cos(yaw).unsqueeze(1)
+        sy = torch.sin(yaw).unsqueeze(1)
+        dx_w = cy * dx_b - sy * dy_b
+        dy_w = sy * dx_b + cy * dy_b
+        dy_w = dy_w.clamp(min=-0.999, max=0.999)
+
+        max_d = self._max_distance_value
+        py = pos_y.unsqueeze(1)
+        d_wall = torch.full((B, self.S), max_d, device=device, dtype=torch.float32)
+        left_mask = dy_w < 0.0
+        right_mask = dy_w > 0.0
+        if left_mask.any():
+            t_left = (self._y_lower_value - py) / dy_w
+            d_wall = torch.minimum(d_wall, torch.where(left_mask, torch.clamp_min(t_left, 0.0), d_wall))
+        if right_mask.any():
+            t_right = (self._y_upper_value - py) / dy_w
+            d_wall = torch.minimum(d_wall, torch.where(right_mask, torch.clamp_min(t_right, 0.0), d_wall))
+        depth = d_wall.clamp(max=max_d)
+
+        T = 0 if cyl_xy_b is None else int(cyl_xy_b.shape[1])
+        if T > 0:
+            if cyl_xy_b.ndim != 3 or cyl_xy_b.shape[0] != B or cyl_xy_b.shape[2] != 2:
+                raise ValueError("cyl_xy_b must be (B, T, 2)")
+            if cyl_xy_b.device != device or cyl_xy_b.dtype != torch.float32:
+                cyl_xy = cyl_xy_b.to(device=device, dtype=torch.float32)
+            else:
+                cyl_xy = cyl_xy_b
+
+            wx = cyl_xy[:, :, 0]
+            wy = cyl_xy[:, :, 1]
+            dx = wx - pos_x.unsqueeze(1)
+            dy = wy - pos_y.unsqueeze(1)
+            cy_tree = torch.cos(yaw).unsqueeze(1)
+            sy_tree = torch.sin(yaw).unsqueeze(1)
+            x_loc = cy_tree * dx + sy_tree * dy
+            y_loc = -sy_tree * dx + cy_tree * dy
+
+            r = torch.sqrt(x_loc * x_loc + y_loc * y_loc) + 1e-9
+            r_surf = torch.clamp_min(r - self._tree_radius_value, 0.0)
+            theta = torch.atan2(y_loc, x_loc)
+            ratio = torch.clamp(self._tree_radius_value / r, max=1.0)
+            delta = torch.asin(ratio)
+
+            croll = torch.clamp(torch.cos(roll), min=1e-3).unsqueeze(1)
+            half_eff = self._half_cone_nom_value * croll
+            in_cone = (theta >= -half_eff) & (theta <= half_eff) & (r <= max_d)
+            near = (r <= self._short_range_value) & (x_loc >= 0.0)
+            active = in_cone | near
+            if active.any():
+                sw = (2.0 * half_eff / float(self.S)).clamp(min=1e-6)
+                theta_l = theta - delta
+                theta_r = theta + delta
+                idx_l = torch.floor((theta_l + half_eff) / sw).to(torch.long).clamp_(0, self.S - 1)
+                idx_r = torch.floor((theta_r + half_eff) / sw).to(torch.long).clamp_(0, self.S - 1)
+
+                sector_mask = (self._sector_idx_t >= idx_l.unsqueeze(-1)) & (self._sector_idx_t <= idx_r.unsqueeze(-1))
+                update_mask = active.unsqueeze(-1) & sector_mask
+                tree_depth = torch.where(
+                    update_mask,
+                    r_surf.unsqueeze(-1),
+                    torch.full((1,), max_d, device=device, dtype=torch.float32),
+                ).amin(dim=1)
+                depth = torch.minimum(depth, tree_depth)
+
+        if noise_std > 0.0:
+            self._ensure_noise_buffer(B)
+            self._noise_t.normal_()
+            depth.add_(self._noise_t, alpha=float(noise_std))
+            depth.clamp_(min=0.0, max=max_d)
+
+        self._depth_t.copy_(depth)
+        return self._depth_t
 
     # ------------------------------------------------------------------ #
     # Setup / housekeeping                                               #

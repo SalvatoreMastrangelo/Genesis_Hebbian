@@ -25,7 +25,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh
-from winged_drone_train.defaults import default_mydrone_urdf_path
+from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
 from winged_drone_train.noise_config import configure_solver_noise
 from winged_drone_train.runtime_random import seed_runtime_randomness
 import builtins
@@ -411,19 +411,18 @@ def evaluation(
         cfg_path_resolved = log_dir / "cfgs.pkl"
     cfg_path = cfg_path_resolved
     log_dir_str = str(cfg_path.parent)
-    urdf_path = Path(urdf_file).expanduser()
-    clean_stem = safe_urdf_stem(urdf_path)
-
-    print(
-        f"[evaluation] exp={exp_name} ckpt={ckpt} urdf={urdf_path.name} "
-        f"clean={clean_stem} envs={envs} save_plots={save_plots} eval_dir={eval_dir}"
-    )
-
     if not cfg_path.is_file():
         raise FileNotFoundError(f"Missing cfgs.pkl at {cfg_path}")
 
     with cfg_path.open("rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+    urdf_file = resolve_or_generate_urdf(urdf_file=urdf_file, drone_key=env_cfg.get("drone"))
+    urdf_path = Path(urdf_file).expanduser()
+    clean_stem = safe_urdf_stem(urdf_path)
+    print(
+        f"[evaluation] exp={exp_name} ckpt={ckpt} urdf={urdf_path.name} "
+        f"clean={clean_stem} envs={envs} save_plots={save_plots} eval_dir={eval_dir}"
+    )
     runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
 
     # Command range used in this evaluation
@@ -644,6 +643,18 @@ if __name__ == "__main__":
     parser.add_argument("--vmin", type=float, default=5.0)
     parser.add_argument("--vmax", type=float, default=25.0)
     parser.add_argument("--gpu", default="cuda")
+    parser.add_argument(
+        "--drone",
+        type=str,
+        default=None,
+        help="Drone key for a known default URDF, e.g. 'mydrone' or 'lisparrow'.",
+    )
+    parser.add_argument(
+        "--urdf-file",
+        type=str,
+        default=None,
+        help="Explicit URDF path. Overrides --drone if both are provided.",
+    )
     args = parser.parse_args()
 
     # ---------------- Load configs ------------------------------------- #
@@ -658,7 +669,13 @@ if __name__ == "__main__":
 
     gs.init(logging_level="error")
 
-    urdf_file = str(default_mydrone_urdf_path())
+    selected_drone = args.drone or env_cfg.get("drone")
+    urdf_file = resolve_or_generate_urdf(
+        urdf_file=args.urdf_file,
+        drone_key=selected_drone,
+    )
+    if args.drone:
+        env_cfg["drone"] = args.drone
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax

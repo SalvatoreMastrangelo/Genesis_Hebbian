@@ -104,6 +104,27 @@ def _validate_shards(shards: Sequence[Sequence[str]], shard_env_counts: Sequence
             )
 
 
+def _choose_worker_count(n_shards: int, num_workers: int, collection_gpus: int) -> int:
+    if n_shards <= 0:
+        return 0
+    if num_workers > 0:
+        return max(1, min(int(num_workers), n_shards))
+    if collection_gpus > 0:
+        return max(1, min(n_shards, int(collection_gpus)))
+    return 1
+
+
+def _rebalance_shards_for_workers(all_urdfs: Sequence[str], num_workers: int) -> List[List[str]]:
+    counts = split_even(len(all_urdfs), num_workers)
+    shards: List[List[str]] = []
+    start = 0
+    for count in counts:
+        end = start + count
+        shards.append(list(all_urdfs[start:end]))
+        start = end
+    return [shard for shard in shards if shard]
+
+
 def run_logical_super_scene_training(
     *,
     experiment_name: str,
@@ -135,18 +156,10 @@ def run_logical_super_scene_training(
     if urdf_shard_size <= 0:
         raise RuntimeError("logical-super-scene mode requires --urdf-shard-size > 0")
 
-    shards: List[List[str]] = chunk_list(all_urdfs, urdf_shard_size)
-    n_shards = len(shards)
+    initial_shards: List[List[str]] = chunk_list(all_urdfs, urdf_shard_size)
+    n_shards = len(initial_shards)
     if n_shards <= 0:
         raise RuntimeError("No shards generated from URDF catalog")
-
-    if num_workers <= 0:
-        num_workers = n_shards
-    if num_workers != n_shards:
-        raise RuntimeError(
-            "For logical-super-scene global updates, num_workers must equal number of shards. "
-            f"Got num_workers={num_workers}, n_shards={n_shards}."
-        )
 
     if collection_gpus <= 0:
         raise RuntimeError(f"Invalid collection_gpus={collection_gpus}. Must be > 0.")
@@ -157,10 +170,21 @@ def run_logical_super_scene_training(
     else:
         collection_gpus = 0
 
+    requested_workers = int(num_workers)
+    num_workers = _choose_worker_count(n_shards, requested_workers, collection_gpus)
+    shards = _rebalance_shards_for_workers(all_urdfs, num_workers)
+    n_shards = len(shards)
+
     if collection_gpus == 0:
         worker_devices = ["cpu"] * n_shards
     else:
         worker_devices = [f"cuda:{i % collection_gpus}" for i in range(n_shards)]
+
+    if collection_gpus == 1 and n_shards > 1:
+        print(
+            "[logical-super-scene] "
+            f"single-GPU collection enabled: all {n_shards} shard workers will share cuda:0."
+        )
 
     shard_env_counts = split_even(num_envs_total, n_shards)
     _validate_shards(shards, shard_env_counts, num_envs_total)
@@ -168,6 +192,7 @@ def run_logical_super_scene_training(
     print(
         "[logical-super-scene] "
         f"exp={experiment_name} urdfs={len(all_urdfs)} shards={n_shards} shard_size={urdf_shard_size} "
+        f"requested_workers={requested_workers} effective_workers={num_workers} "
         f"num_envs_total={num_envs_total} per_shard_envs={shard_env_counts} "
         f"collection_gpus={collection_gpus} learner_device={device}"
     )

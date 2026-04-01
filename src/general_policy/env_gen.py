@@ -4,7 +4,7 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import genesis as gs
@@ -60,6 +60,7 @@ class Gen_Env:
         debug: Optional[bool] = None,
         debug_every: Optional[int] = None,
         peek_envs: Optional[int] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         # ------------------------------------------------------------------ #
         # Basic configuration                                               #
@@ -75,6 +76,7 @@ class Gen_Env:
         self._dbg_peek = int(
             os.getenv("FP_PEEK_ENVS", "0") if peek_envs is None else peek_envs
         )
+        self._progress_callback = progress_callback
         self._t = 0
         self._tic = time.time()
 
@@ -133,6 +135,10 @@ class Gen_Env:
         # ------------------------------------------------------------------ #
         self._subs: List[WingedDroneEnv] = []
         self._slices: List[slice] = []
+        self.scene_init_total_s = 0.0
+        self.scene_build_total_s = 0.0
+        self.slowest_scene_init_s = 0.0
+        self.slowest_scene_urdf = ""
 
         build_tic = time.time()
         gs.max_scenes = max_scenes  # cap in Genesis (>= K)
@@ -150,12 +156,6 @@ class Gen_Env:
                 f"[Gen_Env] Building sub-env #{i:02d} with {count_i} envs "
                 f"from URDF '{Path(urdf_i).name}'"
             )
-            if torch.cuda.is_available():
-                free, total = torch.cuda.mem_get_info()
-                print(
-                    f"[GPU] before sub-env #{i:02d} free={free/1e9:.2f}GB "
-                    f"total={total/1e9:.2f}GB alloc={torch.cuda.memory_allocated()/1e9:.2f}GB"
-                )
 
             sub_env_cfg = dict(env_cfg)
             sub_obs_cfg = dict(obs_cfg)
@@ -174,12 +174,6 @@ class Gen_Env:
                 eval=self.eval_mode,
                 device=self._torch_device_str,
             )
-            if torch.cuda.is_available():
-                free, total = torch.cuda.mem_get_info()
-                print(
-                    f"[GPU] after sub-env #{i:02d} free={free/1e9:.2f}GB "
-                    f"total={total/1e9:.2f}GB alloc={torch.cuda.memory_allocated()/1e9:.2f}GB"
-                )
 
             configure_solver_noise(sub, env_cfg)
 
@@ -190,16 +184,43 @@ class Gen_Env:
                 f"{sub_init_elapsed:.3f}s total, {per_env:.6f}s per env "
                 f"(count={count_i}, urdf='{Path(urdf_i).name}')"
             )
+            scene_init_s = float(getattr(sub, "scene_init_elapsed", 0.0))
+            scene_build_s = float(getattr(sub, "scene_build_elapsed", 0.0))
+            self.scene_init_total_s += scene_init_s
+            self.scene_build_total_s += scene_build_s
+            if scene_init_s >= self.slowest_scene_init_s:
+                self.slowest_scene_init_s = scene_init_s
+                self.slowest_scene_urdf = Path(urdf_i).name
             self._subs.append(sub)
             if torch.cuda.is_available():
                 # Keep allocator pressure lower during multi-sub-env construction.
                 torch.cuda.empty_cache()
+            if self._progress_callback is not None:
+                self._progress_callback(
+                    {
+                        "local_completed_scenes": len(self._subs),
+                        "local_total_scenes": K,
+                        "scene_idx": i,
+                        "scene_envs": int(count_i),
+                        "scene_init_s": float(sub_init_elapsed),
+                        "scene_build_s": scene_build_s,
+                        "urdf": Path(urdf_i).name,
+                    }
+                )
             start = stop
 
         print(
             f"[Gen_Env] Created {len(self._subs)} sub-envs in "
             f"{time.time() - build_tic:.2f} s"
         )
+        if self._subs:
+            print(
+                "[Gen_Env] scene summary: "
+                f"scene_init_total_s={self.scene_init_total_s:.3f} "
+                f"scene_build_total_s={self.scene_build_total_s:.3f} "
+                f"slowest_scene_s={self.slowest_scene_init_s:.3f} "
+                f"slowest_scene_urdf='{self.slowest_scene_urdf}'"
+            )
 
         if not self._subs:
             raise RuntimeError("[Gen_Env] No sub-environments were created.")
