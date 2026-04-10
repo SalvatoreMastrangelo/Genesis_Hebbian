@@ -5,7 +5,7 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: 40_urdf_parallel_test_low_energy_penalty
+exp_name: extra_observations_critic_multi
 
 ppo:
   clip_param: 0.15
@@ -24,12 +24,12 @@ ppo:
 
 policy:
   actor_hidden_dims: [64, 32]
-  critic_hidden_dims: [64, 32]
+  critic_hidden_dims: [128, 128]
   activation: elu
   init_noise_std: 0.3
   rnn_type: lstm
   rnn_hidden_size: 64
-  critic_rnn_hidden_size: 64  # null = same as rnn_hidden_size
+  critic_rnn_hidden_size: 128  # null = same as rnn_hidden_size
   rnn_num_layers: 1
   max_servo: 1.0
   max_throttle: 1.0
@@ -54,6 +54,8 @@ env:
   termination_if_z_greater_than: 50.0
   base_init_pos: [-30.0, 0.0, 15.0]
   base_init_quat: [1.0, 0.0, 0.0, 0.0]
+  randomize_init_quat: false
+  randomize_joint_pos: false
   episode_length_s: 100.0
   at_target_threshold: 0.1
   resampling_time_s: 3.0
@@ -85,6 +87,9 @@ obs:
   add_noise: true
   add_genome_obs_actor: false
   add_genome_obs_critic: true
+  include_joint_pos_critic: true
+  include_joint_vel_critic: true
+  include_ang_vel_critic: true
   noise_std_z: 0.01
   noise_std_quat: 0.01
   noise_std_vel: 0.02
@@ -93,6 +98,9 @@ obs:
   noise_std_last_jnts: 0.0
   noise_std_v_tgt: 0.0
   noise_std_genome: 0.05
+  noise_std_joint_pos: 0.0
+  noise_std_joint_vel: 0.0
+  noise_std_ang_vel: 0.0
 
 reward:
   smooth: -0.1
@@ -110,6 +118,6 @@ command:
   num_commands: 1
 
 catalog:
-  n_urdf: 1
+  n_urdf: 16
   catalog_dir: null
   urdf_seed: 0

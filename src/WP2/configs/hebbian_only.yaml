@@ -10,6 +10,7 @@ hebbian:
   evolve_eta: false
   decay: 0.01
   use_oja_coefficient: true
+  initialize_rules_to_zero: false
   w_max: 3.0
 
 evolution:

@@ -727,6 +727,16 @@ class HebbianCodesignDEAP:
         else:
             # Generation 0: random initial population
             pop = self.tb.pop(self.n_pop)
+
+            # Apply zero initialization if configured
+            if self.cfg.hebbian.initialize_rules_to_zero:
+                from WP2.utils import create_zero_initialized_genome
+                zero_genome = create_zero_initialized_genome(self.cfg)
+                for ind in pop:
+                    for i in range(len(ind)):
+                        ind[i] = zero_genome[i]
+                print("[HebbianCodesignDEAP] Initialized population with zero Hebbian rules")
+
             self._ensure_uids(pop)
             self._gen = 0
 

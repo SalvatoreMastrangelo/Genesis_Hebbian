@@ -112,10 +112,9 @@ def decode_hebbian_genes(
     def _rescale(block: np.ndarray, lo: float, hi: float) -> torch.Tensor:
         return torch.from_numpy(block * (hi - lo) + lo).reshape(out_features, in_features)
 
-    def _constant(lo: float, hi: float) -> torch.Tensor:
-        """Create a constant tensor with the midpoint of the range."""
-        mid = (lo + hi) / 2.0
-        return torch.full((out_features, in_features), mid, dtype=torch.float32)
+    def _constant_value(value: float) -> torch.Tensor:
+        """Create a constant tensor with a specific value."""
+        return torch.full((out_features, in_features), value, dtype=torch.float32)
 
     idx = 0
     A = _rescale(genes[idx:idx + n_weights], *hebb_cfg.A_range); idx += n_weights
@@ -128,7 +127,7 @@ def decode_hebbian_genes(
     if hebb_cfg.evolve_decay:
         lam = _rescale(genes[idx:idx + n_weights], *hebb_cfg.decay_range); idx += n_weights
     else:
-        lam = _constant(*hebb_cfg.decay_range)
+        lam = _constant_value(hebb_cfg.decay)
     result["lam"] = lam
 
     if hebb_cfg.evolve_eta:
@@ -160,6 +159,50 @@ def encode_hebbian_genes(
         parts.append(_normalise(rules["eta"], *hebb_cfg.eta_range))
 
     return np.concatenate(parts).tolist()
+
+
+def create_zero_initialized_genome(
+    cfg: HebbianEvolutionConfig,
+) -> List[float]:
+    """Create a genome with zero Hebbian rules (A, B, C, D = 0, others random).
+
+    The genome has:
+    - A, B, C, D blocks set to 0.5 in [0, 1] space (maps to midpoint of ranges,
+      which is 0.0 for symmetric ranges like [-1, 1])
+    - All other sections (decay, eta, morphology) kept as random [0, 1]
+
+    This is useful for ablation studies starting from no Hebbian plasticity.
+
+    Parameters
+    ----------
+    cfg : HebbianEvolutionConfig
+        Configuration with genome dimensions.
+
+    Returns
+    -------
+    list of float
+        Full genome in [0, 1], with A/B/C/D zeroed and others random.
+    """
+    n_weights = cfg.hebbian.num_actions * cfg.hebbian.hidden_dim
+    genome = []
+
+    # A, B, C, D: 0.5 maps to midpoint of each range, which acts as "zero" behavior
+    # For symmetric ranges like [-1, 1], 0.5 maps to 0.0
+    for _ in range(4):
+        genome.extend([0.5] * n_weights)
+
+    # decay (lambda) and eta: keep as random [0, 1] if evolved
+    if cfg.hebbian.evolve_decay:
+        genome.extend([random.random() for _ in range(n_weights)])
+    if cfg.hebbian.evolve_eta:
+        genome.extend([random.random() for _ in range(n_weights)])
+
+    # Morphology: keep as random [0, 1]
+    if cfg.morphology.evolve:
+        morph_dim = cfg.morphology_genome_dim()
+        genome.extend([random.random() for _ in range(morph_dim)])
+
+    return genome
 
 
 def split_genome(
