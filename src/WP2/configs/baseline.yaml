@@ -11,6 +11,7 @@ checkpoint_config_path: ""
 hebbian:
   enabled: false
   use_oja_coefficient: true
+  initialize_rules_to_zero: false
 
 evolution:
   population_size: 4

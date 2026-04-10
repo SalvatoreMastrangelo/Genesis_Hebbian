@@ -7,7 +7,7 @@
 exp_name: 96_morph
 
 training:
-  num_envs: 5120
+  num_envs: 4000
   max_iterations: 20
   eval_interval: 100
 
@@ -17,12 +17,17 @@ env:
   dens_min_min: 0.0
   dens_min_max: 3.0
   growing_forest: true
+  randomize_init_quat: false
+  randomize_joint_pos: false
 
 obs:
   add_genome_obs_actor: false
   add_genome_obs_critic: true
+  include_joint_pos_critic: true
+  include_joint_vel_critic: true
+  include_ang_vel_critic: true
 
 catalog:
-  n_urdf: 40
+  n_urdf: 20
   catalog_dir: null # Not needed anymore unless specified in the CLI
-  urdf_seed: 11
+  urdf_seed: 89654

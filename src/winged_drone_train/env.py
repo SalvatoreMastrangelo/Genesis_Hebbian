@@ -356,6 +356,9 @@ class WingedDroneEnv:
         self.action_latency_max = int(self.env_cfg.get("action_latency_max_steps", 0))
         self.action_latency_random_per_step = bool(self.env_cfg.get("action_latency_random_per_step", False))
 
+        # Reset randomization toggles
+        self.randomize_joint_pos = bool(self.env_cfg.get("randomize_joint_pos", True))
+
         # For evaluation we enforce a deterministic, fixed latency
         if self.evaluation:
             self.action_latency_min = 0
@@ -752,9 +755,13 @@ class WingedDroneEnv:
             obs_cfg=self.obs_cfg,
             add_genome_obs_actor=self.add_genome_obs_actor and (self._genome_vec is not None),
             add_genome_obs_critic=self.add_genome_obs_critic and (self._genome_vec is not None),
+            include_joint_pos_critic=bool(self.obs_cfg.get("include_joint_pos_critic", False)),
+            include_joint_vel_critic=bool(self.obs_cfg.get("include_joint_vel_critic", False)),
+            include_ang_vel_critic=bool(self.obs_cfg.get("include_ang_vel_critic", False)),
             genome_vec=self._genome_vec,
             genome_min=self.GENOME_MIN if self._genome_vec is not None else None,
             genome_max=self.GENOME_MAX if self._genome_vec is not None else None,
+            num_servos=self.num_servos,
             include_depth=self.obs_cfg.get("include_depth", True),
             device=self.device,
         )
@@ -1181,6 +1188,9 @@ class WingedDroneEnv:
             last_actions=self.last_actions,
             commands=self.commands,
             depth_actor=depth_actor,
+            joint_positions=self.joint_position,
+            joint_velocities=self.joint_velocity,
+            base_ang_vel=self.base_ang_vel,
         )
 
         self.obs_buf.copy_(obs_actor)
@@ -1377,16 +1387,17 @@ class WingedDroneEnv:
         self.base_euler[env_ids, 1] = torch.atan2(-self.base_lin_vel[env_ids, 2], self.base_lin_vel[env_ids, 0])
         self.base_euler[env_ids, 2] = torch.atan2(self.base_lin_vel[env_ids, 1], self.base_lin_vel[env_ids, 0])
 
-        # Small attitude perturbations
-        r.normal_()
-        self.base_euler[env_ids, 0] += torch.clamp(r * 0.2, min=-0.8, max=0.8)
-        r.normal_()
-        self.base_euler[env_ids, 1] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
-        r.normal_()
-        self.base_euler[env_ids, 2] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
+        # Small attitude perturbations (if randomize_init_quat is enabled)
+        if self.env_cfg.get("randomize_init_quat", True):
+            r.normal_()
+            self.base_euler[env_ids, 0] += torch.clamp(r * 0.2, min=-0.8, max=0.8)
+            r.normal_()
+            self.base_euler[env_ids, 1] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
+            r.normal_()
+            self.base_euler[env_ids, 2] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
 
         # Joint positions noise
-        if self.num_servos > 0:
+        if self.num_servos > 0 and self.randomize_joint_pos:
             rs = self._rand_servo_scratch[:n]
             rs.normal_()
             self.joint_position[env_ids] += torch.clamp(rs * 0.01, min=-0.04, max=0.04)
@@ -1509,6 +1520,9 @@ class WingedDroneEnv:
             last_actions=self.last_actions,
             commands=self.commands,
             depth_actor=depth_actor,
+            joint_positions=self.joint_position,
+            joint_velocities=self.joint_velocity,
+            base_ang_vel=self.base_ang_vel,
         )
 
         self.obs_buf.copy_(obs_actor)

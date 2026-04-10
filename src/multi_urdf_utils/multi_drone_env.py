@@ -532,9 +532,13 @@ class MultiDroneEnv:
                 obs_cfg=self.obs_cfg,
                 add_genome_obs_actor=add_genome_actor,
                 add_genome_obs_critic=add_genome_critic,
+                include_joint_pos_critic=bool(self.obs_cfg.get("include_joint_pos_critic", False)),
+                include_joint_vel_critic=bool(self.obs_cfg.get("include_joint_vel_critic", False)),
+                include_ang_vel_critic=bool(self.obs_cfg.get("include_ang_vel_critic", False)),
                 genome_vec=ds._genome_vec,
                 genome_min=genome_min if ds._genome_vec is not None else None,
                 genome_max=genome_max if ds._genome_vec is not None else None,
+                num_servos=self.num_servos,
                 include_depth=True,
                 device=self.device,
             )
@@ -733,6 +737,9 @@ class MultiDroneEnv:
                 last_actions=la,
                 commands=ds.commands,
                 depth_actor=depth,
+                joint_positions=ds.joint_position,
+                joint_velocities=ds.joint_velocity,
+                base_ang_vel=ds.base_ang_vel,
             )
             self.obs_buf[i] = obs_actor
             ds.priv_obs_buf[:] = obs_critic

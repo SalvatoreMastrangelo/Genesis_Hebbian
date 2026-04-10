@@ -276,6 +276,9 @@ class EnvConfig:
         Base std for force-magnitude and force-direction noise.
     noise_sigma_param : float
         Std for aerodynamic parameter randomisation on reset.
+    randomize_init_quat : bool
+        Whether to randomize the initial quaternion (orientation) at reset
+        during training. If False, always use base_init_quat unchanged.
     """
 
     num_actions: int = 7
@@ -287,6 +290,7 @@ class EnvConfig:
     termination_if_z_greater_than: float = 50.0
     base_init_pos: List[float] = field(default_factory=lambda: [-30.0, 0.0, 15.0])
     base_init_quat: List[float] = field(default_factory=lambda: [1.0, 0.0, 0.0, 0.0])
+    randomize_init_quat: bool = True
     episode_length_s: float = 100.0
     at_target_threshold: float = 0.1
     resampling_time_s: float = 3.0
@@ -339,6 +343,12 @@ class ObsConfig:
         **Must be False** for the morphology-blind actor (WP2).
     add_genome_obs_critic : bool
         Whether to append the normalised genome vector to critic observations.
+    include_joint_pos_critic : bool
+        Whether to include joint positions in critic observations only.
+    include_joint_vel_critic : bool
+        Whether to include joint velocities in critic observations only.
+    include_ang_vel_critic : bool
+        Whether to include angular velocity of the drone base in critic observations only.
     noise_std_* : float
         Per-feature noise standard deviations.  ``0.0`` means no noise for
         that feature.
@@ -348,6 +358,9 @@ class ObsConfig:
     add_noise: bool = True
     add_genome_obs_actor: bool = False
     add_genome_obs_critic: bool = True
+    include_joint_pos_critic: bool = False
+    include_joint_vel_critic: bool = False
+    include_ang_vel_critic: bool = False
     noise_std_z: float = 0.01
     noise_std_quat: float = 0.01
     noise_std_vel: float = 0.02
@@ -356,6 +369,9 @@ class ObsConfig:
     noise_std_last_jnts: float = 0.0
     noise_std_v_tgt: float = 0.0
     noise_std_genome: float = 0.05
+    noise_std_joint_pos: float = 0.0
+    noise_std_joint_vel: float = 0.0
+    noise_std_ang_vel: float = 0.0
 
 
 @dataclass
@@ -639,6 +655,9 @@ class RunConfig:
             "add_noise": self.obs.add_noise,
             "add_genome_obs_actor": self.obs.add_genome_obs_actor,
             "add_genome_obs_critic": self.obs.add_genome_obs_critic,
+            "include_joint_pos_critic": self.obs.include_joint_pos_critic,
+            "include_joint_vel_critic": self.obs.include_joint_vel_critic,
+            "include_ang_vel_critic": self.obs.include_ang_vel_critic,
             "noise_std": {
                 "z": self.obs.noise_std_z,
                 "quat": self.obs.noise_std_quat,
@@ -648,6 +667,9 @@ class RunConfig:
                 "last_jnts": self.obs.noise_std_last_jnts,
                 "v_tgt": self.obs.noise_std_v_tgt,
                 "genome": self.obs.noise_std_genome,
+                "joint_pos": self.obs.noise_std_joint_pos,
+                "joint_vel": self.obs.noise_std_joint_vel,
+                "ang_vel": self.obs.noise_std_ang_vel,
             },
         }
 

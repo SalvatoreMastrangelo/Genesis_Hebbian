@@ -55,7 +55,7 @@ Usage
 
     # Query derived properties
     print(cfg.active_objective_names())   # ['velocity', 'energy', 'progress']
-    print(cfg.total_genome_dim())         # 2240 + 15 = 2255 (defaults: 7 actions, 64 hidden)
+    print(cfg.total_genome_dim())         # 1792 + 15 = 1807 (defaults: 7 actions, 64 hidden, no decay/eta evolution)
 """
 
 from __future__ import annotations
@@ -115,6 +115,10 @@ class HebbianConfig:
         When True, dW = eta * k * [ABCD], where k accounts for weight drift from
         the frozen base controller.  When False, k = 1 (standard ABCD rule).
         Default True.
+    initialize_rules_to_zero : bool
+        Initialize all Hebbian rules (A, B, C, D) to 0.0 in the first generation.
+        If True, the initial population has zero Hebbian plasticity; evolution
+        then searches for non-zero rules. Default False (uniform random [0,1]).
     w_max : float
         Symmetric weight clipping bound; weights are clamped to [-w_max, w_max]
         after each Hebbian update to prevent instability.  Typical: 3.0.
@@ -144,6 +148,7 @@ class HebbianConfig:
     decay: float = 0.01
     evolve_decay: bool = False
     use_oja_coefficient: bool = True
+    initialize_rules_to_zero: bool = False
     num_actions: int = 7   # last-layer output dim (inferred from checkpoint)
     hidden_dim: int = 64   # last-layer input dim (actor MLP hidden size)
     w_max: float = 3.0
@@ -449,32 +454,32 @@ class HebbianEvolutionConfig:
     def hebbian_genome_dim(self) -> int:
         """Number of Hebbian genes per individual.
 
-        The Hebbian genome encodes per-weight ABCD+lambda rules for every
-        weight in the frozen last layer (``num_actions`` outputs ×
-        ``hidden_dim`` inputs = ``n_weights`` weights; 7 × 64 = 448 with
-        defaults).  Each weight contributes 5 base genes (A, B, C, D, lambda),
-        plus optionally one gene for per-weight eta (if ``evolve_eta=True``)
-        and one for per-weight decay (if ``evolve_decay=True``).
+        The Hebbian genome encodes per-weight ABCD rules for every weight in
+        the frozen last layer (``num_actions`` outputs × ``hidden_dim`` inputs
+        = ``n_weights`` weights; 7 × 64 = 448 with defaults).  Each weight
+        contributes 4 base genes (A, B, C, D).  Lambda (decay) is either a
+        global config value (if ``evolve_decay=False``) or evolved per-weight
+        (if ``evolve_decay=True``). Similarly, eta (learning rate) is either
+        global (if ``evolve_eta=False``) or per-weight (if ``evolve_eta=True``).
 
         Returns
         -------
         int
             Genome section size.  0 if Hebbian plasticity is disabled;
-            2240 (5 × 448) with defaults if enabled;
-            2688 (6 × 448) if eta is evolved;
-            2688 (6 × 448) if decay is evolved;
-            3136 (7 × 448) if both eta and decay are evolved.
+            1792 (4 × 448) with defaults if enabled and neither eta nor decay evolved;
+            2240 (4 × 448 + 448) if eta or decay is evolved (but not both);
+            2688 (4 × 448 + 448 + 448) if both eta and decay are evolved.
             (Values scale proportionally when ``num_actions`` or ``hidden_dim``
             differ from the 7 × 64 defaults.)
         """
         if not self.hebbian.enabled:
             return 0
         n_weights = self.hebbian.num_actions * self.hebbian.hidden_dim
-        base = 5 * n_weights  # A, B, C, D, lambda per weight
-        if self.hebbian.evolve_eta:
-            base += n_weights  # per-weight eta
+        base = 4 * n_weights  # A, B, C, D per weight (always present)
         if self.hebbian.evolve_decay:
-            base += n_weights  # per-weight decay
+            base += n_weights  # per-weight decay (lambda) only if evolved
+        if self.hebbian.evolve_eta:
+            base += n_weights  # per-weight eta only if evolved
         return base
 
     def morphology_genome_dim(self) -> int:
@@ -499,15 +504,15 @@ class HebbianEvolutionConfig:
         """Total genome dimension across all sections.
 
         The full genome is laid out as:
-            [Hebbian genes (0 or 2240 or 2688 or 3136) | Morphology genes (0 or 15)]
+            [Hebbian genes (0, 1792, 2240, 2688) | Morphology genes (0 or 15)]
 
         With default settings (num_actions=7, hidden_dim=64, evolve_eta=False,
-        evolve_decay=False, morphology.evolve=True): 2240 + 15 = 2255.
+        evolve_decay=False, morphology.evolve=True): 1792 + 15 = 1807.
 
         Returns
         -------
         int
-            Total number of genes per individual (range: 0–3151 with defaults).
+            Total number of genes per individual (range: 0–2703 with defaults).
         """
         return self.hebbian_genome_dim() + self.morphology_genome_dim()
 

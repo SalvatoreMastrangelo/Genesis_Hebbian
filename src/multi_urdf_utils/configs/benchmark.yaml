@@ -42,6 +42,7 @@ env:
   tree_height: 100.0
   base_init_pos: [-30.0, 0.0, 15.0]
   base_init_quat: [1.0, 0.0, 0.0, 0.0]
+  randomize_joint_pos: true
   y_lower: -50.0
   y_upper: 50.0
   forest_x_limit: 150.0

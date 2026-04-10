@@ -54,6 +54,8 @@ env:
   termination_if_z_greater_than: 50.0
   base_init_pos: [-30.0, 0.0, 15.0]
   base_init_quat: [1.0, 0.0, 0.0, 0.0]
+  randomize_init_quat: true
+  randomize_joint_pos: true
   episode_length_s: 100.0
   at_target_threshold: 0.1
   resampling_time_s: 3.0
@@ -85,6 +87,9 @@ obs:
   add_noise: true
   add_genome_obs_actor: false
   add_genome_obs_critic: false
+  include_joint_pos_critic: false
+  include_joint_vel_critic: false
+  include_ang_vel_critic: false
   noise_std_z: 0.01
   noise_std_quat: 0.01
   noise_std_vel: 0.02
@@ -93,6 +98,9 @@ obs:
   noise_std_last_jnts: 0.0
   noise_std_v_tgt: 0.0
   noise_std_genome: 0.05
+  noise_std_joint_pos: 0.0
+  noise_std_joint_vel: 0.0
+  noise_std_ang_vel: 0.0
 
 reward:
   smooth: -0.1
