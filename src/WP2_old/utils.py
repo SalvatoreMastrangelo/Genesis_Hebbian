@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import yaml
 
-from WP2.config import HebbianEvolutionConfig, HebbianConfig
+from WP2_old.config import HebbianEvolutionConfig, HebbianConfig
 
 
 # ============================================================================

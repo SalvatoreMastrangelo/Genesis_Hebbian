@@ -353,7 +353,7 @@ def plot_hebbian_distributions(run_dir: str | Path) -> None:
     if not cfg_path.is_file():
         return
 
-    from WP2.config import HebbianEvolutionConfig
+    from WP2_old.config import HebbianEvolutionConfig
     cfg = HebbianEvolutionConfig.from_yaml(cfg_path)
     if not cfg.hebbian.enabled:
         return
@@ -493,7 +493,7 @@ def plot_morphology_diversity(run_dir: str | Path) -> None:
     if not cfg_path.is_file():
         return
 
-    from WP2.config import HebbianEvolutionConfig
+    from WP2_old.config import HebbianEvolutionConfig
     cfg = HebbianEvolutionConfig.from_yaml(cfg_path)
     if not cfg.morphology.evolve:
         return

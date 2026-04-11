@@ -71,7 +71,7 @@ def main() -> None:
     args, remaining = parser.parse_known_args()
 
     # --- Load or create config ---
-    from WP2.config import HebbianEvolutionConfig
+    from WP2_old.config import HebbianEvolutionConfig
 
     if args.resume:
         # Load config from the existing run
@@ -110,7 +110,7 @@ def main() -> None:
     # --- Setup ---
     _configure_cache_root()
 
-    from WP2.utils import seed_everything
+    from WP2_old.utils import seed_everything
     seed_everything(cfg.seed)
 
     # Infer last-layer dims from checkpoint so genome size is correct
@@ -144,7 +144,7 @@ def main() -> None:
     print("=" * 70 + "\n")
 
     # --- Launch evolution ---
-    from WP2.evolve import HebbianCodesignDEAP
+    from WP2_old.evolve import HebbianCodesignDEAP
 
     ga = HebbianCodesignDEAP(cfg)
 
@@ -161,7 +161,7 @@ def main() -> None:
 
     # --- Post-analysis ---
     try:
-        from WP2.plotting import analyze_run
+        from WP2_old.plotting import analyze_run
         analyze_run(str(ga.run_dir))
     except Exception as exc:
         print(f"[run] Plotting failed (non-fatal): {exc}")

@@ -12,8 +12,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from WP2.config import HebbianEvolutionConfig, HebbianConfig
-from WP2.utils import (
+from WP2_old.config import HebbianEvolutionConfig, HebbianConfig
+from WP2_old.utils import (
     decode_hebbian_genes,
     create_zero_initialized_genome,
 )
@@ -42,7 +42,7 @@ def test_zero_genome_creation():
     print("=" * 80)
 
     # Create a minimal config
-    from WP2.config import HebbianConfig, MorphologyConfig
+    from WP2_old.config import HebbianConfig, MorphologyConfig
     hebb_cfg = HebbianConfig(
         enabled=True,
         eta=0.0001,
@@ -102,7 +102,7 @@ def test_genome_decoding():
     print("TEST 2: Genome Decoding to Rules")
     print("=" * 80)
 
-    from WP2.config import HebbianConfig, MorphologyConfig
+    from WP2_old.config import HebbianConfig, MorphologyConfig
     hebb_cfg = HebbianConfig(
         enabled=True,
         eta=0.0001,
@@ -177,8 +177,8 @@ def test_integration_with_network():
     print("=" * 80)
 
     try:
-        from WP2.policy import HebbianRulesPolicyWrapper
-        from WP2.config import HebbianConfig, MorphologyConfig
+        from WP2_old.policy import HebbianRulesPolicyWrapper
+        from WP2_old.config import HebbianConfig, MorphologyConfig
 
         hebb_cfg = HebbianConfig(
             enabled=True,

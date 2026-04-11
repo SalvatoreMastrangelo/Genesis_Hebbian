@@ -49,8 +49,8 @@ from matplotlib.animation import FFMpegWriter
 import genesis as gs
 
 from WP1.config import RunConfig
-from WP2.config import HebbianConfig
-from WP2.utils import seed_everything
+from WP2_old.config import HebbianConfig
+from WP2_old.utils import seed_everything
 from multi_urdf_utils.config import BenchmarkConfig
 from multi_urdf_utils.multi_drone_env import MultiDroneEnv
 from multi_urdf_utils.multi_drone_actor import MultiDroneActorManager, random_hebbian_rules

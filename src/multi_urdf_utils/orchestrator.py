@@ -75,7 +75,7 @@ def _scene_worker(
 
     import genesis as gs
     from WP1.config import RunConfig
-    from WP2.config import HebbianConfig
+    from WP2_old.config import HebbianConfig
     from multi_urdf_utils.multi_drone_env import MultiDroneEnv
     from multi_urdf_utils.multi_drone_actor import MultiDroneActorManager, random_hebbian_rules
 

@@ -22,8 +22,8 @@ import torch.nn as nn
 from torch import Tensor
 from torch.distributions import Normal
 
-from WP2.config import HebbianEvolutionConfig
-from WP2.hebbian import HebbianLastLayer
+from WP2_old.config import HebbianEvolutionConfig
+from WP2_old.hebbian import HebbianLastLayer
 
 
 # ============================================================================
@@ -387,7 +387,7 @@ class BatchedHebbianActorWrapper:
         actions : Tensor
             Scaled actions (P*S, action_dim).
         """
-        from WP2.hebbian import BatchedHebbianLastLayer
+        from WP2_old.hebbian import BatchedHebbianLastLayer
 
         if not isinstance(self.hebbian, BatchedHebbianLastLayer):
             raise TypeError(f"Expected BatchedHebbianLastLayer, got {type(self.hebbian)}")

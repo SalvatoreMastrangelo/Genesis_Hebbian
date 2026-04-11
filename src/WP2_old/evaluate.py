@@ -19,15 +19,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from WP2.config import HebbianEvolutionConfig
-from WP2.hebbian import HebbianLastLayer
-from WP2.frozen_actor import (
+from WP2_old.config import HebbianEvolutionConfig
+from WP2_old.hebbian import HebbianLastLayer
+from WP2_old.frozen_actor import (
     HebbianActorWrapper,
     attach_hebbian,
     load_frozen_actor,
 )
-from WP2.objectives import compute_fitness, default_fitness
-from WP2.utils import decode_hebbian_genes, split_genome
+from WP2_old.objectives import compute_fitness, default_fitness
+from WP2_old.utils import decode_hebbian_genes, split_genome
 
 
 # ============================================================================
@@ -417,8 +417,8 @@ def evaluate_population_batched(
         If keep_env_alive=False: None
     """
     import genesis as gs
-    from WP2.hebbian import BatchedHebbianLastLayer
-    from WP2.frozen_actor import BatchedHebbianActorWrapper
+    from WP2_old.hebbian import BatchedHebbianLastLayer
+    from WP2_old.frozen_actor import BatchedHebbianActorWrapper
     from WP1.config import RunConfig
 
     # Find individuals needing evaluation

@@ -72,7 +72,7 @@ def main() -> None:
     _configure_cache_root()
 
     # Seed
-    from WP2.utils import seed_everything
+    from WP2_old.utils import seed_everything
     seed_everything(cfg.benchmark.seed)
 
     # Create output directory

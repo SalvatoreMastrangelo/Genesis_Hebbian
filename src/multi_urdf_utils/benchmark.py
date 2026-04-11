@@ -37,7 +37,7 @@ def _build_scene_inputs(cfg, urdf_paths_str):
     suitable for pickling into worker processes."""
     import torch
     from WP1.config import RunConfig
-    from WP2.config import HebbianConfig
+    from WP2_old.config import HebbianConfig
     from dataclasses import asdict
 
     N = cfg.benchmark.N
@@ -197,7 +197,7 @@ def run_benchmark(cfg: BenchmarkConfig) -> Dict[str, float]:
     else:
         print("[Phase 2+3] Sequential mode\n")
         from WP1.config import RunConfig
-        from WP2.config import HebbianConfig
+        from WP2_old.config import HebbianConfig
         from multi_urdf_utils.multi_drone_env import MultiDroneEnv
         from multi_urdf_utils.multi_drone_actor import MultiDroneActorManager, random_hebbian_rules
 

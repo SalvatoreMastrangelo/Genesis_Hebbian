@@ -26,10 +26,10 @@ import numpy as np
 import torch
 from deap import base, creator, tools
 
-from WP2.config import HebbianEvolutionConfig
-from WP2.evaluate import evaluate_individual
-from WP2.objectives import default_fitness
-from WP2.utils import (
+from WP2_old.config import HebbianEvolutionConfig
+from WP2_old.evaluate import evaluate_individual
+from WP2_old.objectives import default_fitness
+from WP2_old.utils import (
     save_git_info,
     save_environment_info,
     save_pareto_front,
@@ -312,7 +312,7 @@ class HebbianCodesignDEAP:
         n_obj = len(obj_names)
 
         # Pre-load frozen actor for reuse across generations
-        from WP2.frozen_actor import load_frozen_actor
+        from WP2_old.frozen_actor import load_frozen_actor
         from WP1.config import RunConfig
         self._model, self._last_layer, _, _ = load_frozen_actor(
             self.cfg.checkpoint_path, self.cfg.checkpoint_config_path, device=self.cfg.device
@@ -422,7 +422,7 @@ class HebbianCodesignDEAP:
         """Extract morphology genome from population (assumes all same if batched)."""
         if not population:
             return None
-        from WP2.utils import split_genome
+        from WP2_old.utils import split_genome
         # Get morphology from first individual
         hebb_part, morph_part = split_genome(list(population[0]), self.cfg)
         return morph_part
@@ -484,7 +484,7 @@ class HebbianCodesignDEAP:
 
     def _evaluate_population(self, population: list) -> None:
         """Evaluate all individuals that need evaluation."""
-        from WP2.evaluate import evaluate_population_batched
+        from WP2_old.evaluate import evaluate_population_batched
 
         # Use batched evaluation (all invalid individuals in parallel)
         model_and_layer = (self._model, self._last_layer, self.cfg.hebbian.num_actions, self.cfg.hebbian.hidden_dim)
@@ -730,7 +730,7 @@ class HebbianCodesignDEAP:
 
             # Apply zero initialization if configured
             if self.cfg.hebbian.initialize_rules_to_zero:
-                from WP2.utils import create_zero_initialized_genome
+                from WP2_old.utils import create_zero_initialized_genome
                 zero_genome = create_zero_initialized_genome(self.cfg)
                 for ind in pop:
                     for i in range(len(ind)):

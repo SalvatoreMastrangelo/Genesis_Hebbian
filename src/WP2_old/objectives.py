@@ -16,7 +16,7 @@ from typing import Callable, Dict, List, Sequence
 
 import numpy as np
 
-from WP2.config import HebbianEvolutionConfig
+from WP2_old.config import HebbianEvolutionConfig
 
 
 # ============================================================================

@@ -14,9 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from WP2.config import HebbianConfig, MorphologyConfig
-from WP2.utils import decode_hebbian_genes, create_zero_initialized_genome
-from WP2.hebbian import HebbianLastLayer
+from WP2_old.config import HebbianConfig, MorphologyConfig
+from WP2_old.utils import decode_hebbian_genes, create_zero_initialized_genome
+from WP2_old.hebbian import HebbianLastLayer
 
 
 def test_zero_rules_no_weight_change():

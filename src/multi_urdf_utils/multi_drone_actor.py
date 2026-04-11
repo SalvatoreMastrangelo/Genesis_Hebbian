@@ -18,9 +18,9 @@ from torch import Tensor
 
 from torch import nn
 
-from WP2.frozen_actor import load_frozen_actor, HebbianActorWrapper
-from WP2.hebbian import HebbianLastLayer
-from WP2.config import HebbianConfig
+from WP2_old.frozen_actor import load_frozen_actor, HebbianActorWrapper
+from WP2_old.hebbian import HebbianLastLayer
+from WP2_old.config import HebbianConfig
 
 
 class BaselineActorWrapper:
