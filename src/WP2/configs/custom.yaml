@@ -21,8 +21,8 @@ hebbian:
   eta_range: [0.0, 0.1]
 
 evolution:
-  population_size: 32
-  num_generations: 100
+  population_size: 128
+  num_generations: 10
   enable_crossover: false
   crossover_probability: 0.9
   mutation_probability: 0.5
@@ -34,7 +34,7 @@ evolution:
 
 evaluation:
   num_eval_episodes: 1
-  num_eval_envs: 256
+  num_eval_envs: 8192
   vmin: 6.0
   vmax: 30.0
   stochastic: true

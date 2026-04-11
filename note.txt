@@ -1,0 +1,3 @@
+WP2 - evolution seems to change the amount of urdfs checked at each iteration
+    [evaluate_population_batched] Evaluating 21 individuals simultaneously
+    Total envs: 256, Population: 21, Envs/ind: 12, Actual total: 252
