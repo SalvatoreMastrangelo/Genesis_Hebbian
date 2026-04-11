@@ -20,6 +20,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 from torch import Tensor
+from torch.distributions import Normal
 
 from WP2.config import HebbianEvolutionConfig
 from WP2.hebbian import HebbianLastLayer
@@ -223,7 +224,8 @@ class HebbianActorWrapper:
         1. obs -> LSTM -> MLP backbone -> x (hidden features)
         2. x -> last_layer -> y (raw actions, before tanh)
         3. hebbian_update(x, y)
-        4. action = tanh(y) -> scale
+        4. action = sample or mean from Normal(y, log_std)
+        5. action = tanh(action) -> scale
 
         Returns
         -------
@@ -256,21 +258,41 @@ class HebbianActorWrapper:
         # --- Step 3: Hebbian update ---
         self.hebbian.hebbian_update(x, y)
 
-        # --- Step 4: Tanh + scale (reproducing training pipeline) ---
-        a = torch.tanh(y)
+        # --- Step 4: Stochastic or deterministic action sampling ---
+        # Get std from model for stochastic sampling
+        if self.stochastic:
+            # Check for std parameter (standard deviation or log_std)
+            if hasattr(model, "std"):
+                std = model.std.detach()
+            elif hasattr(model, "log_std"):
+                log_std = model.log_std.detach()
+                std = torch.exp(log_std)
+            else:
+                # Fallback: no noise, use mean
+                std = None
+
+            if std is not None:
+                # Sample from Normal(y, std)
+                dist = Normal(y, std)
+                action_raw = dist.rsample()  # reparameterized sample
+            else:
+                action_raw = y
+        else:
+            # Deterministic: use mean
+            action_raw = y
+
+        # --- Step 5: Tanh + scale (reproducing training pipeline) ---
+        a = torch.tanh(action_raw)
         return self.model._scale(a)
 
     @torch.no_grad()
     def act_simple(self, obs: Tensor) -> Tensor:
-        """Simplified forward: use model.act() then do Hebbian update.
+        """Simplified forward with stochastic sampling support.
 
-        This avoids duplicating the distribution logic by leveraging the
-        model's own act() method, but still intercepts the last layer for
-        Hebbian updates.
+        Intercepts the last layer for Hebbian updates while handling
+        both stochastic (sampled) and deterministic (mean) actions.
         """
         model = self.model
-        device = obs.device
-        num_envs = obs.shape[0]
 
         # Run the LSTM backbone (inference mode: masks=None)
         if hasattr(model, "memory_a") and model.recurrency:
@@ -293,8 +315,26 @@ class HebbianActorWrapper:
         # Hebbian update
         self.hebbian.hebbian_update(x, y)
 
+        # Stochastic or deterministic action sampling
+        if self.stochastic:
+            if hasattr(model, "std"):
+                std = model.std.detach()
+            elif hasattr(model, "log_std"):
+                log_std = model.log_std.detach()
+                std = torch.exp(log_std)
+            else:
+                std = None
+
+            if std is not None:
+                dist = Normal(y, std)
+                action_raw = dist.rsample()
+            else:
+                action_raw = y
+        else:
+            action_raw = y
+
         # Tanh + scale (reproducing training pipeline)
-        a = torch.tanh(y)
+        a = torch.tanh(action_raw)
         return self.model._scale(a)
 
 
@@ -389,6 +429,24 @@ class BatchedHebbianActorWrapper:
         # --- Hebbian update ---
         self.hebbian.hebbian_update(x, y)
 
+        # --- Stochastic or deterministic action sampling ---
+        if self.stochastic:
+            if hasattr(model, "std"):
+                std = model.std.detach()
+            elif hasattr(model, "log_std"):
+                log_std = model.log_std.detach()
+                std = torch.exp(log_std)
+            else:
+                std = None
+
+            if std is not None:
+                dist = Normal(y, std)
+                action_raw = dist.rsample()
+            else:
+                action_raw = y
+        else:
+            action_raw = y
+
         # Tanh + scale (reproducing training pipeline)
-        a = torch.tanh(y)
+        a = torch.tanh(action_raw)
         return self.model._scale(a)
