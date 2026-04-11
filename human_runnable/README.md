@@ -4,6 +4,88 @@ Simple Python scripts that can be executed directly without pytest.
 
 ## Available Scripts
 
+### `test_hebbian_rules.py` — Test Hebbian rules creation and integration
+
+Create Hebbian ABCD plasticity rules for a loaded WP1 checkpoint and verify they integrate correctly with the actor. Tests initialization strategies, weight modifications, and forward passes.
+
+**Usage:**
+
+```bash
+# Find and test with latest checkpoint (uniform initialization)
+python human_runnable/test_hebbian_rules.py
+
+# Test with zero initialization (no weight changes)
+python human_runnable/test_hebbian_rules.py --init-method zero
+
+# Test specific checkpoint
+python human_runnable/test_hebbian_rules.py \
+    --checkpoint logs/runs/2026-03-01_12-00-00_exp/checkpoints/model_1000.pt \
+    --config logs/runs/2026-03-01_12-00-00_exp/config.yaml
+
+# Use CPU instead of CUDA
+python human_runnable/test_hebbian_rules.py --device cpu
+
+# Quiet mode (no output)
+python human_runnable/test_hebbian_rules.py --quiet
+```
+
+**Output:**
+
+Displays:
+- ✓ Actor architecture structure
+- ✓ Last layer dimensions (input/output sizes)
+- ✓ Hebbian rule shapes (A, B, C, D, lam)
+- ✓ Genome dimensions for evolution
+- ✓ Forward pass validation
+- ✓ Hebbian weight update verification
+- ✓ Before/after weight statistics
+
+**Arguments:**
+
+```
+--checkpoint PATH        Path to checkpoint (.pt file). If not specified, finds latest
+--config PATH           Path to WP1 config (YAML). Default: src/WP1/configs/foundation.yaml
+--device DEVICE         Device to load onto (cuda, cpu). Default: auto-detect
+--init-method {zero,uniform}  Rule initialization method. Default: uniform
+--quiet                 Suppress output
+--help                  Show help message
+```
+
+**Example output:**
+
+```
+==========================================================================================
+ HEBBIAN RULES TEST — Creation & Integration
+==========================================================================================
+
+Checkpoint: logs/runs/2026-03-01_12-00-00_exp/checkpoints/model_1000.pt
+Config:     src/WP1/configs/foundation.yaml
+Device:     cuda
+
+[...steps 1-7...]
+
+STEP 8: Applying Hebbian Update & Verifying Weight Changes
+──────────────────────────────────────────────────────────────────────────────────────────
+✓ Hebbian update applied successfully
+
+Weight change statistics:
+  Max change:  0.001215
+  Mean change: 0.000285
+  Num changed: 895/896
+  ✓ WEIGHTS MODIFIED (as expected)
+
+==========================================================================================
+SUMMARY
+==========================================================================================
+✓ Hebbian rules successfully created and attached to actor
+✓ Last layer: Linear(128 → 7)
+✓ Genome dimensions: 3,584D (base) to 4,480D (with decay)
+✓ Ready for WP2 evolution with NSGA-II + Hebbian plasticity
+==========================================================================================
+```
+
+---
+
 ### `inspect_checkpoint.py` — Inspect WP1 checkpoint architecture
 
 Load a WP1 checkpoint and display detailed information about the actor architecture.
@@ -140,21 +222,48 @@ python human_runnable/inspect_checkpoint.py --device cpu
 
 ## Integration with WP2
 
-After inspecting the checkpoint, use it in WP2:
+After inspecting the checkpoint, use it in WP2 with Hebbian plasticity:
 
 ```python
-from WP2 import load_wp1_actor, get_actor_last_layer, get_actor_dimensions
+from WP2 import (
+    load_wp1_actor, 
+    get_actor_last_layer, 
+    get_actor_dimensions,
+    create_hebbian_rules,
+    attach_hebbian_rules_to_actor,
+    get_hebbian_genome_dim,
+)
 
 # Use the same checkpoint path you inspected
 checkpoint = "logs/runs/2026-03-01_12-00-00_exp/checkpoints/model_1000.pt"
 config = "logs/runs/2026-03-01_12-00-00_exp/config.yaml"
 
+# Load actor
 actor = load_wp1_actor(checkpoint, config, device="cuda")
-last_layer = get_actor_last_layer(actor)
-hidden_dim, num_actions = get_actor_dimensions(actor)
 
-# Now attach Hebbian rules, evolutionary updates, etc.
+# Create Hebbian ABCD rules for the last layer
+rules = create_hebbian_rules(
+    actor,
+    init_method="uniform",      # or "zero"
+    init_range=(-0.05, 0.05),
+    add_decay=True,
+    device="cuda"
+)
+
+# Attach rules to actor
+actor = attach_hebbian_rules_to_actor(actor, rules=rules)
+
+# Get genome dimension for evolution
+genome_dim = get_hebbian_genome_dim(actor, add_decay=True)
+print(f"Genome dimension for NSGA-II: {genome_dim}")
+
+# Now integrate with evolutionary algorithm (DEAP)
 ```
+
+**Workflow:**
+1. **Inspect** — Use `inspect_checkpoint.py` to verify actor structure
+2. **Test Hebbian Rules** — Use `test_hebbian_rules.py` to verify integration
+3. **Evolve** — Use `python -m WP2.run` with loaded actor + rules
 
 ## Troubleshooting
 
