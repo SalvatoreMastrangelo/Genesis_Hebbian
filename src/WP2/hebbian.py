@@ -346,6 +346,9 @@ class HebbianController:
         self.w_max = w_max
         self.use_oja_coefficient = use_oja_coefficient
 
+        # Store dimensions for reference
+        self.num_actions, self.hidden_dim = w_checkpoint.shape
+
         # Store per-controller rules
         self.A = rules["A"].to(self.device)
         self.B = rules["B"].to(self.device)
