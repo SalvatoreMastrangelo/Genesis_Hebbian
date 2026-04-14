@@ -210,6 +210,7 @@ class EvolutionConfig:
         Example: (1.0, 1.0, 1.0) for 3 objectives with equal importance.
     """
 
+    strategy: str = "nsga2"       # "nsga2" or "cma_es"
     population_size: int = 40
     num_generations: int = 30
     enable_crossover: bool = True
@@ -302,6 +303,68 @@ class ObjectivesConfig:
 
 
 @dataclass
+class CMAESConfig:
+    """CMA-ES optimiser hyperparameters (used when evolution.strategy = "cma_es").
+
+    CMA-ES (Covariance Matrix Adaptation Evolution Strategy) is a single-objective
+    optimiser.  It treats the WP1 reward sum as the scalar fitness and adapts a
+    covariance matrix over the Hebbian-rule genome to guide search.
+
+    Attributes
+    ----------
+    sigma0 : float
+        Initial step size (standard deviation) for the search distribution.
+        The genome lives in [0,1], so a starting sigma of ~0.3 spans a
+        third of the domain.  Typical: 0.1–0.5.
+    population_size : int
+        Number of candidate solutions sampled each generation (CMA-ES "lambda").
+        Set to 0 to let pycma choose automatically using the formula
+        ``4 + floor(3 * ln(n_genes))``.  Override when you want more diversity
+        (larger) or faster iterations (smaller).
+    tol_sigma : float
+        Convergence threshold: stop when sigma drops below this value.
+        pycma default ``tolsigma = 1e-11``.
+    tol_fun : float
+        Convergence threshold: stop when the function-value spread across the
+        current population drops below this value.
+        pycma default ``tolfun = 1e-11``.
+    """
+
+    sigma0: float = 0.3
+    population_size: int = 0     # 0 = auto (4 + floor(3*ln(n_genes)))
+    tol_sigma: float = 1e-9
+    tol_fun: float = 1e-11
+
+
+@dataclass
+class CatalogConfig:
+    """URDF catalog for CMA-ES rules-only evaluation.
+
+    When ``path`` points to a catalog file (one URDF filename per line, as
+    produced by WP1 multi-morphology training), each CMA-ES candidate is
+    evaluated against *all* catalog URDFs and the fitness is averaged.
+    This encourages Hebbian rules that generalise across morphologies.
+
+    If ``path`` is empty, a single default URDF (from
+    ``morphology.fixed_genome`` or the WP1 standard genome) is used.
+
+    Attributes
+    ----------
+    path : str
+        Path to a catalog.txt file.  Each line is a filename of the form
+        ``[p1, p2, ..., p15].urdf`` where the values are the physical genome
+        parameters.  The URDF files are expected to live in the same directory
+        as catalog.txt.  Empty string disables multi-URDF evaluation.
+    num_episodes : int
+        Number of independent rollout episodes per URDF per individual.
+        Fitness is averaged across episodes and URDFs.  Default 1.
+    """
+
+    path: str = ""
+    num_episodes: int = 1
+
+
+@dataclass
 class MorphologyConfig:
     """Morphology co-evolution configuration.
 
@@ -383,6 +446,8 @@ class HebbianEvolutionConfig:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     objectives: ObjectivesConfig = field(default_factory=ObjectivesConfig)
     morphology: MorphologyConfig = field(default_factory=MorphologyConfig)
+    cmaes: CMAESConfig = field(default_factory=CMAESConfig)
+    catalog: CatalogConfig = field(default_factory=CatalogConfig)
 
     seed: int = 42
     device: str = "cuda:0"
@@ -587,6 +652,8 @@ class HebbianEvolutionConfig:
             "evaluation": EvaluationConfig,
             "objectives": ObjectivesConfig,
             "morphology": MorphologyConfig,
+            "cmaes": CMAESConfig,
+            "catalog": CatalogConfig,
         }
         for key, val in data.items():
             if key in sub_map and isinstance(val, dict):

@@ -149,6 +149,7 @@ def attach_hebbian(
     hebbian_rules: Dict[str, Tensor],
     cfg: HebbianEvolutionConfig,
     device: str = "cpu",
+    num_envs: int = 1,
 ) -> HebbianLastLayer:
     """Create a HebbianLastLayer wrapper for the actor's last layer.
 
@@ -162,6 +163,9 @@ def attach_hebbian(
         Config for eta and w_max.
     device : str
         Target device.
+    num_envs : int
+        Number of environments. If > 1, maintains per-environment weight matrices.
+        Default: 1 (backward compatible).
 
     Returns
     -------
@@ -176,6 +180,7 @@ def attach_hebbian(
         w_max=cfg.hebbian.w_max,
         use_oja_coefficient=cfg.hebbian.use_oja_coefficient,
         device=device,
+        num_envs=num_envs,
     )
 
 
@@ -189,12 +194,15 @@ class HebbianActorWrapper:
     Performs the forward pass and intercepts pre/post activations of the
     last layer for the Hebbian update.
 
+    Now supports **per-environment** updates where each environment has its own
+    weight matrix and LSTM hidden state.
+
     Parameters
     ----------
     model : nn.Module
         Frozen ActorCriticTanh.
     hebbian : HebbianLastLayer
-        Hebbian controller for the last layer.
+        Hebbian controller for the last layer (may have per-env weights).
     stochastic : bool
         If True, sample from the policy distribution.  If False, use mean.
     """
@@ -209,29 +217,74 @@ class HebbianActorWrapper:
         self.hebbian = hebbian
         self.stochastic = stochastic
 
+        # Per-environment LSTM hidden states (if needed)
+        self._lstm_h_states = None  # (num_envs, num_layers, hidden_dim)
+        self._lstm_c_states = None  # (num_envs, num_layers, hidden_dim)
+        self._num_envs = hebbian.num_envs
+
     def reset_episode(self, num_envs: int, device: str | torch.device = "cpu") -> None:
-        """Reset LSTM hidden states and Hebbian weights for a new episode."""
+        """Reset LSTM hidden states and Hebbian weights for a new episode.
+
+        Parameters
+        ----------
+        num_envs : int
+            Number of environments (should match hebbian.num_envs).
+        device : str or torch.device
+            Device for tensors.
+        """
         self.hebbian.reset_weights()
-        # Reset LSTM internal hidden states (inference mode: masks=None)
-        if hasattr(self.model, "memory_a"):
-            self.model.memory_a.reset()
+
+        # Reset per-environment LSTM hidden states
+        if hasattr(self.model, "memory_a") and self.model.recurrency:
+            # Get RNN hidden size from the LSTM module
+            if hasattr(self.model.memory_a, "rnn"):
+                rnn = self.model.memory_a.rnn
+            else:
+                rnn = self.model.memory_a
+
+            hidden_size = rnn.hidden_size if hasattr(rnn, "hidden_size") else rnn.hidden_dim
+            num_layers = rnn.num_layers if hasattr(rnn, "num_layers") else 1
+
+            # Initialize per-env LSTM states: (num_envs, num_layers, hidden_size)
+            # Note: stored without batch dim; batch dim added when calling LSTM
+            self._lstm_h_states = torch.zeros(
+                num_envs, num_layers, hidden_size, device=device, dtype=torch.float32
+            )
+            self._lstm_c_states = torch.zeros(
+                num_envs, num_layers, hidden_size, device=device, dtype=torch.float32
+            )
 
     @torch.no_grad()
     def act(self, obs: Tensor) -> Tensor:
         """Forward pass with Hebbian update on the last layer.
 
-        Steps:
-        1. obs -> LSTM -> MLP backbone -> x (hidden features)
-        2. x -> last_layer -> y (raw actions, before tanh)
-        3. hebbian_update(x, y)
+        Per-environment forward:
+        1. obs -> LSTM (per-env state) -> MLP backbone -> x (hidden features)
+        2. x -> last_layer (per-env weights) -> y (raw actions, before tanh)
+        3. hebbian_update(x, y) per-environment
         4. action = sample or mean from Normal(y, log_std)
         5. action = tanh(action) -> scale
+
+        If num_envs > 1, processes each environment independently to maintain
+        per-environment LSTM hidden states and weight matrices.
 
         Returns
         -------
         actions : Tensor
-            Scaled physical actions (throttle + servos).
+            Scaled physical actions (throttle + servos) of shape (num_envs, num_actions).
         """
+        model = self.model
+        num_envs = self.hebbian.num_envs
+
+        if num_envs == 1:
+            # Single environment: use batched forward (backward compatible)
+            return self._act_single_env(obs)
+        else:
+            # Multiple environments: per-environment forward
+            return self._act_multi_env(obs)
+
+    def _act_single_env(self, obs: Tensor) -> Tensor:
+        """Forward pass for single environment (original batched logic)."""
         model = self.model
 
         # --- Step 1: Run through LSTM backbone (inference mode: masks=None) ---
@@ -259,63 +312,6 @@ class HebbianActorWrapper:
         self.hebbian.hebbian_update(x, y)
 
         # --- Step 4: Stochastic or deterministic action sampling ---
-        # Get std from model for stochastic sampling
-        if self.stochastic:
-            # Check for std parameter (standard deviation or log_std)
-            if hasattr(model, "std"):
-                std = model.std.detach()
-            elif hasattr(model, "log_std"):
-                log_std = model.log_std.detach()
-                std = torch.exp(log_std)
-            else:
-                # Fallback: no noise, use mean
-                std = None
-
-            if std is not None:
-                # Sample from Normal(y, std)
-                dist = Normal(y, std)
-                action_raw = dist.rsample()  # reparameterized sample
-            else:
-                action_raw = y
-        else:
-            # Deterministic: use mean
-            action_raw = y
-
-        # --- Step 5: Tanh + scale (reproducing training pipeline) ---
-        a = torch.tanh(action_raw)
-        return self.model._scale(a)
-
-    @torch.no_grad()
-    def act_simple(self, obs: Tensor) -> Tensor:
-        """Simplified forward with stochastic sampling support.
-
-        Intercepts the last layer for Hebbian updates while handling
-        both stochastic (sampled) and deterministic (mean) actions.
-        """
-        model = self.model
-
-        # Run the LSTM backbone (inference mode: masks=None)
-        if hasattr(model, "memory_a") and model.recurrency:
-            inp = model.memory_a(obs)  # uses internal hidden states
-        else:
-            inp = obs
-
-        # Get pre-last-layer features
-        actor_layers = list(model.actor.children())
-        x = inp.squeeze(0) if inp.dim() == 3 else inp
-        for layer in actor_layers[:-1]:
-            x = layer(x)
-
-        # Compute raw last-layer output
-        last_layer = actor_layers[-1]
-        y = x @ last_layer.weight.t()
-        if last_layer.bias is not None:
-            y = y + last_layer.bias
-
-        # Hebbian update
-        self.hebbian.hebbian_update(x, y)
-
-        # Stochastic or deterministic action sampling
         if self.stochastic:
             if hasattr(model, "std"):
                 std = model.std.detach()
@@ -333,26 +329,145 @@ class HebbianActorWrapper:
         else:
             action_raw = y
 
-        # Tanh + scale (reproducing training pipeline)
+        # --- Step 5: Tanh + scale (reproducing training pipeline) ---
         a = torch.tanh(action_raw)
         return self.model._scale(a)
 
+    def _act_multi_env(self, obs: Tensor) -> Tensor:
+        """Forward pass for multiple environments with per-environment LSTM states.
+
+        Each environment maintains its own LSTM hidden state across timesteps.
+        """
+        model = self.model
+        actor_layers = list(model.actor.children())
+        num_envs = self.hebbian.num_envs
+        device = obs.device
+
+        # Collect per-environment results
+        all_x = []
+        all_y = []
+
+        # Process each environment independently with its own LSTM hidden state
+        for env_idx in range(num_envs):
+            # Get this environment's observation
+            if obs.shape[0] == num_envs:
+                obs_i = obs[env_idx : env_idx + 1]  # (1, obs_dim)
+            else:
+                obs_i = obs[env_idx : env_idx + 1]
+
+            # --- LSTM forward per-environment with stored hidden state ---
+            if hasattr(model, "memory_a") and model.recurrency:
+                # Get the underlying RNN module
+                if hasattr(model.memory_a, "rnn"):
+                    rnn = model.memory_a.rnn
+                    obs_for_rnn = obs_i
+                else:
+                    rnn = model.memory_a
+                    obs_for_rnn = obs_i
+
+                # Retrieve stored hidden states for this environment
+                h_i = self._lstm_h_states[env_idx]  # (num_layers, hidden_size)
+                c_i = self._lstm_c_states[env_idx]  # (num_layers, hidden_size)
+
+                # Forward through RNN with explicit hidden state
+                if isinstance(rnn, nn.LSTM):
+                    # obs_for_rnn shape: (1, obs_dim)
+                    # LSTM expects input (seq_len, batch, input_size)
+                    if obs_for_rnn.dim() == 2:
+                        obs_for_rnn = obs_for_rnn.unsqueeze(0)  # (1, 1, obs_dim)
+
+                    # Add batch dim to hidden states: (num_layers, hidden_size) -> (num_layers, 1, hidden_size)
+                    h_i_batched = h_i.unsqueeze(1)
+                    c_i_batched = c_i.unsqueeze(1)
+
+                    rnn_out, (h_new, c_new) = rnn(obs_for_rnn, (h_i_batched, c_i_batched))
+
+                    # Remove seq_len dimension, keep batch: (1, 1, hidden_size) -> (1, hidden_size)
+                    inp_i = rnn_out.squeeze(0)
+
+                    # Store hidden states without batch dim for next timestep
+                    self._lstm_h_states[env_idx] = h_new.squeeze(1)  # (num_layers, 1, hidden_size) -> (num_layers, hidden_size)
+                    self._lstm_c_states[env_idx] = c_new.squeeze(1)
+                else:
+                    # Fallback for other RNN types (GRU, etc.)
+                    inp_i = rnn(obs_i)
+            else:
+                inp_i = obs_i
+
+            # --- MLP backbone per-environment ---
+            x_i = inp_i.squeeze(0) if inp_i.dim() == 3 else inp_i
+
+            for layer in actor_layers[:-1]:
+                x_i = layer(x_i)
+
+            # --- Last layer per-environment using per-env weights ---
+            last_layer = actor_layers[-1]
+            if self.hebbian.num_envs > 1:
+                # Use per-env weight matrix
+                W_i = self.hebbian.W[env_idx]  # (num_actions, hidden_dim)
+                y_i = x_i @ W_i.t()
+            else:
+                y_i = x_i @ last_layer.weight.t()
+
+            if last_layer.bias is not None:
+                y_i = y_i + last_layer.bias
+
+            all_x.append(x_i)
+            all_y.append(y_i)
+
+        # --- Batched Hebbian update (per-environment, no averaging) ---
+        x_batch = torch.cat(all_x, dim=0)  # (num_envs, hidden_dim)
+        y_batch = torch.cat(all_y, dim=0)  # (num_envs, num_actions)
+        self.hebbian.hebbian_update(x_batch, y_batch)
+
+        # --- Stochastic or deterministic action sampling ---
+        if self.stochastic:
+            if hasattr(model, "std"):
+                std = model.std.detach()
+            elif hasattr(model, "log_std"):
+                log_std = model.log_std.detach()
+                std = torch.exp(log_std)
+            else:
+                std = None
+
+            if std is not None:
+                dist = Normal(y_batch, std)
+                action_raw = dist.rsample()
+            else:
+                action_raw = y_batch
+        else:
+            action_raw = y_batch
+
+        # --- Tanh + scale ---
+        a = torch.tanh(action_raw)
+        return self.model._scale(a)
+
+    @torch.no_grad()
+    def act_simple(self, obs: Tensor) -> Tensor:
+        """Simplified forward with stochastic sampling support.
+
+        Intercepts the last layer for Hebbian updates while handling
+        both stochastic (sampled) and deterministic (mean) actions.
+        """
+        # Same as act() for now, since we handle per-env in act()
+        return self.act(obs)
+
 
 class BatchedHebbianActorWrapper:
-    """Vectorized actor wrapper for population-level evaluation.
+    """Vectorized actor wrapper with per-environment updates.
 
     Wraps a frozen ActorCriticTanh + BatchedHebbianLastLayer for parallel rollout
-    of P individuals across P*S shared environments.
+    of P*N total environments (either as P individuals × N envs each, or N independent envs).
 
-    All individuals share the frozen LSTM backbone and MLP layers, but each
-    individual has its own last-layer weight matrix and Hebbian rules.
+    Each environment has its own last-layer weight matrix and Hebbian rules.
+    All environments share the frozen LSTM backbone and MLP layers.
 
     Parameters
     ----------
     model : nn.Module
         Frozen ActorCriticTanh.
     batched_hebbian : BatchedHebbianLastLayer
-        Batched Hebbian controller with per-individual weight matrices.
+        Batched Hebbian controller with per-environment weight matrices.
     stochastic : bool
         If True, sample actions. If False, use mean.
     """
@@ -368,24 +483,35 @@ class BatchedHebbianActorWrapper:
         self.stochastic = stochastic
 
     def reset_episode(self, num_envs: int, device: str | torch.device = "cpu") -> None:
-        """Reset Hebbian weights and LSTM hidden states."""
+        """Reset Hebbian weights and LSTM hidden states.
+
+        Parameters
+        ----------
+        num_envs : int
+            Number of environments (should match hebbian.num_envs).
+        device : str or torch.device
+            Device for tensors.
+        """
         self.hebbian.reset_weights()
         if hasattr(self.model, "memory_a"):
             self.model.memory_a.reset()
 
     @torch.no_grad()
     def act(self, obs: Tensor) -> Tensor:
-        """Forward pass with batched per-individual Hebbian updates.
+        """Forward pass with per-environment Hebbian updates.
+
+        Each of N environments has its own weight matrix and receives its own
+        Hebbian update based on individual activations (no averaging).
 
         Parameters
         ----------
         obs : Tensor
-            Observations (P*S, obs_dim) where P is population size, S is slice size.
+            Observations (N, obs_dim) where N is total number of environments.
 
         Returns
         -------
         actions : Tensor
-            Scaled actions (P*S, action_dim).
+            Scaled actions (N, action_dim).
         """
         from WP2.hebbian import BatchedHebbianLastLayer
 
@@ -393,40 +519,36 @@ class BatchedHebbianActorWrapper:
             raise TypeError(f"Expected BatchedHebbianLastLayer, got {type(self.hebbian)}")
 
         model = self.model
-        P = self.hebbian.pop_size
-        S = self.hebbian.slice_size
+        N = self.hebbian.num_envs
         device = obs.device
 
         # --- LSTM backbone ---
         if hasattr(model, "memory_a") and model.recurrency:
-            inp = model.memory_a(obs)  # (P*S, lstm_out)
+            inp = model.memory_a(obs)  # (N, lstm_out)
         else:
             inp = obs
 
         # --- MLP backbone except last layer ---
-        x = inp.squeeze(0) if inp.dim() == 3 else inp
+        x = inp.squeeze(0) if inp.dim() == 3 else inp  # (N, hidden_dim)
         actor_layers = list(model.actor.children())
         for layer in actor_layers[:-1]:
-            x = layer(x)  # x: (P*S, 64)
+            x = layer(x)  # x: (N, 64)
 
-        # --- Batched last layer forward ---
-        # Reshape x into per-individual batches and apply per-individual weights via bmm
-        x_batched = x.view(P, S, -1)       # (P, S, 64)
-        W = self.hebbian.W                 # (P, out, in)
+        # --- Per-environment last layer forward ---
+        # Apply per-environment weights: (N, hidden) @ (N, out, hidden)^T = (N, out)
+        W = self.hebbian.W  # (N, out, in)
         last_layer = actor_layers[-1]
         out_features = last_layer.weight.shape[0]
 
-        # y = x @ W^T: (P, S, 64) @ (P, 64, out) = (P, S, out)
-        y_batched = torch.bmm(x_batched, W.transpose(-2, -1))  # (P, S, out)
+        # Compute y per-environment using einsum
+        # x: (N, hidden), W: (N, out, hidden) -> (N, out)
+        y = torch.einsum("nj,nij->ni", x, W)  # (N, out)
 
         # Add bias if present (broadcast)
         if last_layer.bias is not None:
-            y_batched = y_batched + last_layer.bias.unsqueeze(0).unsqueeze(0)
+            y = y + last_layer.bias.unsqueeze(0)  # (1, out) broadcasts to (N, out)
 
-        # Flatten back to (P*S, out) for Hebbian update
-        y = y_batched.view(P * S, out_features)
-
-        # --- Hebbian update ---
+        # --- Hebbian update: per-environment (no averaging) ---
         self.hebbian.hebbian_update(x, y)
 
         # --- Stochastic or deterministic action sampling ---
