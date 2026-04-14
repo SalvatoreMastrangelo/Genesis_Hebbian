@@ -13,23 +13,23 @@ hebbian:
   use_oja_coefficient: false
   initialize_rules_to_zero: true
   w_max: 5000.0
-  A_range: [-10.0, 10.0]
-  B_range: [-10.0, 10.0]
-  C_range: [-10.0, 10.0]
-  D_range: [-10.0, 10.0]
+  A_range: [-1.0, 1.0]
+  B_range: [-1.0, 1.0]
+  C_range: [-1.0, 1.0]
+  D_range: [-1.0, 1.0]
   decay_range: [0.0, 0.1]
   eta_range: [0.0, 0.1]
 
 evolution:
   population_size: 128
-  num_generations: 10
+  num_generations: 100
   enable_crossover: false
   crossover_probability: 0.9
-  mutation_probability: 0.5
+  mutation_probability: 0.8
   eta_c: 20.0
   eta_m: 20.0
   mutation_operator: "gaussian"  # "polynomial" (default) or "gaussian"
-  mutation_sigma: 0.1            # std dev for gaussian mutation
+  mutation_sigma: 0.02           # std dev for gaussian mutation
   weights: [1.0, 1.0, 1.0]
 
 evaluation:

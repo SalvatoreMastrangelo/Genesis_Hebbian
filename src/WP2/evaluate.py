@@ -275,11 +275,14 @@ def evaluate_individual(
     else:
         model, last_layer, num_actions, hidden_dim = model_and_layer
 
+    # Determine number of environments for per-env weight matrices
+    num_envs = cfg.evaluation.num_eval_envs
+
     # Decode Hebbian rules and attach
     na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
     if hebb_part is not None and cfg.hebbian.enabled:
         rules = decode_hebbian_genes(hebb_part, cfg.hebbian, out_features=na, in_features=hd)
-        hebbian = attach_hebbian(last_layer, rules, cfg, device=device)
+        hebbian = attach_hebbian(last_layer, rules, cfg, device=device, num_envs=num_envs)
     else:
         # No Hebbian — create a dummy that does nothing
         dummy_rules = {
@@ -289,7 +292,7 @@ def evaluate_individual(
             "D": torch.zeros(na, hd),
             "lam": torch.zeros(na, hd),
         }
-        hebbian = attach_hebbian(last_layer, dummy_rules, cfg, device=device)
+        hebbian = attach_hebbian(last_layer, dummy_rules, cfg, device=device, num_envs=num_envs)
         hebbian.eta = 0.0  # disable updates
 
     actor_wrapper = HebbianActorWrapper(
@@ -593,3 +596,397 @@ def evaluate_population_batched(
     # Return environment if requested
     if keep_env_alive:
         return (env, urdf_path, morph_genome)
+
+
+# ============================================================================
+#  CMA-ES evaluation helpers
+# ============================================================================
+
+@torch.no_grad()
+def _rollout_episode_reward_sum(
+    env,
+    actor_wrapper,
+    device: str,
+) -> Dict[str, np.ndarray]:
+    """Run one episode and return the WP1 reward sum per environment.
+
+    Collects ``env.last_reward_total`` at each live step and accumulates it.
+    Also gathers the auxiliary metrics (progress, velocity, crash) used for
+    diagnostic logging in the CMA-ES summary CSV.
+
+    Returns
+    -------
+    dict with keys:
+        reward_sum  : (num_envs,) total WP1 reward accumulated over the episode
+        progresses  : (num_envs,) total forward distance [m]
+        velocities  : (num_envs,) mean forward speed [m/s]
+        crash_flags : (num_envs,) 1.0 if crashed, 0.0 otherwise
+    """
+    B = env.num_envs
+    dt = env.dt
+    dev = torch.device(device)
+
+    done = torch.zeros(B, dtype=torch.bool, device=dev)
+    reward_sum = torch.zeros(B, device=dev)
+    t_acc = torch.zeros(B, device=dev)
+    dx_acc = torch.zeros(B, device=dev)
+    crashed = torch.zeros(B, dtype=torch.bool, device=dev)
+
+    actor_wrapper.reset_episode(num_envs=B, device=dev)
+    obs, _ = env.reset()
+    x0 = env.base_pos[:, 0].clone()
+
+    while not done.all():
+        actions = actor_wrapper.act(obs)
+        obs, _, term, _ = env.step(actions)
+        term = term.bool()
+        nan_mask = env.nan_envs.to(torch.bool)
+
+        alive = (~done) & (~term) & (~nan_mask)
+
+        if alive.any():
+            reward_sum[alive] += env.last_reward_total[alive]
+            t_acc[alive] += dt
+            dx_acc[alive] = env.base_pos[alive, 0] - x0[alive]
+
+        just_done = (~done) & term
+        if just_done.any():
+            for attr in ("pre_collision", "pre_wall_crash", "pre_angle_limit"):
+                flag = getattr(env, attr, None)
+                if flag is not None:
+                    crashed |= just_done & flag.to(torch.bool)
+
+        done |= term | nan_mask
+
+    valid = ~env.nan_envs.to(torch.bool)
+    nan_np = (~valid).cpu().numpy()
+
+    reward_arr = reward_sum.cpu().numpy()
+    t_arr = t_acc.cpu().numpy()
+    dx_arr = dx_acc.cpu().numpy()
+    crash_arr = crashed.float().cpu().numpy()
+
+    reward_arr[nan_np] = 0.0
+    dx_arr[nan_np] = 0.0
+    t_arr[nan_np] = 0.0
+
+    v_arr = np.where(t_arr > 1e-6, dx_arr / t_arr, 0.0)
+
+    return {
+        "reward_sum": reward_arr,
+        "progresses": dx_arr,
+        "velocities": v_arr,
+        "crash_flags": crash_arr,
+    }
+
+
+def _load_catalog(catalog_path: str) -> List[Tuple[str, str]]:
+    """Parse a catalog.txt file and return a list of (urdf_path, naca) tuples.
+
+    Each line in catalog.txt is a URDF filename of the form::
+
+        [p1, p2, ..., p15].urdf
+
+    where the bracketed values are the *physical* drone genome parameters.
+    The URDF files are expected to reside in the same directory as catalog.txt.
+
+    Parameters
+    ----------
+    catalog_path : str
+        Absolute or relative path to catalog.txt.
+
+    Returns
+    -------
+    list of (urdf_path, naca_code)
+        ``urdf_path`` is the full path to the URDF file.
+        ``naca_code`` is a 4-digit string used for the aerodynamic solver.
+    """
+    import ast
+    import re
+    from morph_evolution.chromosome_drone import Chromosome_Drone
+
+    catalog_path = Path(catalog_path)
+    catalog_dir = catalog_path.parent
+
+    entries = []
+    with open(catalog_path, "r") as f:
+        for line in f:
+            filename = line.strip()
+            if not filename:
+                continue
+
+            # Extract physical genome from filename: "[p1, p2, ...].urdf"
+            m = re.match(r'\[(.+)\]\.urdf$', filename)
+            if m:
+                try:
+                    phys = list(ast.literal_eval(f"[{m.group(1)}]"))
+                    naca = Chromosome_Drone.naca_from_physical(phys) or "3416"
+                except Exception:
+                    naca = "3416"
+            else:
+                naca = "3416"
+
+            urdf_file = str(catalog_dir / filename)
+            entries.append((urdf_file, naca))
+
+    return entries
+
+
+def _build_env_from_urdf(
+    urdf_file: str,
+    naca: str,
+    cfg,
+    wp1_cfg,
+    device: str,
+    num_envs: int,
+):
+    """Build a WingedDroneEnv from an already-existing URDF file.
+
+    Mirrors ``_build_env`` but skips URDF generation and accepts a pre-built
+    URDF path directly.  Used by the CMA-ES evaluator to avoid regenerating
+    URDFs that already exist in the catalog.
+
+    Parameters
+    ----------
+    urdf_file : str
+        Path to the URDF file.
+    naca : str
+        4-digit NACA code for the aerodynamic solver configuration.
+    cfg : HebbianEvolutionConfig
+    wp1_cfg : RunConfig
+    device : str
+    num_envs : int
+
+    Returns
+    -------
+    WingedDroneEnv
+    """
+    from winged_drone_train.env import WingedDroneEnv
+    from winged_drone_train.noise_config import configure_solver_noise
+
+    env_cfg = wp1_cfg.to_env_cfg()
+    obs_cfg = wp1_cfg.to_obs_cfg()
+    reward_cfg = wp1_cfg.to_reward_cfg()
+    command_cfg = wp1_cfg.to_command_cfg()
+
+    env_cfg.update(dict(
+        visualize_camera=False,
+        visualize_target=False,
+        naca=naca,
+    ))
+    command_cfg["min_speed"] = cfg.evaluation.vmin
+    command_cfg["max_speed"] = cfg.evaluation.vmax
+    obs_cfg["add_genome_obs_actor"] = False
+    obs_cfg["add_genome_obs_critic"] = False
+
+    env = WingedDroneEnv(
+        num_envs=num_envs,
+        env_cfg=env_cfg,
+        obs_cfg=obs_cfg,
+        reward_cfg=reward_cfg,
+        command_cfg=command_cfg,
+        urdf_file=urdf_file,
+        show_viewer=False,
+        eval=True,
+        device=device,
+    )
+    configure_solver_noise(env, env_cfg)
+    return env
+
+
+def evaluate_population_cma_batched(
+    solutions: List[np.ndarray],
+    cfg,
+    model_and_layer: Tuple,
+    wp1_cfg,
+    catalog: Optional[List[Tuple[str, str]]] = None,
+    existing_env=None,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """Evaluate a CMA-ES population across all catalog URDFs.
+
+    Each solution (Hebbian genome in [0,1]^n) is evaluated simultaneously
+    with all other solutions using a shared Genesis environment.  If a
+    catalog of URDFs is provided, the process repeats for each URDF and
+    fitnesses are averaged.
+
+    The ``BatchedHebbianActorWrapper`` is built once per call (shared across
+    all URDFs in the catalog), and ``reset_episode()`` is called between
+    episodes/URDFs to restore weights to the frozen checkpoint.
+
+    Parameters
+    ----------
+    solutions : list of np.ndarray
+        P genomes in [0,1]^n, as returned by ``cma.CMAEvolutionStrategy.ask()``.
+    cfg : HebbianEvolutionConfig
+        WP2 configuration.
+    model_and_layer : tuple
+        Pre-loaded ``(model, last_layer, num_actions, hidden_dim)`` from
+        ``load_frozen_actor``.
+    wp1_cfg : RunConfig
+        Pre-loaded WP1 config.
+    catalog : list of (urdf_path, naca) or None
+        URDFs to evaluate against.  If None or empty, falls back to the
+        default/fixed morphology URDF (``cfg.morphology.fixed_genome``).
+    existing_env : tuple, optional
+        Pre-built (env, urdf_path) to reuse across evaluations.
+        For rules-only evolution, pass this to avoid rebuilding the Genesis
+        scene every generation.
+
+    Returns
+    -------
+    fitnesses : np.ndarray, shape (P,)
+        Mean WP1 reward sum per individual, averaged across URDFs and episodes.
+    metrics : dict
+        Diagnostic metrics per individual (velocities, progresses, crash_flags).
+    """
+    import genesis as gs
+    from WP2.hebbian import BatchedHebbianLastLayer
+    from WP2.frozen_actor import BatchedHebbianActorWrapper
+
+    P = len(solutions)
+    total_envs = cfg.evaluation.num_eval_envs
+    S = total_envs // P
+    actual_envs = S * P
+
+    if S == 0:
+        raise ValueError(
+            f"num_eval_envs ({total_envs}) is smaller than population size ({P}). "
+            "Increase evaluation.num_eval_envs or reduce population_size."
+        )
+
+    print(f"[evaluate_population_cma_batched] P={P} individuals, "
+          f"S={S} envs/ind, total={actual_envs} envs")
+
+    model, last_layer, num_actions, hidden_dim = model_and_layer
+    na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
+
+    # Decode all genomes into Hebbian rules (once; shared across all URDFs)
+    hebbian_rules_list = []
+    for genome in solutions:
+        hebb_part = list(np.clip(genome, 0.0, 1.0))
+        rules = decode_hebbian_genes(hebb_part, cfg.hebbian, out_features=na, in_features=hd)
+        hebbian_rules_list.append(rules)
+
+    # Build the batched Hebbian controller (reused across URDFs)
+    batched_hebbian = BatchedHebbianLastLayer(
+        last_layer,
+        hebbian_rules_list,
+        eta=cfg.hebbian.eta,
+        w_max=cfg.hebbian.w_max,
+        use_oja_coefficient=cfg.hebbian.use_oja_coefficient,
+        device=cfg.device,
+        pop_size=P,
+        slice_size=S,
+    )
+    wrapper = BatchedHebbianActorWrapper(
+        model, batched_hebbian, stochastic=cfg.evaluation.stochastic
+    )
+
+    # Resolve catalog: empty → single default-morphology entry (None signals _build_env)
+    if not catalog:
+        catalog = [(None, None)]
+    n_urdfs = len(catalog)
+    n_episodes = cfg.catalog.num_episodes
+
+    # Accumulators across URDFs (sum, divided at the end)
+    acc_reward = np.zeros(P)
+    acc_progress = np.zeros(P)
+    acc_velocity = np.zeros(P)
+    acc_crash = np.zeros(P)
+
+    # Check if we can reuse existing environment (rules-only case: single default URDF)
+    env_was_reused = False
+    if (existing_env is not None and n_urdfs == 1 and
+        catalog[0][0] is None):
+        existing_env_obj, _ = existing_env
+        if existing_env_obj.num_envs == actual_envs:
+            env = existing_env_obj
+            env_was_reused = True
+            print(f"[evaluate_population_cma_batched] Reusing environment (rules-only, actual_envs={actual_envs})")
+
+    for urdf_idx, (urdf_file, naca) in enumerate(catalog):
+        print(f"  [catalog {urdf_idx + 1}/{n_urdfs}] "
+              f"{'default URDF' if urdf_file is None else Path(urdf_file).name}")
+
+        # Build environment for this URDF (unless already reused)
+        if not env_was_reused:
+            try:
+                if not gs._initialized:
+                    gs.init(logging_level="error", backend=gs.gpu)
+
+                if urdf_file is None:
+                    env, _ = _build_env(
+                        None, cfg, wp1_cfg, cfg.device,
+                        num_envs_override=actual_envs,
+                    )
+                else:
+                    env = _build_env_from_urdf(
+                        urdf_file, naca, cfg, wp1_cfg, cfg.device,
+                        num_envs=actual_envs,
+                    )
+            except Exception as exc:
+                print(f"  [catalog {urdf_idx + 1}] env build failed: {exc} — skipping")
+                # Don't accumulate; adjust denominator at the end
+                if gs._initialized:
+                    try:
+                        gs.destroy()
+                    except Exception:
+                        pass
+                continue
+
+        # Accumulators for this URDF (across episodes)
+        urdf_reward = np.zeros(P)
+        urdf_progress = np.zeros(P)
+        urdf_velocity = np.zeros(P)
+        urdf_crash = np.zeros(P)
+
+        try:
+            for ep in range(n_episodes):
+                ep_metrics = _rollout_episode_reward_sum(env, wrapper, cfg.device)
+
+                # Reshape flat (actual_envs,) → (P, S) → mean over S → (P,)
+                for key, flat_arr in ep_metrics.items():
+                    per_ind = flat_arr.reshape(P, S).mean(axis=1)
+                    if key == "reward_sum":
+                        urdf_reward += per_ind
+                    elif key == "progresses":
+                        urdf_progress += per_ind
+                    elif key == "velocities":
+                        urdf_velocity += per_ind
+                    elif key == "crash_flags":
+                        urdf_crash += per_ind
+
+        except Exception as exc:
+            print(f"  [catalog {urdf_idx + 1}] rollout failed: {exc}")
+        finally:
+            # Only destroy if environment was just built (not reused)
+            if not env_was_reused:
+                gs.destroy()
+
+        # Average over episodes
+        urdf_reward /= n_episodes
+        urdf_progress /= n_episodes
+        urdf_velocity /= n_episodes
+        urdf_crash /= n_episodes
+
+        acc_reward += urdf_reward
+        acc_progress += urdf_progress
+        acc_velocity += urdf_velocity
+        acc_crash += urdf_crash
+
+        print(f"    best={urdf_reward.max():.4f}  mean={urdf_reward.mean():.4f}  "
+              f"crash={urdf_crash.mean() * 100:.1f}%")
+
+    # Average across URDFs
+    acc_reward /= n_urdfs
+    acc_progress /= n_urdfs
+    acc_velocity /= n_urdfs
+    acc_crash /= n_urdfs
+
+    metrics = {
+        "reward_sums": acc_reward,
+        "progresses": acc_progress,
+        "velocities": acc_velocity,
+        "crash_flags": acc_crash,
+    }
+    return acc_reward, metrics

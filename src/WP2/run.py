@@ -123,50 +123,74 @@ def main() -> None:
     del _ckpt, _sd
 
     # --- Print summary ---
+    strategy = cfg.evolution.strategy
     print("\n" + "=" * 70)
     print("  WP2: Hebbian Plasticity + Evolutionary Co-Optimisation")
     print("=" * 70)
+    print(f"  Strategy:      {strategy.upper()}")
     print(f"  Experiment:    {cfg.exp_name}")
     print(f"  Checkpoint:    {cfg.checkpoint_path}")
     print(f"  WP1 Config:    {cfg.checkpoint_config_path}")
     print(f"  Seed:          {cfg.seed}")
     print(f"  Device:        {cfg.device}")
-    print(f"  Genome dim:    {cfg.total_genome_dim()} "
-          f"(Hebbian={cfg.hebbian_genome_dim()}, Morph={cfg.morphology_genome_dim()})")
-    print(f"  Objectives:    {cfg.active_objective_names()}")
-    print(f"  Population:    {cfg.evolution.population_size}")
-    print(f"  Generations:   {cfg.evolution.num_generations}")
-    print(f"  Crossover:     {'ON' if cfg.evolution.enable_crossover else 'OFF'}")
+    print(f"  Genome dim:    {cfg.hebbian_genome_dim()} (Hebbian rules)")
+    if strategy == "nsga2":
+        print(f"  Morph genome:  {cfg.morphology_genome_dim()}")
+        print(f"  Objectives:    {cfg.active_objective_names()}")
+        print(f"  Crossover:     {'ON' if cfg.evolution.enable_crossover else 'OFF'}")
+    else:
+        catalog_info = cfg.catalog.path if cfg.catalog.path else "default URDF"
+        print(f"  Catalog:       {catalog_info}")
+        print(f"  CMA sigma0:    {cfg.cmaes.sigma0}")
+        popsize_str = (str(cfg.cmaes.population_size)
+                       if cfg.cmaes.population_size > 0 else "auto")
+        print(f"  CMA popsize:   {popsize_str}")
     print(f"  Hebbian:       {'ON' if cfg.hebbian.enabled else 'OFF'}")
     print(f"  Morphology:    {'EVOLVE' if cfg.morphology.evolve else 'FIXED'}")
+    print(f"  Population:    {cfg.evolution.population_size}")
+    print(f"  Generations:   {cfg.evolution.num_generations}")
     print(f"  Eval episodes: {cfg.evaluation.num_eval_episodes}")
     print(f"  Eval envs:     {cfg.evaluation.num_eval_envs}")
     print("=" * 70 + "\n")
 
     # --- Launch evolution ---
-    from WP2.evolve import HebbianCodesignDEAP
+    if strategy == "cma_es":
+        from WP2.evolve_cma import HebbianCMAES
 
-    ga = HebbianCodesignDEAP(cfg)
+        runner = HebbianCMAES(cfg)
 
-    resume_gen = None
-    if args.resume and args.from_gen is not None:
-        # Point to the existing run directory
-        ga.run_dir = Path(args.resume)
-        ga.gen_dir = ga.run_dir / "generations"
-        ga.results_dir = ga.run_dir / "results"
-        ga.plots_dir = ga.run_dir / "plots"
-        resume_gen = args.from_gen
+        resume_gen = None
+        if args.resume and args.from_gen is not None:
+            runner.run_dir = Path(args.resume)
+            runner.gen_dir = runner.run_dir / "generations"
+            runner.results_dir = runner.run_dir / "results"
+            resume_gen = args.from_gen
 
-    final_pop = ga.run(resume_from_gen=resume_gen)
+        runner.run(resume_from_gen=resume_gen)
+        print(f"\n[run] All done. Results in: {runner.run_dir}")
 
-    # --- Post-analysis ---
-    try:
-        from WP2.plotting import analyze_run
-        analyze_run(str(ga.run_dir))
-    except Exception as exc:
-        print(f"[run] Plotting failed (non-fatal): {exc}")
+    else:
+        from WP2.evolve import HebbianCodesignDEAP
 
-    print(f"\n[run] All done. Results in: {ga.run_dir}")
+        ga = HebbianCodesignDEAP(cfg)
+
+        resume_gen = None
+        if args.resume and args.from_gen is not None:
+            ga.run_dir = Path(args.resume)
+            ga.gen_dir = ga.run_dir / "generations"
+            ga.results_dir = ga.run_dir / "results"
+            ga.plots_dir = ga.run_dir / "plots"
+            resume_gen = args.from_gen
+
+        final_pop = ga.run(resume_from_gen=resume_gen)
+
+        try:
+            from WP2.plotting import analyze_run
+            analyze_run(str(ga.run_dir))
+        except Exception as exc:
+            print(f"[run] Plotting failed (non-fatal): {exc}")
+
+        print(f"\n[run] All done. Results in: {ga.run_dir}")
 
 
 if __name__ == "__main__":

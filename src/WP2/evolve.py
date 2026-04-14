@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 from deap import base, creator, tools
+from tabulate import tabulate
 
 from WP2.config import HebbianEvolutionConfig
 from WP2.evaluate import evaluate_individual
@@ -93,6 +94,9 @@ def _init_csvs(pop_path: Path, pareto_path: Path, gen_summary_path: Path, obj_na
 
 def _append_population_csv(path: Path, gen: int, pop: list, fronts: list, obj_names: List[str]) -> None:
     """Append all individuals for this generation."""
+    # Ensure parent directory exists
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
     # Build rank map
     rank_map = {}
     for rank_idx, front in enumerate(fronts):
@@ -173,57 +177,78 @@ def _print_fitness_table(
     eta_seconds: float = None,
     pop_stats: Dict[str, float] = None,
 ) -> None:
-    """Print a formatted table of fitness statistics and timing for the generation."""
+    """Print formatted tables of fitness statistics and timing for the generation."""
     valid = [ind for ind in pop if ind.fitness.valid]
     if not valid:
         return
 
     fitnesses = np.array([ind.fitness.values for ind in valid])  # (N, n_obj)
 
-    # Build table rows with statistics for each objective
-    rows = []
-    for i, name in enumerate(obj_names):
-        obj_fitnesses = fitnesses[:, i]
-        rows.append([
-            name,
-            f"{obj_fitnesses.max():10.6g}",
-            f"{obj_fitnesses.min():10.6g}",
-            f"{obj_fitnesses.mean():10.6g}",
-            f"{obj_fitnesses.std():10.6g}",
-        ])
+    # Build timing info
+    timing_parts = [f"Generation {gen}", f"Population={len(pop)}", f"Pareto Front={pareto_size}"]
 
-    # Format timing info
-    timing_str = f"\n--- Generation {gen} | Population={len(pop)} | Pareto Front={pareto_size} ---"
     if total_elapsed_time is not None:
         elapsed_h, elapsed_m, elapsed_s = _format_time(total_elapsed_time)
-        timing_str += f" | Elapsed: {elapsed_h}:{elapsed_m:02d}:{elapsed_s:02d}"
-    if iter_elapsed_time is not None:
-        iter_m, iter_s = divmod(int(iter_elapsed_time), 60)
-        timing_str += f" | Iter time: {iter_m}:{iter_s:02d}"
+        timing_parts.append(f"Elapsed: {elapsed_h}:{elapsed_m:02d}:{elapsed_s:02d}")
+
+    if gen_elapsed_time is not None:
+        gen_m, gen_s = divmod(int(gen_elapsed_time), 60)
+        timing_parts.append(f"Gen time: {gen_m}:{gen_s:02d}")
+
     if eta_seconds is not None:
         eta_h, eta_m, eta_s = _format_time(eta_seconds)
-        timing_str += f" | ETA: {eta_h}:{eta_m:02d}:{eta_s:02d}"
+        timing_parts.append(f"ETA: {eta_h}:{eta_m:02d}:{eta_s:02d}")
 
-    # Print header
-    print(timing_str)
-    print(f"{'Objective':<20} {'Best':>10} {'Min':>10} {'Mean':>10} {'Std':>10}")
-    print("-" * 60)
+    header_str = " | ".join(timing_parts)
+    print(f"\n{'═' * 80}")
+    print(f"  {header_str}")
+    print(f"{'═' * 80}")
 
-    # Print rows
-    for row in rows:
-        print(f"{row[0]:<20} {row[1]:>10} {row[2]:>10} {row[3]:>10} {row[4]:>10}")
+    # Build fitness statistics table
+    fitness_rows = []
+    for i, name in enumerate(obj_names):
+        obj_fitnesses = fitnesses[:, i]
+        fitness_rows.append([
+            name,
+            f"{obj_fitnesses.max():.6g}",
+            f"{obj_fitnesses.min():.6g}",
+            f"{obj_fitnesses.mean():.6g}",
+            f"{obj_fitnesses.std():.6g}",
+        ])
+
+    print("\n  Fitness Statistics:")
+    print(tabulate(
+        fitness_rows,
+        headers=["Objective", "Best", "Min", "Mean", "Std"],
+        tablefmt="grid",
+        numalign="center",
+        stralign="left",
+    ))
 
     # Print population statistics (crash, spatial termination)
     if pop_stats:
-        print("\nTermination Statistics:")
+        stats_rows = []
+
         if 'crash_rate' in pop_stats:
             crash_pct = pop_stats['crash_rate'] * 100
             success_pct = pop_stats['success_rate'] * 100
-            print(f"  Crash rate: {crash_pct:6.1f}% | Success rate: {success_pct:6.1f}%")
+            stats_rows.append(["Crash Rate", f"{crash_pct:6.1f}%"])
+            stats_rows.append(["Success Rate", f"{success_pct:6.1f}%"])
 
         if 'progress_mean' in pop_stats:
-            print(f"  Position (X-axis): mean={pop_stats['progress_mean']:10.4f}, "
-                  f"std={pop_stats['progress_std']:10.4f}, max={pop_stats['progress_max']:10.4f}")
+            stats_rows.append(["Position Mean", f"{pop_stats['progress_mean']:.4f}"])
+            stats_rows.append(["Position Std", f"{pop_stats['progress_std']:.4f}"])
+            stats_rows.append(["Position Max", f"{pop_stats['progress_max']:.4f}"])
+
+        if stats_rows:
+            print("\n  Population Statistics:")
+            print(tabulate(
+                stats_rows,
+                headers=["Metric", "Value"],
+                tablefmt="simple",
+                stralign="left",
+            ))
+
     print()
 
 
