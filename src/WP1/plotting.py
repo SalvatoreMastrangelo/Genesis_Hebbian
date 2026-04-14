@@ -148,7 +148,26 @@ def plot_run(run_dir: str | Path, csv_name: str = "training_log.csv") -> None:
     iters = col("iter")
 
     # --- 1. Reward curve ---
-    reward = col("mean_reward")
+    # Try various column name formats
+    reward = col("Train_mean_reward")
+    if np.all(np.isnan(reward)):
+        reward = col("mean_reward")
+    if np.all(np.isnan(reward)):
+        reward = col("reward")
+
+    # If no explicit reward column, try to derive from reward components
+    if np.all(np.isnan(reward)):
+        reward_components = [
+            "rew_progress", "rew_energy", "rew_crash", "rew_height",
+            "rew_angular", "rew_smooth", "rew_obstacle", "rew_success",
+            "rew_cosmetic", "rew_stability"
+        ]
+        component_cols = [col(c) for c in reward_components]
+        # Only use components that have data
+        valid_cols = [c for c in component_cols if not np.all(np.isnan(c))]
+        if valid_cols:
+            reward = np.nanmean(np.column_stack(valid_cols), axis=1)
+
     if not np.all(np.isnan(reward)):
         fig, ax = plt.subplots(figsize=(10, 5))
         mask = ~np.isnan(reward)
@@ -164,20 +183,29 @@ def plot_run(run_dir: str | Path, csv_name: str = "training_log.csv") -> None:
         plt.close(fig)
         print(f"[plot_run] Saved reward_curve.png")
 
-    # --- 2. v_mean and E_tot ---
-    v_mean = col("v_mean")
-    e_tot = col("E_tot")
+    # --- 2. Progress and Energy components ---
+    v_mean = col("Episode_rew_progress")  # New: progress reward component
+    e_tot = col("Episode_rew_energy")      # New: energy reward component
+    if np.all(np.isnan(v_mean)):
+        v_mean = col("v_mean")  # Fall back to old name
+    if np.all(np.isnan(v_mean)):
+        v_mean = col("rew_progress")  # Fall back to unprefixed name
+    if np.all(np.isnan(e_tot)):
+        e_tot = col("E_tot")    # Fall back to old name
+    if np.all(np.isnan(e_tot)):
+        e_tot = col("rew_energy")  # Fall back to unprefixed name
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     if not np.all(np.isnan(v_mean)):
         mask = ~np.isnan(v_mean)
         axes[0].plot(iters[mask], _smooth(v_mean[mask]), color="forestgreen", linewidth=2)
-        axes[0].set_title("v_mean (progress reward)")
+        axes[0].set_title("Progress Reward")
         axes[0].set_xlabel("Iteration")
         axes[0].grid(True, alpha=0.3)
     if not np.all(np.isnan(e_tot)):
         mask = ~np.isnan(e_tot)
         axes[1].plot(iters[mask], _smooth(e_tot[mask]), color="firebrick", linewidth=2)
-        axes[1].set_title("E_tot (energy penalty)")
+        axes[1].set_title("Energy Penalty")
         axes[1].set_xlabel("Iteration")
         axes[1].grid(True, alpha=0.3)
     fig.tight_layout()
@@ -186,12 +214,27 @@ def plot_run(run_dir: str | Path, csv_name: str = "training_log.csv") -> None:
     print(f"[plot_run] Saved v_mean_energy.png")
 
     # --- 3. Termination breakdown (stacked area) ---
-    categories = ["wall_crash_frac", "angle_crash_frac", "collision_frac", "success_frac"]
+    # New CSV has Episode_num_* (counts), old had *_frac (fractions)
+    wall_crashes = col("Episode_num_wall_crashed")
+    angle_crashes = col("Episode_num_angle_crashed")
+    collisions = col("Episode_num_collision")
+    successes = col("Episode_num_success")
+
+    # If counts are all NaN, try old fraction columns
+    if np.all(np.isnan(wall_crashes)):
+        data = np.column_stack([col(c) for c in ["wall_crash_frac", "angle_crash_frac", "collision_frac", "success_frac"]])
+    else:
+        # Convert counts to fractions (assume they sum to the episode count per iteration)
+        counts = np.column_stack([wall_crashes, angle_crashes, collisions, successes])
+        counts = np.nan_to_num(counts, nan=0.0)
+        totals = np.sum(counts, axis=1, keepdims=True)
+        totals[totals == 0] = 1  # Avoid division by zero
+        data = counts / totals
+
+    data = np.nan_to_num(data, nan=0.0)
+
     labels = ["Wall crash", "Angle crash", "Collision", "Success"]
     colors = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71"]
-    data = np.column_stack([col(c) for c in categories])
-    # Replace nans with 0
-    data = np.nan_to_num(data, nan=0.0)
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.stackplot(iters, data.T, labels=labels, colors=colors, alpha=0.8)
     ax.set_xlabel("Iteration")
@@ -206,7 +249,11 @@ def plot_run(run_dir: str | Path, csv_name: str = "training_log.csv") -> None:
     print(f"[plot_run] Saved termination_breakdown.png")
 
     # --- 4. Progress (final_x) ---
-    progress = col("progress")
+    progress = col("Episode_final_x")
+    if np.all(np.isnan(progress)):
+        progress = col("progress")  # Fall back to old name
+    if np.all(np.isnan(progress)):
+        progress = col("final_x")  # Fall back to unprefixed name
     if not np.all(np.isnan(progress)):
         fig, ax = plt.subplots(figsize=(10, 5))
         mask = ~np.isnan(progress)

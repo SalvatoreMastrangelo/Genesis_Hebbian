@@ -5,7 +5,8 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: extra_observations_critic_multi_shard_4  # Name of the experiment for logging/tracking
+exp_name: 256_extra_observations_critic_multi_shard_smaller_head_many_envs  # Name of the experiment for logging/tracking
+repeat: 4  # number of times to submit this config as independent jobs
 
 ##############################################################################
 # PPO (Proximal Policy Optimization) hyperparameters
@@ -44,8 +45,8 @@ policy:
 # Training configuration
 ##############################################################################
 training:
-  num_envs: 256                             # Number of parallel environments for data collection
-  max_iterations: 20                        # Maximum training iterations
+  num_envs: 65536                           # Number of parallel environments for data collection
+  max_iterations: 2000                      # Maximum training iterations
   num_steps_per_env: 25                     # Timesteps collected per environment per iteration (experience = num_envs × num_steps)
   save_interval: 50                         # Save checkpoint every N iterations
   eval_interval: 200                        # Run full evaluation every N iterations
@@ -156,7 +157,7 @@ command:
 # Multi-drone URDF catalog (for multi-agent training)
 ##############################################################################
 catalog:
-  n_urdf: 10                                # Number of different drone morphologies in catalog
+  n_urdf: 256                               # Number of different drone morphologies in catalog
   catalog_dir: null                         # Directory containing custom URDF files (null = use default)
   urdf_seed: 20                             # Seed for reproducible URDF generation
 
@@ -165,6 +166,6 @@ catalog:
 ##############################################################################
 lss:
   enabled: true                             # Enable logical super-scene training
-  urdf_shard_size: 1                        # Batch size for URDF processing
+  urdf_shard_size: 8                        # Batch size for URDF processing
   num_workers: 0                            # Number of worker processes for scene collection
-  collection_gpus: 1                        # Number of GPUs for multi-scene collection
+  collection_gpus: 2                        # Number of GPUs for multi-scene collection

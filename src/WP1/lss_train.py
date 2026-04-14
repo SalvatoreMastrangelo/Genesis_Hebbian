@@ -18,9 +18,7 @@ Called from WP1.train when ``cfg.lss.enabled = True``:
 
 from __future__ import annotations
 
-import csv
 import os
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -42,89 +40,6 @@ def _configure_torch_backends() -> None:
     torch.backends.cudnn.benchmark = True
 
 
-def _generate_csv_from_tensorboard(log_dir: Path, eval_dir: Path) -> None:
-    """Generate training_log.csv from TensorBoard events.
-
-    Extracts metrics (mean_reward, mean_episode_length, etc.) from TensorBoard
-    scalar events and writes them to a CSV file for consistent logging across
-    all training modes.
-
-    Parameters
-    ----------
-    log_dir : Path
-        Path to TensorBoard log directory (contains event files).
-    eval_dir : Path
-        Path to evaluation directory where CSV will be written.
-    """
-    try:
-        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-    except ImportError:
-        print("[lss_train] tensorboard not available — skipping CSV generation")
-        return
-
-    try:
-        # Load TensorBoard events
-        ea = EventAccumulator(str(log_dir))
-        ea.Reload()
-
-        # Collect all available scalar metrics
-        scalar_names = ea.Tags()["scalars"]
-
-        # Extract iteration numbers from any scalar
-        iterations = set()
-        for scalar_name in scalar_names:
-            try:
-                events = ea.Scalars(scalar_name)
-                for event in events:
-                    iterations.add(event.step)
-            except KeyError:
-                pass
-
-        if not iterations:
-            print("[lss_train] No scalar events found in TensorBoard")
-            return
-
-        # Build rows with all available metrics
-        rows = []
-        for iteration in sorted(iterations):
-            row = {"iter": str(iteration)}
-
-            # Extract each scalar metric at this iteration
-            for scalar_name in scalar_names:
-                try:
-                    events = ea.Scalars(scalar_name)
-                    event_dict = {e.step: e.value for e in events}
-                    if iteration in event_dict:
-                        # Normalize scalar name for CSV (replace / with _)
-                        csv_col = scalar_name.replace("/", "_")
-                        row[csv_col] = f"{event_dict[iteration]:.6g}"
-                except KeyError:
-                    pass
-
-            rows.append(row)
-
-        if not rows:
-            print("[lss_train] No scalar data found in TensorBoard")
-            return
-
-        # Write CSV
-        csv_path = eval_dir / "training_log.csv"
-        with open(csv_path, "w", newline="") as f:
-            # Use all unique column names from rows
-            fieldnames = ["iter"]
-            for row in rows:
-                for key in row:
-                    if key not in fieldnames:
-                        fieldnames.append(key)
-
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-
-        print(f"[lss_train] Generated training_log.csv with {len(rows)} iterations")
-
-    except Exception as exc:
-        print(f"[lss_train] Failed to generate CSV from TensorBoard: {exc}")
 
 
 def train_lss(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
@@ -216,6 +131,7 @@ def train_lss(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
             collection_gpus=cfg.lss.collection_gpus,
             device=cfg.training.device,
             vis=vis,
+            eval_dir=run.eval_dir,
         )
     finally:
         try:
@@ -224,11 +140,6 @@ def train_lss(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
             pass
 
     # --- Post-training artefacts ---
-    print("[lss_train] Generating training log from TensorBoard…")
-    try:
-        _generate_csv_from_tensorboard(run.log_dir, run.eval_dir)
-    except Exception as exc:
-        print(f"[lss_train] CSV generation failed: {exc}")
 
     # Generate evaluation videos
     print("[lss_train] Generating evaluation videos…")
