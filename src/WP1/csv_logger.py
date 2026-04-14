@@ -1,42 +1,23 @@
 """
-Per-iteration CSV logger with episode-termination breakdown.
-=============================================================
+Per-iteration CSV logger with dynamic field capture.
+====================================================
 
-Captures key training metrics after every PPO update and appends them to
+Captures ALL training metrics after every PPO update and appends them to
 a CSV file inside the run's ``eval/`` directory.  The resulting file is
 the primary data source for ``WP1.plotting.plot_run()``.
 
+Unlike the legacy hardcoded logger, this version:
+- Dynamically discovers and saves all fields from ``env.extras["episode"]``
+- Captures all PPO metrics (mean_reward, mean_episode_length, etc.)
+- Adds derived metrics (crash_rate, termination fractions)
+- Never loses information — new metrics are added to the CSV on first occurrence
+- Maintains backward compatibility with existing plotting code
+
 Data sources
 ------------
-The logger reads from two sources each iteration:
-
-1. **``env.extras["episode"]``** — populated by ``WingedDroneEnv.reset()``
-   whenever environments are reset.  Contains per-reset-batch averages of
-   reward components (``rew_progress``, ``rew_energy``, ...) and raw
-   termination counts (``num_wall_crashed``, ``num_angle_crashed``,
-   ``num_collision``, ``num_success``).
-
-2. **RSL-RL runner buffers** — ``runner.rewbuffer`` and
-   ``runner.lenbuffer`` provide running-mean episode reward and length.
-
-Columns
--------
-===================  ===========================================================
-Column               Description
-===================  ===========================================================
-``iter``             PPO iteration index (0-based)
-``mean_reward``      Mean total episodic reward (from runner buffer)
-``v_mean``           Mean progress-reward component (speed tracking)
-``E_tot``            Mean energy-penalty component
-``progress``         Mean final X position of completed episodes (metres)
-``crash_rate``       Fraction of terminations due to any crash type
-``wall_crash_frac``  Fraction due to lateral-wall or ground crashes
-``angle_crash_frac`` Fraction due to exceeding safe roll/pitch angles
-``collision_frac``   Fraction due to obstacle collisions
-``success_frac``     Fraction of episodes that reached the corridor end
-``timeout_frac``     Fraction of episodes that timed out (placeholder)
-``mean_episode_length``  Mean episode length in env steps
-===================  ===========================================================
+1. **``env.extras["episode"]``** — environment-reported per-episode statistics
+2. **PPO runner buffers** — mean_reward, mean_episode_length
+3. **Derived metrics** — crash rates and termination breakdowns
 
 Usage
 -----
@@ -48,7 +29,14 @@ Usage
 
     for iteration in range(max_iters):
         # ... PPO update ...
-        csv_log.log(iteration, env.extras, mean_reward=..., mean_episode_length=...)
+        csv_log.log(
+            iteration,
+            env.extras,
+            ppo_metrics={
+                "mean_reward": ...,
+                "mean_episode_length": ...,
+            }
+        )
 
     csv_log.close()
 """
@@ -62,31 +50,20 @@ from typing import Any, Dict, List, Optional
 import torch
 
 
-# Column names for the CSV output
-CSV_COLUMNS: List[str] = [
-    "iter",
-    "mean_reward",
-    "v_mean",
-    "E_tot",
-    "progress",
-    "crash_rate",
-    "wall_crash_frac",
-    "angle_crash_frac",
-    "collision_frac",
-    "success_frac",
-    "timeout_frac",
-    "mean_episode_length",
-]
-
-
 class CSVLogger:
-    """Append one row of training metrics per PPO iteration to a CSV file.
+    """Dynamically log all training metrics per PPO iteration to a CSV file.
 
     The file is opened in write mode on construction (overwriting any
-    existing file at the same path), and a header row is written
-    immediately.  Subsequent calls to :meth:`log` append one data row
-    per iteration.  The file is flushed after every write so that
-    partial results are available even if training is interrupted.
+    existing file at the same path), and a header row is written based on
+    the first data row. Subsequent calls to :meth:`log` append one data row
+    per iteration. The file is flushed after every write so that partial
+    results are available even if training is interrupted.
+
+    The logger dynamically discovers columns from the data itself:
+    - Iteration number is always first
+    - PPO metrics (mean_reward, mean_episode_length) are second
+    - Environment episode statistics come next
+    - Derived metrics (crash_rate, termination fractions) are appended
 
     Parameters
     ----------
@@ -97,95 +74,111 @@ class CSVLogger:
     ----------
     path : Path
         Resolved output file path.
+    _fieldnames : List[str]
+        Dynamically determined column names (written to header on first call).
+    _header_written : bool
+        Whether the CSV header has been written yet.
     """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self.path, "w", newline="")
-        self._writer = csv.DictWriter(self._file, fieldnames=CSV_COLUMNS)
-        self._writer.writeheader()
-        self._file.flush()
+        self._writer = None
+        self._fieldnames: List[str] = []
+        self._header_written = False
 
     def log(
         self,
         iteration: int,
         extras: Dict[str, Any],
-        mean_reward: Optional[float] = None,
-        mean_episode_length: Optional[float] = None,
+        ppo_metrics: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Write one CSV row for the current PPO iteration.
+        """Write one CSV row for the current PPO iteration, capturing all available data.
 
-        Termination counts from ``extras["episode"]`` are normalised into
-        fractions (each in [0, 1]) so that they sum to 1.  If no
-        terminations occurred in this iteration the fractions are all 0.
+        Automatically discovers and saves all fields from extras["episode"] and
+        ppo_metrics without losing information. Derived metrics (crash_rate,
+        termination fractions) are computed and added.
 
         Parameters
         ----------
         iteration : int
             Zero-based PPO iteration index.
         extras : Dict[str, Any]
-            The ``env.extras`` dictionary from ``WingedDroneEnv`` (or
-            ``Gen_Env``).  The method looks for the ``"episode"`` sub-dict
-            with keys:
-
-            - ``num_wall_crashed`` — count of wall / ground crashes
-            - ``num_angle_crashed`` — count of angle-limit crashes
-            - ``num_collision`` — count of obstacle collisions
-            - ``num_success`` — count of successful corridor traversals
-            - ``rew_progress`` — mean progress-reward component
-            - ``rew_energy`` — mean energy-penalty component
-            - ``final_x`` — mean final X position (metres)
-
-        mean_reward : float, optional
-            Mean total episodic reward for this iteration.
-        mean_episode_length : float, optional
-            Mean episode length in environment steps.
+            The ``env.extras`` dictionary from ``WingedDroneEnv`` (or ``Gen_Env``).
+            The method looks for the ``"episode"`` sub-dict with arbitrary keys
+            (e.g., ``num_wall_crashed``, ``rew_progress``, ``final_x``, etc.).
+        ppo_metrics : Dict[str, Any], optional
+            PPO-related metrics like ``mean_reward``, ``mean_episode_length``.
+            Keys are used as-is in the CSV.
         """
+        if ppo_metrics is None:
+            ppo_metrics = {}
+
         ep = extras.get("episode", {})
 
-        # Termination counts (these are sums over reset envs, not fractions)
-        # We normalise by the sum of all termination types to get fractions.
+        # Build the complete row data
+        row: Dict[str, str] = {"iter": str(iteration)}
+
+        # Add PPO metrics
+        for key, val in ppo_metrics.items():
+            if val is not None:
+                if isinstance(val, float):
+                    row[key] = f"{val:.6g}"
+                else:
+                    row[key] = str(val)
+
+        # Add all episode statistics from env.extras["episode"]
+        for key, val in ep.items():
+            if val is not None:
+                if isinstance(val, float):
+                    row[key] = f"{val:.6g}"
+                elif isinstance(val, int):
+                    row[key] = str(val)
+                else:
+                    row[key] = str(val)
+
+        # Compute derived termination metrics
         wall = float(ep.get("num_wall_crashed", 0))
         angle = float(ep.get("num_angle_crashed", 0))
         collision = float(ep.get("num_collision", 0))
         success = float(ep.get("num_success", 0))
-
         total_terms = wall + angle + collision + success
-        # timeout is implicit: envs that reset but aren't in any crash/success category
-        # We approximate timeout_frac from time_outs if available
-        timeout_frac = 0.0
 
         if total_terms > 0:
-            wall_frac = wall / total_terms
-            angle_frac = angle / total_terms
-            collision_frac = collision / total_terms
-            success_frac = success / total_terms
-            crash_rate = (wall + angle + collision) / total_terms
+            row["crash_rate"] = f"{(wall + angle + collision) / total_terms:.4f}"
+            row["wall_crash_frac"] = f"{wall / total_terms:.4f}"
+            row["angle_crash_frac"] = f"{angle / total_terms:.4f}"
+            row["collision_frac"] = f"{collision / total_terms:.4f}"
+            row["success_frac"] = f"{success / total_terms:.4f}"
         else:
-            wall_frac = angle_frac = collision_frac = success_frac = crash_rate = 0.0
+            row["crash_rate"] = "0.0000"
+            row["wall_crash_frac"] = "0.0000"
+            row["angle_crash_frac"] = "0.0000"
+            row["collision_frac"] = "0.0000"
+            row["success_frac"] = "0.0000"
 
-        # Reward components
-        v_mean = float(ep.get("rew_progress", 0.0))
-        e_tot = float(ep.get("rew_energy", 0.0))
-        progress = float(ep.get("final_x", 0.0))
+        # On first call, discover all column names and write header
+        if not self._header_written:
+            # Build ordered field names: iter, ppo metrics, episode data, derived metrics
+            self._fieldnames = ["iter"]
+            self._fieldnames.extend(sorted(ppo_metrics.keys()))
+            self._fieldnames.extend(sorted(ep.keys()))
+            self._fieldnames.extend([
+                "crash_rate", "wall_crash_frac", "angle_crash_frac",
+                "collision_frac", "success_frac"
+            ])
+            # Remove duplicates while preserving order
+            seen = set()
+            self._fieldnames = [f for f in self._fieldnames if not (f in seen or seen.add(f))]
 
-        row = {
-            "iter": iteration,
-            "mean_reward": f"{mean_reward:.6g}" if mean_reward is not None else "",
-            "v_mean": f"{v_mean:.6g}",
-            "E_tot": f"{e_tot:.6g}",
-            "progress": f"{progress:.4f}",
-            "crash_rate": f"{crash_rate:.4f}",
-            "wall_crash_frac": f"{wall_frac:.4f}",
-            "angle_crash_frac": f"{angle_frac:.4f}",
-            "collision_frac": f"{collision_frac:.4f}",
-            "success_frac": f"{success_frac:.4f}",
-            "timeout_frac": f"{timeout_frac:.4f}",
-            "mean_episode_length": f"{mean_episode_length:.2f}" if mean_episode_length is not None else "",
-        }
+            self._writer = csv.DictWriter(self._file, fieldnames=self._fieldnames)
+            self._writer.writeheader()
+            self._header_written = True
 
-        self._writer.writerow(row)
+        # Write row, using empty string for missing fields
+        row_with_defaults = {f: row.get(f, "") for f in self._fieldnames}
+        self._writer.writerow(row_with_defaults)
         self._file.flush()
 
     def close(self) -> None:

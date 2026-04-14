@@ -347,18 +347,30 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
         it = _iter_counter["i"]
         try:
             extras = env.extras if hasattr(env, 'extras') else {}
-            mean_rew = None
-            mean_ep_len = None
 
-            # Try to get mean reward from runner's internal tracking
+            # Collect all available PPO metrics
+            ppo_metrics = {}
+
+            # Extract mean reward from runner's internal tracking
             rewbuffer = getattr(runner, 'rewbuffer', None)
             if rewbuffer is not None and len(rewbuffer) > 0:
-                mean_rew = sum(rewbuffer) / len(rewbuffer)
+                ppo_metrics["mean_reward"] = sum(rewbuffer) / len(rewbuffer)
+
+            # Extract mean episode length from runner's internal tracking
             lenbuffer = getattr(runner, 'lenbuffer', None)
             if lenbuffer is not None and len(lenbuffer) > 0:
-                mean_ep_len = sum(lenbuffer) / len(lenbuffer)
+                ppo_metrics["mean_episode_length"] = sum(lenbuffer) / len(lenbuffer)
 
-            csv_logger.log(it, extras, mean_reward=mean_rew, mean_episode_length=mean_ep_len)
+            # Extract additional PPO metrics if available (actor loss, critic loss, entropy, etc.)
+            alg = getattr(runner, 'alg', None)
+            if alg is not None:
+                # Common PPO statistics that might be available
+                for metric_name in ['actor_loss', 'critic_loss', 'entropy', 'ppo_loss', 'value_loss']:
+                    val = getattr(alg, metric_name, None)
+                    if val is not None:
+                        ppo_metrics[metric_name] = val
+
+            csv_logger.log(it, extras, ppo_metrics=ppo_metrics)
 
             # Log adjusted steps/s if using multi-URDF
             if urdf_multiplier > 1:
@@ -469,6 +481,18 @@ def main() -> None:
             "scene training without touching single-scene configs."
         ),
     )
+    parser.add_argument(
+        "--lss-cfg",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a supplementary logical-super-scene YAML (e.g. "
+            "configs/logical_super_scene.yaml).  Its 'lss:' section is "
+            "merged on top of the base config, activating shard-based "
+            "URDF training without touching single-scene configs."
+        ),
+    )
     parser.add_argument("-v", "--vis", action="store_true", help="Enable viewer.")
     parser.add_argument("--resume", action="store_true", help="Resume from latest matching run.")
     parser.add_argument(
@@ -503,10 +527,27 @@ def main() -> None:
                     setattr(ms, k, v)
             cfg.multi_scene = ms
 
+    # Merge supplementary logical-super-scene config if provided
+    if args.lss_cfg is not None:
+        import yaml as _yaml
+        with open(args.lss_cfg, "r") as _f:
+            _lss_data = _yaml.safe_load(_f) or {}
+        if "lss" in _lss_data and isinstance(_lss_data["lss"], dict):
+            from WP1.config import LogicalSuperSceneConfig
+            lss = LogicalSuperSceneConfig()
+            for k, v in _lss_data["lss"].items():
+                if hasattr(lss, k):
+                    setattr(lss, k, v)
+            cfg.lss = lss
+
     # Apply CLI overrides like --cfg.ppo.learning_rate 3e-4
     cfg.apply_cli_overrides(remaining)
 
-    if args.multi_gpu > 1:
+    # Priority: LSS > multi-GPU > standard
+    if cfg.lss.enabled:
+        from WP1.lss_train import train_lss
+        train_lss(cfg, vis=args.vis, resume=args.resume)
+    elif args.multi_gpu > 1:
         from WP1.multi_gpu_train import train_multi_gpu
         train_multi_gpu(cfg, num_gpus=args.multi_gpu, vis=args.vis, resume=args.resume)
     else:

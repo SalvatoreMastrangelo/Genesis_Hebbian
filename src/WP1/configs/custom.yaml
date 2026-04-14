@@ -5,119 +5,166 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: extra_observations_critic_multi
+exp_name: extra_observations_critic_multi_shard_4  # Name of the experiment for logging/tracking
 
+##############################################################################
+# PPO (Proximal Policy Optimization) hyperparameters
+##############################################################################
 ppo:
-  clip_param: 0.15
-  desired_kl: 0.006
-  entropy_coef: 0.002
-  gamma: 0.99
-  lam: 0.9
-  learning_rate: 1.0e-4
-  max_grad_norm: 0.5
-  num_learning_epochs: 2
-  num_mini_batches: 32
-  schedule: adaptive
-  use_clipped_value_loss: true
-  value_loss_coef: 0.3
-  normalize_advantage_per_mini_batch: true
+  clip_param: 0.15                          # Clipping range for policy gradient (ε in PPO)
+  desired_kl: 0.006                         # Target KL divergence; used with adaptive learning rate schedule
+  entropy_coef: 0.002                       # Coefficient for entropy regularization (encourages exploration)
+  gamma: 0.99                               # Discount factor for future rewards
+  lam: 0.9                                  # GAE (Generalized Advantage Estimation) lambda parameter
+  learning_rate: 1.0e-4                     # Base learning rate for optimizer
+  max_grad_norm: 0.5                        # Maximum gradient norm for clipping
+  num_learning_epochs: 2                    # Number of passes over collected data per iteration
+  num_mini_batches: 32                      # Number of mini-batches to divide collected data into
+  schedule: adaptive                        # Learning rate schedule: "adaptive" adjusts based on KL divergence
+  use_clipped_value_loss: true              # Whether to clip value function loss
+  value_loss_coef: 0.3                      # Weight for value function loss in total loss
+  normalize_advantage_per_mini_batch: true  # Normalize advantages per mini-batch for stability
 
+##############################################################################
+# Policy network architecture
+##############################################################################
 policy:
-  actor_hidden_dims: [64, 32]
-  critic_hidden_dims: [128, 128]
-  activation: elu
-  init_noise_std: 0.3
-  rnn_type: lstm
-  rnn_hidden_size: 64
-  critic_rnn_hidden_size: 128  # null = same as rnn_hidden_size
-  rnn_num_layers: 1
-  max_servo: 1.0
-  max_throttle: 1.0
+  actor_hidden_dims: [128, 32]              # Hidden layer dimensions for actor network (input → 64 → 32 → output)
+  critic_hidden_dims: [128, 128]            # Hidden layer dimensions for critic network
+  activation: elu                           # Activation function type (elu, relu, tanh, etc.)
+  init_noise_std: 0.3                       # Initial standard deviation for action noise
+  rnn_type: lstm                            # Type of RNN: lstm, gru, or none
+  rnn_hidden_size: 128                      # Hidden size for actor RNN
+  critic_rnn_hidden_size: 128               # Hidden size for critic RNN (null = same as rnn_hidden_size)
+  rnn_num_layers: 1                         # Number of RNN layers
+  max_servo: 1.0                            # Maximum servo command magnitude (wing sweep, elevator, rudder)
+  max_throttle: 1.0                         # Maximum throttle magnitude
 
+##############################################################################
+# Training configuration
+##############################################################################
 training:
-  num_envs: 16384
-  max_iterations: 500
-  num_steps_per_env: 25
-  save_interval: 100
-  eval_interval: 200
-  seed: 1
-  empirical_normalization: true
-  device: "cuda:0"
+  num_envs: 16384                           # Number of parallel environments for data collection
+  max_iterations: 200                       # Maximum training iterations
+  num_steps_per_env: 25                     # Timesteps collected per environment per iteration (experience = num_envs × num_steps)
+  save_interval: 50                         # Save checkpoint every N iterations
+  eval_interval: 200                        # Run full evaluation every N iterations
+  seed: 1                                   # Random seed for reproducibility
+  empirical_normalization: true             # Use running normalization for observations
+  device: "cuda:0"                          # GPU device for training
 
+##############################################################################
+# Environment configuration
+##############################################################################
 env:
-  num_actions: 7
-  dt: 0.01
-  drone: morphing_drone
-  naca: "3416"
-  termination_if_close_to_ground: 0.1
-  termination_if_y_greater_than: 50.0
-  termination_if_z_greater_than: 50.0
-  base_init_pos: [-30.0, 0.0, 15.0]
-  base_init_quat: [1.0, 0.0, 0.0, 0.0]
-  randomize_init_quat: false
-  randomize_joint_pos: false
-  episode_length_s: 100.0
-  at_target_threshold: 0.1
-  resampling_time_s: 3.0
-  simulate_action_latency: true
-  action_latency_min_steps: 0
-  action_latency_max_steps: 1
-  action_latency_random_per_step: false
-  clip_actions: 1.0
-  visualize_target: false
-  visualize_camera: true
-  max_visualize_FPS: 15
-  tree_radius: 0.75
-  tree_height: 100.0
-  y_lower: -50.0
-  y_upper: 50.0
-  forest_x_limit: 150.0
-  x_upper: 150.0
-  dens_min: 0.0
-  dens_max: 4.0
-  dens_min_min: 0.0
-  dens_min_max: 3.0
-  growing_forest: true
-  aero_noise: true
-  aero_noise_sigma0: 0.05
-  noise_sigma_param: 0.15
+  num_actions: 7                            # Action dimensionality [throttle, sweep_L, sweep_R, twist_L, twist_R, elevator, rudder]
+  dt: 0.01                                  # Physics simulation timestep (seconds)
+  drone: morphing_drone                     # Drone model type (e.g., morphing_drone, simple_drone)
+  naca: "3416"                              # NACA airfoil profile for wings
+  termination_if_close_to_ground: 0.1       # Terminate episode if drone altitude < this value (meters)
+  termination_if_y_greater_than: 50.0       # Terminate if drone y-position exceeds this (meters)
+  termination_if_z_greater_than: 50.0       # Terminate if drone z-position exceeds this (meters)
+  base_init_pos: [-30.0, 0.0, 15.0]         # Initial position [x, y, z] in meters
+  base_init_quat: [1.0, 0.0, 0.0, 0.0]     # Initial orientation as quaternion [w, x, y, z]
+  randomize_init_quat: false                # Randomize initial orientation each episode
+  randomize_joint_pos: false                # Randomize initial joint positions
+  episode_length_s: 100.0                   # Episode duration in seconds
+  at_target_threshold: 0.1                  # Distance threshold to consider target reached (meters)
+  resampling_time_s: 3.0                    # Interval for resampling target waypoints (seconds)
+  simulate_action_latency: true             # Add realistic action latency to simulation
+  action_latency_min_steps: 0               # Minimum latency in simulation steps
+  action_latency_max_steps: 1               # Maximum latency in simulation steps
+  action_latency_random_per_step: false     # Randomize latency per step (if true) or per episode (if false)
+  clip_actions: 1.0                         # Clip action values to [-clip_actions, clip_actions]
+  visualize_target: false                   # Render target waypoint in visualization
+  visualize_camera: true                    # Render drone onboard camera in visualization
+  max_visualize_FPS: 15                     # Maximum FPS for video rendering
+  tree_radius: 0.75                         # Radius of forest tree cylinders (meters)
+  tree_height: 100.0                        # Height of forest trees (meters)
+  y_lower: -50.0                            # Forest extent lower y-bound (meters)
+  y_upper: 50.0                             # Forest extent upper y-bound (meters)
+  forest_x_limit: 150.0                     # Forest extent x-limit (meters)
+  x_upper: 150.0                            # Maximum x position (meters)
+  dens_min: 0.0                             # Minimum forest density (trees per unit area)
+  dens_max: 4.0                             # Maximum forest density
+  dens_min_min: 0.0                         # Lower bound for randomizing dens_min
+  dens_min_max: 3.0                         # Upper bound for randomizing dens_min
+  growing_forest: true                      # Regenerate random forest layout each episode
+  aero_noise: true                          # Add aerodynamic noise to forces/moments
+  aero_noise_sigma0: 0.05                   # Base aerodynamic noise standard deviation
+  noise_sigma_param: 0.15                   # Scaling parameter for aerodynamic noise
 
+##############################################################################
+# Evaluation-specific environment overrides (for videos/evaluation episodes)
+# If a field is null, the training env value is used
+##############################################################################
+eval:
+  episode_length_s: 300.0                   # Longer eval episodes
+  aero_noise: false                         # No noise during eval
+  forest_x_limit: 300.0                     # 2x longer forest corridor
+  x_upper: 300.0
+  dens_min: null                            # Use training value
+  dens_max: null                            # Use training value
+
+##############################################################################
+# Observation configuration
+##############################################################################
 obs:
-  num_obs: 36
-  add_noise: true
-  add_genome_obs_actor: false
-  add_genome_obs_critic: true
-  include_joint_pos_critic: true
-  include_joint_vel_critic: true
-  include_ang_vel_critic: true
-  noise_std_z: 0.01
-  noise_std_quat: 0.01
-  noise_std_vel: 0.02
-  noise_std_depth: 0.05
-  noise_std_last_thr: 0.0
-  noise_std_last_jnts: 0.0
-  noise_std_v_tgt: 0.0
-  noise_std_genome: 0.05
-  noise_std_joint_pos: 0.0
-  noise_std_joint_vel: 0.0
-  noise_std_ang_vel: 0.0
+  num_obs: 36                               # Total number of observations (auto-computed if using privileged critic obs)
+  add_noise: true                           # Add Gaussian noise to observations
+  add_genome_obs_actor: false               # CRITICAL: Actor should NOT see morphology (genome) to enable generalization
+  add_genome_obs_critic: true               # Critic can see morphology for better value estimation
+  include_joint_pos_critic: true            # Critic receives joint positions (privileged obs)
+  include_joint_vel_critic: true            # Critic receives joint velocities (privileged obs)
+  include_ang_vel_critic: true              # Critic receives angular velocity (privileged obs)
+  include_effective_thrust_critic: true     # Critic receives effective thrust in Newtons (privileged obs)
+  noise_std_z: 0.01                         # Noise on altitude observation
+  noise_std_quat: 0.01                      # Noise on quaternion observation
+  noise_std_vel: 0.02                       # Noise on velocity observation
+  noise_std_depth: 0.05                     # Noise on depth sensor observation
+  noise_std_last_thr: 0.0                   # Noise on last throttle action
+  noise_std_last_jnts: 0.0                  # Noise on last joint positions
+  noise_std_v_tgt: 0.0                      # Noise on target velocity
+  noise_std_genome: 0.05                    # Noise on genome observation (if included)
+  noise_std_joint_pos: 0.0                  # Noise on joint positions (if critic privileged obs)
+  noise_std_joint_vel: 0.0                  # Noise on joint velocities (if critic privileged obs)
+  noise_std_ang_vel: 0.0                    # Noise on angular velocity (if critic privileged obs)
+  noise_std_effective_thrust: 0.0            # Noise on effective thrust observation (if critic privileged obs)
 
+##############################################################################
+# Reward function weights (all components summed for total reward)
+##############################################################################
 reward:
-  smooth: -0.1
-  angular: -0.005
-  crash: -10.0
-  obstacle: -0.1
-  energy: -0.0004
-  progress: 0.5
-  height: -0.005
-  success: 0.0
-  cosmetic: -1.0
-  stability: 0.0
+  smooth: -0.1                              # Penalty for high action changes (encourage smooth control)
+  angular: -0.005                           # Penalty for high angular velocity (encourage stable flight)
+  crash: -10.0                              # Large penalty for collision with ground/obstacles
+  obstacle: -0.1                            # Penalty for proximity to obstacles
+  energy: -0.0004                           # Penalty for high power consumption
+  progress: 0.5                             # Reward for moving toward target waypoint
+  height: -0.005                            # Penalty for flying too low (safety bonus)
+  success: 0.0                              # Reward for reaching target (0 = no explicit bonus)
+  cosmetic: -1.0                            # Penalty for ground collision (cosmetic)
+  stability: 0.0                            # Reward for stable flight (0 = disabled)
 
+##############################################################################
+# Command/goal configuration
+##############################################################################
 command:
-  num_commands: 1
+  num_commands: 1                           # Number of simultaneous command types (1 = single waypoint navigation)
 
+##############################################################################
+# Multi-drone URDF catalog (for multi-agent training)
+##############################################################################
 catalog:
-  n_urdf: 16
-  catalog_dir: null
-  urdf_seed: 0
+  n_urdf: 60                                # Number of different drone morphologies in catalog
+  catalog_dir: null                         # Directory containing custom URDF files (null = use default)
+  urdf_seed: 20                             # Seed for reproducible URDF generation
+
+##############################################################################
+# Logical Super-Scene (LSS) configuration (WP2.5 multi-scene training)
+##############################################################################
+lss:
+  enabled: true                             # Enable logical super-scene training
+  urdf_shard_size: 10                       # Batch size for URDF processing
+  num_workers: 0                            # Number of worker processes for scene collection
+  collection_gpus: 1                        # Number of GPUs for multi-scene collection

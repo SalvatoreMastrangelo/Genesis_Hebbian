@@ -285,6 +285,20 @@ def _generate_eval_videos(
         "episode_length_s": 300.0,
     })
 
+    # Apply eval-specific overrides from config if they exist
+    if cfg.eval.episode_length_s is not None:
+        env_cfg_eval["episode_length_s"] = cfg.eval.episode_length_s
+    if cfg.eval.aero_noise is not None:
+        env_cfg_eval["aero_noise"] = cfg.eval.aero_noise
+    if cfg.eval.forest_x_limit is not None:
+        env_cfg_eval["forest_x_limit"] = cfg.eval.forest_x_limit
+    if cfg.eval.x_upper is not None:
+        env_cfg_eval["x_upper"] = cfg.eval.x_upper
+    if cfg.eval.dens_min is not None:
+        env_cfg_eval["dens_min"] = cfg.eval.dens_min
+    if cfg.eval.dens_max is not None:
+        env_cfg_eval["dens_max"] = cfg.eval.dens_max
+
     obs_cfg_eval = obs_cfg.copy()
     command_cfg_eval = command_cfg.copy()
     command_cfg_eval["eval_speed"] = eval_speed

@@ -651,14 +651,14 @@ def train_multi_gpu(
     def _on_iter_end() -> None:
         it = _iter["i"]
         try:
-            mean_rew = mean_ep_len = None
+            ppo_metrics = {}
             rb = getattr(runner, "rewbuffer", None)
             if rb and len(rb):
-                mean_rew = sum(rb) / len(rb)
+                ppo_metrics["mean_reward"] = sum(rb) / len(rb)
             lb = getattr(runner, "lenbuffer", None)
             if lb and len(lb):
-                mean_ep_len = sum(lb) / len(lb)
-            csv_logger.log(it, env.extras, mean_reward=mean_rew, mean_episode_length=mean_ep_len)
+                ppo_metrics["mean_episode_length"] = sum(lb) / len(lb)
+            csv_logger.log(it, env.extras, ppo_metrics=ppo_metrics)
         except Exception as exc:
             print(f"[MultiGPU] CSV log error at iter {it}: {exc}")
         _iter["i"] = it + 1
@@ -700,13 +700,41 @@ def train_multi_gpu(
             tb_dir=run.log_dir,
         )
     except Exception as exc:
-        print(f"[MultiGPU] TensorBoard reward extraction skipped: {exc}")
+        print(f"[MultiGPU] TensorBoard reward extraction failed: {exc}")
 
+    # Generate evaluation videos (critical for multi-GPU runs)
+    print("[MultiGPU] Generating evaluation videos…")
     try:
+        import genesis as gs
+        # Ensure Genesis is destroyed before evaluation (workers use it)
+        try:
+            gs.destroy()
+        except Exception:
+            pass
+
+        # Run evaluation with detailed error reporting
         _generate_eval_videos(run.run_dir)
+        print("[MultiGPU] Evaluation videos generated")
     except Exception as exc:
-        print(f"[MultiGPU] Video generation skipped: {exc}")
+        import traceback
+        print(f"[MultiGPU] Video generation failed: {exc}")
+        traceback.print_exc()
+        print("[MultiGPU] Attempting recovery and fallback…")
+        try:
+            # Fallback: try again with Genesis fresh init
+            import genesis as gs
+            gs.destroy()
+            _generate_eval_videos(run.run_dir)
+            print("[MultiGPU] Evaluation videos generated (on retry)")
+        except Exception as exc2:
+            print(f"[MultiGPU] Fallback video generation also failed: {exc2}")
+            print("[MultiGPU] Skipping video generation but continuing with plots…")
 
     print("[MultiGPU] Generating plots…")
-    plot_run(run.run_dir)
+    try:
+        plot_run(run.run_dir)
+        print("[MultiGPU] Plots generated")
+    except Exception as exc:
+        print(f"[MultiGPU] Plot generation failed: {exc}")
+
     print(f"[MultiGPU] Done. Results in: {run.run_dir}")

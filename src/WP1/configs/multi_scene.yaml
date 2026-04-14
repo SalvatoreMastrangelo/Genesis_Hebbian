@@ -29,3 +29,9 @@ multi_scene:
   N: 1                        # URDFs per scene  →  total envs = S * N * E
   E: 800                      # environments per drone per scene
   cpu_threads_per_worker: 2   # Taichi compiler threads per worker
+
+lss:
+  enabled: false
+  urdf_shard_size: 64
+  num_workers: 0
+  collection_gpus: 1

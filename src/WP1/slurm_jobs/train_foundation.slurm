@@ -31,6 +31,13 @@ CLI_OVERRIDES=${CLI_OVERRIDES:-}
 # Example: sbatch --gpus=2 --export=ALL,MULTI_GPU=2,CFG_FILE=... train_foundation.slurm
 MULTI_GPU=${MULTI_GPU:-1}
 
+# Logical-super-scene: set LOGICAL_SUPER_SCENE=1 to enable LSS mode.
+# Mutually exclusive with MULTI_GPU > 1.
+# Example: sbatch --export=ALL,LOGICAL_SUPER_SCENE=1,URDF_SHARD_SIZE=64,LSS_COLLECTION_GPUS=2,...
+LOGICAL_SUPER_SCENE=${LOGICAL_SUPER_SCENE:-0}
+URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-64}
+LSS_COLLECTION_GPUS=${LSS_COLLECTION_GPUS:-1}
+
 # CUDA MPS controls (for multi-GPU concurrency)
 ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-0}
 MPS_THREAD_PCT=${MPS_THREAD_PCT:-0}
@@ -154,7 +161,14 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
     fi
   done
 
-  if [ "${MULTI_GPU:-1}" -gt 1 ]; then
+  if [ \"${LOGICAL_SUPER_SCENE:-0}\" -ne 0 ]; then
+    echo \"[RUNTIME] Logical-super-scene mode: shard_size=${URDF_SHARD_SIZE}, collection_gpus=${LSS_COLLECTION_GPUS}\"
+    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} \
+      --cfg.lss.enabled true \
+      --cfg.lss.urdf_shard_size ${URDF_SHARD_SIZE} \
+      --cfg.lss.collection_gpus ${LSS_COLLECTION_GPUS} \
+      ${CLI_OVERRIDES}
+  elif [ \"${MULTI_GPU:-1}\" -gt 1 ]; then
     echo \"[RUNTIME] Multi-GPU mode: distributing across ${MULTI_GPU} GPUs\"
     python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} --multi-gpu ${MULTI_GPU} ${CLI_OVERRIDES}
   else

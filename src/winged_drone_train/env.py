@@ -758,6 +758,7 @@ class WingedDroneEnv:
             include_joint_pos_critic=bool(self.obs_cfg.get("include_joint_pos_critic", False)),
             include_joint_vel_critic=bool(self.obs_cfg.get("include_joint_vel_critic", False)),
             include_ang_vel_critic=bool(self.obs_cfg.get("include_ang_vel_critic", False)),
+            include_effective_thrust_critic=bool(self.obs_cfg.get("include_effective_thrust_critic", False)),
             genome_vec=self._genome_vec,
             genome_min=self.GENOME_MIN if self._genome_vec is not None else None,
             genome_max=self.GENOME_MAX if self._genome_vec is not None else None,
@@ -1191,6 +1192,7 @@ class WingedDroneEnv:
             joint_positions=self.joint_position,
             joint_velocities=self.joint_velocity,
             base_ang_vel=self.base_ang_vel,
+            effective_thrust=self.thrust_log,
         )
 
         self.obs_buf.copy_(obs_actor)
@@ -1523,6 +1525,7 @@ class WingedDroneEnv:
             joint_positions=self.joint_position,
             joint_velocities=self.joint_velocity,
             base_ang_vel=self.base_ang_vel,
+            effective_thrust=self.thrust_log,
         )
 
         self.obs_buf.copy_(obs_actor)
