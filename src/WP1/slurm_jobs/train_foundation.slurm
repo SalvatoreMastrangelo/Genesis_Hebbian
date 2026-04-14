@@ -5,7 +5,7 @@
 #SBATCH --gpus=2
 #SBATCH --mem=160G
 #SBATCH --cpus-per-gpu=4
-#SBATCH --time=100:00:00
+#SBATCH --time=17:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 #SBATCH --mail-user=salvatore.mastrangelo@epfl.ch
@@ -162,11 +162,9 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   done
 
   if [ \"${LOGICAL_SUPER_SCENE:-0}\" -ne 0 ]; then
-    echo \"[RUNTIME] Logical-super-scene mode: shard_size=${URDF_SHARD_SIZE}, collection_gpus=${LSS_COLLECTION_GPUS}\"
+    echo \"[RUNTIME] Logical-super-scene mode enabled (using YAML config)\"
     python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} \
       --cfg.lss.enabled true \
-      --cfg.lss.urdf_shard_size ${URDF_SHARD_SIZE} \
-      --cfg.lss.collection_gpus ${LSS_COLLECTION_GPUS} \
       ${CLI_OVERRIDES}
   elif [ \"${MULTI_GPU:-1}\" -gt 1 ]; then
     echo \"[RUNTIME] Multi-GPU mode: distributing across ${MULTI_GPU} GPUs\"
