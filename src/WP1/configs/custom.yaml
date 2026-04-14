@@ -28,7 +28,7 @@ policy:
   activation: elu
   init_noise_std: 0.3
   rnn_type: lstm
-  rnn_hidden_size: 64
+  rnn_hidden_size: 128
   critic_rnn_hidden_size: 128  # null = same as rnn_hidden_size
   rnn_num_layers: 1
   max_servo: 1.0

@@ -497,7 +497,8 @@ class MultiDroneEnv:
 
         # Number of actions = max across all drones (throttle + servos)
         self.num_actions = max(1 + ds.num_servos for ds in self.drones)
-        num_servos_max = self.num_actions - 1
+        self.num_servos = self.num_actions - 1  # max servos across all drones
+        num_servos_max = self.num_servos
 
         # Extract genome vectors from each drone's URDF filename and cache them
         genome_min, genome_max = Chromosome_Drone.genome_min_max()
