@@ -82,6 +82,16 @@ env:
   aero_noise_sigma0: 0.05
   noise_sigma_param: 0.15
 
+# Evaluation-specific environment overrides (for videos/evaluation episodes)
+# If a field is null, the training env value is used
+eval:
+  episode_length_s: 300.0      # Longer eval episodes
+  aero_noise: false             # No noise during eval
+  forest_x_limit: 300.0         # 2x longer forest corridor
+  x_upper: 300.0
+  dens_min: null                # Use training value
+  dens_max: null                # Use training value
+
 obs:
   num_obs: 36
   add_noise: true
@@ -121,3 +131,9 @@ catalog:
   n_urdf: null
   catalog_dir: null
   urdf_seed: 0
+
+lss:
+  enabled: false
+  urdf_shard_size: 64
+  num_workers: 0
+  collection_gpus: 1

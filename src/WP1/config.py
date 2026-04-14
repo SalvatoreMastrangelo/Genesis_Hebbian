@@ -319,6 +319,75 @@ class EnvConfig:
 
 
 @dataclass
+class EvalConfig:
+    """Evaluation-specific environment overrides.
+
+    Allows evaluation videos/episodes to use different settings than training
+    (e.g., longer forests, no noise, longer episodes).
+
+    If a field is ``None``, the training ``EnvConfig`` value is used.
+
+    Attributes
+    ----------
+    episode_length_s : Optional[float]
+        Maximum evaluation episode duration (seconds). If None, uses training value.
+    aero_noise : Optional[bool]
+        Enable aerodynamic noise during eval. If None, defaults to False.
+    forest_x_limit : Optional[float]
+        Forward forest corridor length (metres). If None, uses training value.
+    x_upper : Optional[float]
+        Forward boundary length (metres). If None, uses training value.
+    dens_min : Optional[float]
+        Minimum tree density at corridor start. If None, uses training value.
+    dens_max : Optional[float]
+        Maximum tree density at corridor end. If None, uses training value.
+    """
+
+    episode_length_s: Optional[float] = None
+    aero_noise: Optional[bool] = None
+    forest_x_limit: Optional[float] = None
+    x_upper: Optional[float] = None
+    dens_min: Optional[float] = None
+    dens_max: Optional[float] = None
+
+    num_actions: int = 7
+    dt: float = 0.01
+    drone: str = "morphing_drone"
+    naca: str = "3416"
+    termination_if_close_to_ground: float = 0.1
+    termination_if_y_greater_than: float = 50.0
+    termination_if_z_greater_than: float = 50.0
+    base_init_pos: List[float] = field(default_factory=lambda: [-30.0, 0.0, 15.0])
+    base_init_quat: List[float] = field(default_factory=lambda: [1.0, 0.0, 0.0, 0.0])
+    randomize_init_quat: bool = True
+    episode_length_s: float = 100.0
+    at_target_threshold: float = 0.1
+    resampling_time_s: float = 3.0
+    simulate_action_latency: bool = True
+    action_latency_min_steps: int = 0
+    action_latency_max_steps: int = 1
+    action_latency_random_per_step: bool = False
+    clip_actions: float = 1.0
+    visualize_target: bool = False
+    visualize_camera: bool = True
+    max_visualize_FPS: int = 15
+    tree_radius: float = 0.75
+    tree_height: float = 100.0
+    y_lower: float = -50.0
+    y_upper: float = 50.0
+    forest_x_limit: float = 150.0
+    x_upper: float = 150.0
+    dens_min: float = 0.0
+    dens_max: float = 4.0
+    dens_min_min: Optional[float] = None
+    dens_min_max: Optional[float] = None
+    growing_forest: bool = True
+    aero_noise: bool = True
+    aero_noise_sigma0: float = 0.05
+    noise_sigma_param: float = 0.15
+
+
+@dataclass
 class ObsConfig:
     """Observation-space configuration.
 
@@ -349,6 +418,8 @@ class ObsConfig:
         Whether to include joint velocities in critic observations only.
     include_ang_vel_critic : bool
         Whether to include angular velocity of the drone base in critic observations only.
+    include_effective_thrust_critic : bool
+        Whether to include effective thrust (propeller force in Newtons) in critic observations only.
     noise_std_* : float
         Per-feature noise standard deviations.  ``0.0`` means no noise for
         that feature.
@@ -361,6 +432,7 @@ class ObsConfig:
     include_joint_pos_critic: bool = False
     include_joint_vel_critic: bool = False
     include_ang_vel_critic: bool = False
+    include_effective_thrust_critic: bool = False
     noise_std_z: float = 0.01
     noise_std_quat: float = 0.01
     noise_std_vel: float = 0.02
@@ -372,6 +444,7 @@ class ObsConfig:
     noise_std_joint_pos: float = 0.0
     noise_std_joint_vel: float = 0.0
     noise_std_ang_vel: float = 0.0
+    noise_std_effective_thrust: float = 0.0
 
 
 @dataclass
@@ -500,6 +573,41 @@ class MultiSceneConfig:
     cpu_threads_per_worker: int = 4
 
 
+@dataclass
+class LogicalSuperSceneConfig:
+    """Parameters for logical-super-scene URDF-shard training.
+
+    When ``enabled=True``, the URDF catalog is split into shards of size
+    ``urdf_shard_size``, and one worker process is spawned per shard.
+    Each worker collects rollouts from its assigned URDFs independently,
+    then results are globally aggregated for a single PPO update.
+
+    Mutually exclusive with ``multi_scene.enabled`` and ``--multi-gpu > 1``.
+
+    Requires ``catalog.n_urdf > 0`` or ``catalog.catalog_dir`` to point to
+    an existing URDF catalog.
+
+    Attributes
+    ----------
+    enabled : bool
+        Activate logical-super-scene mode.  Default ``False``.
+    urdf_shard_size : int
+        Number of URDFs per shard / worker.  Must be ``> 0`` when enabled.
+        Typical values: 32–128, depending on VRAM and URDF complexity.
+    num_workers : int
+        Number of worker processes.  ``0`` = auto-detect (one per shard).
+        For global updates, must equal the number of shards.
+    collection_gpus : int
+        Number of visible GPUs for rollout workers.  Workers are cycled
+        across available GPUs in round-robin fashion.  Default ``1``.
+    """
+
+    enabled: bool = False
+    urdf_shard_size: int = 0
+    num_workers: int = 0
+    collection_gpus: int = 1
+
+
 # ============================================================================
 #  Top-level RunConfig
 # ============================================================================
@@ -532,6 +640,8 @@ class RunConfig:
         Runner and training-loop settings.
     env : EnvConfig
         WingedDroneEnv physics, termination, and forest parameters.
+    eval : EvalConfig
+        Evaluation-specific environment overrides (for videos/episodes).
     obs : ObsConfig
         Observation-space flags and noise scales.
     reward : RewardConfig
@@ -540,6 +650,10 @@ class RunConfig:
         Command vector configuration.
     catalog : CatalogConfig
         URDF catalog settings for multi-morphology training.
+    multi_scene : MultiSceneConfig
+        Multi-scene parallel training parameters.
+    lss : LogicalSuperSceneConfig
+        Logical-super-scene URDF-shard training parameters.
     """
 
     exp_name: str = "less_neurons_more_envs"
@@ -548,11 +662,13 @@ class RunConfig:
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
     obs: ObsConfig = field(default_factory=ObsConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     command: CommandConfig = field(default_factory=CommandConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
     multi_scene: MultiSceneConfig = field(default_factory=MultiSceneConfig)
+    lss: LogicalSuperSceneConfig = field(default_factory=LogicalSuperSceneConfig)
 
     # ------------------------------------------------------------------ #
     # Conversion helpers — produce the legacy dict format expected by
@@ -658,6 +774,7 @@ class RunConfig:
             "include_joint_pos_critic": self.obs.include_joint_pos_critic,
             "include_joint_vel_critic": self.obs.include_joint_vel_critic,
             "include_ang_vel_critic": self.obs.include_ang_vel_critic,
+            "include_effective_thrust_critic": self.obs.include_effective_thrust_critic,
             "noise_std": {
                 "z": self.obs.noise_std_z,
                 "quat": self.obs.noise_std_quat,
@@ -670,6 +787,7 @@ class RunConfig:
                 "joint_pos": self.obs.noise_std_joint_pos,
                 "joint_vel": self.obs.noise_std_joint_vel,
                 "ang_vel": self.obs.noise_std_ang_vel,
+                "effective_thrust": self.obs.noise_std_effective_thrust,
             },
         }
 
@@ -777,11 +895,13 @@ class RunConfig:
             "policy": PolicyConfig,
             "training": TrainingConfig,
             "env": EnvConfig,
+            "eval": EvalConfig,
             "obs": ObsConfig,
             "reward": RewardConfig,
             "command": CommandConfig,
             "catalog": CatalogConfig,
             "multi_scene": MultiSceneConfig,
+            "lss": LogicalSuperSceneConfig,
         }
         for key, val in data.items():
             if key in sub_map and isinstance(val, dict):

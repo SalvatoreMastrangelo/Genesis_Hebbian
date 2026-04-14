@@ -1,0 +1,33 @@
+##############################################################################
+# Logical-super-scene configuration for WP1 training.
+#
+# LSS mode partitions a URDF catalog into shards and spawns one worker
+# process per shard for independent rollout collection. All workers
+# contribute to a single global PPO update.
+#
+# Mutually exclusive with:
+#   - multi_scene.enabled = true
+#   - --multi-gpu N (N > 1)
+#
+# Usage: merge this on top of a base config with a catalog:
+#
+#   python -m WP1.train \
+#     --cfg src/WP1/configs/foundation.yaml \
+#     --lss-cfg src/WP1/configs/logical_super_scene.yaml
+#
+# Or embed the lss: section directly in any base config YAML.
+#
+# Tuning guidance
+# ---------------
+# - urdf_shard_size: Number of URDFs per shard. Larger shards = fewer
+#   workers but more URDFs per worker. Typical range 32-128.
+# - num_workers: Number of worker processes. 0 = auto (one per shard).
+# - collection_gpus: Number of GPUs visible to rollout workers.
+#   Workers cycle across available GPUs in round-robin.
+##############################################################################
+
+lss:
+  enabled: true
+  urdf_shard_size: 64    # URDFs per shard / worker
+  num_workers: 0         # 0 = auto (one per shard)
+  collection_gpus: 1     # GPUs visible to rollout workers

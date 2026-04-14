@@ -76,6 +76,7 @@ class ObservationBuilder:
         include_joint_pos_critic: bool = False,
         include_joint_vel_critic: bool = False,
         include_ang_vel_critic: bool = False,
+        include_effective_thrust_critic: bool = False,
         genome_vec: Optional[torch.Tensor] = None,
         genome_min: Optional[list] = None,
         genome_max: Optional[list] = None,
@@ -92,6 +93,7 @@ class ObservationBuilder:
         self.include_joint_pos_critic = bool(include_joint_pos_critic)
         self.include_joint_vel_critic = bool(include_joint_vel_critic)
         self.include_ang_vel_critic = bool(include_ang_vel_critic)
+        self.include_effective_thrust_critic = bool(include_effective_thrust_critic)
         self.num_servos = int(num_servos)
 
         # Joint limits used to normalise last joint actions to roughly [-1, 1]
@@ -205,6 +207,8 @@ class ObservationBuilder:
             critic_extra_dim += self.num_servos
         if self.include_ang_vel_critic:
             critic_extra_dim += 3  # 3D angular velocity
+        if self.include_effective_thrust_critic:
+            critic_extra_dim += 1  # scalar thrust in Newtons
 
         if self.add_genome_obs_actor and self.genome_dim is not None:
             self.actor_obs_dim += self.genome_dim
@@ -235,6 +239,7 @@ class ObservationBuilder:
         joint_positions: Optional[torch.Tensor] = None,
         joint_velocities: Optional[torch.Tensor] = None,
         base_ang_vel: Optional[torch.Tensor] = None,
+        effective_thrust: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Construct actor and critic observations.
 
@@ -257,6 +262,8 @@ class ObservationBuilder:
                 Only appended to critic if include_joint_vel_critic=True.
             base_ang_vel: Optional ``(B, 3)`` base angular velocity in body frame.
                 Only appended to critic if include_ang_vel_critic=True.
+            effective_thrust: Optional ``(B, 1)`` effective thrust in Newtons.
+                Only appended to critic if include_effective_thrust_critic=True.
 
         Returns:
             A tuple ``(obs_actor, obs_critic)``.
@@ -511,6 +518,24 @@ class ObservationBuilder:
                     noise *= std_cfg["ang_vel"]
                     av = av + noise
             critic_features.append(av)
+
+        if self.include_effective_thrust_critic:
+            if effective_thrust is None:
+                raise ValueError("include_effective_thrust_critic=True but effective_thrust not provided")
+            et = effective_thrust
+            if et.device != device:
+                et = et.to(device)
+            # Ensure it's 2D (B, 1)
+            if et.ndim == 1:
+                et = et.unsqueeze(1)
+            if self.add_noise and self.noise_std:
+                std_cfg = self.noise_std
+                if std_cfg.get("effective_thrust", 0.0) > 0.0:
+                    et = et.clone()
+                    noise = torch.randn_like(et, device=device)
+                    noise *= std_cfg["effective_thrust"]
+                    et = et + noise
+            critic_features.append(et)
 
         if critic_features:
             obs_critic = torch.cat((obs_critic,) + tuple(critic_features), dim=1)
