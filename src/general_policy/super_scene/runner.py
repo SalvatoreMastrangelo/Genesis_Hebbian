@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import torch
 from rsl_rl.runners import OnPolicyRunner
@@ -144,6 +144,7 @@ def run_logical_super_scene_training(
     device: str,
     init_policy_path: str | None,
     vis: bool,
+    eval_dir: Optional[Path] = None,
 ) -> None:
     """
     Multi-URDF rollout with standard RSL-RL learning path.
@@ -219,12 +220,49 @@ def run_logical_super_scene_training(
     rl_logger.attach()
     rl_logger.log_resource_usage(step=0, include_cuda=torch.cuda.is_available())
 
+    # --- CSV logger (per-iteration metrics) ---
+    csv_logger = None
+    if eval_dir is not None:
+        from WP1.csv_logger import CSVLogger
+        csv_logger = CSVLogger(eval_dir / "training_log.csv")
+
+        _iter_counter = {"i": 0}
+        alg = getattr(runner, 'alg', None)
+        if alg is not None:
+            _orig_alg_update = alg.update
+
+            def _patched_update(*args, **kwargs):
+                """Wrapped PPO update that appends CSV logging."""
+                result = _orig_alg_update(*args, **kwargs)
+                it = _iter_counter["i"]
+                try:
+                    extras = env.extras if hasattr(env, 'extras') else {}
+                    ppo_metrics = {}
+                    rewbuffer = getattr(runner, 'rewbuffer', None)
+                    if rewbuffer is not None and len(rewbuffer) > 0:
+                        ppo_metrics["mean_reward"] = sum(rewbuffer) / len(rewbuffer)
+                    lenbuffer = getattr(runner, 'lenbuffer', None)
+                    if lenbuffer is not None and len(lenbuffer) > 0:
+                        ppo_metrics["mean_episode_length"] = sum(lenbuffer) / len(lenbuffer)
+                    csv_logger.log(it, extras, ppo_metrics=ppo_metrics)
+                except Exception as e:
+                    print(f"[lss runner] CSV log error at iter {it}: {e}")
+                _iter_counter["i"] = it + 1
+                return result
+
+            alg.update = _patched_update
+
     try:
         runner.learn(
             num_learning_iterations=max_iterations,
             init_at_random_ep_len=True,
         )
     finally:
+        try:
+            if csv_logger is not None:
+                csv_logger.close()
+        except Exception:
+            pass
         try:
             rl_logger.close()
         except Exception:
