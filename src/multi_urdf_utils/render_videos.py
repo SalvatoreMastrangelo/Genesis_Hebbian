@@ -129,6 +129,7 @@ def _collect_scene_trajectory(
 
     actor_mgr = MultiDroneActorManager(
         D=N,
+        num_envs_per_drone=E,
         checkpoint_path=checkpoint_path,
         checkpoint_config_path=checkpoint_config_path,
         hebbian_rules_list=hebbian_rules_list,

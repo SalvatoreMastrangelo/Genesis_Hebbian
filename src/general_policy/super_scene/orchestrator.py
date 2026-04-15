@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -118,10 +119,14 @@ class LogicalSuperSceneOrchestrator:
             "waiting for ready replies"
         )
 
+        # Allow 40 minutes per worker for Genesis scene compilation + reset.
+        # Workers typically take ~1500s; this is a safety net against silent deadlocks.
+        _STARTUP_TIMEOUT_S = float(os.getenv("LOGICAL_SUPER_SCENE_STARTUP_TIMEOUT", "2400"))
+
         ready_wait_t0 = time.perf_counter()
         for i, worker_device, urdfs_i, parent_conn, p in pending_workers:
             reply_wait_t0 = time.perf_counter()
-            reply = self._recv_reply(parent_conn, worker_idx=i, process=p)
+            reply = self._recv_reply(parent_conn, worker_idx=i, process=p, timeout=_STARTUP_TIMEOUT_S)
             if not reply.ok:
                 raise RuntimeError(reply.error or f"Worker {i} failed to start")
             if reply.payload.get("event") != "ready":
@@ -131,10 +136,15 @@ class LogicalSuperSceneOrchestrator:
             metas.append(meta)
 
             shm = reply.payload.get("shared_buffers")
-            if self.use_shared_memory and not isinstance(shm, dict):
-                raise RuntimeError(f"Worker {i} did not provide shared buffers")
+            # Worker may have fallen back to pipe-based transfer if share_memory_() failed.
+            worker_used_shm = isinstance(shm, dict) and bool(meta.get("use_shared_memory", True))
+            if self.use_shared_memory and not worker_used_shm:
+                print(
+                    f"[logical-super-scene] WARNING: worker={i} fell back to pipe transfer "
+                    "(shared memory unavailable); continuing without shared memory for this worker."
+                )
 
-            if shm is not None:
+            if worker_used_shm:
                 initial_obs_cpu.append(shm["obs"])
                 initial_critic_cpu.append(shm["critic_obs"])
             else:
@@ -150,7 +160,7 @@ class LogicalSuperSceneOrchestrator:
                     conn=parent_conn,
                     num_envs=int(meta["num_envs"]),
                     sl=sl,
-                    shm=shm if isinstance(shm, dict) else None,
+                    shm=shm if worker_used_shm else None,
                     worker_idx=i,
                     worker_device=worker_device,
                 )
@@ -187,14 +197,30 @@ class LogicalSuperSceneOrchestrator:
         self._obs = torch.cat(initial_obs_cpu, dim=0).to(self.device)
         self._critic = torch.cat(initial_critic_cpu, dim=0).to(self.device)
 
-    def _recv_reply(self, conn, worker_idx: Optional[int] = None, process: Optional[mp.Process] = None) -> WorkerReply:
+    def _recv_reply(
+        self,
+        conn,
+        worker_idx: Optional[int] = None,
+        process: Optional[mp.Process] = None,
+        timeout: Optional[float] = None,
+    ) -> WorkerReply:
+        prefix = f"worker={worker_idx}" if worker_idx is not None else "worker=<unknown>"
+        if timeout is not None:
+            ready = conn.poll(timeout)
+            if not ready:
+                details = ""
+                if process is not None:
+                    alive = process.is_alive()
+                    details = f" pid={process.pid} alive={alive} exitcode={process.exitcode}"
+                raise RuntimeError(
+                    f"Timeout ({timeout:.0f}s) waiting for reply from {prefix}.{details}"
+                )
         try:
             msg = conn.recv()
         except EOFError as exc:
             details = ""
             if process is not None:
                 details = f" pid={process.pid} exitcode={process.exitcode}"
-            prefix = f"worker={worker_idx}" if worker_idx is not None else "worker=<unknown>"
             raise RuntimeError(f"EOF while waiting reply from {prefix}.{details}") from exc
         if isinstance(msg, WorkerReply):
             return msg

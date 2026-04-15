@@ -15,8 +15,13 @@ from .ipc import WorkerCommand, WorkerReply
 def _safe_reply(conn, ok: bool, payload: Dict[str, Any] | None = None, error: str = "") -> None:
     try:
         conn.send(WorkerReply(ok=ok, payload=payload or {}, error=error))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[worker] _safe_reply failed to send (ok={ok}): {exc}", flush=True)
+        # Attempt a lightweight error-only reply so the main process can fail fast
+        try:
+            conn.send(WorkerReply(ok=False, payload={}, error=f"Reply serialization failed: {exc}"))
+        except Exception:
+            pass
 
 
 def _to_cpu(t: torch.Tensor) -> torch.Tensor:
@@ -116,14 +121,24 @@ def worker_main(
             critic = env.privileged_obs_buf
 
         if use_shared_memory:
-            shared_buffers = _make_shared_buffers(
-                num_envs=int(env.num_envs),
-                num_obs=int(env.num_obs),
-                num_privileged_obs=int(env.num_privileged_obs),
-                num_actions=int(env.num_actions),
-            )
-            shared_buffers["obs"].copy_(_to_cpu(obs))
-            shared_buffers["critic_obs"].copy_(_to_cpu(critic))
+            try:
+                shared_buffers = _make_shared_buffers(
+                    num_envs=int(env.num_envs),
+                    num_obs=int(env.num_obs),
+                    num_privileged_obs=int(env.num_privileged_obs),
+                    num_actions=int(env.num_actions),
+                )
+                shared_buffers["obs"].copy_(_to_cpu(obs))
+                shared_buffers["critic_obs"].copy_(_to_cpu(critic))
+                print("[worker] Shared memory buffers created successfully.", flush=True)
+            except Exception as shm_exc:
+                print(
+                    f"[worker] share_memory_() failed ({shm_exc}); "
+                    "falling back to pipe-based tensor transfer.",
+                    flush=True,
+                )
+                shared_buffers = None
+                use_shared_memory = False
 
         _safe_reply(
             conn,
@@ -137,6 +152,7 @@ def worker_main(
                     "num_actions": int(env.num_actions),
                     "max_episode_length": int(env.max_episode_length),
                     "dt": float(env.dt),
+                    "use_shared_memory": use_shared_memory,
                 },
                 "obs": _to_cpu(obs) if not use_shared_memory else None,
                 "critic_obs": _to_cpu(critic) if not use_shared_memory else None,

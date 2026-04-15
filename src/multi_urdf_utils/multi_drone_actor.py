@@ -9,7 +9,6 @@ cross-contamination between drones during evaluation.
 
 from __future__ import annotations
 
-import copy
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -18,18 +17,16 @@ from torch import Tensor
 
 from torch import nn
 
-from WP2.frozen_actor import load_frozen_actor, HebbianActorWrapper
-from WP2.hebbian import HebbianLastLayer
-from WP2.config import HebbianConfig
+from WP2.frozen_actor import (
+    IsolatedPopulationActor,
+    build_isolated_population_actor,
+    load_frozen_actor,
+)
+from WP2.config import HebbianConfig, HebbianEvolutionConfig
 
 
 class BaselineActorWrapper:
-    """Thin wrapper around a frozen WP1 actor (no Hebbian plasticity).
-
-    Exposes the same ``act`` / ``reset_episode`` interface as
-    ``HebbianActorWrapper`` so it can be used interchangeably in
-    ``MultiDroneActorManager``.
-    """
+    """Thin wrapper around a frozen WP1 actor (no Hebbian plasticity)."""
 
     def __init__(self, model: nn.Module, stochastic: bool = False):
         self.model = model
@@ -54,7 +51,6 @@ def random_hebbian_rules(
 ) -> Dict[str, Tensor]:
     """Generate random Hebbian rules for benchmarking."""
     rng = np.random.RandomState(seed)
-    n_weights = out_features * in_features
 
     def _rand(lo, hi):
         return torch.tensor(
@@ -71,6 +67,15 @@ def random_hebbian_rules(
     }
 
 
+def _adapt_hebb_cfg(hebb_cfg: HebbianConfig) -> HebbianEvolutionConfig:
+    """Wrap a HebbianConfig inside a HebbianEvolutionConfig shell so that
+    ``build_isolated_population_actor`` (which expects the evolution-level
+    config) can read ``cfg.hebbian.*`` directly."""
+    shell = HebbianEvolutionConfig.__new__(HebbianEvolutionConfig)
+    shell.hebbian = hebb_cfg
+    return shell
+
+
 class MultiDroneActorManager:
     """Manages D independent frozen actor + Hebbian wrappers.
 
@@ -78,6 +83,9 @@ class MultiDroneActorManager:
     ----------
     D : int
         Number of drone entities.
+    num_envs_per_drone : int
+        Number of parallel environments each drone runs in (E).  Each env
+        gets its own LSTM state and last-layer weight matrix.
     checkpoint_path : str
         Path to frozen WP1 actor .pt file.
     checkpoint_config_path : str
@@ -90,11 +98,14 @@ class MultiDroneActorManager:
         Sample actions (True) or use mean (False).
     device : str
         Torch device.
+    use_hebbian : bool
+        If False, use baseline actor wrappers (no plasticity).
     """
 
     def __init__(
         self,
         D: int,
+        num_envs_per_drone: int,
         checkpoint_path: str,
         checkpoint_config_path: str,
         hebbian_rules_list: Optional[List[Dict[str, Tensor]]] = None,
@@ -104,28 +115,34 @@ class MultiDroneActorManager:
         use_hebbian: bool = True,
     ):
         self.D = D
+        self.E = num_envs_per_drone
         self.device = device
         self.actors: list = []
 
-        for i in range(D):
-            model, last_layer, num_actions, hidden_dim = load_frozen_actor(
-                checkpoint_path, checkpoint_config_path, device=device,
-            )
+        if use_hebbian:
+            if hebbian_rules_list is None or hebb_cfg is None:
+                raise ValueError("hebbian_rules_list and hebb_cfg required when use_hebbian=True")
 
-            if use_hebbian:
-                hebbian = HebbianLastLayer(
-                    linear_layer=last_layer,
-                    hebbian_rules=hebbian_rules_list[i],
-                    eta=hebb_cfg.eta,
-                    w_max=hebb_cfg.w_max,
-                    use_oja_coefficient=hebb_cfg.use_oja_coefficient,
+            cfg_shell = _adapt_hebb_cfg(hebb_cfg)
+            for i in range(D):
+                wrapper = build_isolated_population_actor(
+                    checkpoint_path=checkpoint_path,
+                    wp1_cfg_path=checkpoint_config_path,
+                    hebbian_rules_per_individual=[hebbian_rules_list[i]],
+                    cfg=cfg_shell,
+                    K=1,
+                    S=num_envs_per_drone,
                     device=device,
+                    stochastic=stochastic,
                 )
-                wrapper = HebbianActorWrapper(model, hebbian, stochastic=stochastic)
-            else:
+                self.actors.append(wrapper)
+        else:
+            for _ in range(D):
+                model, _last_layer, _na, _hd = load_frozen_actor(
+                    checkpoint_path, checkpoint_config_path, device=device,
+                )
                 wrapper = BaselineActorWrapper(model, stochastic=stochastic)
-
-            self.actors.append(wrapper)
+                self.actors.append(wrapper)
 
     def act(self, obs_all: Tensor) -> Tensor:
         """Forward pass for all D drones.
@@ -146,5 +163,12 @@ class MultiDroneActorManager:
 
     def reset_episode(self, E: int, device: str):
         """Reset LSTM hidden states and Hebbian weights for all actors."""
+        if E != self.E:
+            raise ValueError(
+                f"reset_episode called with E={E} but manager was built with E={self.E}"
+            )
         for actor in self.actors:
-            actor.reset_episode(num_envs=E, device=device)
+            if isinstance(actor, IsolatedPopulationActor):
+                actor.reset_episode(device=device)
+            else:
+                actor.reset_episode(num_envs=E, device=device)

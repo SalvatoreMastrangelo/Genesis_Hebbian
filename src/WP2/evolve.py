@@ -28,7 +28,6 @@ from deap import base, creator, tools
 from tabulate import tabulate
 
 from WP2.config import HebbianEvolutionConfig
-from WP2.evaluate import evaluate_individual
 from WP2.objectives import default_fitness
 from WP2.utils import (
     save_git_info,
@@ -487,26 +486,6 @@ class HebbianCodesignDEAP:
     #  Evaluation
     # ------------------------------------------------------------------
 
-    def _evaluate_individual(self, ind) -> Tuple[float, ...]:
-        """Evaluate a single individual and return fitness tuple."""
-        if not hasattr(ind, "uid"):
-            self._assign_uid(ind)
-
-        genome = list(ind)
-        print(
-            f"[eval] gen={getattr(self, '_gen', 0)} uid={ind.uid} "
-            f"genome_dim={len(genome)}"
-        )
-
-        try:
-            fitness, metrics = evaluate_individual(genome, self.cfg)
-        except Exception as exc:
-            print(f"[eval] FAILED uid={ind.uid}: {exc}")
-            fitness = default_fitness(self.cfg)
-
-        print(f"  -> fitness = {fitness}")
-        return tuple(fitness)
-
     def _evaluate_population(self, population: list) -> None:
         """Evaluate all individuals that need evaluation."""
         from WP2.evaluate import evaluate_population_batched
@@ -548,35 +527,6 @@ class HebbianCodesignDEAP:
             self._current_env_morph = morph_genome
             self._current_env_size = actual_envs
             print(f"[evolve] Stored environment for reuse (morph={morph_genome is not None}, size={actual_envs})")
-
-    def _evaluate_population_serial(self, population: list) -> None:
-        """Evaluate sequentially (single GPU)."""
-        for ind in population:
-            if not ind.fitness.valid:
-                ind.fitness.values = self._evaluate_individual(ind)
-
-    def _evaluate_population_ray(self, population: list) -> None:
-        """Evaluate in parallel using Ray."""
-        # Define remote evaluation function
-        @ray.remote(num_gpus=1, max_calls=1)
-        def _eval_remote(genome, cfg):
-            try:
-                fitness, _ = evaluate_individual(genome, cfg)
-                return tuple(fitness)
-            except Exception as exc:
-                print(f"[ray_eval] failed: {exc}")
-                return tuple(default_fitness(cfg))
-
-        # Launch jobs
-        pending = []
-        for ind in population:
-            if not ind.fitness.valid:
-                fut = _eval_remote.remote(list(ind), self.cfg)
-                pending.append((ind, fut))
-
-        # Collect results
-        for ind, fut in pending:
-            ind.fitness.values = ray.get(fut)
 
     # ------------------------------------------------------------------
     #  Variation operators

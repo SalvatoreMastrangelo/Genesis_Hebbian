@@ -116,6 +116,7 @@ def _scene_worker(
 
     actor_mgr = MultiDroneActorManager(
         D=N,
+        num_envs_per_drone=E,
         checkpoint_path=checkpoint_model_path,
         checkpoint_config_path=checkpoint_config_path,
         hebbian_rules_list=hebbian_rules_list,
