@@ -166,6 +166,6 @@ catalog:
 ##############################################################################
 lss:
   enabled: true                             # Enable logical super-scene training
-  urdf_shard_size: 16                       # Batch size for URDF processing
+  urdf_shard_size: 32                       # Batch size for URDF processing
   num_workers: 0                            # Number of worker processes for scene collection
   collection_gpus: 2                        # Number of GPUs for multi-scene collection

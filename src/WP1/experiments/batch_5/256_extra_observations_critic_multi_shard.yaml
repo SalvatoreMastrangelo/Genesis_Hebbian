@@ -5,7 +5,7 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: 256_extra_observations_critic_multi_shard_smaller_head_many_envs  # Name of the experiment for logging/tracking
+exp_name: 256_extra_observations_critic_multi_shard  # Name of the experiment for logging/tracking
 repeat: 4  # number of times to submit this config as independent jobs
 
 ##############################################################################
@@ -30,7 +30,7 @@ ppo:
 # Policy network architecture
 ##############################################################################
 policy:
-  actor_hidden_dims: [128, 32]              # Hidden layer dimensions for actor network (input → 64 → 32 → output)
+  actor_hidden_dims: [128, 64]              # Hidden layer dimensions for actor network (input → 64 → 32 → output)
   critic_hidden_dims: [128, 128]            # Hidden layer dimensions for critic network
   activation: elu                           # Activation function type (elu, relu, tanh, etc.)
   init_noise_std: 0.3                       # Initial standard deviation for action noise
@@ -45,7 +45,7 @@ policy:
 # Training configuration
 ##############################################################################
 training:
-  num_envs: 65536                           # Number of parallel environments for data collection
+  num_envs: 32768                           # Number of parallel environments for data collection
   max_iterations: 2000                      # Maximum training iterations
   num_steps_per_env: 25                     # Timesteps collected per environment per iteration (experience = num_envs × num_steps)
   save_interval: 50                         # Save checkpoint every N iterations
@@ -166,6 +166,6 @@ catalog:
 ##############################################################################
 lss:
   enabled: true                             # Enable logical super-scene training
-  urdf_shard_size: 16                       # Batch size for URDF processing
+  urdf_shard_size: 32                       # Batch size for URDF processing
   num_workers: 0                            # Number of worker processes for scene collection
   collection_gpus: 2                        # Number of GPUs for multi-scene collection

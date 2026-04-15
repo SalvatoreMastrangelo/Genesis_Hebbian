@@ -17,8 +17,13 @@ from .ipc import WorkerCommand, WorkerReply
 def _safe_reply(conn, ok: bool, payload: Dict[str, Any] | None = None, error: str = "") -> None:
     try:
         conn.send(WorkerReply(ok=ok, payload=payload or {}, error=error))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[worker] _safe_reply failed to send (ok={ok}): {exc}", flush=True)
+        # Attempt a lightweight error-only reply so the main process can fail fast
+        try:
+            conn.send(WorkerReply(ok=False, payload={}, error=f"Reply serialization failed: {exc}"))
+        except Exception:
+            pass
 
 
 def _to_cpu(t: torch.Tensor) -> torch.Tensor:
@@ -195,28 +200,24 @@ def worker_main(
         slowest_scene_urdf = str(getattr(env, "slowest_scene_urdf", ""))
 
         if use_shared_memory:
-            shm_export_start = time.perf_counter()
-            shared_buffers = _make_shared_buffers(
-                num_envs=int(env.num_envs),
-                num_obs=int(env.num_obs),
-                num_privileged_obs=int(env.num_privileged_obs),
-                num_actions=int(env.num_actions),
-            )
-            shared_buffers["obs"].copy_(_to_cpu(obs))
-            shared_buffers["critic_obs"].copy_(_to_cpu(critic))
-            shm_export_elapsed = time.perf_counter() - shm_export_start
-
-        worker_ready_elapsed = time.perf_counter() - worker_start_t0
-        print(
-            "[logical-super-scene][worker] "
-            f"device={local_device} envs={int(env.num_envs)} urdfs={len(urdf_list)} "
-            f"cpu_threads={cpu_threads} "
-            f"ready_s={worker_ready_elapsed:.3f} gs_init_s={gs_init_elapsed:.3f} "
-            f"gen_env_build_s={gen_env_build_elapsed:.3f} initial_reset_s={initial_reset_elapsed:.3f} "
-            f"shm_export_s={shm_export_elapsed:.3f} "
-            f"scene_init_total_s={scene_init_total_s:.3f} scene_build_total_s={scene_build_total_s:.3f} "
-            f"slowest_scene_s={slowest_scene_s:.3f} slowest_scene_urdf='{slowest_scene_urdf}'"
-        )
+            try:
+                shared_buffers = _make_shared_buffers(
+                    num_envs=int(env.num_envs),
+                    num_obs=int(env.num_obs),
+                    num_privileged_obs=int(env.num_privileged_obs),
+                    num_actions=int(env.num_actions),
+                )
+                shared_buffers["obs"].copy_(_to_cpu(obs))
+                shared_buffers["critic_obs"].copy_(_to_cpu(critic))
+                print("[worker] Shared memory buffers created successfully.", flush=True)
+            except Exception as shm_exc:
+                print(
+                    f"[worker] share_memory_() failed ({shm_exc}); "
+                    "falling back to pipe-based tensor transfer.",
+                    flush=True,
+                )
+                shared_buffers = None
+                use_shared_memory = False
 
         _safe_reply(
             conn,
@@ -230,15 +231,7 @@ def worker_main(
                     "num_actions": int(env.num_actions),
                     "max_episode_length": int(env.max_episode_length),
                     "dt": float(env.dt),
-                    "worker_ready_s": float(worker_ready_elapsed),
-                    "gs_init_s": float(gs_init_elapsed),
-                    "gen_env_build_s": float(gen_env_build_elapsed),
-                    "initial_reset_s": float(initial_reset_elapsed),
-                    "shm_export_s": float(shm_export_elapsed),
-                    "scene_init_total_s": scene_init_total_s,
-                    "scene_build_total_s": scene_build_total_s,
-                    "slowest_scene_s": slowest_scene_s,
-                    "slowest_scene_urdf": slowest_scene_urdf,
+                    "use_shared_memory": use_shared_memory,
                 },
                 "obs": _to_cpu(obs) if not use_shared_memory else None,
                 "critic_obs": _to_cpu(critic) if not use_shared_memory else None,

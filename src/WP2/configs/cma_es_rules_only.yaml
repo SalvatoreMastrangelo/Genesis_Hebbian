@@ -33,7 +33,7 @@ hebbian:
 
 evolution:
   strategy: "cma_es"
-  num_generations: 500
+  num_generations: 50
   # population_size is not used by CMA-ES; set cmaes.population_size instead
   population_size: 0
 

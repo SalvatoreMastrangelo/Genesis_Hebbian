@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
-import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from multiprocessing.connection import wait
@@ -230,18 +228,18 @@ class LogicalSuperSceneOrchestrator:
             "waiting for ready replies"
         )
 
+        # Allow 40 minutes per worker for Genesis scene compilation + reset.
+        # Workers typically take ~1500s; this is a safety net against silent deadlocks.
+        _STARTUP_TIMEOUT_S = float(os.getenv("LOGICAL_SUPER_SCENE_STARTUP_TIMEOUT", "2400"))
+
         ready_wait_t0 = time.perf_counter()
-        total_scenes = int(sum(len(shard) for shard in shards))
-        completed_scenes = 0
-        worker_scene_counts: Dict[int, int] = {}
-        next_progress_report_pct = 10
-        while pending_workers:
-            for parent_conn in wait(list(pending_workers.keys())):
-                i, worker_device, urdfs_i, p = pending_workers[parent_conn]
-                reply_wait_t0 = time.perf_counter()
-                reply = self._recv_reply(parent_conn, worker_idx=i, process=p)
-                if not reply.ok:
-                    raise RuntimeError(reply.error or f"Worker {i} failed to start")
+        for i, worker_device, urdfs_i, parent_conn, p in pending_workers:
+            reply_wait_t0 = time.perf_counter()
+            reply = self._recv_reply(parent_conn, worker_idx=i, process=p, timeout=_STARTUP_TIMEOUT_S)
+            if not reply.ok:
+                raise RuntimeError(reply.error or f"Worker {i} failed to start")
+            if reply.payload.get("event") != "ready":
+                raise RuntimeError(f"Worker {i} returned unexpected startup event")
 
                 event = str(reply.payload.get("event", ""))
                 if event == "init_progress":
@@ -272,41 +270,34 @@ class LogicalSuperSceneOrchestrator:
                         next_progress_report_pct += 10
                     continue
 
-                if event != "ready":
-                    raise RuntimeError(f"Worker {i} returned unexpected startup event '{event}'")
+            shm = reply.payload.get("shared_buffers")
+            # Worker may have fallen back to pipe-based transfer if share_memory_() failed.
+            worker_used_shm = isinstance(shm, dict) and bool(meta.get("use_shared_memory", True))
+            if self.use_shared_memory and not worker_used_shm:
+                print(
+                    f"[logical-super-scene] WARNING: worker={i} fell back to pipe transfer "
+                    "(shared memory unavailable); continuing without shared memory for this worker."
+                )
 
-                pending_workers.pop(parent_conn, None)
-                prev_completed = worker_scene_counts.get(i, 0)
-                if len(urdfs_i) > prev_completed:
-                    completed_scenes += len(urdfs_i) - prev_completed
-                    worker_scene_counts[i] = len(urdfs_i)
-                meta = dict(reply.payload["meta"])
-                metas.append(meta)
+            if worker_used_shm:
+                initial_obs_cpu.append(shm["obs"])
+                initial_critic_cpu.append(shm["critic_obs"])
+            else:
+                initial_obs_cpu.append(reply.payload["obs"])
+                initial_critic_cpu.append(reply.payload["critic_obs"])
 
-                shm = reply.payload.get("shared_buffers")
-                if self.use_shared_memory and not isinstance(shm, dict):
-                    raise RuntimeError(f"Worker {i} did not provide shared buffers")
-
-                if shm is not None:
-                    initial_obs_cpu.append(shm["obs"])
-                    initial_critic_cpu.append(shm["critic_obs"])
-                else:
-                    initial_obs_cpu.append(reply.payload["obs"])
-                    initial_critic_cpu.append(reply.payload["critic_obs"])
-
-                stop = start + int(meta["num_envs"])
-                sl = slice(start, stop)
-                self._worker_slices.append(sl)
-                self._workers.append(
-                    WorkerHandle(
-                        process=p,
-                        conn=parent_conn,
-                        num_envs=int(meta["num_envs"]),
-                        sl=sl,
-                        shm=shm if isinstance(shm, dict) else None,
-                        worker_idx=i,
-                        worker_device=worker_device,
-                    )
+            stop = start + int(meta["num_envs"])
+            sl = slice(start, stop)
+            self._worker_slices.append(sl)
+            self._workers.append(
+                WorkerHandle(
+                    process=p,
+                    conn=parent_conn,
+                    num_envs=int(meta["num_envs"]),
+                    sl=sl,
+                    shm=shm if worker_used_shm else None,
+                    worker_idx=i,
+                    worker_device=worker_device,
                 )
                 start = stop
 
@@ -364,14 +355,30 @@ class LogicalSuperSceneOrchestrator:
                 critic_src=critic_cpu,
             )
 
-    def _recv_reply(self, conn, worker_idx: Optional[int] = None, process: Optional[mp.Process] = None) -> WorkerReply:
+    def _recv_reply(
+        self,
+        conn,
+        worker_idx: Optional[int] = None,
+        process: Optional[mp.Process] = None,
+        timeout: Optional[float] = None,
+    ) -> WorkerReply:
+        prefix = f"worker={worker_idx}" if worker_idx is not None else "worker=<unknown>"
+        if timeout is not None:
+            ready = conn.poll(timeout)
+            if not ready:
+                details = ""
+                if process is not None:
+                    alive = process.is_alive()
+                    details = f" pid={process.pid} alive={alive} exitcode={process.exitcode}"
+                raise RuntimeError(
+                    f"Timeout ({timeout:.0f}s) waiting for reply from {prefix}.{details}"
+                )
         try:
             msg = conn.recv()
         except EOFError as exc:
             details = ""
             if process is not None:
                 details = f" pid={process.pid} exitcode={process.exitcode}"
-            prefix = f"worker={worker_idx}" if worker_idx is not None else "worker=<unknown>"
             raise RuntimeError(f"EOF while waiting reply from {prefix}.{details}") from exc
         if isinstance(msg, WorkerReply):
             return msg

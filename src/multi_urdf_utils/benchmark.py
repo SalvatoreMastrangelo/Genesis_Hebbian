@@ -256,6 +256,7 @@ def run_benchmark(cfg: BenchmarkConfig) -> Dict[str, float]:
 
             actor_mgr = MultiDroneActorManager(
                 D=N,
+                num_envs_per_drone=E,
                 checkpoint_path=cfg.checkpoint.model_path,
                 checkpoint_config_path=cfg.checkpoint.config_path,
                 hebbian_rules_list=hebbian_rules_list,
