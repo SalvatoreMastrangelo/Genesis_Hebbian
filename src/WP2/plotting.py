@@ -478,59 +478,6 @@ def plot_weight_dynamics(run_dir: str | Path) -> None:
 
 
 # ============================================================================
-#  8. Morphology diversity
-# ============================================================================
-
-def plot_morphology_diversity(run_dir: str | Path) -> None:
-    """Plot morphology genome diversity across generations."""
-    if not HAS_MPL:
-        return
-    run_dir = Path(run_dir)
-    plots_dir = run_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
-    cfg_path = run_dir / "reproducibility" / "config.yaml"
-    if not cfg_path.is_file():
-        return
-
-    from WP2.config import HebbianEvolutionConfig
-    cfg = HebbianEvolutionConfig.from_yaml(cfg_path)
-    if not cfg.morphology.evolve:
-        return
-
-    hebb_dim = cfg.hebbian_genome_dim()
-    morph_dim = cfg.morphology_genome_dim()
-
-    rows = _load_pop_history(run_dir)
-    if not rows:
-        return
-
-    gen_std: Dict[int, float] = {}
-    for r in rows:
-        g = int(float(r["generation"]))
-        try:
-            genome = ast.literal_eval(r["genome"])
-        except (ValueError, SyntaxError):
-            continue
-        morph = genome[hebb_dim:hebb_dim + morph_dim]
-        gen_std.setdefault(g, []).append(morph)
-
-    gens = sorted(gen_std.keys())
-    stds = []
-    for g in gens:
-        arr = np.array(gen_std[g])
-        stds.append(np.mean(np.std(arr, axis=0)))
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(gens, stds, "o-", color="teal", linewidth=2, markersize=4)
-    ax.set_xlabel("Generation")
-    ax.set_ylabel("Mean Genome Std Dev")
-    ax.set_title("Morphology Diversity")
-    ax.grid(True, alpha=0.3)
-    _save_fig(fig, plots_dir, "morphology_diversity")
-
-
-# ============================================================================
 #  10. Objective correlation (pairwise scatter)
 # ============================================================================
 
@@ -599,7 +546,6 @@ def analyze_run(run_dir: str | Path) -> None:
     plot_hebbian_distributions(run_dir)
     plot_hebbian_heatmap(run_dir)
     plot_weight_dynamics(run_dir)
-    plot_morphology_diversity(run_dir)
     plot_objective_correlation(run_dir)
 
     print(f"[analyze_run] All plots saved to {run_dir / 'plots'}")

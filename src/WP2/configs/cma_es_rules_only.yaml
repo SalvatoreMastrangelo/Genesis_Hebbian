@@ -1,12 +1,12 @@
-# CMA-ES rules-only experiment
-# ==============================
-# Evolves Hebbian rules (ABCD) against the WP1 scalar reward sum.
-# Morphology is fixed; no co-design.
+# CMA-ES Hebbian rules evolution
+# ================================
+# Evolves per-weight ABCD Hebbian rules against the WP1 scalar reward sum.
+# Morphology is always fixed (WP1 default drone).
 #
 # Usage:
 #   python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml
 #
-# To evaluate across a catalog of URDFs, set catalog.path:
+# To evaluate across a catalog of URDFs (for robustness):
 #   python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml \
 #       --cfg.catalog.path logs/runs/2026-03-26_01-33-07_96_morph/catalog/catalog.txt
 
@@ -32,38 +32,24 @@ hebbian:
   eta_range: [0.0, 0.1]
 
 evolution:
-  strategy: "cma_es"
   num_generations: 50
-  # population_size is not used by CMA-ES; set cmaes.population_size instead
-  population_size: 0
+  population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
   sigma0: 0.3          # initial step size (genome in [0,1], so 0.3 = 30% of domain)
   population_size: 100 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
-  tol_sigma: 0.0       # disabled (0 = never stop on sigma)
-  tol_fun: 0.0         # disabled (0 = never stop on fitness)
+  tol_sigma: 0.0       # 0 = never stop on sigma
+  tol_fun: 0.0         # 0 = never stop on fitness spread
 
 catalog:
   path: ""             # empty = use default/fixed morphology only
   num_episodes: 1      # rollout episodes per URDF per individual
 
 evaluation:
-  num_eval_episodes: 1   # ignored for CMA-ES (use catalog.num_episodes)
-  num_eval_envs: 10000   # total envs per URDF; divided among population
+  num_eval_envs: 10000  # total envs per URDF; divided among population
   vmin: 10.0
   vmax: 20.0
   stochastic: false
-
-objectives:            # only used by NSGA-II; ignored by CMA-ES
-  velocity: true
-  energy: true
-  progress: true
-  smoothness: false
-  crash_rate: false
-
-morphology:
-  evolve: false          # MUST be false for CMA-ES strategy
-  fixed_genome: null     # null = WP1 default drone
 
 seed: 1
 device: "cuda:0"

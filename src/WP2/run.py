@@ -1,22 +1,22 @@
 """
-WP2 main entry point — launch Hebbian + morphology co-optimisation.
-===================================================================
+WP2 main entry point — Hebbian rules evolution with CMA-ES.
+===========================================================
 
 Usage
 -----
 .. code-block:: bash
 
     # From a YAML config
-    python -m WP2.run --cfg src/WP2/configs/full_codesing.yaml
+    python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml
 
     # With CLI overrides
-    python -m WP2.run --cfg src/WP2/configs/full_codesing.yaml \\
-        --cfg.evolution.population_size 80 \\
-        --cfg.hebbian.eta 0.005
+    python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml \\
+        --cfg.evolution.num_generations 100 \\
+        --cfg.hebbian.eta 0.0001
 
     # Resume from a previous run
-    python -m WP2.run --resume logs/runs_hebbian/2026-03-12_14-30-00_hebbian_codesing \\
-        --from-gen 15
+    python -m WP2.run --resume logs/runs_hebbian/2026-04-15_10-00-00_cma_es_rules \\
+        --from-gen 20
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _configure_cache_root() -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="WP2: Hebbian Plasticity + Evolutionary Co-Optimisation"
+        description="WP2: Hebbian Plasticity Evolution with CMA-ES"
     )
     parser.add_argument(
         "--cfg", type=str, default=None,
@@ -74,14 +74,12 @@ def main() -> None:
     from WP2.config import HebbianEvolutionConfig
 
     if args.resume:
-        # Load config from the existing run
         resume_dir = Path(args.resume)
         cfg_path = resume_dir / "reproducibility" / "config.yaml"
         if not cfg_path.is_file():
             print(f"[ERROR] Cannot find config at {cfg_path}")
             sys.exit(1)
         cfg = HebbianEvolutionConfig.from_yaml(cfg_path)
-        # Override base_dir to point to the parent of the run dir
         cfg.base_dir = str(resume_dir.parent)
         print(f"[run] Resuming from {resume_dir}")
     elif args.cfg:
@@ -89,7 +87,6 @@ def main() -> None:
     else:
         cfg = HebbianEvolutionConfig()
 
-    # Apply CLI overrides from remaining args
     cfg.apply_cli_overrides(remaining)
 
     # --- Validation ---
@@ -104,7 +101,7 @@ def main() -> None:
         sys.exit(1)
 
     if cfg.total_genome_dim() == 0:
-        print("[ERROR] Total genome dimension is 0. Enable hebbian and/or morphology evolution.")
+        print("[ERROR] Total genome dimension is 0. Enable hebbian in config.")
         sys.exit(1)
 
     # --- Setup ---
@@ -123,74 +120,44 @@ def main() -> None:
     del _ckpt, _sd
 
     # --- Print summary ---
-    strategy = cfg.evolution.strategy
+    n_pop_cfg = cfg.cmaes.population_size
+    import numpy as _np
+    expected_pop = (
+        n_pop_cfg if n_pop_cfg > 0
+        else int(4 + 3 * _np.log(cfg.total_genome_dim()))
+    )
+    catalog_info = cfg.catalog.path if cfg.catalog.path else "default URDF"
+
     print("\n" + "=" * 70)
-    print("  WP2: Hebbian Plasticity + Evolutionary Co-Optimisation")
+    print("  WP2: Hebbian Rules Evolution — CMA-ES")
     print("=" * 70)
-    print(f"  Strategy:      {strategy.upper()}")
     print(f"  Experiment:    {cfg.exp_name}")
     print(f"  Checkpoint:    {cfg.checkpoint_path}")
     print(f"  WP1 Config:    {cfg.checkpoint_config_path}")
     print(f"  Seed:          {cfg.seed}")
     print(f"  Device:        {cfg.device}")
-    print(f"  Genome dim:    {cfg.hebbian_genome_dim()} (Hebbian rules)")
-    if strategy == "nsga2":
-        print(f"  Morph genome:  {cfg.morphology_genome_dim()}")
-        print(f"  Objectives:    {cfg.active_objective_names()}")
-        print(f"  Crossover:     {'ON' if cfg.evolution.enable_crossover else 'OFF'}")
-    else:
-        catalog_info = cfg.catalog.path if cfg.catalog.path else "default URDF"
-        print(f"  Catalog:       {catalog_info}")
-        print(f"  CMA sigma0:    {cfg.cmaes.sigma0}")
-        popsize_str = (str(cfg.cmaes.population_size)
-                       if cfg.cmaes.population_size > 0 else "auto")
-        print(f"  CMA popsize:   {popsize_str}")
-    print(f"  Hebbian:       {'ON' if cfg.hebbian.enabled else 'OFF'}")
-    print(f"  Morphology:    {'EVOLVE' if cfg.morphology.evolve else 'FIXED'}")
-    print(f"  Population:    {cfg.evolution.population_size}")
+    print(f"  Genome dim:    {cfg.total_genome_dim()} (Hebbian rules only)")
+    print(f"  Catalog:       {catalog_info}")
+    print(f"  CMA sigma0:    {cfg.cmaes.sigma0}")
+    print(f"  CMA popsize:   {'auto ≈ ' + str(expected_pop) if n_pop_cfg == 0 else n_pop_cfg}")
     print(f"  Generations:   {cfg.evolution.num_generations}")
-    print(f"  Eval episodes: {cfg.evaluation.num_eval_episodes}")
     print(f"  Eval envs:     {cfg.evaluation.num_eval_envs}")
     print("=" * 70 + "\n")
 
-    # --- Launch evolution ---
-    if strategy == "cma_es":
-        from WP2.evolve_cma import HebbianCMAES
+    # --- Launch CMA-ES evolution ---
+    from WP2.evolve_cma import HebbianCMAES
 
-        runner = HebbianCMAES(cfg)
+    runner = HebbianCMAES(cfg)
 
-        resume_gen = None
-        if args.resume and args.from_gen is not None:
-            runner.run_dir = Path(args.resume)
-            runner.gen_dir = runner.run_dir / "generations"
-            runner.results_dir = runner.run_dir / "results"
-            resume_gen = args.from_gen
+    resume_gen = None
+    if args.resume and args.from_gen is not None:
+        runner.run_dir = Path(args.resume)
+        runner.gen_dir = runner.run_dir / "generations"
+        runner.results_dir = runner.run_dir / "results"
+        resume_gen = args.from_gen
 
-        runner.run(resume_from_gen=resume_gen)
-        print(f"\n[run] All done. Results in: {runner.run_dir}")
-
-    else:
-        from WP2.evolve import HebbianCodesignDEAP
-
-        ga = HebbianCodesignDEAP(cfg)
-
-        resume_gen = None
-        if args.resume and args.from_gen is not None:
-            ga.run_dir = Path(args.resume)
-            ga.gen_dir = ga.run_dir / "generations"
-            ga.results_dir = ga.run_dir / "results"
-            ga.plots_dir = ga.run_dir / "plots"
-            resume_gen = args.from_gen
-
-        final_pop = ga.run(resume_from_gen=resume_gen)
-
-        try:
-            from WP2.plotting import analyze_run
-            analyze_run(str(ga.run_dir))
-        except Exception as exc:
-            print(f"[run] Plotting failed (non-fatal): {exc}")
-
-        print(f"\n[run] All done. Results in: {ga.run_dir}")
+    runner.run(resume_from_gen=resume_gen)
+    print(f"\n[run] All done. Results in: {runner.run_dir}")
 
 
 if __name__ == "__main__":
