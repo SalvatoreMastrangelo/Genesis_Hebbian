@@ -1,17 +1,13 @@
 """
-HebbianCMAES — CMA-ES loop for Hebbian rules-only optimisation.
-===============================================================
+HebbianCMAES — CMA-ES loop for Hebbian rules optimisation.
+==========================================================
 
-Alternative to ``HebbianCodesignDEAP`` (NSGA-II).  Uses the pycma
-``CMAEvolutionStrategy`` to search for Hebbian rules that maximise the
-WP1 scalar reward (sum of per-step ``env.last_reward_total`` over the
-episode, averaged across evaluation environments).
+Uses the pycma ``CMAEvolutionStrategy`` to search for Hebbian rules that
+maximise the WP1 scalar reward (sum of per-step ``env.last_reward_total``
+over the episode, averaged across evaluation environments).
 
-Key differences from the NSGA-II loop
---------------------------------------
-- **Single objective**: WP1 reward sum (weighted combination as set in WP1).
-- **Rules only**: morphology is always fixed (``cfg.morphology.evolve`` must
-  be ``False``).
+- **Single objective**: WP1 reward sum.
+- **Rules only**: morphology is always fixed.
 - **Catalog support**: optionally evaluates each candidate against a set of
   pre-built URDFs for robustness across morphologies.
 - **CMA-ES mechanics**: pycma handles step-size adaptation and covariance
@@ -195,7 +191,7 @@ def _print_generation_table(
 # ============================================================================
 
 class HebbianCMAES:
-    """CMA-ES loop for Hebbian plasticity rules-only optimisation.
+    """CMA-ES loop for Hebbian plasticity rules optimisation.
 
     Maximises the WP1 scalar reward sum (``env.last_reward_total`` accumulated
     over an episode) using the pycma ``CMAEvolutionStrategy``.
@@ -203,18 +199,10 @@ class HebbianCMAES:
     Parameters
     ----------
     cfg : HebbianEvolutionConfig
-        Must have ``evolution.strategy == "cma_es"`` and
-        ``morphology.evolve == False``.
     """
 
     def __init__(self, cfg: HebbianEvolutionConfig) -> None:
         self.cfg = cfg
-
-        if cfg.morphology.evolve:
-            raise ValueError(
-                "CMA-ES strategy requires morphology.evolve=False "
-                "(rules-only evolution)."
-            )
 
         self.n_genes = cfg.hebbian_genome_dim()
         if self.n_genes == 0:
@@ -271,11 +259,11 @@ class HebbianCMAES:
     # ------------------------------------------------------------------
 
     def _build_env_once(self) -> None:
-        """Build the environment once for rules-only evolution.
+        """Build the environment once and keep it alive across generations.
 
-        For morphology evolution or catalog-based evaluation, the environment
-        is built per-generation by evaluate_population_cma_batched. But for
-        rules-only (single fixed URDF), we build it once here and reuse.
+        When a catalog is used, the environment is built per-URDF inside
+        ``evaluate_population_cma_batched``.  For single-URDF evaluation,
+        we build it once here and reuse it every generation.
         """
         if self._catalog is not None:
             # Catalog case: will be handled per-generation by evaluate function
@@ -293,7 +281,7 @@ class HebbianCMAES:
 
             num_envs = self.cfg.evaluation.num_eval_envs
             self._env, self._env_urdf_path = _build_env(
-                None, self.cfg, self._wp1_cfg, self.cfg.device,
+                self.cfg, self._wp1_cfg, self.cfg.device,
                 num_envs_override=num_envs,
             )
             print(f"[HebbianCMAES] Environment ready: {num_envs} envs")

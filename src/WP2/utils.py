@@ -9,13 +9,11 @@ import os
 import pickle
 import random
 import subprocess
-from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
-import yaml
 
 from WP2.config import HebbianEvolutionConfig, HebbianConfig
 
@@ -31,7 +29,6 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    # DEAP uses the Python random module internally — covered by random.seed()
 
 
 # ============================================================================
@@ -75,30 +72,23 @@ def decode_hebbian_genes(
 ) -> Dict[str, torch.Tensor]:
     """Decode a normalised [0,1] Hebbian genome section into per-weight tensors.
 
-    The genome section is laid out as consecutive blocks of
-    ``n_weights = out_features * in_features`` values (typically 7 × 64 = 448):
-        [A_flat | B_flat | C_flat | D_flat | (lam_flat) | (eta_flat)]
+    Layout: ``[A_flat | B_flat | C_flat | D_flat | (lam_flat) | (eta_flat)]``
 
-    Block order:
     - A, B, C, D are always present (4 × n_weights genes).
-    - lam is present only when ``evolve_decay=True``; otherwise all weights
-      use the scalar ``hebb_cfg.decay`` via a constant tensor at the midpoint
-      of ``decay_range``.
-    - eta is present only when ``evolve_eta=True``; otherwise the global scalar
-      ``hebb_cfg.eta`` is used.
-
-    Each block is rescaled from [0,1] to the configured range (e.g. A_range).
+    - lam is present only when ``evolve_decay=True``; otherwise the scalar
+      ``hebb_cfg.decay`` is used as a constant tensor.
+    - eta is present only when ``evolve_eta=True``; otherwise ``hebb_cfg.eta``
+      is used as a global scalar.
 
     Parameters
     ----------
     genome_section : sequence of float
         Flat gene values in [0,1], length = ``hebbian_genome_dim()`` from config.
     hebb_cfg : HebbianConfig
-        Provides range bounds (A_range, B_range, …) and evolve_* flags.
     out_features : int
-        Last-layer output dimension (num_actions).  Default 7.
+        Last-layer output dimension (num_actions).
     in_features : int
-        Last-layer input dimension (hidden_dim).  Default 64.
+        Last-layer input dimension (hidden_dim).
 
     Returns
     -------
@@ -106,14 +96,13 @@ def decode_hebbian_genes(
         Keys: ``A``, ``B``, ``C``, ``D``, ``lam`` (each shape ``(out, in)``),
         and optionally ``eta`` if ``evolve_eta=True``.
     """
-    n_weights = out_features * in_features  # e.g. 448 when out_features=7, in_features=64
+    n_weights = out_features * in_features
     genes = np.asarray(genome_section, dtype=np.float32)
 
     def _rescale(block: np.ndarray, lo: float, hi: float) -> torch.Tensor:
         return torch.from_numpy(block * (hi - lo) + lo).reshape(out_features, in_features)
 
-    def _constant_value(value: float) -> torch.Tensor:
-        """Create a constant tensor with a specific value."""
+    def _constant(value: float) -> torch.Tensor:
         return torch.full((out_features, in_features), value, dtype=torch.float32)
 
     idx = 0
@@ -127,13 +116,12 @@ def decode_hebbian_genes(
     if hebb_cfg.evolve_decay:
         lam = _rescale(genes[idx:idx + n_weights], *hebb_cfg.decay_range); idx += n_weights
     else:
-        lam = _constant_value(hebb_cfg.decay)
+        lam = _constant(hebb_cfg.decay)
     result["lam"] = lam
 
     if hebb_cfg.evolve_eta:
         eta = _rescale(genes[idx:idx + n_weights], *hebb_cfg.eta_range)
         result["eta"] = eta
-        idx += n_weights
 
     return result
 
@@ -164,62 +152,25 @@ def encode_hebbian_genes(
 def create_zero_initialized_genome(
     cfg: HebbianEvolutionConfig,
 ) -> List[float]:
-    """Create a genome with zero Hebbian rules (A, B, C, D = 0, others random).
+    """Create a genome with zero Hebbian rules (A=B=C=D=0, others random).
 
-    The genome has:
-    - A, B, C, D blocks set to 0.5 in [0, 1] space (maps to midpoint of ranges,
-      which is 0.0 for symmetric ranges like [-1, 1])
-    - All other sections (decay, eta, morphology) kept as random [0, 1]
-
-    This is useful for ablation studies starting from no Hebbian plasticity.
-
-    Parameters
-    ----------
-    cfg : HebbianEvolutionConfig
-        Configuration with genome dimensions.
-
-    Returns
-    -------
-    list of float
-        Full genome in [0, 1], with A/B/C/D zeroed and others random.
+    A, B, C, D are set to 0.5 in [0,1] space, which maps to the midpoint
+    of their configured ranges (0.0 for symmetric ranges like [-1, 1]).
+    Decay and eta sections (if evolved) are kept as random [0, 1].
     """
     n_weights = cfg.hebbian.num_actions * cfg.hebbian.hidden_dim
-    genome = []
+    genome: List[float] = []
 
-    # A, B, C, D: 0.5 maps to midpoint of each range, which acts as "zero" behavior
-    # For symmetric ranges like [-1, 1], 0.5 maps to 0.0
+    # A, B, C, D: 0.5 → midpoint of range → zero for symmetric [-1, 1]
     for _ in range(4):
         genome.extend([0.5] * n_weights)
 
-    # decay (lambda) and eta: keep as random [0, 1] if evolved
     if cfg.hebbian.evolve_decay:
         genome.extend([random.random() for _ in range(n_weights)])
     if cfg.hebbian.evolve_eta:
         genome.extend([random.random() for _ in range(n_weights)])
 
-    # Morphology: keep as random [0, 1]
-    if cfg.morphology.evolve:
-        morph_dim = cfg.morphology_genome_dim()
-        genome.extend([random.random() for _ in range(morph_dim)])
-
     return genome
-
-
-def split_genome(
-    genome: Sequence[float],
-    cfg: HebbianEvolutionConfig,
-) -> Tuple[Optional[List[float]], Optional[List[float]]]:
-    """Split a full genome into (hebbian_section, morphology_section).
-
-    Either part may be None if not enabled.
-    """
-    hebb_dim = cfg.hebbian_genome_dim()
-    morph_dim = cfg.morphology_genome_dim()
-    genome = list(genome)
-
-    hebb_part = genome[:hebb_dim] if hebb_dim > 0 else None
-    morph_part = genome[hebb_dim:hebb_dim + morph_dim] if morph_dim > 0 else None
-    return hebb_part, morph_part
 
 
 # ============================================================================
@@ -257,67 +208,3 @@ def save_environment_info(path: Path) -> None:
     except Exception as exc:
         with open(path, "w") as f:
             f.write(f"pip freeze unavailable: {exc}\n")
-
-
-# ============================================================================
-#  Pareto solution serialisation
-# ============================================================================
-
-def save_pareto_front(
-    run_dir: Path,
-    pareto_individuals: list,
-    cfg: HebbianEvolutionConfig,
-) -> None:
-    """Save each Pareto-optimal individual's rules, morphology, and fitness."""
-    pareto_dir = run_dir / "pareto_solutions"
-    pareto_dir.mkdir(parents=True, exist_ok=True)
-
-    summary_rows = []
-    obj_names = cfg.active_objective_names()
-
-    for i, ind in enumerate(pareto_individuals):
-        ind_dir = pareto_dir / f"individual_{i:03d}"
-        ind_dir.mkdir(parents=True, exist_ok=True)
-
-        hebb_part, morph_part = split_genome(list(ind), cfg)
-
-        # Fitness
-        fitness_dict = {}
-        for j, name in enumerate(obj_names):
-            fitness_dict[name] = float(ind.fitness.values[j])
-        with open(ind_dir / "fitness.yaml", "w") as f:
-            yaml.dump(fitness_dict, f, sort_keys=False)
-
-        # Hebbian rules
-        if hebb_part is not None:
-            rules = decode_hebbian_genes(hebb_part, cfg.hebbian)
-            rules_dict = {k: v.cpu().numpy().tolist() for k, v in rules.items()}
-            with open(ind_dir / "hebbian_rules.yaml", "w") as f:
-                yaml.dump(rules_dict, f, sort_keys=False)
-
-        # Morphology
-        if morph_part is not None:
-            from morph_evolution.chromosome_drone import Chromosome_Drone
-            phys = Chromosome_Drone.to_physical(morph_part)
-            naca = Chromosome_Drone.naca_from_physical(phys)
-            morph_dict = {
-                "genome_normalised": morph_part,
-                "genome_physical": phys,
-                "naca": naca,
-            }
-            with open(ind_dir / "morphology.yaml", "w") as f:
-                yaml.dump(morph_dict, f, sort_keys=False)
-
-        row = {"individual": i, "genome": list(ind)}
-        row.update(fitness_dict)
-        summary_rows.append(row)
-
-    # Summary CSV
-    if summary_rows:
-        import csv
-        csv_path = pareto_dir / "summary.csv"
-        fieldnames = list(summary_rows[0].keys())
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(summary_rows)

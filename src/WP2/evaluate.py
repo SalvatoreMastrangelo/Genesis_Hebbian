@@ -2,11 +2,13 @@
 Evaluation pipeline for WP2 — rollout frozen actor + Hebbian on Genesis.
 ========================================================================
 
-Every invalid individual is evaluated in the same forward pass using an
-``IsolatedPopulationActor`` that owns ``K*S`` fully-isolated environment
-slots (K individuals × S environments per individual).  Nothing mutable is
-shared across slots, so each individual's fitness is a clean function of
-its own genome.
+CMA-ES evaluation path:
+  ``evaluate_population_cma_batched`` — evaluates a full CMA-ES generation
+  across all catalog URDFs (or a single default URDF).  Returns WP1 reward
+  sums as the scalar fitness signal.
+
+Morphology is always fixed.  Each individual's Hebbian rules are decoded
+from its genome and applied to independent last-layer weight copies.
 """
 
 from __future__ import annotations
@@ -23,8 +25,7 @@ from WP2.frozen_actor import (
     build_isolated_population_actor,
     load_frozen_actor,
 )
-from WP2.objectives import compute_fitness, default_fitness
-from WP2.utils import decode_hebbian_genes, split_genome
+from WP2.utils import decode_hebbian_genes
 
 
 # ============================================================================
@@ -32,25 +33,19 @@ from WP2.utils import decode_hebbian_genes, split_genome
 # ============================================================================
 
 def _build_env(
-    morphology_genome: Optional[List[float]],
     cfg: HebbianEvolutionConfig,
     wp1_cfg,
     device: str,
     num_envs_override: Optional[int] = None,
 ):
-    """Build a WingedDroneEnv for a given morphology."""
+    """Build a WingedDroneEnv using the WP1 default morphology."""
     from morph_evolution.chromosome_drone import Chromosome_Drone
     from drone_making import UrdfMaker
     from winged_drone_train.env import WingedDroneEnv
     from winged_drone_train.noise_config import configure_solver_noise
+    from winged_drone_train.defaults import STANDARD_MYDRONE_GENOME
 
-    if morphology_genome is not None:
-        phys = Chromosome_Drone.to_physical(morphology_genome)
-    elif cfg.morphology.fixed_genome is not None:
-        phys = Chromosome_Drone.to_physical(cfg.morphology.fixed_genome)
-    else:
-        from winged_drone_train.defaults import STANDARD_MYDRONE_GENOME
-        phys = list(STANDARD_MYDRONE_GENOME)
+    phys = list(STANDARD_MYDRONE_GENOME)
 
     urdf_dir = Path("logs") / ".cache" / "wp2_urdfs"
     urdf_dir.mkdir(parents=True, exist_ok=True)
@@ -94,268 +89,7 @@ def _build_env(
 
 
 # ============================================================================
-#  Single-episode rollout
-# ============================================================================
-
-@torch.no_grad()
-def _rollout_episode(
-    env,
-    actor: IsolatedPopulationActor,
-    device: str,
-    collect_smoothness: bool = False,
-) -> Dict[str, np.ndarray]:
-    """Run one episode and collect per-env metrics."""
-    B = env.num_envs
-    dt = env.dt
-    dev = torch.device(device)
-
-    done = torch.zeros(B, dtype=torch.bool, device=dev)
-    t_acc = torch.zeros(B, device=dev)
-    dx_acc = torch.zeros(B, device=dev)
-    E_acc = torch.zeros(B, device=dev)
-    crashed = torch.zeros(B, dtype=torch.bool, device=dev)
-
-    prev_actions = None
-    prev_prev_actions = None
-    jerk_acc = torch.zeros(B, device=dev)
-    jerk_count = torch.zeros(B, device=dev)
-
-    actor.reset_episode(device=dev)
-    obs, _ = env.reset()
-    x0 = env.base_pos[:, 0].clone()
-
-    while not done.all():
-        actions = actor.act(obs)
-        obs, _, term, _ = env.step(actions)
-        term = term.bool()
-        nan_mask = env.nan_envs.to(torch.bool)
-
-        alive = (~done) & (~term) & (~nan_mask)
-
-        if alive.any():
-            t_acc[alive] += dt
-            dx_acc[alive] = env.base_pos[alive, 0] - x0[alive]
-            P = env.power
-            E_acc[alive] += P[alive] * dt
-
-            if collect_smoothness and prev_actions is not None and prev_prev_actions is not None:
-                jerk = torch.abs(actions - 2 * prev_actions + prev_prev_actions)
-                jerk_acc[alive] += jerk[alive].mean(dim=-1)
-                jerk_count[alive] += 1
-
-        just_done = (~done) & term
-        if just_done.any():
-            for attr in ("pre_collision", "pre_wall_crash", "pre_angle_limit"):
-                flag = getattr(env, attr, None)
-                if flag is not None:
-                    crashed |= just_done & flag.to(torch.bool)
-
-        done |= term | nan_mask
-
-        if collect_smoothness:
-            prev_prev_actions = prev_actions
-            prev_actions = actions.clone() if actions is not None else None
-
-    valid = ~env.nan_envs.to(torch.bool)
-    v_mean = (dx_acc / t_acc.clamp_min(1e-6)).cpu().numpy()
-    E_tot = E_acc.cpu().numpy()
-    progress = dx_acc.cpu().numpy()
-    crash_flags = crashed.float().cpu().numpy()
-
-    nan_np = (~valid).cpu().numpy()
-    v_mean[nan_np] = 0.0
-    E_tot[nan_np] = 0.0
-    progress[nan_np] = 0.0
-
-    result = {
-        "velocities": v_mean,
-        "energies": E_tot,
-        "progresses": progress,
-        "crash_flags": crash_flags,
-    }
-    if collect_smoothness:
-        jerk_mean = (jerk_acc / jerk_count.clamp_min(1)).cpu().numpy()
-        jerk_mean[nan_np] = 0.0
-        result["action_jerks"] = jerk_mean
-
-    return result
-
-
-# ============================================================================
-#  Batched population evaluation (NSGA-II path)
-# ============================================================================
-
-def _decode_rules_for_individual(
-    ind,
-    cfg: HebbianEvolutionConfig,
-) -> Tuple[Dict[str, torch.Tensor], Optional[List[float]]]:
-    """Split an individual into (hebbian_rules dict, morphology genome)."""
-    hebb_part, morph_part = split_genome(list(ind), cfg)
-    na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
-    if hebb_part is not None and cfg.hebbian.enabled:
-        rules = decode_hebbian_genes(hebb_part, cfg.hebbian, out_features=na, in_features=hd)
-    else:
-        rules = {
-            "A": torch.zeros(na, hd, device=cfg.device),
-            "B": torch.zeros(na, hd, device=cfg.device),
-            "C": torch.zeros(na, hd, device=cfg.device),
-            "D": torch.zeros(na, hd, device=cfg.device),
-            "lam": torch.zeros(na, hd, device=cfg.device),
-        }
-    return rules, morph_part
-
-
-def evaluate_population_batched(
-    population: list,
-    cfg: HebbianEvolutionConfig,
-    model_and_layer=None,
-    wp1_cfg=None,
-    existing_env=None,
-    keep_env_alive: bool = False,
-) -> Optional[Tuple]:
-    """Evaluate all invalid individuals simultaneously.
-
-    Uses a single ``IsolatedPopulationActor`` spanning all K individuals ×
-    S envs/individual.  Each slot owns its own LSTM state and last-layer
-    weights — no cross-contamination.  Modifies individuals in-place.
-
-    Returns
-    -------
-    tuple or None
-        If ``keep_env_alive=True``: ``(env, urdf_path, morph_genome)``.
-        Otherwise ``None``.
-    """
-    import genesis as gs
-    from WP1.config import RunConfig
-
-    invalid = [ind for ind in population if not ind.fitness.valid]
-    K = len(invalid)
-    if K == 0:
-        return None
-
-    total_envs = cfg.evaluation.num_eval_envs
-    S = total_envs // K
-    actual_envs = S * K
-
-    print(
-        f"[evaluate_population_batched] K={K} individuals, "
-        f"S={S} envs/ind, total={actual_envs} envs"
-    )
-
-    if S == 0:
-        raise ValueError(
-            f"num_eval_envs ({total_envs}) is smaller than population size ({K}). "
-            "Increase evaluation.num_eval_envs or reduce population_size."
-        )
-
-    if wp1_cfg is None:
-        wp1_cfg = RunConfig.from_yaml(cfg.checkpoint_config_path)
-
-    # Decode genomes
-    hebbian_rules_per_individual: List[Dict[str, torch.Tensor]] = []
-    morph_parts: List[Optional[List[float]]] = []
-    for ind in invalid:
-        rules, morph_part = _decode_rules_for_individual(ind, cfg)
-        hebbian_rules_per_individual.append(rules)
-        morph_parts.append(morph_part)
-
-    if cfg.morphology.evolve and len(set(str(m) for m in morph_parts)) > 1:
-        raise RuntimeError(
-            "evaluate_population_batched: heterogeneous morphologies in population — "
-            "batched evaluation requires a single shared morphology."
-        )
-    morph_genome = morph_parts[0]
-
-    # Build the isolated actor (deep-copies the model internally)
-    actor = build_isolated_population_actor(
-        checkpoint_path=cfg.checkpoint_path,
-        wp1_cfg_path=cfg.checkpoint_config_path,
-        hebbian_rules_per_individual=hebbian_rules_per_individual,
-        cfg=cfg,
-        K=K,
-        S=S,
-        device=cfg.device,
-        stochastic=cfg.evaluation.stochastic,
-    )
-
-    # Resolve environment (reuse if dimensions match)
-    env = None
-    urdf_path = None
-    env_was_reused = False
-    if existing_env is not None:
-        existing_env_obj, existing_urdf_path = existing_env
-        if existing_env_obj.num_envs == actual_envs:
-            env = existing_env_obj
-            urdf_path = existing_urdf_path
-            env_was_reused = True
-            print(f"[evaluate_population_batched] Reusing environment (num_envs={actual_envs})")
-        else:
-            print(
-                f"[evaluate_population_batched] Env size mismatch "
-                f"(expected {actual_envs}, got {existing_env_obj.num_envs}); rebuilding"
-            )
-
-    if env is None:
-        if not gs._initialized:
-            gs.init(logging_level="error", backend=gs.gpu)
-        env, urdf_path = _build_env(
-            morph_genome, cfg, wp1_cfg, cfg.device, num_envs_override=actual_envs
-        )
-
-    collect_smoothness = cfg.objectives.smoothness
-    all_metrics: Dict[str, List[np.ndarray]] = {
-        "velocities": [],
-        "energies": [],
-        "progresses": [],
-        "crash_flags": [],
-    }
-    if collect_smoothness:
-        all_metrics["action_jerks"] = []
-
-    try:
-        for ep in range(cfg.evaluation.num_eval_episodes):
-            print(f"  Episode {ep + 1}/{cfg.evaluation.num_eval_episodes}")
-            ep_metrics = _rollout_episode(
-                env, actor, cfg.device, collect_smoothness=collect_smoothness
-            )
-            for key in all_metrics:
-                if key in ep_metrics:
-                    flat = ep_metrics[key]  # (K*S,)
-                    per_ind = flat.reshape(K, S).mean(axis=1)  # (K,)
-                    all_metrics[key].append(per_ind)
-    except Exception as exc:
-        print(f"[evaluate_population_batched] rollout failed: {exc}")
-        if not keep_env_alive:
-            gs.destroy()
-        raise
-
-    if not keep_env_alive:
-        gs.destroy()
-
-    aggregated_per_ind: Dict[str, np.ndarray] = {}
-    for key, ep_list in all_metrics.items():
-        if ep_list:
-            stacked = np.stack(ep_list, axis=0)  # (num_episodes, K)
-            aggregated_per_ind[key] = np.mean(stacked, axis=0)
-        else:
-            aggregated_per_ind[key] = np.zeros(K)
-
-    for i, ind in enumerate(invalid):
-        ind_metrics = {k: aggregated_per_ind[k][i:i + 1] for k in aggregated_per_ind}
-        try:
-            fitness = compute_fitness(ind_metrics, cfg)
-            ind.fitness.values = tuple(fitness)
-            ind.metrics = {k: aggregated_per_ind[k][i] for k in aggregated_per_ind}
-        except Exception:
-            ind.fitness.values = tuple(default_fitness(cfg))
-
-    if keep_env_alive:
-        return (env, urdf_path, morph_genome)
-    return None
-
-
-# ============================================================================
-#  CMA-ES evaluation (catalog of URDFs)
+#  CMA-ES evaluation
 # ============================================================================
 
 @torch.no_grad()
@@ -499,7 +233,7 @@ def _build_env_from_urdf(
 
 def evaluate_population_cma_batched(
     solutions: List[np.ndarray],
-    cfg,
+    cfg: HebbianEvolutionConfig,
     model_and_layer: Tuple,
     wp1_cfg,
     catalog: Optional[List[Tuple[str, str]]] = None,
@@ -510,6 +244,26 @@ def evaluate_population_cma_batched(
     One ``IsolatedPopulationActor`` is built per generation (new rules each
     generation); it is reused across every URDF in the catalog.  Each env
     slot has its own LSTM + last-layer weights.
+
+    Parameters
+    ----------
+    solutions : list of np.ndarray
+        Raw genomes (each in [0, 1]) from CMA-ES ``ask()``.
+    cfg : HebbianEvolutionConfig
+    model_and_layer : tuple
+        ``(model, last_layer, num_actions, hidden_dim)`` from ``load_frozen_actor``.
+    wp1_cfg : RunConfig
+    catalog : list of (urdf_path, naca), optional
+        If None or empty, uses a single default URDF.
+    existing_env : tuple (env, urdf_path), optional
+        Pre-built environment to reuse (only when catalog is empty).
+
+    Returns
+    -------
+    fitnesses : np.ndarray, shape (P,)
+        Mean WP1 reward sum per individual, averaged over URDFs and episodes.
+    metrics : dict
+        Additional per-individual metrics (progresses, velocities, crash_flags).
     """
     import genesis as gs
 
@@ -531,7 +285,7 @@ def evaluate_population_cma_batched(
 
     na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
 
-    # Decode all genomes into Hebbian rules (shared across all URDFs)
+    # Decode all genomes into Hebbian rules
     hebbian_rules_per_individual: List[Dict[str, torch.Tensor]] = []
     for genome in solutions:
         hebb_part = list(np.clip(genome, 0.0, 1.0))
@@ -583,9 +337,7 @@ def evaluate_population_cma_batched(
                     gs.init(logging_level="error", backend=gs.gpu)
 
                 if urdf_file is None:
-                    env, _ = _build_env(
-                        None, cfg, wp1_cfg, cfg.device, num_envs_override=actual_envs
-                    )
+                    env, _ = _build_env(cfg, wp1_cfg, cfg.device, num_envs_override=actual_envs)
                 else:
                     env = _build_env_from_urdf(
                         urdf_file, naca, cfg, wp1_cfg, cfg.device, num_envs=actual_envs
