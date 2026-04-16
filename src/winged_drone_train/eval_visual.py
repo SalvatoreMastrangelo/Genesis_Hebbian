@@ -478,7 +478,6 @@ def create_overlay_video(
             raise RuntimeError("Cannot read first frame from depth video.")
         im_depth = ax_depth.imshow(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
 
-    # Writer
     writer = FFMpegWriter(fps=fps, metadata=dict(artist="winged-drone"))
     with writer.saving(fig, out_mp4, dpi=dpi):
         for k in range(nF):
@@ -994,16 +993,30 @@ def main() -> None:
         default=12.0,
         help="Commanded target Velocity.",
     )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default=None,
+        help=(
+            "Base directory that contains the <exp_name> subfolder. "
+            "Defaults to 'logs'. Override to point at tests/eval_visual or any other location."
+        ),
+    )
+    parser.add_argument(
+        "--urdf",
+        type=str,
+        default=None,
+        help="Path to the drone URDF file. Defaults to default_mydrone_urdf_path().",
+    )
     args = parser.parse_args()
 
     # Initialize Genesis in high-performance mode (same backend as training)
     gs.init(logging_level="error", backend=gs.gpu)
 
     # Paths: training logs and evaluation outputs
-    train_log_dir = os.path.join("logs", args.exp_name)
-    # Overwrite log_dir if needed coming from cluster
-    #train_log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2563547/logs/ea/{args.exp_name}"
-    eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
+    base_dir = args.log_dir if args.log_dir is not None else "logs"
+    train_log_dir = os.path.join(base_dir, args.exp_name)
+    eval_log_dir = os.path.join(base_dir, f"{args.exp_name}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
 
     # Load training configurations
@@ -1014,7 +1027,7 @@ def main() -> None:
     with open(cfg_path, "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
-    urdf_file = str(default_mydrone_urdf_path())
+    urdf_file = args.urdf if args.urdf is not None else str(default_mydrone_urdf_path())
 
     # Build evaluation-specific environment config (do not modify original dict)
     env_cfg_eval = dict(env_cfg)
