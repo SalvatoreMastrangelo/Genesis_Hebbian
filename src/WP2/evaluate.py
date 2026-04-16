@@ -548,6 +548,7 @@ if __name__ == "__main__":
     if args.x_upper is not None:
         wp1_cfg.env.x_upper = args.x_upper
         wp1_cfg.env.forest_x_limit = args.x_upper
+        cfg.evaluation.x_upper = args.x_upper  # ensure _build_env also uses the override
         print(f"[eval] Forest length overridden to {args.x_upper} m")
     else:
         print(f"[eval] Forest length: {wp1_cfg.env.x_upper} m (from WP1 config)")
