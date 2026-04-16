@@ -68,21 +68,23 @@ def _build_actor_critic(wp1_cfg_path: str | Path, device: str = "cpu", state_dic
             num_critic_obs = state_dict["memory_c.rnn.weight_ih_l0"].shape[1]
             critic_rnn_hidden = state_dict["memory_c.rnn.weight_ih_l0"].shape[0] // 4
 
-    model = ActorCriticTanh(
-        num_actor_obs=num_obs,
-        num_critic_obs=num_critic_obs,
-        num_actions=num_actions,
-        actor_hidden_dims=policy_cfg["actor_hidden_dims"],
-        critic_hidden_dims=policy_cfg["critic_hidden_dims"],
-        activation=policy_cfg["activation"],
-        rnn_type=policy_cfg.get("rnn_type", "lstm"),
-        rnn_hidden_size=actor_rnn_hidden,
-        critic_rnn_hidden_size=critic_rnn_hidden,
-        rnn_num_layers=policy_cfg.get("rnn_num_layers", 1),
-        init_noise_std=policy_cfg.get("init_noise_std", 0.3),
-        max_servo=policy_cfg.get("max_servo", 1.0),
-        max_throttle=policy_cfg.get("max_throttle", 1.0),
-    )
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()):
+        model = ActorCriticTanh(
+            num_actor_obs=num_obs,
+            num_critic_obs=num_critic_obs,
+            num_actions=num_actions,
+            actor_hidden_dims=policy_cfg["actor_hidden_dims"],
+            critic_hidden_dims=policy_cfg["critic_hidden_dims"],
+            activation=policy_cfg["activation"],
+            rnn_type=policy_cfg.get("rnn_type", "lstm"),
+            rnn_hidden_size=actor_rnn_hidden,
+            critic_rnn_hidden_size=critic_rnn_hidden,
+            rnn_num_layers=policy_cfg.get("rnn_num_layers", 1),
+            init_noise_std=policy_cfg.get("init_noise_std", 0.3),
+            max_servo=policy_cfg.get("max_servo", 1.0),
+            max_throttle=policy_cfg.get("max_throttle", 1.0),
+        )
     return model, wp1_cfg
 
 

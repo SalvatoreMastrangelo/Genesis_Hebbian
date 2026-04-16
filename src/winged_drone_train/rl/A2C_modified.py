@@ -46,8 +46,6 @@ class ActorCriticTanh(ActorCriticRecurrent):
         self.memory_a = Memory(num_actor_obs,  type=rnn_type, num_layers=rnn_num_layers, hidden_size=actor_rnn_hidden)
         self.memory_c = Memory(num_critic_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=critic_rnn_hidden)
 
-        print(f"Actor RNN: {self.memory_a}")
-        print(f"Critic RNN: {self.memory_c}")
 
         self.max_servo    = max_servo
         self.max_throttle = max_throttle

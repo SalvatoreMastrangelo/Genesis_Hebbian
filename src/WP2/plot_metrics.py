@@ -53,8 +53,13 @@ def plot_metrics(run_dir: Path | str) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(11, 7))
     fig.suptitle("Metrics Evolution — mean ± std", fontsize=13)
 
-    mean_colour = "#1f77b4"
-    best_colour = "#d62728"
+    mean_colour     = "#1f77b4"
+    best_colour     = "#d62728"
+    baseline_colour = "#2ca02c"
+
+    # Load baseline per-generation data if available
+    baseline_csv = run_dir / "results" / "baseline_summary.csv"
+    baseline_df  = pd.read_csv(baseline_csv) if baseline_csv.is_file() else None
 
     for ax, (col, label, lower_is_better) in zip(axes.flat, _METRICS):
         mu  = means[col].to_numpy()
@@ -75,6 +80,14 @@ def plot_metrics(run_dir: Path | str) -> None:
             gens, mu - sig, mu + sig,
             alpha=0.25, color=mean_colour, label="±1 std",
         )
+
+        if baseline_df is not None and col in baseline_df.columns:
+            bl = baseline_df.set_index("generation")[col].reindex(gens)
+            ax.plot(
+                gens, bl.to_numpy(),
+                color=baseline_colour, linewidth=1.4,
+                linestyle="--", label="baseline",
+            )
 
         title = f"{label}  (↓ better)" if lower_is_better else label
         ax.set_title(title, fontsize=11)

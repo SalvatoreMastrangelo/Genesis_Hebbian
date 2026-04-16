@@ -116,6 +116,7 @@ class EvaluationConfig:
     vmin: float = 6.0
     vmax: float = 30.0
     stochastic: bool = True
+    run_baseline: bool = False
 
 
 @dataclass

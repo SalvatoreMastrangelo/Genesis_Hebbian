@@ -97,6 +97,7 @@ def _rollout_episode_reward_sum(
     env,
     actor: IsolatedPopulationActor,
     device: str,
+    verbose: bool = False,
 ) -> Dict[str, np.ndarray]:
     """Run one episode and return WP1 reward sum per environment."""
     B = env.num_envs
@@ -113,6 +114,7 @@ def _rollout_episode_reward_sum(
     obs, _ = env.reset()
     x0 = env.base_pos[:, 0].clone()
 
+    step = 0
     while not done.all():
         actions = actor.act(obs)
         obs, _, term, _ = env.step(actions)
@@ -134,6 +136,19 @@ def _rollout_episode_reward_sum(
                     crashed |= just_done & flag.to(torch.bool)
 
         done |= term | nan_mask
+        step += 1
+
+        if verbose and step % 50 == 0:
+            n_alive = int((~done).sum().item())
+            mean_dx = float(dx_acc[~done].mean().item()) if n_alive > 0 else 0.0
+            max_dx = float(dx_acc.max().item())
+            mean_r = float(reward_sum[~done].mean().item()) if n_alive > 0 else 0.0
+            print(
+                f"  step {step:5d} | alive {n_alive:5d}/{B}"
+                f" | progress mean {mean_dx:7.1f} m  max {max_dx:7.1f} m"
+                f" | reward mean {mean_r:8.2f}",
+                flush=True,
+            )
 
     valid = ~env.nan_envs.to(torch.bool)
     nan_np = (~valid).cpu().numpy()
@@ -238,6 +253,7 @@ def evaluate_population_cma_batched(
     wp1_cfg,
     catalog: Optional[List[Tuple[str, str]]] = None,
     existing_env=None,
+    verbose: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     """Evaluate a CMA-ES population across all catalog URDFs.
 
@@ -278,10 +294,11 @@ def evaluate_population_cma_batched(
             "Increase evaluation.num_eval_envs or reduce population_size."
         )
 
-    print(
-        f"[evaluate_population_cma_batched] P={P} individuals, "
-        f"S={S} envs/ind, total={actual_envs} envs"
-    )
+    if verbose:
+        print(
+            f"[evaluate_population_cma_batched] P={P} individuals, "
+            f"S={S} envs/ind, total={actual_envs} envs"
+        )
 
     na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
 
@@ -320,16 +337,18 @@ def evaluate_population_cma_batched(
         if existing_env_obj.num_envs == actual_envs:
             env = existing_env_obj
             env_was_reused = True
-            print(
-                f"[evaluate_population_cma_batched] Reusing environment "
-                f"(rules-only, actual_envs={actual_envs})"
-            )
+            if verbose:
+                print(
+                    f"[evaluate_population_cma_batched] Reusing environment "
+                    f"(rules-only, actual_envs={actual_envs})"
+                )
 
     for urdf_idx, (urdf_file, naca) in enumerate(catalog):
-        print(
-            f"  [catalog {urdf_idx + 1}/{n_urdfs}] "
-            f"{'default URDF' if urdf_file is None else Path(urdf_file).name}"
-        )
+        if verbose:
+            print(
+                f"  [catalog {urdf_idx + 1}/{n_urdfs}] "
+                f"{'default URDF' if urdf_file is None else Path(urdf_file).name}"
+            )
 
         if not env_was_reused:
             try:
@@ -358,7 +377,7 @@ def evaluate_population_cma_batched(
 
         try:
             for ep in range(n_episodes):
-                ep_metrics = _rollout_episode_reward_sum(env, actor, cfg.device)
+                ep_metrics = _rollout_episode_reward_sum(env, actor, cfg.device, verbose=verbose)
 
                 for key, flat_arr in ep_metrics.items():
                     per_ind = flat_arr.reshape(P, S).mean(axis=1)
@@ -387,10 +406,11 @@ def evaluate_population_cma_batched(
         acc_velocity += urdf_velocity
         acc_crash += urdf_crash
 
-        print(
-            f"    best={urdf_reward.max():.4f}  mean={urdf_reward.mean():.4f}  "
-            f"crash={urdf_crash.mean() * 100:.1f}%"
-        )
+        if verbose:
+            print(
+                f"    best={urdf_reward.max():.4f}  mean={urdf_reward.mean():.4f}  "
+                f"crash={urdf_crash.mean() * 100:.1f}%"
+            )
 
     acc_reward /= n_urdfs
     acc_progress /= n_urdfs
@@ -404,3 +424,161 @@ def evaluate_population_cma_batched(
         "crash_flags": acc_crash,
     }
     return acc_reward, metrics
+
+
+# ============================================================================
+#  Standalone driver
+# ============================================================================
+
+if __name__ == "__main__":
+    """Evaluate a single saved Hebbian genome against a Genesis forest env.
+
+    Usage
+    -----
+    # Evaluate the best genome from a completed run (default forest length):
+        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run
+
+    # Override forest length to 1200 m:
+        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run --x-upper 1200
+
+    # Point at an explicit genome file:
+        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run \\
+            --genome path/to/genome.npy --x-upper 800
+
+    # Evaluate a specific generation's best individual:
+        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run \\
+            --genome logs/runs_hebbian/2026-xx-xx_my_run/generations/gen_042/solutions.npy \\
+            --genome-idx 0
+    """
+    import argparse
+    import os
+    import sys
+    from pathlib import Path
+
+    _src_dir = Path(__file__).resolve().parent.parent
+    if str(_src_dir) not in sys.path:
+        sys.path.insert(0, str(_src_dir))
+
+    parser = argparse.ArgumentParser(
+        description="Standalone evaluation of a saved Hebbian genome."
+    )
+    parser.add_argument(
+        "--run", type=str, required=True,
+        help="Path to a completed WP2 run directory.",
+    )
+    parser.add_argument(
+        "--genome", type=str, default=None,
+        help="Path to a .npy genome file.  Defaults to <run>/best/genome.npy.",
+    )
+    parser.add_argument(
+        "--genome-idx", type=int, default=0,
+        help="Row index to use when the .npy file contains multiple genomes (e.g. solutions.npy).",
+    )
+    parser.add_argument(
+        "--x-upper", type=float, default=None,
+        help="Override forest corridor length in metres (WP1 env x_upper).  "
+             "Default: value from the saved WP1 config (typically 600 m for eval).",
+    )
+    parser.add_argument(
+        "--num-envs", type=int, default=None,
+        help="Override evaluation.num_eval_envs.",
+    )
+    parser.add_argument(
+        "--episodes", type=int, default=1,
+        help="Number of rollout episodes to average over.",
+    )
+    parser.add_argument(
+        "--device", type=str, default=None,
+        help="Torch device override (e.g. cuda:0).",
+    )
+    parser.add_argument(
+        "--stochastic", action="store_true",
+        help="Sample from the policy distribution instead of using the mean.",
+    )
+    args = parser.parse_args()
+
+    # --- resolve paths ---
+    run_dir = Path(args.run)
+    cfg_path = run_dir / "reproducibility" / "config.yaml"
+    if not cfg_path.is_file():
+        sys.exit(f"[ERROR] Config not found: {cfg_path}")
+
+    genome_path = Path(args.genome) if args.genome else run_dir / "best_individual" / "genome.npy"
+    if not genome_path.is_file():
+        sys.exit(f"[ERROR] Genome file not found: {genome_path}")
+
+    # --- load WP2 config ---
+    from WP2.config import HebbianEvolutionConfig
+    cfg = HebbianEvolutionConfig.from_yaml(cfg_path)
+
+    if args.device:
+        cfg.device = args.device
+    if args.num_envs:
+        cfg.evaluation.num_eval_envs = args.num_envs
+    if args.stochastic:
+        cfg.evaluation.stochastic = True
+    cfg.catalog.num_episodes = args.episodes
+
+    # Infer last-layer dims from checkpoint (same as run.py does)
+    import torch
+    _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
+    _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
+    if "actor.4.weight" in _sd:
+        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
+        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    del _ckpt, _sd
+
+    # --- load WP1 config and optionally override forest length ---
+    from WP1.config import RunConfig
+    wp1_cfg = RunConfig.from_yaml(cfg.checkpoint_config_path)
+
+    if args.x_upper is not None:
+        wp1_cfg.env.x_upper = args.x_upper
+        wp1_cfg.env.forest_x_limit = args.x_upper
+        print(f"[eval] Forest length overridden to {args.x_upper} m")
+    else:
+        print(f"[eval] Forest length: {wp1_cfg.env.x_upper} m (from WP1 config)")
+
+    # --- load genome ---
+    genome_arr = np.load(genome_path)
+    if genome_arr.ndim == 2:
+        genome = genome_arr[args.genome_idx]
+        print(f"[eval] Loaded genome row {args.genome_idx} from {genome_path.name}  "
+              f"(shape {genome_arr.shape})")
+    else:
+        genome = genome_arr
+        print(f"[eval] Loaded genome from {genome_path.name}  (dim={genome.size})")
+
+    # --- load frozen actor ---
+    from WP2.frozen_actor import load_frozen_actor
+    model_and_layer = load_frozen_actor(
+        cfg.checkpoint_path, cfg.checkpoint_config_path, cfg.device
+    )
+
+    # --- Genesis init + evaluate ---
+    import genesis as gs
+    gs.init(logging_level="error", backend=gs.gpu)
+
+    print(
+        f"\n[eval] Running evaluation: "
+        f"envs={cfg.evaluation.num_eval_envs}  "
+        f"episodes={cfg.catalog.num_episodes}  "
+        f"stochastic={cfg.evaluation.stochastic}"
+    )
+
+    fitnesses, metrics = evaluate_population_cma_batched(
+        solutions=[genome],
+        cfg=cfg,
+        model_and_layer=model_and_layer,
+        wp1_cfg=wp1_cfg,
+        verbose=True,
+    )
+
+    gs.destroy()
+
+    print("\n" + "=" * 50)
+    print(f"  reward   : {fitnesses[0]:.4f}")
+    print(f"  progress : {metrics['progresses'][0]:.1f} m")
+    print(f"  velocity : {metrics['velocities'][0]:.2f} m/s")
+    print(f"  crash    : {metrics['crash_flags'][0] * 100:.1f}%")
+    print("=" * 50)

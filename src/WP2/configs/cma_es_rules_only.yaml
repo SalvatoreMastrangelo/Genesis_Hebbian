@@ -17,9 +17,9 @@ checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.01
+  eta: 0.001
   evolve_eta: false
-  decay: 0.01
+  decay: 0.001
   evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: false
@@ -50,6 +50,7 @@ evaluation:
   vmin: 10.0
   vmax: 20.0
   stochastic: false
+  run_baseline: true   # if true, re-evaluates the frozen WP1 actor each gen for comparison
 
 seed: 1
 device: "cuda:0"
