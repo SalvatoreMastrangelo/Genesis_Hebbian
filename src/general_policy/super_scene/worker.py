@@ -106,13 +106,18 @@ def _make_shared_buffers(
     num_privileged_obs: int,
     num_actions: int,
 ) -> Dict[str, torch.Tensor]:
+    # device="cpu" is mandatory: after gs.init(backend=gs.gpu) Genesis sets the
+    # default PyTorch device to CUDA, so bare torch.zeros() creates GPU tensors.
+    # GPU tensors use CUDA IPC (_share_cuda_()) which is not supported across
+    # independent spawned processes and raises "CUDA driver error: invalid argument".
+    cpu = torch.device("cpu")
     return {
-        "actions": torch.zeros((num_envs, num_actions), dtype=torch.float32).share_memory_(),
-        "obs": torch.zeros((num_envs, num_obs), dtype=torch.float32).share_memory_(),
-        "critic_obs": torch.zeros((num_envs, num_privileged_obs), dtype=torch.float32).share_memory_(),
-        "rew": torch.zeros((num_envs,), dtype=torch.float32).share_memory_(),
-        "done": torch.zeros((num_envs,), dtype=torch.int64).share_memory_(),
-        "time_outs": torch.zeros((num_envs,), dtype=torch.float32).share_memory_(),
+        "actions":    torch.zeros((num_envs, num_actions),        dtype=torch.float32, device=cpu).share_memory_(),
+        "obs":        torch.zeros((num_envs, num_obs),            dtype=torch.float32, device=cpu).share_memory_(),
+        "critic_obs": torch.zeros((num_envs, num_privileged_obs), dtype=torch.float32, device=cpu).share_memory_(),
+        "rew":        torch.zeros((num_envs,),                    dtype=torch.float32, device=cpu).share_memory_(),
+        "done":       torch.zeros((num_envs,),                    dtype=torch.int64,   device=cpu).share_memory_(),
+        "time_outs":  torch.zeros((num_envs,),                    dtype=torch.float32, device=cpu).share_memory_(),
     }
 
 
@@ -219,25 +224,47 @@ def worker_main(
                 shared_buffers = None
                 use_shared_memory = False
 
-        _safe_reply(
-            conn,
-            ok=True,
-            payload={
-                "event": "ready",
-                "meta": {
-                    "num_envs": int(env.num_envs),
-                    "num_obs": int(env.num_obs),
-                    "num_privileged_obs": int(env.num_privileged_obs),
-                    "num_actions": int(env.num_actions),
-                    "max_episode_length": int(env.max_episode_length),
-                    "dt": float(env.dt),
-                    "use_shared_memory": use_shared_memory,
+        _ready_meta = {
+            "num_envs": int(env.num_envs),
+            "num_obs": int(env.num_obs),
+            "num_privileged_obs": int(env.num_privileged_obs),
+            "num_actions": int(env.num_actions),
+            "max_episode_length": int(env.max_episode_length),
+            "dt": float(env.dt),
+            "use_shared_memory": use_shared_memory,
+        }
+        _sent_ready = False
+        if use_shared_memory and shared_buffers is not None:
+            try:
+                conn.send(WorkerReply(ok=True, payload={
+                    "event": "ready",
+                    "meta": _ready_meta,
+                    "obs": None,
+                    "critic_obs": None,
+                    "shared_buffers": shared_buffers,
+                }))
+                _sent_ready = True
+            except Exception as ser_exc:
+                print(
+                    f"[worker] shared_buffers serialization failed ({ser_exc}); "
+                    "falling back to pipe-based transfer.",
+                    flush=True,
+                )
+                use_shared_memory = False
+                shared_buffers = None
+                _ready_meta["use_shared_memory"] = False
+        if not _sent_ready:
+            _safe_reply(
+                conn,
+                ok=True,
+                payload={
+                    "event": "ready",
+                    "meta": _ready_meta,
+                    "obs": _to_cpu(obs),
+                    "critic_obs": _to_cpu(critic),
+                    "shared_buffers": None,
                 },
-                "obs": _to_cpu(obs) if not use_shared_memory else None,
-                "critic_obs": _to_cpu(critic) if not use_shared_memory else None,
-                "shared_buffers": shared_buffers if use_shared_memory else None,
-            },
-        )
+            )
 
         while True:
             msg = conn.recv()

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -138,6 +138,26 @@ def load_frozen_actor(
     return model, last_layer, num_actions, hidden_dim
 
 
+def _load_obs_normalizer(ckpt_dict: dict, num_obs: int, device: str) -> nn.Module:
+    """Load the empirical observation normalizer from a checkpoint dict.
+
+    Returns an EmpiricalNormalization in eval mode if ``obs_norm_state_dict``
+    is present in the checkpoint, otherwise ``nn.Identity``.
+    """
+    if not isinstance(ckpt_dict, dict) or "obs_norm_state_dict" not in ckpt_dict:
+        return nn.Identity().to(device)
+    try:
+        from rsl_rl.modules import EmpiricalNormalization  # type: ignore
+        norm = EmpiricalNormalization(shape=[num_obs], until=1.0e8)
+        norm.load_state_dict(ckpt_dict["obs_norm_state_dict"])
+        norm.eval()
+        norm.to(device)
+        return norm
+    except Exception as exc:
+        print(f"[frozen_actor] obs_normalizer load failed ({exc}); using identity")
+        return nn.Identity().to(device)
+
+
 def attach_hebbian(
     last_layer: nn.Linear,
     hebbian_rules: Dict[str, Tensor],
@@ -196,6 +216,7 @@ class IsolatedPopulationActor:
         K: int,
         S: int,
         stochastic: bool = True,
+        obs_normalizer: Optional[nn.Module] = None,
     ) -> None:
         if hebbian.num_envs != K * S:
             raise ValueError(
@@ -209,6 +230,9 @@ class IsolatedPopulationActor:
         self.K = K
         self.S = S
         self.stochastic = stochastic
+        # Observation normalizer loaded from the WP1 checkpoint (empirical normalization).
+        # If the checkpoint was trained without normalization this is nn.Identity.
+        self.obs_normalizer: nn.Module = obs_normalizer if obs_normalizer is not None else nn.Identity()
 
         rnn = model.memory_a.rnn if hasattr(model.memory_a, "rnn") else model.memory_a
         if not isinstance(rnn, nn.LSTM):
@@ -218,8 +242,12 @@ class IsolatedPopulationActor:
         self._hidden_size = rnn.hidden_size
         self._num_layers = rnn.num_layers
 
-        # Cache references to actor layers
-        self._actor_layers = list(model.actor.children())
+        # Cache references to actor layers.
+        # NOTE: `model.actor.children()` deduplicates by module identity, which
+        # drops repeated activation instances (rsl_rl reuses a single ELU across
+        # positions). We must iterate `_modules.values()` to preserve the full
+        # forward order of nn.Sequential.
+        self._actor_layers = list(model.actor._modules.values())
         self._last_layer_bias = self._actor_layers[-1].bias
 
         # Owned LSTM states: (num_layers, K*S, hidden) — NOT shared with model.memory_a
@@ -263,6 +291,9 @@ class IsolatedPopulationActor:
         """
         if self._h is None or self._c is None:
             raise RuntimeError("act called before reset_episode")
+
+        # --- 0. Normalize observations (matches WP1 inference pipeline) ---
+        obs = self.obs_normalizer(obs)
 
         # --- 1. LSTM with our owned hidden states (bypass memory_a.hidden_states) ---
         # obs: (N, obs_dim) → (1, N, obs_dim) for (seq_len, batch, input) layout
@@ -330,9 +361,17 @@ def build_isolated_population_actor(
             f"Expected {K} rule dicts, got {len(hebbian_rules_per_individual)}"
         )
 
+    # Load checkpoint once; extract obs_normalizer before the model is built.
+    ckpt_dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
     model, last_layer, _num_actions, _hidden_dim = load_frozen_actor(
         checkpoint_path, wp1_cfg_path, device=device
     )
+
+    # Load observation normalizer (matches WP1 get_inference_policy).
+    num_obs = model.memory_a.rnn.input_size
+    obs_normalizer = _load_obs_normalizer(ckpt_dict, num_obs, device)
+
     # Deep-copy to fully isolate this actor from the cached/template model
     model = copy.deepcopy(model)
     # Re-find the matching last layer in the deep-copied model so the
@@ -360,4 +399,6 @@ def build_isolated_population_actor(
         expanded[key] = torch.stack(per_env, dim=0)  # (K*S, out, in)
 
     hebbian = attach_hebbian(last_layer, expanded, cfg, device=device, num_envs=K * S)
-    return IsolatedPopulationActor(model, hebbian, K=K, S=S, stochastic=stochastic)
+    return IsolatedPopulationActor(
+        model, hebbian, K=K, S=S, stochastic=stochastic, obs_normalizer=obs_normalizer
+    )
