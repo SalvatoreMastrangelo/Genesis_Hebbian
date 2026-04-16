@@ -66,6 +66,9 @@ def _build_env(
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
+    if cfg.evaluation.x_upper is not None:
+        env_cfg["x_upper"] = cfg.evaluation.x_upper
+        env_cfg["forest_x_limit"] = cfg.evaluation.x_upper
 
     obs_cfg["add_genome_obs_actor"] = False
     obs_cfg["add_genome_obs_critic"] = False
@@ -140,9 +143,9 @@ def _rollout_episode_reward_sum(
 
         if verbose and step % 50 == 0:
             n_alive = int((~done).sum().item())
-            mean_dx = float(dx_acc[~done].mean().item()) if n_alive > 0 else 0.0
+            mean_dx = float(dx_acc.mean().item())
             max_dx = float(dx_acc.max().item())
-            mean_r = float(reward_sum[~done].mean().item()) if n_alive > 0 else 0.0
+            mean_r = float(reward_sum.mean().item())
             print(
                 f"  step {step:5d} | alive {n_alive:5d}/{B}"
                 f" | progress mean {mean_dx:7.1f} m  max {max_dx:7.1f} m"
@@ -228,6 +231,9 @@ def _build_env_from_urdf(
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
+    if cfg.evaluation.x_upper is not None:
+        env_cfg["x_upper"] = cfg.evaluation.x_upper
+        env_cfg["forest_x_limit"] = cfg.evaluation.x_upper
     obs_cfg["add_genome_obs_actor"] = False
     obs_cfg["add_genome_obs_critic"] = False
 
@@ -449,6 +455,9 @@ if __name__ == "__main__":
         python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run \\
             --genome logs/runs_hebbian/2026-xx-xx_my_run/generations/gen_042/solutions.npy \\
             --genome-idx 0
+
+    # Compare Hebbian vs. frozen baseline (zero rules):
+        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run --compare
     """
     import argparse
     import os
@@ -494,6 +503,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stochastic", action="store_true",
         help="Sample from the policy distribution instead of using the mean.",
+    )
+    parser.add_argument(
+        "--compare", action="store_true",
+        help="Also evaluate the frozen baseline (zero Hebbian rules) and print a comparison.",
     )
     args = parser.parse_args()
 
@@ -555,9 +568,15 @@ if __name__ == "__main__":
         cfg.checkpoint_path, cfg.checkpoint_config_path, cfg.device
     )
 
-    # --- Genesis init + evaluate ---
+    # --- Genesis init + build env ---
     import genesis as gs
     gs.init(logging_level="error", backend=gs.gpu)
+
+    # Build a single env and reuse it across all evaluations so Genesis is
+    # only initialised/destroyed once (existing_env bypasses gs.destroy inside
+    # evaluate_population_cma_batched).
+    shared_env, urdf_path = _build_env(cfg, wp1_cfg, cfg.device)
+    existing_env = (shared_env, urdf_path)
 
     print(
         f"\n[eval] Running evaluation: "
@@ -571,14 +590,81 @@ if __name__ == "__main__":
         cfg=cfg,
         model_and_layer=model_and_layer,
         wp1_cfg=wp1_cfg,
+        existing_env=existing_env,
         verbose=True,
     )
 
-    gs.destroy()
+    hebb_reward   = fitnesses[0]
+    hebb_progress = metrics['progresses'][0]
+    hebb_velocity = metrics['velocities'][0]
+    hebb_crash    = metrics['crash_flags'][0]
 
     print("\n" + "=" * 50)
-    print(f"  reward   : {fitnesses[0]:.4f}")
-    print(f"  progress : {metrics['progresses'][0]:.1f} m")
-    print(f"  velocity : {metrics['velocities'][0]:.2f} m/s")
-    print(f"  crash    : {metrics['crash_flags'][0] * 100:.1f}%")
+    print("  [Hebbian]")
+    print(f"  reward   : {hebb_reward:.4f}")
+    print(f"  progress : {hebb_progress:.1f} m")
+    print(f"  velocity : {hebb_velocity:.2f} m/s")
+    print(f"  crash    : {hebb_crash * 100:.1f}%")
     print("=" * 50)
+
+    if args.compare:
+        # ------------------------------------------------------------------
+        # Build a genome that decodes to all-zero ABCD rules (no plasticity).
+        # gene * (hi - lo) + lo = 0  =>  gene = -lo / (hi - lo)
+        # ------------------------------------------------------------------
+        def _gene_for_zero(lo: float, hi: float) -> float:
+            return -lo / (hi - lo) if hi != lo else 0.0
+
+        na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
+        n_weights = na * hd
+        baseline_parts = [
+            np.full(n_weights, _gene_for_zero(*cfg.hebbian.A_range)),
+            np.full(n_weights, _gene_for_zero(*cfg.hebbian.B_range)),
+            np.full(n_weights, _gene_for_zero(*cfg.hebbian.C_range)),
+            np.full(n_weights, _gene_for_zero(*cfg.hebbian.D_range)),
+        ]
+        if cfg.hebbian.evolve_decay:
+            lo, hi = cfg.hebbian.decay_range
+            baseline_parts.append(np.full(n_weights, (lo + hi) / 2))
+        if cfg.hebbian.evolve_eta:
+            lo, hi = cfg.hebbian.eta_range
+            baseline_parts.append(np.full(n_weights, (lo + hi) / 2))
+        baseline_genome = np.concatenate(baseline_parts)
+
+        print(
+            f"\n[eval] Running baseline (zero-rules) evaluation: "
+            f"envs={cfg.evaluation.num_eval_envs}  "
+            f"episodes={cfg.catalog.num_episodes}  "
+            f"stochastic={cfg.evaluation.stochastic}"
+        )
+
+        base_fitnesses, base_metrics = evaluate_population_cma_batched(
+            solutions=[baseline_genome],
+            cfg=cfg,
+            model_and_layer=model_and_layer,
+            wp1_cfg=wp1_cfg,
+            existing_env=existing_env,
+            verbose=True,
+        )
+
+        base_reward   = base_fitnesses[0]
+        base_progress = base_metrics['progresses'][0]
+        base_velocity = base_metrics['velocities'][0]
+        base_crash    = base_metrics['crash_flags'][0]
+
+        d_reward   = hebb_reward   - base_reward
+        d_progress = hebb_progress - base_progress
+        d_velocity = hebb_velocity - base_velocity
+        d_crash    = hebb_crash    - base_crash
+
+        w = 12
+        print("\n" + "=" * 55)
+        print(f"  {'Metric':<12}  {'Baseline':>{w}}  {'Hebbian':>{w}}  {'Delta':>{w}}")
+        print("  " + "-" * 51)
+        print(f"  {'reward':<12}  {base_reward:>{w}.4f}  {hebb_reward:>{w}.4f}  {d_reward:>+{w}.4f}")
+        print(f"  {'progress (m)':<12}  {base_progress:>{w}.1f}  {hebb_progress:>{w}.1f}  {d_progress:>+{w}.1f}")
+        print(f"  {'velocity (m/s)':<12}  {base_velocity:>{w}.2f}  {hebb_velocity:>{w}.2f}  {d_velocity:>+{w}.2f}")
+        print(f"  {'crash (%)':<12}  {base_crash*100:>{w}.1f}  {hebb_crash*100:>{w}.1f}  {d_crash*100:>+{w}.1f}")
+        print("=" * 55)
+
+    gs.destroy()

@@ -197,10 +197,8 @@ def _print_generation_table(
     if baseline is not None:
         headers = [
             "Metric",
-            "Best (Hebb)", "Best (Base)",
-            "Mean (Hebb)", "Mean (Base)",
-            "Worst (Hebb)", "Worst (Base)",
-            "Std",
+            "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)",
+            "Std", "Baseline",
         ]
         table_rows = []
         for name, arr, key in rows:
@@ -211,10 +209,11 @@ def _print_generation_table(
             bv = baseline.get(key, float("nan"))
             table_rows.append([
                 name,
-                f"{best:.4g}", f"{bv:.4g}",
-                f"{arr.mean():.4g}", f"{bv:.4g}",
-                f"{worst:.4g}", f"{bv:.4g}",
+                f"{best:.4g}",
+                f"{arr.mean():.4g}",
+                f"{worst:.4g}",
                 f"{arr.std():.4g}",
+                f"{bv:.4g}",
             ])
     else:
         headers = ["Metric", "Best", "Mean", "Worst", "Std"]
@@ -657,7 +656,8 @@ class HebbianCMAES:
                 # 0.5 in normalised space maps to 0.0 for symmetric [-1,1] ranges
                 x0 = np.full(self.n_genes, 0.5)
             else:
-                x0 = np.full(self.n_genes, 0.5)  # always start at centre
+                # Random initialisation uniformly sampled from [0, 1]^n
+                x0 = np.random.uniform(0.0, 1.0, self.n_genes)
 
             es = cma.CMAEvolutionStrategy(x0, self.cfg.cmaes.sigma0, opts)
             start_gen = 0
