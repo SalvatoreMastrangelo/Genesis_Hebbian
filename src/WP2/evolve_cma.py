@@ -165,13 +165,19 @@ def _print_generation_table(
         ("Crash Rate", metrics["crash_flags"]),
     ]
 
+    lower_is_better = {"Crash Rate"}
+
     table_rows = []
     for name, arr in rows:
+        if name in lower_is_better:
+            best, worst = arr.min(), arr.max()
+        else:
+            best, worst = arr.max(), arr.min()
         table_rows.append([
             name,
-            f"{arr.max():.4g}",
+            f"{best:.4g}",
             f"{arr.mean():.4g}",
-            f"{arr.min():.4g}",
+            f"{worst:.4g}",
             f"{arr.std():.4g}",
         ])
 
