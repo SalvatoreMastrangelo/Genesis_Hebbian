@@ -17,9 +17,9 @@ checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.0001
+  eta: 0.01
   evolve_eta: false
-  decay: 0.001
+  decay: 0.01
   evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: false

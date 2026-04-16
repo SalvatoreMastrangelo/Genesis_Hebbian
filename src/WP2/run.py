@@ -159,6 +159,12 @@ def main() -> None:
     runner.run(resume_from_gen=resume_gen)
     print(f"\n[run] All done. Results in: {runner.run_dir}")
 
+    try:
+        from WP2.plot_metrics import plot_metrics
+        plot_metrics(runner.run_dir)
+    except Exception as exc:  # never crash the run over a plotting failure
+        print(f"[run] Warning: metrics plot failed — {exc}")
+
 
 if __name__ == "__main__":
     main()
