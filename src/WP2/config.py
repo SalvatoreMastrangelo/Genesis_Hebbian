@@ -117,6 +117,7 @@ class EvaluationConfig:
     vmax: float = 30.0
     stochastic: bool = True
     run_baseline: bool = False
+    x_upper: Optional[float] = None  # override WP1 forest corridor length [m]
 
 
 @dataclass
