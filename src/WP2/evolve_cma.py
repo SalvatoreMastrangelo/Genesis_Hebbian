@@ -85,6 +85,32 @@ def _init_csvs(pop_path: Path, summary_path: Path) -> None:
         ])
 
 
+def _init_baseline_csv(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "generation",
+            "fitness", "velocity", "progress", "crash_rate",
+        ])
+
+
+def _append_baseline_csv(
+    path: Path,
+    gen: int,
+    baseline: Dict[str, float],
+) -> None:
+    with open(path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            gen,
+            f"{baseline['fitness']:.6g}",
+            f"{baseline['velocity']:.6g}",
+            f"{baseline['progress']:.6g}",
+            f"{baseline['crash_rate']:.6g}",
+        ])
+
+
 def _append_population_csv(
     path: Path,
     gen: int,
@@ -135,6 +161,7 @@ def _print_generation_table(
     total_elapsed: Optional[float] = None,
     iter_elapsed: Optional[float] = None,
     eta_seconds: Optional[float] = None,
+    baseline: Optional[Dict[str, float]] = None,
 ) -> None:
     timing_parts = [f"CMA-ES Generation {gen}", f"Population={len(fitnesses)}"]
 
@@ -157,34 +184,58 @@ def _print_generation_table(
     print(f"  {header_str}")
     print(f"{'═' * 90}")
 
-    # Build metrics table
+    # Metric rows: (display name, array, baseline_key)
     rows = [
-        ("Fitness (reward)", fitnesses),
-        ("Velocity [m/s]", metrics["velocities"]),
-        ("Progress [m]", metrics["progresses"]),
-        ("Crash Rate", metrics["crash_flags"]),
+        ("Fitness (reward)", fitnesses, "fitness"),
+        ("Velocity [m/s]",   metrics["velocities"], "velocity"),
+        ("Progress [m]",     metrics["progresses"],  "progress"),
+        ("Crash Rate",       metrics["crash_flags"],  "crash_rate"),
     ]
 
     lower_is_better = {"Crash Rate"}
 
-    table_rows = []
-    for name, arr in rows:
-        if name in lower_is_better:
-            best, worst = arr.min(), arr.max()
-        else:
-            best, worst = arr.max(), arr.min()
-        table_rows.append([
-            name,
-            f"{best:.4g}",
-            f"{arr.mean():.4g}",
-            f"{worst:.4g}",
-            f"{arr.std():.4g}",
-        ])
+    if baseline is not None:
+        headers = [
+            "Metric",
+            "Best (Hebb)", "Best (Base)",
+            "Mean (Hebb)", "Mean (Base)",
+            "Worst (Hebb)", "Worst (Base)",
+            "Std",
+        ]
+        table_rows = []
+        for name, arr, key in rows:
+            if name in lower_is_better:
+                best, worst = arr.min(), arr.max()
+            else:
+                best, worst = arr.max(), arr.min()
+            bv = baseline.get(key, float("nan"))
+            table_rows.append([
+                name,
+                f"{best:.4g}", f"{bv:.4g}",
+                f"{arr.mean():.4g}", f"{bv:.4g}",
+                f"{worst:.4g}", f"{bv:.4g}",
+                f"{arr.std():.4g}",
+            ])
+    else:
+        headers = ["Metric", "Best", "Mean", "Worst", "Std"]
+        table_rows = []
+        for name, arr, key in rows:
+            if name in lower_is_better:
+                best, worst = arr.min(), arr.max()
+            else:
+                best, worst = arr.max(), arr.min()
+            table_rows.append([
+                name,
+                f"{best:.4g}",
+                f"{arr.mean():.4g}",
+                f"{worst:.4g}",
+                f"{arr.std():.4g}",
+            ])
 
-    print("\n  Metrics Summary:")
+    print("\n  Metrics Summary (Hebb | Base):" if baseline else "\n  Metrics Summary:")
     print(tabulate(
         table_rows,
-        headers=["Metric", "Best", "Mean", "Worst", "Std"],
+        headers=headers,
         tablefmt="grid",
         numalign="center",
         stralign="left",
@@ -254,7 +305,9 @@ class HebbianCMAES:
         # CSV paths
         self.pop_csv_path = self.results_dir / "cma_population.csv"
         self.summary_csv_path = self.results_dir / "cma_summary.csv"
+        self.baseline_csv_path = self.results_dir / "baseline_summary.csv"
         _init_csvs(self.pop_csv_path, self.summary_csv_path)
+        _init_baseline_csv(self.baseline_csv_path)
 
         # Timing
         self._run_start_time: Optional[float] = None
@@ -309,6 +362,73 @@ class HebbianCMAES:
                 print(f"[HebbianCMAES] Warning: failed to destroy environment: {exc}")
 
     # ------------------------------------------------------------------
+    #  Baseline evaluation (frozen WP1 actor, zero Hebbian rules)
+    # ------------------------------------------------------------------
+
+    def _evaluate_baseline(self, verbose: bool = False) -> Optional[Dict[str, float]]:
+        """Evaluate the frozen WP1 actor with zero Hebbian rules (A=B=C=D=0, decay=0).
+
+        ABCD=0 (genome=0.5 for symmetric [-1,1] ranges) means no plasticity
+        update.  Decay is also zeroed so weights stay exactly at the WP1
+        checkpoint values throughout the episode.
+
+        Two paths:
+        - evolve_decay=False: decay comes from cfg.hebbian.decay → pass a
+          config copy with decay=0.
+        - evolve_decay=True:  decay genes sit at positions [4n:5n] in the
+          genome; setting them to 0.0 maps to decay_range[0]=0.0.
+        """
+        import copy
+
+        n_weights = self.cfg.hebbian.num_actions * self.cfg.hebbian.hidden_dim
+
+        # Build baseline genome: ABCD=0.5 (→ 0 for symmetric ranges), rest=0.5
+        baseline_genome = np.full(self.n_genes, 0.5)
+
+        # Zero out evolved decay genes so they decode to decay_range[0]=0
+        if self.cfg.hebbian.evolve_decay:
+            decay_start = 4 * n_weights
+            baseline_genome[decay_start: decay_start + n_weights] = 0.0
+
+        # Config copy with fixed decay forced to 0 (covers non-evolved case)
+        baseline_cfg = copy.deepcopy(self.cfg)
+        baseline_cfg.hebbian.decay = 0.0
+
+        existing_env = (
+            (self._env, self._env_urdf_path)
+            if self._env is not None
+            else None
+        )
+        try:
+            if verbose:
+                print("[HebbianCMAES] Evaluating baseline (zero-Hebbian, zero-decay)...")
+            fitnesses, metrics = evaluate_population_cma_batched(
+                [baseline_genome],
+                baseline_cfg,
+                self._model_and_layer,
+                self._wp1_cfg,
+                catalog=self._catalog,
+                existing_env=existing_env,
+                verbose=verbose,
+            )
+            result = {
+                "fitness":    float(fitnesses[0]),
+                "velocity":   float(metrics["velocities"][0]),
+                "progress":   float(metrics["progresses"][0]),
+                "crash_rate": float(metrics["crash_flags"][0]),
+            }
+            if verbose:
+                print(
+                    f"[HebbianCMAES] Baseline: fitness={result['fitness']:.4g}  "
+                    f"vel={result['velocity']:.4g}  prog={result['progress']:.4g}  "
+                    f"crash={result['crash_rate']:.4g}"
+                )
+            return result
+        except Exception as exc:
+            print(f"[HebbianCMAES] Baseline evaluation failed: {exc}")
+            return None
+
+    # ------------------------------------------------------------------
     #  Reproducibility
     # ------------------------------------------------------------------
 
@@ -359,6 +479,7 @@ class HebbianCMAES:
         fitnesses: np.ndarray,
         metrics: Dict[str, np.ndarray],
         es,
+        baseline: Optional[Dict[str, float]] = None,
     ) -> None:
         import time
 
@@ -367,6 +488,8 @@ class HebbianCMAES:
         # CSV logging
         _append_population_csv(self.pop_csv_path, gen, fitnesses, metrics)
         _append_summary_csv(self.summary_csv_path, gen, fitnesses, metrics, sigma)
+        if baseline is not None:
+            _append_baseline_csv(self.baseline_csv_path, gen, baseline)
 
         # Generation checkpoint
         self._save_generation(gen, solutions, fitnesses, es)
@@ -385,6 +508,7 @@ class HebbianCMAES:
             total_elapsed=total_elapsed,
             iter_elapsed=iter_elapsed,
             eta_seconds=eta_secs,
+            baseline=baseline,
         )
 
     # ------------------------------------------------------------------
@@ -547,10 +671,7 @@ class HebbianCMAES:
         gen = start_gen
         while not es.stop() and gen <= self.cfg.evolution.num_generations:
             self._gen_start_time = time.perf_counter()
-
-            print(f"\n{'=' * 60}")
-            print(f"  CMA-ES Generation {gen}/{self.cfg.evolution.num_generations}")
-            print(f"{'=' * 60}")
+            verbose = (gen == 0)
 
             # Sample new candidate solutions
             solutions = es.ask()   # list of np.ndarray, each shape (n_genes,)
@@ -570,6 +691,7 @@ class HebbianCMAES:
                     self._wp1_cfg,
                     catalog=self._catalog,
                     existing_env=existing_env,
+                    verbose=verbose,
                 )
             except Exception as exc:
                 print(f"[HebbianCMAES] Evaluation failed at gen {gen}: {exc}")
@@ -585,8 +707,11 @@ class HebbianCMAES:
             # CMA-ES minimises — negate fitness to maximise reward
             es.tell(solutions, (-fitnesses).tolist())
 
+            # Baseline: evaluate frozen WP1 actor with zero Hebbian rules
+            baseline = self._evaluate_baseline(verbose=verbose) if self.cfg.evaluation.run_baseline else None
+
             # Bookkeeping
-            self._after_generation(gen, solutions, fitnesses, metrics, es)
+            self._after_generation(gen, solutions, fitnesses, metrics, es, baseline=baseline)
 
             last_solutions = solutions
             last_fitnesses = fitnesses
