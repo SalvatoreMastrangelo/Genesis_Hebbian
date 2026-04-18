@@ -58,6 +58,7 @@ def _build_env(
         visualize_camera=False,
         visualize_target=False,
         naca=naca,
+        episode_length_s=200.0,  # 5000 steps at 25 Hz
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
@@ -240,6 +241,7 @@ def _build_env_from_urdf(
         visualize_camera=False,
         visualize_target=False,
         naca=naca,
+        episode_length_s=200.0,  # 5000 steps at 25 Hz
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
@@ -390,6 +392,22 @@ def evaluate_population_cma_batched(
                         pass
                 continue
 
+        # Fix forest assignment so individual k's env i always sees forest i,
+        # making fitness comparisons fair across the population.
+        if env.cylinders_array is not None and P > 1:
+            fixed_ids = torch.arange(S, device=cfg.device, dtype=torch.long).repeat(P)
+            env._fixed_forest_ids = fixed_ids
+            env.forest_ids[:actual_envs] = fixed_ids
+            env._update_cylinders_xy(torch.arange(actual_envs, device=cfg.device, dtype=torch.long))
+
+        # Tile the commanded-velocity grid so env slot i has the same target
+        # speed for every individual (linspace over S, repeated P times).
+        if P > 1:
+            vmin_cmd = float(env.command_cfg.get("min_speed", cfg.evaluation.vmin))
+            vmax_cmd = float(env.command_cfg.get("max_speed", cfg.evaluation.vmax))
+            per_ind_grid = torch.linspace(vmin_cmd, vmax_cmd, S, device=cfg.device, dtype=torch.float32)
+            env._eval_speed_grid = per_ind_grid.repeat(P)
+
         urdf_reward = np.zeros(P)
         urdf_progress = np.zeros(P)
         urdf_velocity = np.zeros(P)
@@ -469,11 +487,15 @@ if __name__ == "__main__":
 
     Usage
     -----
-    # Evaluate the best genome from a completed run (default forest length):
+    # Evaluate the best genome by fitness (default):
         python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run
 
     # Override forest length to 1200 m:
         python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run --x-upper 1200
+
+    # Use the best individual selected by crash_rate:
+        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run \\
+            --best crash_rate --x-upper 600
 
     # Point at an explicit genome file:
         python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run \\
@@ -485,7 +507,8 @@ if __name__ == "__main__":
             --genome-idx 0
 
     # Compare Hebbian vs. frozen baseline (zero rules):
-        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run --compare
+        python -m WP2.evaluate --run logs/runs_hebbian/2026-xx-xx_my_run --compare \\
+            --best crash_rate
     """
     import argparse
     import os
@@ -505,11 +528,20 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--genome", type=str, default=None,
-        help="Path to a .npy genome file.  Defaults to <run>/best/genome.npy.",
+        help="Path to a .npy genome file.  Defaults to <run>/best_individual/fitness/genome.npy.",
     )
     parser.add_argument(
         "--genome-idx", type=int, default=0,
         help="Row index to use when the .npy file contains multiple genomes (e.g. solutions.npy).",
+    )
+    parser.add_argument(
+        "--best", type=str, default=None,
+        help=(
+            "Name of the best-individual subfolder to evaluate "
+            "(e.g. crash_rate, fitness, progress).  "
+            "Must be a directory inside <run>/best_individual/.  "
+            "Ignored if --genome is set explicitly."
+        ),
     )
     parser.add_argument(
         "--x-upper", type=float, default=None,
@@ -549,7 +581,20 @@ if __name__ == "__main__":
     if not cfg_path.is_file():
         sys.exit(f"[ERROR] Config not found: {cfg_path}")
 
-    genome_path = Path(args.genome) if args.genome else run_dir / "best_individual" / "genome.npy"
+    if args.genome:
+        genome_path = Path(args.genome)
+    else:
+        best_individual_dir = run_dir / "best_individual"
+        best_name = args.best or "fitness"
+        best_subfolder = best_individual_dir / best_name
+        if not best_subfolder.is_dir():
+            available = sorted(p.name for p in best_individual_dir.iterdir() if p.is_dir()) if best_individual_dir.is_dir() else []
+            avail_str = ", ".join(available) if available else "(none found)"
+            sys.exit(
+                f"[ERROR] '{best_name}' is not a valid best_individual subfolder.\n"
+                f"        Available: {avail_str}"
+            )
+        genome_path = best_subfolder / "genome.npy"
     if not genome_path.is_file():
         sys.exit(f"[ERROR] Genome file not found: {genome_path}")
 

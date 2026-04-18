@@ -1194,22 +1194,250 @@ def pretty_print_stats(stats: Dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device) -> WingedDroneEnv:
+    """Build and reset a single-env WingedDroneEnv with the standard eval overrides."""
+    env_cfg_eval = dict(env_cfg)
+    env_cfg_eval.update(
+        dict(
+            visualize_camera=False,
+            visualize_target=False,
+            max_visualize_FPS=25,
+            unique_forests_eval=False,
+            growing_forest=True,
+            episode_length_s=SUCCESS_TIME_SEC,
+            x_upper=600,
+            forest_x_limit=600,
+            tree_radius=env_cfg.get("tree_radius", 0.75),
+            base_init_pos=env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0]),
+            aero_noise=False,
+            aero_noise_sigma0=0.0,
+            noise_sigma_param=0.0,
+        )
+    )
+    command_cfg["eval_speed"] = args.vtgt
+
+    obs_cfg_eval = dict(obs_cfg)
+
+    print("\nEnvironment Configuration (eval):")
+    print(env_cfg_eval)
+    print("\nObservation Configuration (eval):")
+    print(obs_cfg_eval)
+    print("\nReward Configuration:")
+    print(reward_cfg)
+    print("\nCommand Configuration:")
+    print(command_cfg)
+
+    env = WingedDroneEnv(
+        num_envs=1,
+        env_cfg=env_cfg_eval,
+        obs_cfg=obs_cfg_eval,
+        reward_cfg=reward_cfg,
+        command_cfg=command_cfg,
+        urdf_file=urdf_file,
+        show_viewer=args.visual,
+        eval=True,
+        device=str(device),
+    )
+    _disable_all_noise_except_obs(env)
+    env.reset()
+    return env
+
+
+def _render_all_videos(env: WingedDroneEnv, eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool) -> None:
+    """Render the full set of evaluation videos (top-down, depth, overlay, rewards)."""
+    topdown_mp4 = os.path.join(eval_log_dir, "eval_topdown.mp4")
+    print("\nRendering top-down video …")
+    create_topdown_video_multi(env, [traj], topdown_mp4)
+    print(f"✅ Top-down video saved to: {topdown_mp4}")
+
+    depth_video_path = None
+    if traj.get("depth_series") is not None:
+        depth_video_path = os.path.join(eval_log_dir, "depth_view.mp4")
+        print("Rendering depth video …")
+        create_depth_video(
+            depth_series=traj["depth_series"],
+            max_distance=traj.get("depth_max_distance", float(env.MAX_DISTANCE)),
+            save_path=depth_video_path,
+            fps=int(1.0 / env.dt),
+        )
+        print(f"✅ Depth video saved to: {depth_video_path}")
+    else:
+        print("No depth data recorded; skipping depth video.")
+
+    if cam_saved:
+        overlay_mp4 = os.path.join(eval_log_dir, "overlay.mp4")
+        if hasattr(env, "commands") and env.commands.shape[1] >= 3:
+            v_commanded = env.commands[0, 2].detach().cpu().item()
+        else:
+            v_commanded = env.commands[0, 0].detach().cpu().item()
+        print("Rendering camera + HUD overlay video …")
+        create_overlay_video(
+            cam_mp4=cam_mp4,
+            td_mp4=topdown_mp4,
+            traj=traj,
+            out_mp4=overlay_mp4,
+            v_commanded=v_commanded,
+            depth_mp4=depth_video_path,
+        )
+        print(f"✅ Overlay video saved to: {overlay_mp4}")
+
+        camera_rewards_mp4 = os.path.join(eval_log_dir, "camera_rewards.mp4")
+        print("Rendering camera + rewards video …")
+        create_camera_rewards_video(
+            cam_mp4=cam_mp4,
+            traj=traj,
+            out_mp4=camera_rewards_mp4,
+            dpi=240,
+        )
+        print(f"✅ Camera + rewards video saved to: {camera_rewards_mp4}")
+    else:
+        print("Camera recording was not enabled or not supported; skipping overlay/videos based on camera.")
+
+
+def _run_hebbian(args) -> None:
+    """Evaluate a Hebbian controller (WP2) with a given genome and render videos."""
+    from pathlib import Path
+
+    # Ensure src/ is importable for WP1/WP2 modules.
+    _src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    import sys
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+
+    from WP1.config import RunConfig
+    from WP2.config import HebbianEvolutionConfig
+    from WP2.frozen_actor import build_isolated_population_actor
+    from WP2.utils import decode_hebbian_genes
+
+    hebbian_run = Path(args.hebbian_run).resolve()
+    genome_path = Path(args.genome).resolve()
+
+    repro = hebbian_run / "reproducibility"
+    wp2_cfg_path = repro / "config.yaml"
+    wp1_cfg_path = repro / "wp1_config.yaml"
+    wp1_ckpt_path = repro / "wp1_actor.pt"
+
+    for p in (wp2_cfg_path, wp1_cfg_path, wp1_ckpt_path, genome_path):
+        if not p.is_file():
+            raise FileNotFoundError(f"Required file not found: {p}")
+
+    gs.init(logging_level="error", backend=gs.gpu)
+
+    cfg = HebbianEvolutionConfig.from_yaml(wp2_cfg_path)
+    # Repoint to the files saved inside the run's reproducibility folder
+    # (the original paths in config.yaml are the ones used at training time and
+    # may no longer exist or may be relative to a different working directory).
+    cfg.checkpoint_path = str(wp1_ckpt_path)
+    cfg.checkpoint_config_path = str(wp1_cfg_path)
+
+    # Infer last-layer dims from checkpoint (robust to config drift)
+    _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
+    _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
+    if "actor.4.weight" in _sd:
+        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
+        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    del _ckpt, _sd
+
+    # Build env from the WP1 config embedded with the run
+    wp1_cfg = RunConfig.from_yaml(cfg.checkpoint_config_path)
+    env_cfg = wp1_cfg.to_env_cfg()
+    obs_cfg = wp1_cfg.to_obs_cfg()
+    reward_cfg = wp1_cfg.to_reward_cfg()
+    command_cfg = wp1_cfg.to_command_cfg()
+    # Hebbian evaluation always strips morphology genome from actor/critic obs.
+    obs_cfg["add_genome_obs_actor"] = False
+    obs_cfg["add_genome_obs_critic"] = False
+
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    urdf_file = args.urdf if args.urdf is not None else str(default_mydrone_urdf_path())
+
+    env = _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device)
+
+    # Load and decode the genome
+    genome_arr = np.load(genome_path)
+    if genome_arr.ndim == 2:
+        genome = genome_arr[0]
+        print(f"[eval] Loaded genome row 0 from {genome_path.name} (shape {genome_arr.shape})")
+    else:
+        genome = genome_arr
+        print(f"[eval] Loaded genome from {genome_path.name} (dim={genome.size})")
+
+    hebb_part = list(np.clip(genome, 0.0, 1.0))
+    rules = decode_hebbian_genes(
+        hebb_part,
+        cfg.hebbian,
+        out_features=cfg.hebbian.num_actions,
+        in_features=cfg.hebbian.hidden_dim,
+    )
+
+    actor = build_isolated_population_actor(
+        checkpoint_path=cfg.checkpoint_path,
+        wp1_cfg_path=cfg.checkpoint_config_path,
+        hebbian_rules_per_individual=[rules],
+        cfg=cfg,
+        K=1,
+        S=1,
+        device=str(device),
+        stochastic=cfg.evaluation.stochastic,
+    )
+    actor.reset_episode(device=device)
+
+    policy = actor.act
+
+    # Output directory: <hebbian_run>/eval_<genome_stem>/
+    eval_log_dir = str(hebbian_run / f"eval_{genome_path.stem}")
+    os.makedirs(eval_log_dir, exist_ok=True)
+
+    print(
+        f"\n[eval] Hebbian controller | stochastic={cfg.evaluation.stochastic} | "
+        f"rules from {genome_path}"
+    )
+    print(f"[eval] Output directory: {eval_log_dir}")
+
+    print("\nRunning evaluation episode …")
+    cam_mp4 = os.path.join(eval_log_dir, "camera_view.mp4")
+    stats, traj, cam_saved = run_and_record(
+        env,
+        policy,
+        show_video=args.visual,
+        collect_video=True,
+        video_cam_path=cam_mp4,
+    )
+
+    print("Final reason:", traj["end_reason"])
+    pretty_print_stats(stats)
+
+    if traj is None:
+        print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
+        return
+
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved)
+    print("\nEvaluation complete.")
+
+
 def main() -> None:
+    # add_help=False frees `-h` to be used as the short flag for --hebbian-run.
     parser = argparse.ArgumentParser(
-        description="Evaluate a trained winged drone policy and generate videos."
+        description="Evaluate a trained winged drone policy and generate videos.",
+        add_help=False,
+    )
+    parser.add_argument(
+        "--help",
+        action="help",
+        help="Show this help message and exit.",
     )
     parser.add_argument(
         "-e",
         "--exp_name",
         type=str,
-        required=True,
-        help="Name of the experiment (training log directory under ./logs).",
+        default=None,
+        help="Name of the experiment (training log directory under ./logs). Required in PPO mode.",
     )
     parser.add_argument(
         "--ckpt",
         type=int,
-        required=True,
-        help="Checkpoint index to load (model_<ckpt>.pt).",
+        default=None,
+        help="Checkpoint index to load (model_<ckpt>.pt). Required in PPO mode.",
     )
     parser.add_argument(
         "--visual",
@@ -1237,7 +1465,35 @@ def main() -> None:
         default=None,
         help="Path to the drone URDF file. Defaults to default_mydrone_urdf_path().",
     )
+    parser.add_argument(
+        "-h",
+        "--hebbian-run",
+        dest="hebbian_run",
+        type=str,
+        default=None,
+        help=(
+            "Path to a WP2 (Hebbian) training directory, e.g. "
+            "logs/runs_hebbian/2026-04-18_13-07-20_.... "
+            "Enables Hebbian controller mode; requires --genome."
+        ),
+    )
+    parser.add_argument(
+        "--genome",
+        type=str,
+        default=None,
+        help="Path to the genome .npy file to evaluate in Hebbian mode.",
+    )
     args = parser.parse_args()
+
+    # Hebbian mode takes precedence if -h/--hebbian-run is set.
+    if args.hebbian_run is not None:
+        if not args.genome:
+            parser.error("--genome is required when -h/--hebbian-run is set.")
+        _run_hebbian(args)
+        return
+
+    if args.exp_name is None or args.ckpt is None:
+        parser.error("-e/--exp_name and --ckpt are required in PPO mode (or use -h for Hebbian mode).")
 
     # Initialize Genesis in high-performance mode (same backend as training)
     gs.init(logging_level="error", backend=gs.gpu)
@@ -1258,62 +1514,8 @@ def main() -> None:
 
     urdf_file = args.urdf if args.urdf is not None else str(default_mydrone_urdf_path())
 
-    # Build evaluation-specific environment config (do not modify original dict)
-    env_cfg_eval = dict(env_cfg)
-    rec_cam_follow_distance = float(env_cfg.get("rec_cam_follow_distance", 1.5))
-    env_cfg_eval.update(
-        dict(
-            # eval_visual exists to render videos, so keep rendering enabled here
-            # regardless of how the training config was saved.
-            enable_rendering=True,
-            visualize_camera=False,
-            visualize_target=False,
-            max_visualize_FPS=25,
-            unique_forests_eval=False,
-            growing_forest=True,
-            episode_length_s=SUCCESS_TIME_SEC,
-            x_upper=600,
-            forest_x_limit=600,
-            tree_radius=env_cfg.get("tree_radius", 0.75),
-            base_init_pos=env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0]),
-            rec_cam_follow_distance=max(0.5, rec_cam_follow_distance),
-            aero_noise=False,
-            aero_noise_sigma0=0.0,
-            noise_sigma_param=0.0,
-        )
-    )
-    if args.drone:
-        env_cfg_eval["drone"] = args.drone
-    env_cfg_eval = _apply_drone_profile_defaults(env_cfg_eval, urdf_file)
-    command_cfg["eval_speed"] = args.vtgt
-
-    obs_cfg_eval = dict(obs_cfg)
-
-    # Print configs for sanity check
-    print("\nEnvironment Configuration (eval):")
-    print(env_cfg_eval)
-    print("\nObservation Configuration (eval):")
-    print(obs_cfg_eval)
-    print("\nReward Configuration:")
-    print(reward_cfg)
-    print("\nCommand Configuration:")
-    print(command_cfg)
-
-    # Create evaluation environment (single environment)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    env = WingedDroneEnv(
-        num_envs=1,
-        env_cfg=env_cfg_eval,
-        obs_cfg=obs_cfg_eval,
-        reward_cfg=reward_cfg,
-        command_cfg=command_cfg,
-        urdf_file=urdf_file,
-        show_viewer=args.visual,
-        eval=True,
-        device=str(device),
-    )
-    _disable_all_noise_except_obs(env)
-    env.reset()
+    env = _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device)
 
     # Build runner and load policy
     runner_cfg = copy.deepcopy(train_cfg)
@@ -1346,69 +1548,7 @@ def main() -> None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    # Top-down trajectory video
-    topdown_mp4 = os.path.join(eval_log_dir, "eval_topdown.mp4")
-    print("\nRendering top-down video …")
-    create_topdown_video_multi(env, [traj], topdown_mp4)
-    print(f"✅ Top-down video saved to: {topdown_mp4}")
-
-    # Depth video (if depth data is available)
-    depth_video_path = None
-    if traj.get("depth_series") is not None:
-        depth_video_path = os.path.join(eval_log_dir, "depth_view.mp4")
-        print("Rendering depth video …")
-        create_depth_video(
-            depth_series=traj["depth_series"],
-            max_distance=traj.get("depth_max_distance", float(env.MAX_DISTANCE)),
-            save_path=depth_video_path,
-            fps=int(1.0 / env.dt),
-        )
-        print(f"✅ Depth video saved to: {depth_video_path}")
-    else:
-        print("No depth data recorded; skipping depth video.")
-
-    # Overlay video (camera + HUD)
-    if cam_saved:
-        left_column_mp4 = os.path.join(eval_log_dir, "left_column.mp4")
-        print("Rendering left-column video …")
-        create_left_column_video(
-            cam_mp4=cam_mp4,
-            td_mp4=topdown_mp4,
-            out_mp4=left_column_mp4,
-            depth_mp4=depth_video_path,
-        )
-        print(f"✅ Left-column video saved to: {left_column_mp4}")
-
-        overlay_mp4 = os.path.join(eval_log_dir, "overlay.mp4")
-        # Commanded speed: for compatibility, try commands[:,2], else [:,0]
-        if hasattr(env, "commands") and env.commands.shape[1] >= 3:
-            v_commanded = env.commands[0, 2].detach().cpu().item()
-        else:
-            v_commanded = env.commands[0, 0].detach().cpu().item()
-        print("Rendering camera + HUD overlay video …")
-        create_overlay_video(
-            cam_mp4=cam_mp4,
-            td_mp4=topdown_mp4,
-            traj=traj,
-            out_mp4=overlay_mp4,
-            v_commanded=v_commanded,
-            depth_mp4=depth_video_path,
-        )
-        print(f"✅ Overlay video saved to: {overlay_mp4}")
-
-        # Camera + rewards video
-        camera_rewards_mp4 = os.path.join(eval_log_dir, "camera_rewards.mp4")
-        print("Rendering camera + rewards video …")
-        create_camera_rewards_video(
-            cam_mp4=cam_mp4,
-            traj=traj,
-            out_mp4=camera_rewards_mp4,
-            dpi=240,
-        )
-        print(f"✅ Camera + rewards video saved to: {camera_rewards_mp4}")
-    else:
-        print("Camera recording was not enabled or not supported; skipping overlay/videos based on camera.")
-
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved)
     print("\nEvaluation complete.")
 
 

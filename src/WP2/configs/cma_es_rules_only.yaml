@@ -10,7 +10,7 @@
 #   python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml \
 #       --cfg.catalog.path logs/runs/2026-03-26_01-33-07_96_morph/catalog/catalog.txt
 
-exp_name: 0.075_sigma0
+exp_name: 0.075_sigma0_deterministic_forest
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -32,11 +32,11 @@ hebbian:
   eta_range: [0.0, 0.1]
 
 evolution:
-  num_generations: 100
+  num_generations: 50
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
-  sigma0: 0.075        # initial step size (genome in [0,1], so 0.3 = 30% of domain)
+  sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
   population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
@@ -52,6 +52,7 @@ evaluation:
   stochastic: true
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor each gen for comparison
   x_upper: 500         # override forest corridor length [m]; null = use WP1 config value
+  refresh_forests_per_generation: true  # regenerate forest layouts each generation
 
 seed: 1
 device: "cuda:0"
