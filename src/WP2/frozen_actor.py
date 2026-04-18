@@ -115,6 +115,8 @@ def load_frozen_actor(
     model, _wp1_cfg = _build_actor_critic(wp1_cfg_path, device, state_dict=state_dict)
     model.load_state_dict(state_dict, strict=False)
     model.to(device)
+    if hasattr(model, "memory_a"):
+        model.memory_a.rnn.flatten_parameters()
 
     for param in model.parameters():
         param.requires_grad = False

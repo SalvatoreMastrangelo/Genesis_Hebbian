@@ -72,7 +72,7 @@ def _init_csvs(pop_path: Path, summary_path: Path) -> None:
         writer = csv.writer(f)
         writer.writerow([
             "generation", "individual_idx",
-            "fitness", "velocity", "progress", "crash_rate",
+            "fitness", "velocity", "progress", "crash_rate", "cot", "v_deviation",
         ])
 
     with open(summary_path, "w", newline="") as f:
@@ -81,7 +81,7 @@ def _init_csvs(pop_path: Path, summary_path: Path) -> None:
             "generation", "pop_size",
             "best_fitness", "mean_fitness", "worst_fitness", "std_fitness",
             "sigma",
-            "mean_velocity", "mean_progress", "mean_crash_rate",
+            "mean_velocity", "mean_progress", "mean_crash_rate", "mean_cot", "mean_v_deviation",
         ])
 
 
@@ -91,7 +91,7 @@ def _init_baseline_csv(path: Path) -> None:
         writer = csv.writer(f)
         writer.writerow([
             "generation",
-            "fitness", "velocity", "progress", "crash_rate",
+            "fitness", "velocity", "progress", "crash_rate", "cot", "v_deviation",
         ])
 
 
@@ -108,6 +108,8 @@ def _append_baseline_csv(
             f"{baseline['velocity']:.6g}",
             f"{baseline['progress']:.6g}",
             f"{baseline['crash_rate']:.6g}",
+            f"{baseline.get('cot', float('nan')):.6g}",
+            f"{baseline.get('v_deviation', float('nan')):.6g}",
         ])
 
 
@@ -127,6 +129,8 @@ def _append_population_csv(
                 f"{metrics['velocities'][i]:.6g}",
                 f"{metrics['progresses'][i]:.6g}",
                 f"{metrics['crash_flags'][i]:.6g}",
+                f"{metrics['cots'][i]:.6g}",
+                f"{metrics['v_deviations'][i]:.6g}",
             ])
 
 
@@ -150,6 +154,8 @@ def _append_summary_csv(
             f"{metrics['velocities'].mean():.6g}",
             f"{metrics['progresses'].mean():.6g}",
             f"{metrics['crash_flags'].mean():.6g}",
+            f"{metrics['cots'].mean():.6g}",
+            f"{metrics['v_deviations'].mean():.6g}",
         ])
 
 
@@ -186,13 +192,15 @@ def _print_generation_table(
 
     # Metric rows: (display name, array, baseline_key)
     rows = [
-        ("Fitness (reward)", fitnesses, "fitness"),
-        ("Velocity [m/s]",   metrics["velocities"], "velocity"),
-        ("Progress [m]",     metrics["progresses"],  "progress"),
-        ("Crash Rate",       metrics["crash_flags"],  "crash_rate"),
+        ("Fitness (reward)", fitnesses,                "fitness"),
+        ("Velocity [m/s]",   metrics["velocities"],    "velocity"),
+        ("Vel. Dev. [m/s]",  metrics["v_deviations"],  "v_deviation"),
+        ("Progress [m]",     metrics["progresses"],    "progress"),
+        ("COT",              metrics["cots"],          "cot"),
+        ("Crash Rate",       metrics["crash_flags"],   "crash_rate"),
     ]
 
-    lower_is_better = {"Crash Rate"}
+    lower_is_better = {"Crash Rate", "COT", "Vel. Dev. [m/s]"}
 
     if baseline is not None:
         headers = [
@@ -411,16 +419,19 @@ class HebbianCMAES:
                 verbose=verbose,
             )
             result = {
-                "fitness":    float(fitnesses[0]),
-                "velocity":   float(metrics["velocities"][0]),
-                "progress":   float(metrics["progresses"][0]),
-                "crash_rate": float(metrics["crash_flags"][0]),
+                "fitness":     float(fitnesses[0]),
+                "velocity":    float(metrics["velocities"][0]),
+                "progress":    float(metrics["progresses"][0]),
+                "crash_rate":  float(metrics["crash_flags"][0]),
+                "cot":         float(metrics["cots"][0]),
+                "v_deviation": float(metrics["v_deviations"][0]),
             }
             if verbose:
                 print(
                     f"[HebbianCMAES] Baseline: fitness={result['fitness']:.4g}  "
                     f"vel={result['velocity']:.4g}  prog={result['progress']:.4g}  "
-                    f"crash={result['crash_rate']:.4g}"
+                    f"crash={result['crash_rate']:.4g}  cot={result['cot']:.4g}  "
+                    f"v_dev={result['v_deviation']:.4g} m/s"
                 )
             return result
         except Exception as exc:
@@ -702,6 +713,8 @@ class HebbianCMAES:
                     "velocities": fitnesses,
                     "progresses": fitnesses,
                     "crash_flags": fitnesses,
+                    "cots": fitnesses,
+                    "v_deviations": fitnesses,
                 }
 
             # CMA-ES minimises — negate fitness to maximise reward
