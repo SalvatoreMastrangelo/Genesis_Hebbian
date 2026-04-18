@@ -37,21 +37,16 @@ def _build_env(
     wp1_cfg,
     device: str,
     num_envs_override: Optional[int] = None,
+    base_init_pos: Optional[List[float]] = None,
 ):
     """Build a WingedDroneEnv using the WP1 default morphology."""
     from morph_evolution.chromosome_drone import Chromosome_Drone
-    from drone_making import UrdfMaker
     from winged_drone_train.env import WingedDroneEnv
     from winged_drone_train.noise_config import configure_solver_noise
-    from winged_drone_train.defaults import STANDARD_MYDRONE_GENOME
+    from winged_drone_train.defaults import STANDARD_MYDRONE_GENOME, default_mydrone_urdf_path
 
     phys = list(STANDARD_MYDRONE_GENOME)
-
-    urdf_dir = Path("logs") / ".cache" / "wp2_urdfs"
-    urdf_dir.mkdir(parents=True, exist_ok=True)
-    maker = UrdfMaker(phys, out_dir=str(urdf_dir))
-    urdf_path = maker.create_urdf()
-
+    urdf_path = str(default_mydrone_urdf_path())
     naca = Chromosome_Drone.naca_from_physical(phys) or "3416"
 
     env_cfg = wp1_cfg.to_env_cfg()
@@ -69,6 +64,8 @@ def _build_env(
     if cfg.evaluation.x_upper is not None:
         env_cfg["x_upper"] = cfg.evaluation.x_upper
         env_cfg["forest_x_limit"] = cfg.evaluation.x_upper
+    if base_init_pos is not None:
+        env_cfg["base_init_pos"] = list(base_init_pos)
 
     obs_cfg["add_genome_obs_actor"] = False
     obs_cfg["add_genome_obs_critic"] = False
@@ -111,6 +108,8 @@ def _rollout_episode_reward_sum(
     reward_sum = torch.zeros(B, device=dev)
     t_acc = torch.zeros(B, device=dev)
     dx_acc = torch.zeros(B, device=dev)
+    energy_acc = torch.zeros(B, device=dev)
+    v_dev_acc = torch.zeros(B, device=dev)
     crashed = torch.zeros(B, dtype=torch.bool, device=dev)
 
     actor.reset_episode(device=dev)
@@ -130,6 +129,8 @@ def _rollout_episode_reward_sum(
             reward_sum[alive] += env.last_reward_total[alive]
             t_acc[alive] += dt
             dx_acc[alive] = env.base_pos[alive, 0] - x0[alive]
+            energy_acc[alive] += env.power[alive] * dt
+            v_dev_acc[alive] += (env.base_lin_vel[alive, 0] - env.commands[alive, 0]).abs() * dt
 
         just_done = (~done) & term
         if just_done.any():
@@ -159,19 +160,30 @@ def _rollout_episode_reward_sum(
     reward_arr = reward_sum.cpu().numpy()
     t_arr = t_acc.cpu().numpy()
     dx_arr = dx_acc.cpu().numpy()
+    energy_arr = energy_acc.cpu().numpy()
+    v_dev_arr = v_dev_acc.cpu().numpy()
     crash_arr = crashed.float().cpu().numpy()
 
     reward_arr[nan_np] = 0.0
     dx_arr[nan_np] = 0.0
     t_arr[nan_np] = 0.0
+    energy_arr[nan_np] = 0.0
+    v_dev_arr[nan_np] = 0.0
 
     v_arr = np.where(t_arr > 1e-6, dx_arr / t_arr, 0.0)
+    v_dev_arr = np.where(t_arr > 1e-6, v_dev_arr / t_arr, 0.0)
+
+    # Cost of Transport = Energy / (mass * gravity * displacement)
+    mg = float(env.nominal_mass) * 9.81
+    cot_arr = np.where(dx_arr > 1e-6, energy_arr / (mg * dx_arr), 0.0)
 
     return {
         "reward_sum": reward_arr,
         "progresses": dx_arr,
         "velocities": v_arr,
         "crash_flags": crash_arr,
+        "cots": cot_arr,
+        "v_deviations": v_dev_arr,
     }
 
 
@@ -335,6 +347,8 @@ def evaluate_population_cma_batched(
     acc_progress = np.zeros(P)
     acc_velocity = np.zeros(P)
     acc_crash = np.zeros(P)
+    acc_cot = np.zeros(P)
+    acc_v_dev = np.zeros(P)
 
     env_was_reused = False
     env = None
@@ -380,6 +394,8 @@ def evaluate_population_cma_batched(
         urdf_progress = np.zeros(P)
         urdf_velocity = np.zeros(P)
         urdf_crash = np.zeros(P)
+        urdf_cot = np.zeros(P)
+        urdf_v_dev = np.zeros(P)
 
         try:
             for ep in range(n_episodes):
@@ -395,6 +411,10 @@ def evaluate_population_cma_batched(
                         urdf_velocity += per_ind
                     elif key == "crash_flags":
                         urdf_crash += per_ind
+                    elif key == "cots":
+                        urdf_cot += per_ind
+                    elif key == "v_deviations":
+                        urdf_v_dev += per_ind
 
         except Exception as exc:
             print(f"  [catalog {urdf_idx + 1}] rollout failed: {exc}")
@@ -406,11 +426,15 @@ def evaluate_population_cma_batched(
         urdf_progress /= n_episodes
         urdf_velocity /= n_episodes
         urdf_crash /= n_episodes
+        urdf_cot /= n_episodes
+        urdf_v_dev /= n_episodes
 
         acc_reward += urdf_reward
         acc_progress += urdf_progress
         acc_velocity += urdf_velocity
         acc_crash += urdf_crash
+        acc_cot += urdf_cot
+        acc_v_dev += urdf_v_dev
 
         if verbose:
             print(
@@ -422,12 +446,16 @@ def evaluate_population_cma_batched(
     acc_progress /= n_urdfs
     acc_velocity /= n_urdfs
     acc_crash /= n_urdfs
+    acc_cot /= n_urdfs
+    acc_v_dev /= n_urdfs
 
     metrics = {
         "reward_sums": acc_reward,
         "progresses": acc_progress,
         "velocities": acc_velocity,
         "crash_flags": acc_crash,
+        "cots": acc_cot,
+        "v_deviations": acc_v_dev,
     }
     return acc_reward, metrics
 
@@ -501,8 +529,13 @@ if __name__ == "__main__":
         help="Torch device override (e.g. cuda:0).",
     )
     parser.add_argument(
-        "--stochastic", action="store_true",
-        help="Sample from the policy distribution instead of using the mean.",
+        "--stochastic", action=argparse.BooleanOptionalAction, default=None,
+        help="Sample from the policy distribution (--stochastic) or use the mean "
+             "(--no-stochastic). Overrides evaluation.stochastic from the run config.",
+    )
+    parser.add_argument(
+        "--base-init-pos", type=float, nargs=3, metavar=("X", "Y", "Z"), default=None,
+        help="Override base_init_pos (drone spawn location). Example: --base-init-pos -50 0 10",
     )
     parser.add_argument(
         "--compare", action="store_true",
@@ -528,8 +561,8 @@ if __name__ == "__main__":
         cfg.device = args.device
     if args.num_envs:
         cfg.evaluation.num_eval_envs = args.num_envs
-    if args.stochastic:
-        cfg.evaluation.stochastic = True
+    if args.stochastic is not None:
+        cfg.evaluation.stochastic = args.stochastic
     cfg.catalog.num_episodes = args.episodes
 
     # Infer last-layer dims from checkpoint (same as run.py does)
@@ -576,7 +609,9 @@ if __name__ == "__main__":
     # Build a single env and reuse it across all evaluations so Genesis is
     # only initialised/destroyed once (existing_env bypasses gs.destroy inside
     # evaluate_population_cma_batched).
-    shared_env, urdf_path = _build_env(cfg, wp1_cfg, cfg.device)
+    shared_env, urdf_path = _build_env(
+        cfg, wp1_cfg, cfg.device, base_init_pos=args.base_init_pos
+    )
     existing_env = (shared_env, urdf_path)
 
     print(
@@ -599,6 +634,7 @@ if __name__ == "__main__":
     hebb_progress = metrics['progresses'][0]
     hebb_velocity = metrics['velocities'][0]
     hebb_crash    = metrics['crash_flags'][0]
+    hebb_cot      = metrics['cots'][0]
 
     print("\n" + "=" * 50)
     print("  [Hebbian]")
@@ -606,6 +642,7 @@ if __name__ == "__main__":
     print(f"  progress : {hebb_progress:.1f} m")
     print(f"  velocity : {hebb_velocity:.2f} m/s")
     print(f"  crash    : {hebb_crash * 100:.1f}%")
+    print(f"  cot      : {hebb_cot:.4f}")
     print("=" * 50)
 
     if args.compare:
@@ -652,20 +689,23 @@ if __name__ == "__main__":
         base_progress = base_metrics['progresses'][0]
         base_velocity = base_metrics['velocities'][0]
         base_crash    = base_metrics['crash_flags'][0]
+        base_cot      = base_metrics['cots'][0]
 
         d_reward   = hebb_reward   - base_reward
         d_progress = hebb_progress - base_progress
         d_velocity = hebb_velocity - base_velocity
         d_crash    = hebb_crash    - base_crash
+        d_cot      = hebb_cot      - base_cot
 
         w = 12
         print("\n" + "=" * 55)
-        print(f"  {'Metric':<12}  {'Baseline':>{w}}  {'Hebbian':>{w}}  {'Delta':>{w}}")
-        print("  " + "-" * 51)
-        print(f"  {'reward':<12}  {base_reward:>{w}.4f}  {hebb_reward:>{w}.4f}  {d_reward:>+{w}.4f}")
-        print(f"  {'progress (m)':<12}  {base_progress:>{w}.1f}  {hebb_progress:>{w}.1f}  {d_progress:>+{w}.1f}")
-        print(f"  {'velocity (m/s)':<12}  {base_velocity:>{w}.2f}  {hebb_velocity:>{w}.2f}  {d_velocity:>+{w}.2f}")
-        print(f"  {'crash (%)':<12}  {base_crash*100:>{w}.1f}  {hebb_crash*100:>{w}.1f}  {d_crash*100:>+{w}.1f}")
+        print(f"  {'Metric':<14}  {'Baseline':>{w}}  {'Hebbian':>{w}}  {'Delta':>{w}}")
+        print("  " + "-" * 53)
+        print(f"  {'reward':<14}  {base_reward:>{w}.4f}  {hebb_reward:>{w}.4f}  {d_reward:>+{w}.4f}")
+        print(f"  {'progress (m)':<14}  {base_progress:>{w}.1f}  {hebb_progress:>{w}.1f}  {d_progress:>+{w}.1f}")
+        print(f"  {'velocity (m/s)':<14}  {base_velocity:>{w}.2f}  {hebb_velocity:>{w}.2f}  {d_velocity:>+{w}.2f}")
+        print(f"  {'crash (%)':<14}  {base_crash*100:>{w}.1f}  {hebb_crash*100:>{w}.1f}  {d_crash*100:>+{w}.1f}")
+        print(f"  {'cot':<14}  {base_cot:>{w}.4f}  {hebb_cot:>{w}.4f}  {d_cot:>+{w}.4f}")
         print("=" * 55)
 
     gs.destroy()

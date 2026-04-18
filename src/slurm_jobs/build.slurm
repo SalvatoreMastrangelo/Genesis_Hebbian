@@ -2,7 +2,7 @@
 #SBATCH --job-name=genesis_build
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=1
+#SBATCH --gpus=0
 #SBATCH --cpus-per-task=16
 #SBATCH --time=00:20:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out

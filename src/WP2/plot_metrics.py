@@ -25,10 +25,12 @@ import pandas as pd
 
 # (csv_column, display_label, lower_is_better)
 _METRICS = [
-    ("fitness",    "Fitness (reward)", False),
-    ("velocity",   "Velocity [m/s]",   False),
-    ("progress",   "Progress [m]",     False),
-    ("crash_rate", "Crash Rate",       True),
+    ("fitness",     "Fitness (reward)",      False),
+    ("velocity",    "Velocity [m/s]",        False),
+    ("progress",    "Progress [m]",          False),
+    ("crash_rate",  "Crash Rate",            True),
+    ("cot",         "Cost of Transport",     True),
+    ("v_deviation", "Vel. Deviation [m/s]",  True),
 ]
 
 
@@ -50,7 +52,7 @@ def plot_metrics(run_dir: Path | str) -> None:
     plots_dir = run_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 7))
     fig.suptitle("Metrics Evolution — mean ± std", fontsize=13)
 
     mean_colour     = "#1f77b4"

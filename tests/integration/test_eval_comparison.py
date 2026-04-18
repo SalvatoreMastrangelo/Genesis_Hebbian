@@ -62,7 +62,14 @@ def _configure_cache_root() -> None:
     os.environ["MPLCONFIGDIR"] = str(mpl)
 
 
-def _build_env(wp1_config_path: str, urdf_path: str, num_envs: int, device: str):
+def _build_env(
+    wp1_config_path: str,
+    urdf_path: str,
+    num_envs: int,
+    device: str,
+    vmin: float | None = None,
+    vmax: float | None = None,
+):
     """Build a WingedDroneEnv with standard evaluation overrides."""
     from WP1.config import RunConfig
     from winged_drone_train.env import WingedDroneEnv
@@ -84,6 +91,11 @@ def _build_env(wp1_config_path: str, urdf_path: str, num_envs: int, device: str)
     ))
     obs_cfg["add_genome_obs_actor"] = False
     obs_cfg["add_genome_obs_critic"] = False
+
+    if vmin is not None:
+        command_cfg["min_speed"] = float(vmin)
+    if vmax is not None:
+        command_cfg["max_speed"] = float(vmax)
 
     env = WingedDroneEnv(
         num_envs=num_envs,
@@ -209,7 +221,14 @@ def run_comparison(args) -> int:
         gs.init(logging_level="error", backend=gs.gpu)
 
     print(f"[test] Building env  ({args.num_envs} envs, urdf={Path(args.urdf).name})")
-    env, _ = _build_env(args.wp1_config, args.urdf, args.num_envs, args.device)
+    env, _ = _build_env(
+        args.wp1_config,
+        args.urdf,
+        args.num_envs,
+        args.device,
+        vmin=args.vmin,
+        vmax=args.vmax,
+    )
 
     print(f"[test] Loading WP1 policy  ({Path(args.checkpoint).name})")
     wp1_policy, runner = _load_wp1_policy(args.checkpoint, args.wp1_config, env, args.device)
@@ -300,6 +319,10 @@ def main() -> int:
                     help="Base seed; episode i uses seed+i (default: 42)")
     ap.add_argument("--device",      default="cuda:0",
                     help="Torch/Genesis device (default: cuda:0)")
+    ap.add_argument("--vmin",        type=float, default=None,
+                    help="Override command min_speed (default: from WP1 config)")
+    ap.add_argument("--vmax",        type=float, default=None,
+                    help="Override command max_speed (default: from WP1 config)")
     return run_comparison(ap.parse_args())
 
 
