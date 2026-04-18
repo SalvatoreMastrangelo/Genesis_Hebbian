@@ -118,6 +118,7 @@ class EvaluationConfig:
     stochastic: bool = True
     run_baseline: bool = False
     x_upper: Optional[float] = None  # override WP1 forest corridor length [m]
+    refresh_forests_per_generation: bool = False
 
 
 @dataclass

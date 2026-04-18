@@ -516,6 +516,10 @@ class WingedDroneEnv:
             device=self.device,
             dtype=torch.long,
         )
+        # When set from outside (e.g. WP2 evaluation), reset_idx uses this
+        # tiled assignment instead of random, so all individuals see the same
+        # set of forests (env i of individual k always gets forest i).
+        self._fixed_forest_ids: Optional[torch.Tensor] = None
         self.cylinders_xy: Optional[torch.Tensor] = None
         if self.cylinders_array is not None:
             self.cylinders_xy = self.cylinders_array[self.forest_ids, :, :2]
@@ -1068,6 +1072,25 @@ class WingedDroneEnv:
             return
         self.cylinders_xy[env_ids] = self.cylinders_array[self.forest_ids[env_ids], :, :2]
 
+    def refresh_forests(self) -> None:
+        """Regenerate the full forest pool (new random tree positions).
+
+        Cylinders are pure tensor obstacles (no Genesis physics bodies), so a
+        refresh is just re-running the forest generator and reapplying the
+        per-env forest assignment.
+        """
+        if self._forest_generator is None or self.cylinders_array is None:
+            return
+        new_cylinders, _ = self._forest_generator.generate()
+        self.cylinders_array = new_cylinders
+        if self._fixed_forest_ids is not None:
+            self.forest_ids[:] = self._fixed_forest_ids
+        else:
+            self.forest_ids.random_(0, self.cylinders_array.shape[0])
+        all_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        self.cylinders_xy = self.cylinders_array[self.forest_ids, :, :2]
+        self._update_cylinders_xy(all_ids)
+
     def _nonfinite_row_mask(self, tensor: torch.Tensor) -> torch.Tensor:
         """
         Return a per-environment mask where at least one element is non-finite.
@@ -1416,9 +1439,12 @@ class WingedDroneEnv:
 
         # Resample command (target speed) and forest layout
         self._resample_commands(env_ids)
-        new_ids = self._randint_scratch[: env_ids.numel()]
-        new_ids.random_(0, self.cylinders_array.shape[0])
-        self.forest_ids[env_ids] = new_ids
+        if self._fixed_forest_ids is not None:
+            self.forest_ids[env_ids] = self._fixed_forest_ids[env_ids]
+        else:
+            new_ids = self._randint_scratch[: env_ids.numel()]
+            new_ids.random_(0, self.cylinders_array.shape[0])
+            self.forest_ids[env_ids] = new_ids
         self._update_cylinders_xy(env_ids)
 
         # Log episode statistics for finished episodes

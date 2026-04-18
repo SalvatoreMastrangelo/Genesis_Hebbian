@@ -320,6 +320,17 @@ class HebbianCMAES:
         self._run_start_time: Optional[float] = None
         self._gen_start_time: Optional[float] = None
 
+        # All-time best trackers: one entry per saved metric.
+        # Each value: {"genome": np.ndarray, "gen": int, "idx": int,
+        #              "fitness": float, <metric_key>: float}
+        self._best_trackers: Dict[str, Optional[dict]] = {
+            "fitness":            None,  # higher is better
+            "progress":           None,  # higher is better
+            "velocity_deviation": None,  # lower is better
+            "cost_of_transport":  None,  # lower is better
+            "crash_rate":         None,  # lower is better
+        }
+
     # ------------------------------------------------------------------
     #  Environment setup (rules-only only)
     # ------------------------------------------------------------------
@@ -522,6 +533,83 @@ class HebbianCMAES:
         )
 
     # ------------------------------------------------------------------
+    #  All-time best tracking
+    # ------------------------------------------------------------------
+
+    _METRIC_SPECS = {
+        # key in _best_trackers → (metrics_array_key, higher_is_better)
+        "fitness":            ("reward_sums",  True),
+        "progress":           ("progresses",   True),
+        "velocity_deviation": ("v_deviations", False),
+        "cost_of_transport":  ("cots",         False),
+        "crash_rate":         ("crash_flags",  False),
+    }
+
+    def _update_best_trackers(
+        self,
+        gen: int,
+        solutions: List[np.ndarray],
+        fitnesses: np.ndarray,
+        metrics: Dict[str, np.ndarray],
+    ) -> None:
+        """Update all-time best for each tracked metric after a generation."""
+        metric_arrays = dict(metrics)
+        metric_arrays["reward_sums"] = fitnesses
+
+        for tracker_key, (arr_key, higher_is_better) in self._METRIC_SPECS.items():
+            arr = metric_arrays[arr_key]
+            idx = int(np.argmax(arr) if higher_is_better else np.argmin(arr))
+            value = float(arr[idx])
+
+            prev = self._best_trackers[tracker_key]
+            is_better = (
+                prev is None
+                or (higher_is_better and value > prev["value"])
+                or (not higher_is_better and value < prev["value"])
+            )
+            if is_better:
+                self._best_trackers[tracker_key] = {
+                    "genome":             solutions[idx].copy(),
+                    "gen":                gen,
+                    "idx":                idx,
+                    "value":              value,
+                    # all metrics for this individual
+                    "fitness":            float(fitnesses[idx]),
+                    "progress":           float(metric_arrays["progresses"][idx]),
+                    "velocity_deviation": float(metric_arrays["v_deviations"][idx]),
+                    "cost_of_transport":  float(metric_arrays["cots"][idx]),
+                    "crash_rate":         float(metric_arrays["crash_flags"][idx]),
+                }
+
+    def _save_best_individual(
+        self,
+        subdir: Path,
+        genome: np.ndarray,
+        gen: int,
+        idx: int,
+        extra_fields: Dict,
+    ) -> None:
+        """Save genome.npy, hebbian_rules.yaml, and fitness.yaml to *subdir*."""
+        import yaml
+
+        subdir.mkdir(parents=True, exist_ok=True)
+        np.save(subdir / "genome.npy", genome)
+
+        rules = decode_hebbian_genes(
+            list(np.clip(genome, 0.0, 1.0)),
+            self.cfg.hebbian,
+            out_features=self.cfg.hebbian.num_actions,
+            in_features=self.cfg.hebbian.hidden_dim,
+        )
+        rules_dict = {k: v.cpu().numpy().tolist() for k, v in rules.items()}
+        with open(subdir / "hebbian_rules.yaml", "w") as f:
+            yaml.dump(rules_dict, f, sort_keys=False)
+
+        record = {"generation": gen, "individual_idx": idx, **extra_fields}
+        with open(subdir / "fitness.yaml", "w") as f:
+            yaml.dump(record, f, sort_keys=False)
+
+    # ------------------------------------------------------------------
     #  Finalisation
     # ------------------------------------------------------------------
 
@@ -531,35 +619,44 @@ class HebbianCMAES:
         solutions: List[np.ndarray],
         fitnesses: np.ndarray,
     ) -> None:
-        import yaml
-
-        best_idx = int(np.argmax(fitnesses))
-        best_genome = solutions[best_idx]
-        best_fitness = float(fitnesses[best_idx])
+        best_idx = int(np.argmax(fitnesses)) if len(fitnesses) else 0
+        best_fitness = float(fitnesses[best_idx]) if len(fitnesses) else 0.0
 
         print(f"\n[HebbianCMAES] Done. Best fitness: {best_fitness:.6g} "
               f"(individual {best_idx})")
         print(f"[HebbianCMAES] Results saved to: {self.run_dir}")
 
-        # Save best individual
+        # Save all-time best for each tracked metric
         best_dir = self.run_dir / "best_individual"
-        best_dir.mkdir(parents=True, exist_ok=True)
 
-        np.save(best_dir / "genome.npy", best_genome)
+        folder_names = {
+            "fitness":            "fitness",
+            "progress":           "progress",
+            "velocity_deviation": "velocity_deviation",
+            "cost_of_transport":  "cost_of_transport",
+            "crash_rate":         "crash_rate",
+        }
 
-        # Decode and save Hebbian rules
-        rules = decode_hebbian_genes(
-            list(np.clip(best_genome, 0.0, 1.0)),
-            self.cfg.hebbian,
-            out_features=self.cfg.hebbian.num_actions,
-            in_features=self.cfg.hebbian.hidden_dim,
-        )
-        rules_dict = {k: v.cpu().numpy().tolist() for k, v in rules.items()}
-        with open(best_dir / "hebbian_rules.yaml", "w") as f:
-            yaml.dump(rules_dict, f, sort_keys=False)
-
-        with open(best_dir / "fitness.yaml", "w") as f:
-            yaml.dump({"fitness": best_fitness, "individual_idx": best_idx}, f)
+        for tracker_key, folder_name in folder_names.items():
+            entry = self._best_trackers[tracker_key]
+            if entry is None:
+                continue
+            subdir = best_dir / folder_name
+            self._save_best_individual(
+                subdir,
+                entry["genome"],
+                entry["gen"],
+                entry["idx"],
+                {
+                    "fitness":            entry["fitness"],
+                    "progress":           entry["progress"],
+                    "velocity_deviation": entry["velocity_deviation"],
+                    "cost_of_transport":  entry["cost_of_transport"],
+                    "crash_rate":         entry["crash_rate"],
+                },
+            )
+            print(f"[HebbianCMAES] Best {tracker_key}: {entry['value']:.6g} "
+                  f"(gen {entry['gen']}, ind {entry['idx']}) → {subdir}")
 
         # Final CMA-ES state
         import pickle
@@ -687,6 +784,10 @@ class HebbianCMAES:
             # Sample new candidate solutions
             solutions = es.ask()   # list of np.ndarray, each shape (n_genes,)
 
+            # Optionally refresh forest layouts so each generation sees new trees.
+            if self.cfg.evaluation.refresh_forests_per_generation and self._env is not None:
+                self._env.refresh_forests()
+
             # Evaluate (returns scalar fitness per individual)
             try:
                 # Pass pre-built environment if available (rules-only)
@@ -725,6 +826,7 @@ class HebbianCMAES:
 
             # Bookkeeping
             self._after_generation(gen, solutions, fitnesses, metrics, es, baseline=baseline)
+            self._update_best_trackers(gen, solutions, fitnesses, metrics)
 
             last_solutions = solutions
             last_fitnesses = fitnesses
@@ -742,14 +844,17 @@ class HebbianCMAES:
         # Cleanup environment if it was pre-built
         self._cleanup_env()
 
-        if last_solutions is None or last_fitnesses is None:
-            # Edge case: stopped before completing gen 0
-            best_genome = np.full(self.n_genes, 0.5)
-            best_fitness = 0.0
-        else:
-            best_idx = int(np.argmax(last_fitnesses))
-            best_genome = last_solutions[best_idx]
+        fitness_entry = self._best_trackers["fitness"]
+        if fitness_entry is not None:
+            best_genome  = fitness_entry["genome"]
+            best_fitness = fitness_entry["fitness"]
+        elif last_fitnesses is not None:
+            best_idx     = int(np.argmax(last_fitnesses))
+            best_genome  = last_solutions[best_idx]
             best_fitness = float(last_fitnesses[best_idx])
+        else:
+            best_genome  = np.full(self.n_genes, 0.5)
+            best_fitness = 0.0
 
         self._finalize(
             es,
