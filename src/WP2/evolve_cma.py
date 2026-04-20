@@ -37,6 +37,7 @@ from tabulate import tabulate
 from WP2.config import HebbianEvolutionConfig
 from WP2.evaluate import (
     evaluate_population_cma_batched,
+    evaluate_population_multi_urdf,
     _load_catalog,
 )
 from WP2.utils import (
@@ -58,6 +59,41 @@ def _format_time(seconds: float) -> Tuple[int, int, int]:
     m = (total % 3600) // 60
     s = total % 60
     return h, m, s
+
+
+def _load_catalog_paths(catalog_path: str) -> List[str]:
+    """Load a ``catalog.txt`` into absolute URDF paths (one per line)."""
+    p = Path(catalog_path)
+    base = p.parent
+    entries: List[str] = []
+    with open(p, "r") as f:
+        for line in f:
+            name = line.strip()
+            if not name:
+                continue
+            entries.append(str((base / name).resolve()))
+    if not entries:
+        raise ValueError(f"Catalog {catalog_path} is empty")
+    return entries
+
+
+def _generate_random_urdfs(out_dir: Path, n: int, seed: int) -> List[str]:
+    """Sample ``n`` random URDFs using the same sampler as WP1 training.
+
+    The first URDF is the standard-mydrone baseline; the rest are drawn
+    uniformly in the normalized drone genome space via ``Chromosome_Drone``.
+    URDFs and a ``catalog.txt`` are written to ``out_dir`` for reproducibility.
+    """
+    from general_policy.catalog import build_catalog
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = build_catalog(
+        catalog_dir=out_dir,
+        n=n,
+        seed=seed,
+        include_standard_mydrone=True,
+    )
+    return [str(p) for p in paths]
 
 
 # ============================================================================
@@ -284,20 +320,7 @@ class HebbianCMAES:
             cfg.hebbian.num_actions, cfg.hebbian.hidden_dim,
         )
 
-        # Parse catalog (may be empty → single default URDF)
-        self._catalog: Optional[List[Tuple[str, str]]] = None
-        if cfg.catalog.path:
-            self._catalog = _load_catalog(cfg.catalog.path)
-            print(f"[HebbianCMAES] Catalog: {len(self._catalog)} URDFs "
-                  f"from {cfg.catalog.path}")
-        else:
-            print("[HebbianCMAES] No catalog — using default/fixed morphology URDF")
-
-        # For rules-only evolution: pre-build environment once (will be reused)
-        self._env = None
-        self._env_urdf_path = None
-
-        # Run directory
+        # Run directory (created early so URDF auto-generation can write here)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         folder_name = f"{stamp}_{cfg.exp_name}"
         self.run_dir = Path(cfg.base_dir) / folder_name
@@ -308,6 +331,41 @@ class HebbianCMAES:
         self.results_dir = self.run_dir / "results"
         for d in (self.repro_dir, self.gen_dir, self.results_dir):
             d.mkdir(parents=True, exist_ok=True)
+
+        # ------------------------------------------------------------------
+        #  Resolve URDFs and pick evaluation path
+        # ------------------------------------------------------------------
+        #
+        # The multi-URDF path runs ALL URDFs in a single Genesis scene via
+        # ``MultiSceneEvalEnv`` — one scene per URDF, reused across generations.
+        # The single-URDF legacy path is preserved byte-for-byte for N=1 runs
+        # without an explicit catalog (default/fixed morphology).
+        self._catalog: Optional[List[Tuple[str, str]]] = None
+        self._urdf_paths: Optional[List[str]] = None
+        self._use_multi_urdf: bool = False
+
+        if cfg.catalog.path:
+            self._urdf_paths = _load_catalog_paths(cfg.catalog.path)
+            self._use_multi_urdf = True
+            print(f"[HebbianCMAES] Catalog: {len(self._urdf_paths)} URDFs "
+                  f"from {cfg.catalog.path}  → multi-URDF path")
+        elif cfg.catalog.num_urdfs > 1 or cfg.catalog.force_multi_urdf:
+            n = max(1, cfg.catalog.num_urdfs)
+            gen_dir = self.run_dir / "urdfs"
+            print(f"[HebbianCMAES] No catalog — generating {n} random URDFs "
+                  f"into {gen_dir}")
+            self._urdf_paths = _generate_random_urdfs(gen_dir, n, cfg.seed)
+            self._use_multi_urdf = True
+            force_note = " (force_multi_urdf=True)" if (n == 1 and cfg.catalog.force_multi_urdf) else ""
+            print(f"[HebbianCMAES] Generated {len(self._urdf_paths)} URDFs "
+                  f"→ multi-URDF path{force_note}")
+        else:
+            print("[HebbianCMAES] No catalog — legacy single-URDF path "
+                  "(default/fixed morphology)")
+
+        # For rules-only evolution: pre-build environment once (will be reused)
+        self._env = None
+        self._env_urdf_path = None
 
         # CSV paths
         self.pop_csv_path = self.results_dir / "cma_population.csv"
@@ -338,17 +396,52 @@ class HebbianCMAES:
     def _build_env_once(self) -> None:
         """Build the environment once and keep it alive across generations.
 
-        When a catalog is used, the environment is built per-URDF inside
-        ``evaluate_population_cma_batched``.  For single-URDF evaluation,
-        we build it once here and reuse it every generation.
+        - **Multi-URDF path** (``self._use_multi_urdf``): build a
+          ``MultiSceneEvalEnv`` with N independent Genesis scenes (one
+          ``WingedDroneEnv`` per URDF, same pattern as WP1's ``Gen_Env``).
+          Sized so each drone gets ``(num_eval_envs // N) // H * H`` parallel
+          envs, where H is the CMA-ES population size (so every
+          (urdf, individual) pair gets the same integer number of forests).
+        - **Single-URDF legacy path**: build the WP1 default ``WingedDroneEnv``
+          with ``num_eval_envs`` envs.  Identical to the original behavior.
         """
-        if self._catalog is not None:
-            # Catalog case: will be handled per-generation by evaluate function
-            print("[HebbianCMAES] Using catalog — environment will be built per-generation")
+        import genesis as gs
+
+        if self._use_multi_urdf:
+            from WP2.evaluate import _build_multi_urdf_env
+
+            N = len(self._urdf_paths)
+            total = self.cfg.evaluation.num_eval_envs
+            # Population size for sizing: same formula the CMA-ES loop uses.
+            n_pop_cfg = self.cfg.cmaes.population_size
+            H = n_pop_cfg if n_pop_cfg > 0 else int(4 + 3 * np.log(self.n_genes))
+            # Round envs/drone so it's divisible by H (so F = envs/drone / H is integer).
+            F = max(1, (total // N) // H)
+            envs_per_drone = H * F
+            total_slots = N * envs_per_drone
+
+            print(f"[HebbianCMAES] Building MultiSceneEvalEnv: N={N} URDFs × "
+                  f"{envs_per_drone} envs/drone = {total_slots} slots "
+                  f"(H={H}, F={F} forests per (urdf, individual))...")
+            try:
+                if not gs._initialized:
+                    gs.init(logging_level="error", backend=gs.gpu)
+                self._env = _build_multi_urdf_env(
+                    urdf_paths=self._urdf_paths,
+                    cfg=self.cfg,
+                    wp1_cfg=self._wp1_cfg,
+                    device=self.cfg.device,
+                    num_envs_per_drone=envs_per_drone,
+                )
+                self._env_urdf_path = list(self._urdf_paths)
+                print(f"[HebbianCMAES] MultiSceneEvalEnv ready")
+            except Exception as exc:
+                print(f"[HebbianCMAES] Failed to build MultiSceneEvalEnv: {exc}")
+                self._env = None
+                self._env_urdf_path = None
             return
 
-        # Rules-only case: pre-build environment
-        import genesis as gs
+        # Legacy single-URDF path — unchanged.
         from WP2.evaluate import _build_env
 
         print("[HebbianCMAES] Building environment (rules-only, single URDF)...")
@@ -420,15 +513,26 @@ class HebbianCMAES:
         try:
             if verbose:
                 print("[HebbianCMAES] Evaluating baseline (zero-Hebbian, zero-decay)...")
-            fitnesses, metrics = evaluate_population_cma_batched(
-                [baseline_genome],
-                baseline_cfg,
-                self._model_and_layer,
-                self._wp1_cfg,
-                catalog=self._catalog,
-                existing_env=existing_env,
-                verbose=verbose,
-            )
+            if self._use_multi_urdf:
+                fitnesses, metrics = evaluate_population_multi_urdf(
+                    [baseline_genome],
+                    baseline_cfg,
+                    self._model_and_layer,
+                    self._wp1_cfg,
+                    urdf_paths=self._urdf_paths,
+                    existing_env=existing_env,
+                    verbose=verbose,
+                )
+            else:
+                fitnesses, metrics = evaluate_population_cma_batched(
+                    [baseline_genome],
+                    baseline_cfg,
+                    self._model_and_layer,
+                    self._wp1_cfg,
+                    catalog=self._catalog,
+                    existing_env=existing_env,
+                    verbose=verbose,
+                )
             result = {
                 "fitness":     float(fitnesses[0]),
                 "velocity":    float(metrics["velocities"][0]),
@@ -720,9 +824,10 @@ class HebbianCMAES:
         print(f"\n[HebbianCMAES] Run directory: {self.run_dir}")
         print(f"[HebbianCMAES] Genome dim: {self.n_genes} (Hebbian rules only)")
         print(f"[HebbianCMAES] Generations: {self.cfg.evolution.num_generations}")
-        print(f"[HebbianCMAES] Catalog URDFs: "
-              f"{len(self._catalog) if self._catalog else 1} "
-              f"({'catalog' if self._catalog else 'default'})")
+        if self._use_multi_urdf:
+            print(f"[HebbianCMAES] URDFs: {len(self._urdf_paths)} (multi-URDF path)")
+        else:
+            print(f"[HebbianCMAES] URDFs: 1 (single-URDF legacy path)")
         n_pop_cfg = self.cfg.cmaes.population_size
         expected_pop = (
             n_pop_cfg if n_pop_cfg > 0
@@ -796,15 +901,26 @@ class HebbianCMAES:
                     if self._env is not None
                     else None
                 )
-                fitnesses, metrics = evaluate_population_cma_batched(
-                    solutions,
-                    self.cfg,
-                    self._model_and_layer,
-                    self._wp1_cfg,
-                    catalog=self._catalog,
-                    existing_env=existing_env,
-                    verbose=verbose,
-                )
+                if self._use_multi_urdf:
+                    fitnesses, metrics = evaluate_population_multi_urdf(
+                        solutions,
+                        self.cfg,
+                        self._model_and_layer,
+                        self._wp1_cfg,
+                        urdf_paths=self._urdf_paths,
+                        existing_env=existing_env,
+                        verbose=verbose,
+                    )
+                else:
+                    fitnesses, metrics = evaluate_population_cma_batched(
+                        solutions,
+                        self.cfg,
+                        self._model_and_layer,
+                        self._wp1_cfg,
+                        catalog=self._catalog,
+                        existing_env=existing_env,
+                        verbose=verbose,
+                    )
             except Exception as exc:
                 print(f"[HebbianCMAES] Evaluation failed at gen {gen}: {exc}")
                 # Tell CMA-ES that all solutions have zero fitness (don't crash run)

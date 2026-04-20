@@ -316,6 +316,12 @@ class MultiDroneEnv:
         else:
             self.cylinders_xy = None
 
+        # Optional eval-time overrides. When set (shape (E,)), ``_reset_drone_idx``
+        # uses them instead of random sampling so every rollout sees a deterministic
+        # forest/velocity assignment — required for fair cross-individual comparison.
+        self._fixed_forest_ids: Optional[torch.Tensor] = None
+        self._eval_speed_grid: Optional[torch.Tensor] = None
+
         # Depth solver (shared across all drones)
         y_lower = float(env_cfg.get("y_lower", -50.0))
         y_upper = float(env_cfg.get("y_upper", 50.0))
@@ -538,7 +544,7 @@ class MultiDroneEnv:
                 genome_vec=ds._genome_vec,
                 genome_min=genome_min if ds._genome_vec is not None else None,
                 genome_max=genome_max if ds._genome_vec is not None else None,
-                num_servos=self.num_servos,
+                num_servos=ds.num_servos,
                 include_depth=True,
                 device=self.device,
             )
@@ -751,6 +757,27 @@ class MultiDroneEnv:
             return self.obs_buf, {}
 
     # ================================================================== #
+    #  Forest regeneration (eval-time helper)                             #
+    # ================================================================== #
+
+    def refresh_forests(self) -> None:
+        """Regenerate the shared forest pool with new random tree positions.
+
+        Cylinders are pure tensor obstacles (no Genesis physics bodies), so a
+        refresh is just re-running the forest generator and re-applying the
+        per-env forest assignment.  Mirrors ``WingedDroneEnv.refresh_forests``.
+        """
+        if self._forest_generator is None or self.cylinders_array is None:
+            return
+        new_cylinders, _ = self._forest_generator.generate()
+        self.cylinders_array = new_cylinders
+        if self._fixed_forest_ids is not None:
+            self.forest_ids[:] = self._fixed_forest_ids
+        else:
+            self.forest_ids.random_(0, self.cylinders_array.shape[0])
+        self.cylinders_xy = self.cylinders_array[self.forest_ids, :, :2]
+
+    # ================================================================== #
     #  State extraction                                                   #
     # ================================================================== #
 
@@ -877,6 +904,9 @@ class MultiDroneEnv:
             last_actions=la,
             commands=ds.commands,
             depth_actor=depth,
+            joint_positions=ds.joint_position,
+            joint_velocities=ds.joint_velocity,
+            base_ang_vel=ds.base_ang_vel,
         )
         self.obs_buf[drone_idx] = obs_actor
         ds.priv_obs_buf[:] = obs_critic
@@ -1062,14 +1092,22 @@ class MultiDroneEnv:
             return
         n = env_ids.numel()
 
-        # Resample command (target forward speed)
-        ds.commands[env_ids, 0] = torch.empty(n, device=self.device).uniform_(
-            self.vmin, self.vmax
-        )
+        # Resample command (target forward speed). When an eval speed grid is set
+        # the reset copies the deterministic per-slot value instead of uniform-random.
+        if self._eval_speed_grid is not None:
+            ds.commands[env_ids, 0] = self._eval_speed_grid[env_ids]
+        else:
+            ds.commands[env_ids, 0] = torch.empty(n, device=self.device).uniform_(
+                self.vmin, self.vmax
+            )
 
-        # Resample forest layout (matches WingedDroneEnv behavior)
+        # Resample forest layout (matches WingedDroneEnv behavior). When a fixed
+        # per-slot assignment is set, restore it instead of drawing a new random one.
         if self.cylinders_array is not None:
-            new_ids = torch.randint(0, self.total_forests, (n,), device=self.device, dtype=torch.long)
+            if self._fixed_forest_ids is not None:
+                new_ids = self._fixed_forest_ids[env_ids]
+            else:
+                new_ids = torch.randint(0, self.total_forests, (n,), device=self.device, dtype=torch.long)
             self.forest_ids[env_ids] = new_ids
             self.cylinders_xy = self.cylinders_array[self.forest_ids, :, :2]
 
@@ -1155,6 +1193,13 @@ class MultiDroneEnv:
         # Reset per-drone actuator dynamics (latency buffer)
         ds.actuator.reset_envs(env_ids)
 
+        # Sanitize aero solver persistent state for these envs. Without this,
+        # crashed drones leave NaN in _thr_flt (Taichi low-pass filter) and
+        # output buffers; once seeded, the NaN self-propagates (NaN + α(raw-NaN)
+        # = NaN), so on the first step after reset the kernel emits NaN thrust
+        # → NaN physics → reset_buf immediately True and the rollout exits.
+        self._sanitize_aero_state(ds, env_ids)
+
         # Reset bookkeeping
         ds.last_actions[env_ids] = 0.0
         ds.prev_actions[env_ids] = 0.0
@@ -1170,6 +1215,43 @@ class MultiDroneEnv:
         ds.pre_angle_limit[env_ids] = False
         ds.pre_success[env_ids] = False
         ds.pre_nan[env_ids] = False
+
+    def _sanitize_aero_state(self, ds: _DroneState, env_ids: torch.Tensor) -> None:
+        """Clear the aero solver's persistent state at the given env indices.
+
+        Torch output buffers are zeroed in-place. Taichi scalar fields
+        (``_thr_raw``, ``_thr_flt``, ``v_ind``, ``prop_*_b``) persist across
+        rollouts and will retain NaN/stale values from crashed drones unless
+        explicitly cleared here — once one env holds NaN in any of them, the
+        next ``scene.step`` propagates it to every env in the shared batch.
+        """
+        solver = getattr(ds, "aero_solver", None)
+        if solver is None:
+            return
+
+        for name in (
+            "_thrust_n_buf", "_prop_rpm_buf", "_prop_axial_speed_buf",
+            "_thr_flt_buf", "_max_thrust_buf", "_thr_buf",
+            "_force_buf", "_cp_buf", "_tq_buf",
+            "_alpha_dbg0_buf", "_beta_dbg0_buf",
+        ):
+            t = getattr(solver, name, None)
+            if torch.is_tensor(t) and t.shape[0] == self.E:
+                t[env_ids] = 0.0
+
+        for name in (
+            "_thr_raw", "_thr_flt", "v_ind",
+            "prop_thrust_b", "prop_rpm_b", "prop_axial_speed_b",
+        ):
+            fld = getattr(solver, name, None)
+            if fld is None or not hasattr(fld, "to_torch"):
+                continue
+            cur = fld.to_torch(device=self.device)
+            if cur.shape[0] != self.E:
+                continue
+            cur[env_ids] = 0.0
+            torch.nan_to_num_(cur, nan=0.0, posinf=0.0, neginf=0.0)
+            fld.from_torch(cur)
 
     # ================================================================== #
     #  Follow-camera                                                      #

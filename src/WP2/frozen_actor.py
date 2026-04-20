@@ -269,6 +269,7 @@ class IsolatedPopulationActor:
             self._num_layers, N, self._hidden_size, device=dev, dtype=torch.float32
         )
         self.hebbian.reset_weights()
+        self._rnn.flatten_parameters()
 
     def reset_individual(self, k: int, device: str | torch.device = "cpu") -> None:
         """Zero the LSTM states for individual ``k``'s S slots and reset their weights."""

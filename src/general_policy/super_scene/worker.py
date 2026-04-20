@@ -190,7 +190,8 @@ def worker_main(
         configure_solver_noise(env, env_cfg)
         gen_env_build_elapsed = time.perf_counter() - gen_env_build_start
 
-        initial_reset_start = time.perf_counter()
+        torch.no_grad().__enter__()
+
         obs, info = env.reset()
         critic = info.get("observations", {}).get("critic")
         if critic is None:
