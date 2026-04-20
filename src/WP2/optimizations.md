@@ -107,9 +107,6 @@ runtime — revert before moving on.
 ### OPT-A1 · `WingedDroneEnv` auto-resets inside every `step()` during eval
 **File:** `winged_drone_train/env.py:1374-1382`
 **Estimated impact:** 20–40% rollout time on multi-URDF path (biggest single win)
-**Status: DONE 2026-04-20.** Added `auto_reset=True` kwarg to
-`WingedDroneEnv.__init__`; `step()` skips the reset block when `False`.
-`MultiSceneEvalEnv` constructs sub-envs with `auto_reset=False`.
 
 `WingedDroneEnv.step()` always auto-resets crashed envs inline:
 

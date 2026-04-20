@@ -308,7 +308,6 @@ class WingedDroneEnv:
         show_viewer: bool = False,
         eval: bool = False,
         device: str = "cuda",
-        auto_reset: bool = True,
     ) -> None:
         self.aero_solver_kind = str(env_cfg.get("aero_solver_kind", "simple")).strip().lower()
         # ------------------------------------------------------------------ #
@@ -317,7 +316,6 @@ class WingedDroneEnv:
         self.device = torch.device(device)
         self.num_envs = int(num_envs)
         self.evaluation = bool(eval)
-        self.auto_reset = bool(auto_reset)
 
         # Only ONE command: target forward speed along +X (m/s)
         self.num_commands = 1
@@ -1373,15 +1371,14 @@ class WingedDroneEnv:
             # Render one frame for the recording camera.
             self.rec_cam.render()
 
-        if self.auto_reset:
-            reset_env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
-            self.reset_idx(reset_env_ids)
-            if reset_env_ids.numel() > 0:
-                # Match the next observation to the freshly reset state so PPO
-                # stores coherent transitions across episode boundaries.
-                self.depth[reset_env_ids] = self.MAX_DISTANCE
-                self._rebuild_observations()
-                self.extras["observations"]["critic"] = self.privileged_obs_buf
+        reset_env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+        self.reset_idx(reset_env_ids)
+        if reset_env_ids.numel() > 0:
+            # Match the next observation to the freshly reset state so PPO
+            # stores coherent transitions across episode boundaries.
+            self.depth[reset_env_ids] = self.MAX_DISTANCE
+            self._rebuild_observations()
+            self.extras["observations"]["critic"] = self.privileged_obs_buf
 
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
 

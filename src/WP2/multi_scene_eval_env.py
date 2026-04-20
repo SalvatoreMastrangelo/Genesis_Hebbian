@@ -89,7 +89,6 @@ class MultiSceneEvalEnv:
                 show_viewer=False,
                 eval=True,
                 device=device,
-                auto_reset=False,
             )
             configure_solver_noise(sub, sub_env_cfg)
             self.drones.append(sub)
