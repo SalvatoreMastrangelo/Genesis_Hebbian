@@ -10,16 +10,16 @@
 #   python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml \
 #       --cfg.catalog.path logs/runs/2026-03-26_01-33-07_96_morph/catalog/catalog.txt
 
-exp_name: 0.075_sigma0_deterministic_forest
+exp_name: 0.075_sigma0_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.001
+  eta: 0.005
   evolve_eta: false
-  decay: 0.001
+  decay: 0.05
   evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: true

@@ -352,6 +352,12 @@ def create_overlay_video(
     dpi: int = 240,
     depth_mp4: Optional[str] = None,
 ) -> None:
+    # Hebbian-only extra: optional per-step delta of the last-layer weights
+    # (W_current - W_checkpoint), shape (T, num_actions, hidden_dim). If
+    # present, a full-width heatmap is rendered at the bottom of the figure
+    # with a fixed diverging scale centered at 0.
+    weight_delta = traj.get("hebbian_weight_delta_history", None)
+    has_heatmap = weight_delta is not None and weight_delta.size > 0
     """
     Create a composite video with:
       - Left column: camera view, depth squares, top-down render.
@@ -367,7 +373,7 @@ def create_overlay_video(
         depth_mp4: optional path to depth video; if None, depth panel is blank.
     """
     import cv2
-    from matplotlib.gridspec import GridSpec
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
     # Video sources
     cap_cam = cv2.VideoCapture(cam_mp4)
@@ -397,16 +403,28 @@ def create_overlay_video(
     beta_deg = traj.get("beta_deg", None)
     vel_commanded = np.full_like(t_all, v_commanded, dtype=np.float32)
 
-    # Layout: 7 rows x 3 columns (left: videos, right: plots)
-    fig = plt.figure(figsize=(16, 9), dpi=dpi)
-    gs = GridSpec(
-        nrows=7,
-        ncols=3,
-        width_ratios=[1.8, 0.06, 1.0],
-        height_ratios=[1.3, 1.3, 1.3, 1.0, 1.0, 0.7, 0.2],
-        wspace=0.08,
-        hspace=0.30,
-    )
+    # Layout: left column = videos, right column = plots; optional full-width
+    # heatmap row appended at the bottom for Hebbian runs.
+    fig_h = 9 if not has_heatmap else 11
+    fig = plt.figure(figsize=(16, fig_h), dpi=dpi)
+    if has_heatmap:
+        gs = GridSpec(
+            nrows=8,
+            ncols=3,
+            width_ratios=[1.8, 0.06, 1.0],
+            height_ratios=[1.3, 1.3, 1.3, 1.0, 1.0, 0.7, 0.2, 1.6],
+            wspace=0.08,
+            hspace=0.30,
+        )
+    else:
+        gs = GridSpec(
+            nrows=7,
+            ncols=3,
+            width_ratios=[1.8, 0.06, 1.0],
+            height_ratios=[1.3, 1.3, 1.3, 1.0, 1.0, 0.7, 0.2],
+            wspace=0.08,
+            hspace=0.30,
+        )
 
     # Left column: camera / depth / top-down
     ax_cam = fig.add_subplot(gs[0:3, 0])
@@ -462,6 +480,47 @@ def create_overlay_video(
 
     for ax in ts_axes:
         ax.legend(fontsize=9, frameon=False, loc="upper right", ncol=2)
+
+    # Optional Hebbian weight-delta heatmap (full width, bottom row)
+    im_heatmap = None
+    vmax_hm = 0.0
+    if has_heatmap:
+        vmax_hm = float(np.abs(weight_delta).max())
+        if vmax_hm <= 0.0:
+            vmax_hm = 1e-8  # avoid zero range; keeps colormap well-defined
+        gs_hm = GridSpecFromSubplotSpec(
+            1, 2, subplot_spec=gs[7, :], width_ratios=[1.0, 0.015], wspace=0.02
+        )
+        ax_heatmap = fig.add_subplot(gs_hm[0, 0])
+        ax_cbar = fig.add_subplot(gs_hm[0, 1])
+        num_actions, hidden_dim = weight_delta.shape[1], weight_delta.shape[2]
+        im_heatmap = ax_heatmap.imshow(
+            weight_delta[0],
+            aspect="auto",
+            cmap="seismic",
+            vmin=-vmax_hm,
+            vmax=vmax_hm,
+            interpolation="nearest",
+        )
+        ax_heatmap.set_xlabel("Head neuron")
+        ax_heatmap.set_ylabel("Actuator")
+        actuator_names = [
+            "throttle",
+            "sweep_L",
+            "sweep_R",
+            "twist_L",
+            "twist_R",
+            "elevator",
+            "rudder",
+        ]
+        if num_actions == len(actuator_names):
+            ax_heatmap.set_yticks(range(num_actions))
+            ax_heatmap.set_yticklabels(actuator_names, fontsize=8)
+        ax_heatmap.set_title(
+            f"Hebbian last-layer ΔW (max |ΔW| = {vmax_hm:.4f})",
+            fontsize=10,
+        )
+        fig.colorbar(im_heatmap, cax=ax_cbar)
 
     # First frames
     okC, frm_cam = cap_cam.read()
@@ -520,6 +579,10 @@ def create_overlay_video(
 
             for ax in ts_axes:
                 ax.set_xlim(0, max(t_all[idx], 1e-6))
+
+            if im_heatmap is not None:
+                hm_idx = min(idx, weight_delta.shape[0] - 1)
+                im_heatmap.set_data(weight_delta[hm_idx])
 
             writer.grab_frame()
 
@@ -664,7 +727,8 @@ def run_and_record(env,
                    show_video: bool = False,
                    collect_video: bool = False,
                    video_cam_path: str = "camera_view.mp4",
-                   debug_aero: bool = True):
+                   debug_aero: bool = True,
+                   hebbian_actor=None):
     """
     Roll out ONE evaluation episode (usually with num_envs = 1) and:
     - collect trajectory data (positions, velocities, joints, depth)
@@ -706,6 +770,11 @@ def run_and_record(env,
         reward_comp_b = []
         reward_names = None
         depth_b = []              # depth sectors at each time step
+        # Hebbian-only: per-step delta of last-layer weights vs frozen checkpoint
+        log_hebb_weights = hebbian_actor is not None and hasattr(hebbian_actor, "hebbian")
+        weight_delta_b: List[np.ndarray] = []
+        if log_hebb_weights:
+            W_ckpt_np = hebbian_actor.hebbian.W_checkpoint.detach().cpu().numpy().astype(np.float32)
 
     # Camera video (if available and requested)
     if collect_video and getattr(env, "rec_cam", None) is not None and B == 1:
@@ -766,6 +835,10 @@ def run_and_record(env,
         # --------------------------------------------------------------
         with torch.no_grad():
             act = policy(obs)
+        # Capture post-update Hebbian weights (delta vs frozen checkpoint).
+        if B == 1 and log_hebb_weights:
+            W_now = hebbian_actor.hebbian.W[0].detach().cpu().numpy().astype(np.float32)
+            weight_delta_b.append(W_now - W_ckpt_np)
         obs, _, term, _ = env.step(act)
         step_idx += 1
 
@@ -934,6 +1007,9 @@ def run_and_record(env,
                 np.vstack(depth_b).astype(np.float32) if len(depth_b) > 0 else None
             ),
             depth_max_distance=float(getattr(env, "MAX_DISTANCE", 30.0)),
+            hebbian_weight_delta_history=(
+                np.stack(weight_delta_b, axis=0) if log_hebb_weights and len(weight_delta_b) > 0 else None
+            ),
         )
         return stats, traj, cam_recording
 
@@ -1065,6 +1141,23 @@ def _render_all_videos(env: WingedDroneEnv, eval_log_dir: str, cam_mp4: str, tra
         print("Camera recording was not enabled or not supported; skipping overlay/videos based on camera.")
 
 
+def _resolve_urdf(args) -> str:
+    """Return the URDF path to use, generating a random one if --random-urdf is set."""
+    if args.random_urdf:
+        import tempfile
+        from pathlib import Path as _Path
+        from drone_making import UrdfMaker
+        from morph_evolution.chromosome_drone import Chromosome_Drone
+        norm_genome = np.random.uniform(0.0, 1.0, size=15).tolist()
+        phys_genome = Chromosome_Drone.to_physical(norm_genome)
+        urdf_dir = _Path(tempfile.mkdtemp(prefix="eval_random_urdf_"))
+        urdf_path = _Path(UrdfMaker(phys_genome, out_dir=str(urdf_dir)).create_urdf()).resolve()
+        print(f"[eval] Random morphology genome: {[f'{v:.3f}' for v in norm_genome]}")
+        print(f"[eval] Generated random URDF: {urdf_path}")
+        return str(urdf_path)
+    return args.urdf if args.urdf is not None else str(default_mydrone_urdf_path())
+
+
 def _run_hebbian(args) -> None:
     """Evaluate a Hebbian controller (WP2) with a given genome and render videos."""
     from pathlib import Path
@@ -1120,7 +1213,7 @@ def _run_hebbian(args) -> None:
     obs_cfg["add_genome_obs_critic"] = False
 
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    urdf_file = args.urdf if args.urdf is not None else str(default_mydrone_urdf_path())
+    urdf_file = _resolve_urdf(args)
 
     env = _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device)
 
@@ -1173,6 +1266,7 @@ def _run_hebbian(args) -> None:
         show_video=args.visual,
         collect_video=True,
         video_cam_path=cam_mp4,
+        hebbian_actor=actor,
     )
 
     print("Final reason:", traj["end_reason"])
@@ -1237,6 +1331,11 @@ def main() -> None:
         help="Path to the drone URDF file. Defaults to default_mydrone_urdf_path().",
     )
     parser.add_argument(
+        "--random-urdf",
+        action="store_true",
+        help="Sample a random morphology genome and generate a fresh URDF for this evaluation.",
+    )
+    parser.add_argument(
         "-h",
         "--hebbian-run",
         dest="hebbian_run",
@@ -1283,7 +1382,7 @@ def main() -> None:
     with open(cfg_path, "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
-    urdf_file = args.urdf if args.urdf is not None else str(default_mydrone_urdf_path())
+    urdf_file = _resolve_urdf(args)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     env = _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device)
