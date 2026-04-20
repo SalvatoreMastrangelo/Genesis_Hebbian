@@ -479,6 +479,389 @@ def evaluate_population_cma_batched(
 
 
 # ============================================================================
+#  Multi-URDF evaluation (single Genesis scene with N different URDFs)
+# ============================================================================
+
+def _build_multi_urdf_env(
+    urdf_paths: List[str],
+    cfg: HebbianEvolutionConfig,
+    wp1_cfg,
+    device: str,
+    num_envs_per_drone: int,
+):
+    """Build a ``MultiSceneEvalEnv`` — one Genesis scene per URDF.
+
+    We mirror ``WP1.train``'s ``Gen_Env`` pattern: each URDF gets its own
+    ``WingedDroneEnv`` (its own rigid solver, aero Taichi state, and
+    contact/constraint buffers).  The legacy single-scene multi-URDF env
+    shared Taichi state across D URDFs, which caused NaN from one URDF's
+    crashed physics to contaminate every env on the next reset → we avoid
+    that failure mode entirely by isolating the scenes.
+
+    The WP1 config is translated through ``to_legacy_cfgs()`` — exactly the
+    same pipeline ``WP1.train`` uses — and then patched with the same
+    eval-time overrides as the legacy single-URDF path (episode length,
+    optional ``x_upper``, disabled genome obs).
+    """
+    from WP2.multi_scene_eval_env import MultiSceneEvalEnv
+
+    env_cfg, obs_cfg, reward_cfg, command_cfg, _ = wp1_cfg.to_legacy_cfgs()
+
+    env_cfg = dict(env_cfg)
+    env_cfg["episode_length_s"] = 200.0  # 5000 steps at 25 Hz, matches legacy eval
+    if cfg.evaluation.x_upper is not None:
+        env_cfg["x_upper"] = float(cfg.evaluation.x_upper)
+        env_cfg["forest_x_limit"] = float(cfg.evaluation.x_upper)
+
+    obs_cfg = dict(obs_cfg)
+    obs_cfg["add_genome_obs_actor"] = False
+    obs_cfg["add_genome_obs_critic"] = False
+
+    command_cfg = dict(command_cfg)
+    command_cfg["min_speed"] = cfg.evaluation.vmin
+    command_cfg["max_speed"] = cfg.evaluation.vmax
+
+    return MultiSceneEvalEnv(
+        urdf_paths=urdf_paths,
+        num_envs_per_drone=num_envs_per_drone,
+        env_cfg=env_cfg,
+        obs_cfg=obs_cfg,
+        reward_cfg=reward_cfg,
+        command_cfg=command_cfg,
+        device=device,
+    )
+
+
+@torch.no_grad()
+def _rollout_episode_multi_urdf(
+    env,
+    actor,
+    device: str,
+    P: int,
+    F: int,
+    verbose: bool = False,
+) -> Dict[str, np.ndarray]:
+    """One rollout across a ``MultiSceneEvalEnv`` holding D URDFs in D scenes.
+
+    Layout
+    ------
+    - Env slot ``e`` within drone ``d`` encodes ``(individual p, forest f)``
+      via ``e = p*F + f``.  The per-slot forest-ids and target speeds are
+      broadcast to every sub-env so each (drone, individual) pair sees the
+      same F forests and F target speeds.
+    - The actor expects a flat ``(P*D*F, obs_dim)`` batch with individual
+      as the OUTER index (``slot = p*D*F + d*F + f``) so its per-controller
+      forward batches are contiguous.  We achieve this with a
+      ``(D, P, F, obs_dim) → (P, D, F, obs_dim)`` permute before ``act()``
+      and the inverse after.
+
+    Returns per-individual metric arrays of shape ``(P,)``.
+    """
+    D = env.D
+    E = env.E
+    if P * F != E:
+        raise ValueError(
+            f"_rollout_episode_multi_urdf: P*F ({P}*{F}={P*F}) must equal "
+            f"env.E ({E})"
+        )
+
+    dt = env.dt
+    dev = torch.device(device)
+
+    # Per-(drone, env) accumulators — reduced to per-individual at episode end.
+    done = torch.zeros(D, E, dtype=torch.bool, device=dev)
+    reward_sum = torch.zeros(D, E, device=dev)
+    t_acc = torch.zeros(D, E, device=dev)
+    dx_acc = torch.zeros(D, E, device=dev)
+    energy_acc = torch.zeros(D, E, device=dev)
+    v_dev_acc = torch.zeros(D, E, device=dev)
+    crashed = torch.zeros(D, E, dtype=torch.bool, device=dev)
+    nan_tracker = torch.zeros(D, E, dtype=torch.bool, device=dev)
+
+    actor.reset_episode(device=dev)
+    obs, _ = env.reset()  # (D, E, obs_dim)
+    # Starting x position per (drone, env)
+    x0 = torch.stack([ds.base_pos[:, 0].clone() for ds in env.drones], dim=0)  # (D, E)
+
+    step = 0
+    while not done.all():
+        # (D, E, obs) → (P, D, F, obs) → (P*D*F, obs)
+        obs_pdf = obs.view(D, P, F, -1).permute(1, 0, 2, 3).contiguous()
+        actor_obs = obs_pdf.view(P * D * F, -1)
+
+        actor_act = actor.act(actor_obs)  # (P*D*F, num_actions)
+        act_pdf = actor_act.view(P, D, F, -1).permute(1, 0, 2, 3).contiguous()
+        actions = act_pdf.view(D, E, -1)
+
+        obs, _, _, _ = env.step(actions)  # (D, E, obs), ...
+
+        # ``WingedDroneEnv.step`` has already populated ``ds.last_reward_total``
+        # and termination flags for every sub-env; the shim call below is a
+        # no-op kept for backward compatibility with the legacy single-scene
+        # rollout.
+        for d, ds in enumerate(env.drones):
+            env._compute_rewards_drone(d, ds)
+
+            nan_d = ds.nan_envs.to(torch.bool)
+            term_d = ds.reset_buf.clone()  # this step's termination flag (set in _check_termination)
+            alive_d = (~done[d]) & (~term_d) & (~nan_d)
+
+            if alive_d.any():
+                reward_sum[d, alive_d] += ds.last_reward_total[alive_d]
+                t_acc[d, alive_d] += dt
+                dx_acc[d, alive_d] = ds.base_pos[alive_d, 0] - x0[d, alive_d]
+                energy_acc[d, alive_d] += ds.power[alive_d] * dt
+                v_dev_acc[d, alive_d] += (
+                    ds.base_lin_vel[alive_d, 0] - ds.commands[alive_d, 0]
+                ).abs() * dt
+
+            just_done = (~done[d]) & term_d
+            if just_done.any():
+                for attr in ("pre_collision", "pre_wall_crash", "pre_angle_limit"):
+                    flag = getattr(ds, attr, None)
+                    if flag is not None:
+                        crashed[d] |= just_done & flag.to(torch.bool)
+
+            nan_tracker[d] |= nan_d & ~done[d]
+            done[d] |= term_d | nan_d
+
+        step += 1
+
+        if verbose and step % 50 == 0:
+            n_alive = int((~done).sum().item())
+            mean_dx = float(dx_acc.mean().item())
+            max_dx = float(dx_acc.max().item())
+            mean_r = float(reward_sum.mean().item())
+            print(
+                f"  step {step:5d} | alive {n_alive:5d}/{D * E}"
+                f" | progress mean {mean_dx:7.1f} m  max {max_dx:7.1f} m"
+                f" | reward mean {mean_r:8.2f}",
+                flush=True,
+            )
+
+    # Zero contributions from NaN slots, then reduce to per-individual metrics.
+    valid = ~nan_tracker  # (D, E)
+    reward_sum = reward_sum * valid
+    t_acc = t_acc * valid
+    dx_acc = dx_acc * valid
+    energy_acc = energy_acc * valid
+    v_dev_acc = v_dev_acc * valid
+
+    # (D, E=P*F) → (D, P, F) → mean over (D, F) → (P,)
+    def _per_ind(metric: torch.Tensor) -> torch.Tensor:
+        return metric.view(D, P, F).float().mean(dim=(0, 2))
+
+    reward_per_ind = _per_ind(reward_sum)
+    t_per_ind = _per_ind(t_acc)
+    dx_per_ind = _per_ind(dx_acc)
+    energy_per_ind = _per_ind(energy_acc)
+    v_dev_per_ind = _per_ind(v_dev_acc)
+    crash_per_ind = _per_ind(crashed)
+
+    # Scalar arrays on CPU
+    reward_arr = reward_per_ind.cpu().numpy()
+    t_arr = t_per_ind.cpu().numpy()
+    dx_arr = dx_per_ind.cpu().numpy()
+    energy_arr = energy_per_ind.cpu().numpy()
+    v_dev_arr = v_dev_per_ind.cpu().numpy()
+    crash_arr = crash_per_ind.cpu().numpy()
+
+    v_arr = np.where(t_arr > 1e-6, dx_arr / t_arr, 0.0)
+    v_dev_arr = np.where(t_arr > 1e-6, v_dev_arr / t_arr, 0.0)
+
+    # COT averaged across drones (per drone different nominal mass). Compute per-slot
+    # then reduce to per-individual to get the right weighting.
+    mg_per_drone = torch.tensor(
+        [float(ds.nominal_mass) * 9.81 for ds in env.drones],
+        device=dev, dtype=torch.float32,
+    ).view(D, 1)  # (D, 1)
+    cot_slot = torch.where(
+        dx_acc > 1e-6,
+        energy_acc / (mg_per_drone * dx_acc.clamp(min=1e-6)),
+        torch.zeros_like(dx_acc),
+    )
+    cot_arr = _per_ind(cot_slot).cpu().numpy()
+
+    return {
+        "reward_sum": reward_arr,
+        "progresses": dx_arr,
+        "velocities": v_arr,
+        "crash_flags": crash_arr,
+        "cots": cot_arr,
+        "v_deviations": v_dev_arr,
+    }
+
+
+def evaluate_population_multi_urdf(
+    solutions: List[np.ndarray],
+    cfg: HebbianEvolutionConfig,
+    model_and_layer: Tuple,
+    wp1_cfg,
+    urdf_paths: List[str],
+    existing_env=None,
+    verbose: bool = False,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """Evaluate a CMA-ES population over a single multi-URDF Genesis scene.
+
+    Sibling of ``evaluate_population_cma_batched`` that supports N≥1 URDFs in
+    one scene. The legacy path is left completely unchanged; this function is
+    dispatched to by ``HebbianCMAES`` when a catalog (or auto-generated URDFs)
+    is active, or when ``cfg.catalog.force_multi_urdf`` is set.
+
+    Parameters
+    ----------
+    solutions : list[np.ndarray]
+        CMA-ES genomes in [0,1]^n (P = len(solutions) individuals).
+    cfg : HebbianEvolutionConfig
+    model_and_layer : tuple
+        ``(model, last_layer, num_actions, hidden_dim)``.
+    wp1_cfg : RunConfig
+    urdf_paths : list[str]
+        The N URDF files held simultaneously in the Genesis scene.
+    existing_env : tuple (env, urdf_paths) or None
+        Pre-built MultiSceneEvalEnv to reuse (built once by the caller).
+    """
+    import genesis as gs
+
+    P = len(solutions)
+    N = len(urdf_paths)
+    if P == 0 or N == 0:
+        raise ValueError(
+            f"evaluate_population_multi_urdf: need P≥1 and N≥1 "
+            f"(got P={P}, N={N})"
+        )
+
+    # Determine layout. When an existing env is reusable, derive from it so
+    # every call (main eval with P=H and baseline with P=1) maps cleanly to
+    # the same scene without rebuilds. Otherwise compute from num_eval_envs.
+    existing_ok = False
+    if existing_env is not None:
+        env_obj, _paths = existing_env
+        if env_obj is not None and env_obj.D == N:
+            existing_ok = True
+
+    if existing_ok:
+        envs_per_drone = existing_env[0].E
+        F = envs_per_drone // P
+        if F == 0:
+            raise ValueError(
+                f"Existing env has {envs_per_drone} envs/drone, too small for "
+                f"P={P} individuals. Grow num_eval_envs or reduce population."
+            )
+        if F * P != envs_per_drone:
+            raise ValueError(
+                f"Existing env has {envs_per_drone} envs/drone which is not "
+                f"divisible by P={P} (F*P={F*P}). Pre-build the env with a "
+                f"size that is a common multiple of all P values you evaluate."
+            )
+    else:
+        total_envs = cfg.evaluation.num_eval_envs
+        F = (total_envs // N) // P
+        if F == 0:
+            raise ValueError(
+                f"num_eval_envs ({total_envs}) too small: need at least "
+                f"N*P = {N}*{P} = {N * P} envs so each (urdf, individual) "
+                f"pair gets at least 1 forest."
+            )
+        envs_per_drone = P * F
+    actual_total = N * envs_per_drone
+
+    if verbose:
+        print(
+            f"[evaluate_population_multi_urdf] P={P} individuals, N={N} URDFs, "
+            f"F={F} forests/(urdf,ind), envs/drone={envs_per_drone}, "
+            f"total_slots={actual_total}"
+        )
+
+    na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
+
+    hebbian_rules_per_individual: List[Dict[str, torch.Tensor]] = []
+    for genome in solutions:
+        hebb_part = list(np.clip(genome, 0.0, 1.0))
+        rules = decode_hebbian_genes(hebb_part, cfg.hebbian, out_features=na, in_features=hd)
+        hebbian_rules_per_individual.append(rules)
+
+    # Build / reuse env
+    env = None
+    env_was_built_here = False
+    if existing_ok and existing_env[0].E == envs_per_drone:
+        env = existing_env[0]
+    if env is None:
+        if not gs._initialized:
+            gs.init(logging_level="error", backend=gs.gpu)
+        env = _build_multi_urdf_env(
+            urdf_paths=urdf_paths,
+            cfg=cfg,
+            wp1_cfg=wp1_cfg,
+            device=cfg.device,
+            num_envs_per_drone=envs_per_drone,
+        )
+        env_was_built_here = True
+
+    # Deterministic forest + velocity grid, shared across all D drones. Each
+    # individual's block of F contiguous env slots sees forests [0..F-1] and
+    # speeds linspace(vmin, vmax, F), so (urdf, individual) comparisons are fair.
+    # Propagated to every sub-env by ``MultiSceneEvalEnv``'s setter; sub-env
+    # reset_idx then copies the shared per-slot ids into its own forest_ids
+    # and updates cylinders_xy accordingly.
+    fixed_ids = torch.arange(F, device=cfg.device, dtype=torch.long).repeat(P)  # (E,)
+    v_grid = torch.linspace(
+        float(cfg.evaluation.vmin), float(cfg.evaluation.vmax), F,
+        device=cfg.device, dtype=torch.float32,
+    ).repeat(P)  # (E,)
+    env._fixed_forest_ids = fixed_ids
+    env._eval_speed_grid = v_grid
+
+    # Actor: K=P individuals, S=N*F env slots per individual.
+    actor = build_isolated_population_actor(
+        checkpoint_path=cfg.checkpoint_path,
+        wp1_cfg_path=cfg.checkpoint_config_path,
+        hebbian_rules_per_individual=hebbian_rules_per_individual,
+        cfg=cfg,
+        K=P,
+        S=N * F,
+        device=cfg.device,
+        stochastic=cfg.evaluation.stochastic,
+    )
+
+    n_episodes = cfg.catalog.num_episodes
+
+    acc = {
+        "reward_sums":  np.zeros(P),
+        "progresses":   np.zeros(P),
+        "velocities":   np.zeros(P),
+        "crash_flags":  np.zeros(P),
+        "cots":         np.zeros(P),
+        "v_deviations": np.zeros(P),
+    }
+
+    try:
+        for _ep in range(n_episodes):
+            ep_metrics = _rollout_episode_multi_urdf(
+                env, actor, cfg.device, P=P, F=F, verbose=verbose,
+            )
+            acc["reward_sums"]  += ep_metrics["reward_sum"]
+            acc["progresses"]   += ep_metrics["progresses"]
+            acc["velocities"]   += ep_metrics["velocities"]
+            acc["crash_flags"]  += ep_metrics["crash_flags"]
+            acc["cots"]         += ep_metrics["cots"]
+            acc["v_deviations"] += ep_metrics["v_deviations"]
+    finally:
+        # Only tear down if we built it in this call.  Otherwise the caller owns
+        # the env lifecycle (and will reuse it across generations).
+        if env_was_built_here:
+            try:
+                gs.destroy()
+            except Exception:
+                pass
+
+    for k in acc:
+        acc[k] /= n_episodes
+
+    return acc["reward_sums"], acc
+
+
+# ============================================================================
 #  Standalone driver
 # ============================================================================
 

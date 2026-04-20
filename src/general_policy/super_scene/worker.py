@@ -120,6 +120,8 @@ def worker_main(
         )
         configure_solver_noise(env, env_cfg)
 
+        torch.no_grad().__enter__()
+
         obs, info = env.reset()
         critic = info.get("observations", {}).get("critic")
         if critic is None:

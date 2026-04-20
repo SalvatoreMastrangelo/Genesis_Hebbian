@@ -153,20 +153,38 @@ class CMAESConfig:
 class CatalogConfig:
     """Optional multi-URDF catalog for robustness evaluation.
 
-    When ``path`` points to a catalog file (one URDF filename per line),
-    each CMA-ES candidate is evaluated against *all* catalog URDFs and the
-    fitness is averaged.  Empty string → single default URDF.
+    Two ways to drive multi-URDF evaluation:
+    1. ``path`` points to an existing ``catalog.txt`` (one URDF filename per
+       line). The number of URDFs is inferred from the file.
+    2. ``path`` is empty and ``num_urdfs > 1``: a catalog of that many random
+       URDFs is auto-generated at run start (same sampler as WP1 training).
+
+    When the effective number of URDFs is > 1, evaluation runs in the new
+    multi-URDF path that builds a single Genesis scene holding all N URDFs
+    as separate entities. When it is 1, the legacy single-URDF path is used
+    unchanged (unless ``force_multi_urdf=True``, which routes a 1-URDF run
+    through the multi-URDF path for verification).
 
     Attributes
     ----------
     path : str
-        Path to a ``catalog.txt`` file.  Empty disables multi-URDF evaluation.
+        Path to a ``catalog.txt`` file.  Empty triggers auto-generation when
+        ``num_urdfs > 1`` or ``force_multi_urdf=True``.
+    num_urdfs : int
+        Size of the auto-generated catalog when ``path`` is empty.  Ignored
+        when ``path`` is set.
     num_episodes : int
         Rollout episodes per URDF per individual.
+    force_multi_urdf : bool
+        Verification flag. When True, use the multi-URDF evaluation path
+        even with a single URDF (useful for confirming parity with the
+        legacy single-URDF path).
     """
 
     path: str = ""
+    num_urdfs: int = 1
     num_episodes: int = 1
+    force_multi_urdf: bool = False
 
 
 # ============================================================================

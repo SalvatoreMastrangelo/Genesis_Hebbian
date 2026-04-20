@@ -1,16 +1,25 @@
-# CMA-ES Hebbian rules evolution
-# ================================
+# CMA-ES Hebbian rules evolution — multi-URDF
+# ============================================
 # Evolves per-weight ABCD Hebbian rules against the WP1 scalar reward sum.
-# Morphology is always fixed (WP1 default drone).
+# Every generation evaluates each individual across `num_urdfs` morphologies,
+# each URDF held in its own Genesis scene (WingedDroneEnv) — mirrors WP1
+# training's Gen_Env construction so scenes are isolated (no cross-URDF
+# Taichi state contamination).
 #
 # Usage:
-#   python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml
+#   PYTHONPATH=src python src/WP2/run.py --cfg src/WP2/configs/cma_es_rules_only.yaml \
+#       --cfg.checkpoint_path logs/runs/<RUN>/tb/model_1999.pt \
+#       --cfg.checkpoint_config_path logs/runs/<RUN>/config.yaml
 #
-# To evaluate across a catalog of URDFs (for robustness):
-#   python -m WP2.run --cfg src/WP2/configs/cma_es_rules_only.yaml \
-#       --cfg.catalog.path logs/runs/2026-03-26_01-33-07_96_morph/catalog/catalog.txt
+# Slot layout with N URDFs, H individuals, F forests per (URDF, individual):
+#   num_eval_envs is TOTAL across all URDFs and individuals.  F is auto-rounded
+#   down so  N * H * F <= num_eval_envs  (every pair gets the same F forests
+#   and the same F commanded speeds, so comparisons are fair).
+#
+# To reuse an existing catalog instead of auto-generating new URDFs:
+#   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: 0.075_sigma0_0.005_0.05
+exp_name: multi_drone_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -42,11 +51,14 @@ cmaes:
   tol_fun: 0.0         # 0 = never stop on fitness spread
 
 catalog:
-  path: ""             # empty = use default/fixed morphology only
-  num_episodes: 1      # rollout episodes per URDF per individual
+  path: ""             # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
+  num_urdfs: 1         # N: number of URDFs, each in its own Genesis scene
+  num_episodes: 1      # rollout episodes per generation
+  force_multi_urdf: false  # route N=1 through the multi-URDF path (for verification)
 
 evaluation:
-  num_eval_envs: 12800 # total envs per URDF; divided among population
+  num_eval_envs: 8192 # TOTAL slots across all URDFs and all individuals
+                       # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
   vmin: 10.0
   vmax: 20.0
   stochastic: true
