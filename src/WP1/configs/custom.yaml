@@ -5,7 +5,7 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: extra_observations_critic_multi_shard_4  # Name of the experiment for logging/tracking
+exp_name: single_new  # Name of the experiment for logging/tracking
 
 ##############################################################################
 # PPO (Proximal Policy Optimization) hyperparameters
@@ -45,7 +45,7 @@ policy:
 ##############################################################################
 training:
   num_envs: 16384                           # Number of parallel environments for data collection
-  max_iterations: 850                        # Maximum training iterations
+  max_iterations: 2000                      # Maximum training iterations
   num_steps_per_env: 25                     # Timesteps collected per environment per iteration (experience = num_envs × num_steps)
   save_interval: 50                         # Save checkpoint every N iterations
   eval_interval: 200                        # Run full evaluation every N iterations
@@ -156,7 +156,7 @@ command:
 # Multi-drone URDF catalog (for multi-agent training)
 ##############################################################################
 catalog:
-  n_urdf: 64                                # Number of different drone morphologies in catalog
+  n_urdf: 1                                 # Number of different drone morphologies in catalog
   catalog_dir: null                         # Directory containing custom URDF files (null = use default)
   urdf_seed: 20                             # Seed for reproducible URDF generation
 
@@ -164,7 +164,7 @@ catalog:
 # Logical Super-Scene (LSS) configuration (WP2.5 multi-scene training)
 ##############################################################################
 lss:
-  enabled: true                             # Enable logical super-scene training
+  enabled: false                            # Enable logical super-scene training
   urdf_shard_size: 16                       # Batch size for URDF processing
   num_workers: 0                            # Number of worker processes for scene collection
   collection_gpus: 1                        # Number of GPUs for multi-scene collection
