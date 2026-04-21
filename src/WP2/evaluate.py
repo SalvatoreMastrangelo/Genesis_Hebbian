@@ -105,8 +105,21 @@ def _rollout_episode_reward_sum(
     dt = env.dt
     dev = torch.device(device)
 
+    raw_names = list(getattr(env, "reward_names", []))
+    reward_scales = getattr(env, "reward_scales", {}) or {}
+    active_idx = [
+        i for i, n in enumerate(raw_names)
+        if float(reward_scales.get(n, 0.0)) != 0.0
+    ]
+    reward_names = [raw_names[i] for i in active_idx]
+    n_comp = len(reward_names)
+    active_idx_t = (
+        torch.tensor(active_idx, device=dev, dtype=torch.long) if n_comp else None
+    )
+
     done = torch.zeros(B, dtype=torch.bool, device=dev)
     reward_sum = torch.zeros(B, device=dev)
+    reward_comp_sum = torch.zeros(B, n_comp, device=dev) if n_comp else None
     t_acc = torch.zeros(B, device=dev)
     dx_acc = torch.zeros(B, device=dev)
     energy_acc = torch.zeros(B, device=dev)
@@ -128,6 +141,8 @@ def _rollout_episode_reward_sum(
 
         if alive.any():
             reward_sum[alive] += env.last_reward_total[alive]
+            if reward_comp_sum is not None:
+                reward_comp_sum[alive] += env.last_reward_components[alive][:, active_idx_t]
             t_acc[alive] += dt
             dx_acc[alive] = env.base_pos[alive, 0] - x0[alive]
             energy_acc[alive] += env.power[alive] * dt
@@ -171,6 +186,12 @@ def _rollout_episode_reward_sum(
     energy_arr[nan_np] = 0.0
     v_dev_arr[nan_np] = 0.0
 
+    if reward_comp_sum is not None:
+        comp_arr = reward_comp_sum.cpu().numpy()
+        comp_arr[nan_np] = 0.0
+    else:
+        comp_arr = np.zeros((B, 0), dtype=np.float32)
+
     v_arr = np.where(t_arr > 1e-6, dx_arr / t_arr, 0.0)
     v_dev_arr = np.where(t_arr > 1e-6, v_dev_arr / t_arr, 0.0)
 
@@ -180,6 +201,8 @@ def _rollout_episode_reward_sum(
 
     return {
         "reward_sum": reward_arr,
+        "reward_components": comp_arr,
+        "reward_names": reward_names,
         "progresses": dx_arr,
         "velocities": v_arr,
         "crash_flags": crash_arr,
@@ -351,6 +374,8 @@ def evaluate_population_cma_batched(
     acc_crash = np.zeros(P)
     acc_cot = np.zeros(P)
     acc_v_dev = np.zeros(P)
+    acc_components = None
+    reward_names: List[str] = []
 
     env_was_reused = False
     env = None
@@ -414,12 +439,26 @@ def evaluate_population_cma_batched(
         urdf_crash = np.zeros(P)
         urdf_cot = np.zeros(P)
         urdf_v_dev = np.zeros(P)
+        urdf_components = None
 
         try:
             for ep in range(n_episodes):
                 ep_metrics = _rollout_episode_reward_sum(env, actor, cfg.device, verbose=verbose)
 
-                for key, flat_arr in ep_metrics.items():
+                ep_names = ep_metrics.get("reward_names", [])
+                if ep_names and not reward_names:
+                    reward_names = list(ep_names)
+
+                ep_comp = ep_metrics.get("reward_components")
+                if ep_comp is not None and ep_comp.size:
+                    per_ind_comp = ep_comp.reshape(P, S, -1).mean(axis=1)
+                    if urdf_components is None:
+                        urdf_components = np.zeros_like(per_ind_comp)
+                    urdf_components += per_ind_comp
+
+                for key in ("reward_sum", "progresses", "velocities",
+                            "crash_flags", "cots", "v_deviations"):
+                    flat_arr = ep_metrics[key]
                     per_ind = flat_arr.reshape(P, S).mean(axis=1)
                     if key == "reward_sum":
                         urdf_reward += per_ind
@@ -446,6 +485,8 @@ def evaluate_population_cma_batched(
         urdf_crash /= n_episodes
         urdf_cot /= n_episodes
         urdf_v_dev /= n_episodes
+        if urdf_components is not None:
+            urdf_components /= n_episodes
 
         acc_reward += urdf_reward
         acc_progress += urdf_progress
@@ -453,6 +494,10 @@ def evaluate_population_cma_batched(
         acc_crash += urdf_crash
         acc_cot += urdf_cot
         acc_v_dev += urdf_v_dev
+        if urdf_components is not None:
+            if acc_components is None:
+                acc_components = np.zeros_like(urdf_components)
+            acc_components += urdf_components
 
         if verbose:
             print(
@@ -466,6 +511,8 @@ def evaluate_population_cma_batched(
     acc_crash /= n_urdfs
     acc_cot /= n_urdfs
     acc_v_dev /= n_urdfs
+    if acc_components is not None:
+        acc_components /= n_urdfs
 
     metrics = {
         "reward_sums": acc_reward,
@@ -474,6 +521,9 @@ def evaluate_population_cma_batched(
         "crash_flags": acc_crash,
         "cots": acc_cot,
         "v_deviations": acc_v_dev,
+        "reward_components": acc_components if acc_components is not None
+                             else np.zeros((P, 0), dtype=np.float32),
+        "reward_names": reward_names,
     }
     return acc_reward, metrics
 
@@ -577,9 +627,25 @@ def _rollout_episode_multi_urdf(
     dt = env.dt
     dev = torch.device(device)
 
+    _ref = env.drones[0]
+    raw_names = list(getattr(_ref, "reward_names", []))
+    _scales = getattr(_ref, "reward_scales", {}) or {}
+    active_idx = [
+        i for i, n in enumerate(raw_names)
+        if float(_scales.get(n, 0.0)) != 0.0
+    ]
+    reward_names: List[str] = [raw_names[i] for i in active_idx]
+    n_comp = len(reward_names)
+    active_idx_t = (
+        torch.tensor(active_idx, device=dev, dtype=torch.long) if n_comp else None
+    )
+
     # Per-(drone, env) accumulators — reduced to per-individual at episode end.
     done = torch.zeros(D, E, dtype=torch.bool, device=dev)
     reward_sum = torch.zeros(D, E, device=dev)
+    reward_comp_sum = (
+        torch.zeros(D, E, n_comp, device=dev) if n_comp else None
+    )
     t_acc = torch.zeros(D, E, device=dev)
     dx_acc = torch.zeros(D, E, device=dev)
     energy_acc = torch.zeros(D, E, device=dev)
@@ -617,6 +683,10 @@ def _rollout_episode_multi_urdf(
 
             if alive_d.any():
                 reward_sum[d, alive_d] += ds.last_reward_total[alive_d]
+                if reward_comp_sum is not None:
+                    reward_comp_sum[d, alive_d] += (
+                        ds.last_reward_components[alive_d][:, active_idx_t]
+                    )
                 t_acc[d, alive_d] += dt
                 dx_acc[d, alive_d] = ds.base_pos[alive_d, 0] - x0[d, alive_d]
                 energy_acc[d, alive_d] += ds.power[alive_d] * dt
@@ -655,6 +725,8 @@ def _rollout_episode_multi_urdf(
     dx_acc = dx_acc * valid
     energy_acc = energy_acc * valid
     v_dev_acc = v_dev_acc * valid
+    if reward_comp_sum is not None:
+        reward_comp_sum = reward_comp_sum * valid.unsqueeze(-1)
 
     # (D, E=P*F) → (D, P, F) → mean over (D, F) → (P,)
     def _per_ind(metric: torch.Tensor) -> torch.Tensor:
@@ -666,6 +738,12 @@ def _rollout_episode_multi_urdf(
     energy_per_ind = _per_ind(energy_acc)
     v_dev_per_ind = _per_ind(v_dev_acc)
     crash_per_ind = _per_ind(crashed)
+
+    if reward_comp_sum is not None:
+        # (D, E, C) → (D, P, F, C) → mean over (D, F) → (P, C)
+        comp_per_ind = reward_comp_sum.view(D, P, F, n_comp).float().mean(dim=(0, 2))
+    else:
+        comp_per_ind = None
 
     # Scalar arrays on CPU
     reward_arr = reward_per_ind.cpu().numpy()
@@ -691,8 +769,15 @@ def _rollout_episode_multi_urdf(
     )
     cot_arr = _per_ind(cot_slot).cpu().numpy()
 
+    if comp_per_ind is not None:
+        comp_arr = comp_per_ind.cpu().numpy()
+    else:
+        comp_arr = np.zeros((P, 0), dtype=np.float32)
+
     return {
         "reward_sum": reward_arr,
+        "reward_components": comp_arr,
+        "reward_names": reward_names,
         "progresses": dx_arr,
         "velocities": v_arr,
         "crash_flags": crash_arr,
@@ -843,6 +928,8 @@ def evaluate_population_multi_urdf(
         "cots":         np.zeros(P),
         "v_deviations": np.zeros(P),
     }
+    acc_components: Optional[np.ndarray] = None
+    reward_names: List[str] = []
 
     try:
         for _ep in range(n_episodes):
@@ -855,6 +942,15 @@ def evaluate_population_multi_urdf(
             acc["crash_flags"]  += ep_metrics["crash_flags"]
             acc["cots"]         += ep_metrics["cots"]
             acc["v_deviations"] += ep_metrics["v_deviations"]
+
+            ep_comp = ep_metrics.get("reward_components")
+            if ep_comp is not None and ep_comp.size:
+                if acc_components is None:
+                    acc_components = np.zeros_like(ep_comp)
+                acc_components += ep_comp
+            ep_names = ep_metrics.get("reward_names", [])
+            if ep_names and not reward_names:
+                reward_names = list(ep_names)
     finally:
         # Only tear down if we built it in this call.  Otherwise the caller owns
         # the env lifecycle (and will reuse it across generations).
@@ -866,6 +962,14 @@ def evaluate_population_multi_urdf(
 
     for k in acc:
         acc[k] /= n_episodes
+    if acc_components is not None:
+        acc_components /= n_episodes
+
+    acc["reward_components"] = (
+        acc_components if acc_components is not None
+        else np.zeros((P, 0), dtype=np.float32)
+    )
+    acc["reward_names"] = reward_names
 
     return acc["reward_sums"], acc
 

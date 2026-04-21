@@ -283,6 +283,48 @@ def _print_generation_table(
         numalign="center",
         stralign="left",
     ))
+
+    # Reward breakdown (per-component episode-sum values)
+    comp_arr = metrics.get("reward_components")
+    comp_names = metrics.get("reward_names") or []
+    if comp_arr is not None and len(comp_names) and comp_arr.size:
+        best_idx = int(np.argmax(fitnesses))
+        worst_idx = int(np.argmin(fitnesses))
+        base_comps = (baseline or {}).get("reward_components", {}) if baseline else {}
+
+        breakdown_rows = []
+        for i, name in enumerate(comp_names):
+            col = comp_arr[:, i]
+            row = [
+                name,
+                f"{col[best_idx]:.4g}",
+                f"{col.mean():.4g}",
+                f"{col[worst_idx]:.4g}",
+                f"{col.std():.4g}",
+            ]
+            if baseline is not None:
+                row.append(f"{base_comps.get(name, float('nan')):.4g}")
+            breakdown_rows.append(row)
+
+        if baseline is not None:
+            breakdown_headers = [
+                "Reward Component",
+                "Best-Fit (Hebb)", "Mean (Hebb)", "Worst-Fit (Hebb)",
+                "Std", "Baseline",
+            ]
+        else:
+            breakdown_headers = [
+                "Reward Component", "Best-Fit", "Mean", "Worst-Fit", "Std",
+            ]
+
+        print("\n  Reward Breakdown (per-component episode sum):")
+        print(tabulate(
+            breakdown_rows,
+            headers=breakdown_headers,
+            tablefmt="grid",
+            numalign="center",
+            stralign="left",
+        ))
     print()
 
 
@@ -542,6 +584,12 @@ class HebbianCMAES:
                 "cot":         float(metrics["cots"][0]),
                 "v_deviation": float(metrics["v_deviations"][0]),
             }
+            comp_arr = metrics.get("reward_components")
+            names = metrics.get("reward_names", []) or []
+            if comp_arr is not None and len(names) and comp_arr.size:
+                result["reward_components"] = {
+                    name: float(comp_arr[0, i]) for i, name in enumerate(names)
+                }
             if verbose:
                 print(
                     f"[HebbianCMAES] Baseline: fitness={result['fitness']:.4g}  "

@@ -26,7 +26,7 @@ checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.005
+  eta: 0.005                     # 0.0025 seems better for multi-urdf controllers. of course you dumb fuck, you're setting the hebbian effect lower, so it's just more similar to the baseline
   evolve_eta: false
   decay: 0.05
   evolve_decay: false
@@ -45,7 +45,7 @@ evolution:
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
-  sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
+  sigma0: 0.05         # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
   population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
