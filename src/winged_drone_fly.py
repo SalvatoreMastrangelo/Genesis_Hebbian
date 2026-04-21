@@ -2,6 +2,9 @@ import os
 import time
 import threading
 import signal
+import argparse
+import importlib
+import importlib.util
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 from pathlib import Path
@@ -35,8 +38,10 @@ CONSOLE = sys.__stderr__
 # Batch size: keep 1 for now, but code is structured to extend to B > 1.
 BATCH_SIZE = 1
 AERO_SOLVER_KIND = os.environ.get("AERO_SOLVER_KIND", "simple").strip().lower()
+KILL_ALTITUDE_Z = 2.0
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TRAJECTORY_FILE = PROJECT_ROOT / "src/winged_drone_prescribed_trajectory.py"
 
 # Select which drone to fly.
 DRONE_NAME = "lisparrow"  # "mydrone" or "lisparrow"
@@ -102,7 +107,7 @@ def _configure_aero_solver(solver_kind: str) -> None:
 
 def _load_joint_position_limits_from_urdf(urdf_path: str, joint_names: List[str]) -> np.ndarray:
     """
-    Return per-joint absolute position limits from the URDF (in radians).
+    Return per-joint lower/upper position limits from the URDF (in radians).
 
     No defaults: every requested joint must exist and define a <limit lower= upper=>.
     """
@@ -121,7 +126,7 @@ def _load_joint_position_limits_from_urdf(urdf_path: str, joint_names: List[str]
             raise ValueError(f"URDF joint '{name}' must define both 'lower' and 'upper' in <limit>.")
         lo = float(lower)
         hi = float(upper)
-        out.append(max(abs(lo), abs(hi)))
+        out.append((lo, hi))
     return np.asarray(out, dtype=np.float32)
 
 
@@ -274,6 +279,76 @@ def _print_controls(layout: ServoLayout) -> None:
     print("ESC     - Quit\n")
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Fly/debug a winged drone with optional prescribed actuator trajectories.")
+    parser.add_argument(
+        "--trajectory",
+        nargs="?",
+        const=str(DEFAULT_TRAJECTORY_FILE),
+        default=None,
+        help=(
+            "Use a prescribed trajectory module. With no value, uses "
+            f"{DEFAULT_TRAJECTORY_FILE}. A filesystem path or importable module name is accepted."
+        ),
+    )
+    return parser.parse_args()
+
+
+class PrescribedTrajectory:
+    def __init__(self, module, source: str):
+        self.module = module
+        self.source = source
+        if not hasattr(module, "command"):
+            raise ValueError(f"Trajectory source '{source}' must define command(t).")
+        self.initial_conditions = dict(getattr(module, "INITIAL_CONDITIONS", {}) or {})
+
+    def command(self, t: float) -> dict:
+        out = self.module.command(float(t))
+        if out is None:
+            return {}
+        if not isinstance(out, dict):
+            raise TypeError(f"Trajectory command(t) from '{self.source}' must return a dict.")
+        return out
+
+
+def _load_prescribed_trajectory(spec: str | None) -> PrescribedTrajectory | None:
+    if not spec:
+        return None
+
+    candidate = Path(spec).expanduser()
+    if not candidate.is_absolute():
+        cwd_path = Path.cwd() / candidate
+        project_path = PROJECT_ROOT / candidate
+        src_path = PROJECT_ROOT / "src" / candidate
+        if cwd_path.exists():
+            candidate = cwd_path
+        elif project_path.exists():
+            candidate = project_path
+        elif src_path.exists():
+            candidate = src_path
+
+    if candidate.exists():
+        module_name = f"_winged_drone_trajectory_{abs(hash(candidate.resolve()))}"
+        spec_obj = importlib.util.spec_from_file_location(module_name, candidate)
+        if spec_obj is None or spec_obj.loader is None:
+            raise ImportError(f"Could not load trajectory file: {candidate}")
+        module = importlib.util.module_from_spec(spec_obj)
+        spec_obj.loader.exec_module(module)
+        return PrescribedTrajectory(module, str(candidate))
+
+    module = importlib.import_module(spec)
+    return PrescribedTrajectory(module, spec)
+
+
+def _as_vec3(value, default, name: str) -> np.ndarray:
+    arr = np.asarray(value if value is not None else default, dtype=np.float32).reshape(-1)
+    if arr.shape[0] != 3:
+        raise ValueError(f"Trajectory initial condition '{name}' must have 3 values, got {arr}.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"Trajectory initial condition '{name}' contains non-finite values: {arr}.")
+    return arr
+
+
 def _first_local_dof_idx(joint_obj) -> int | None:
     idx = getattr(joint_obj, "dofs_idx_local", None)
     if idx is None:
@@ -379,9 +454,11 @@ class DroneController:
         # Runtime
         self.running: bool = True
         self.pressed_keys: set = set()
+        self.trajectory: Optional[PrescribedTrajectory] = None
+        self.trajectory_time: float = 0.0
 
         # Throttle state (broadcast inside AeroSolver to all envs)
-        self.throttle: float = 0.75
+        self.throttle: float = 0.0
         self._throttle_min: float = 0.0
         self._throttle_max: float = 1.0
         self._throttle_rate: float = 0.2  # change per second
@@ -389,6 +466,9 @@ class DroneController:
         # Servo joints (configurable)
         self.servo_joint_names: List[str] = list(layout.joint_names)
         self._role_index: dict[str, int] = dict(layout.role_index)
+        self._joint_index_by_name: dict[str, int] = {
+            str(name): i for i, name in enumerate(self.servo_joint_names)
+        }
 
         # Filled after build()
         self.drone: Optional[gs.engine.entities.RigidEntity] = None  # type: ignore
@@ -408,7 +488,8 @@ class DroneController:
         self._rudder_sign = float(tail_command_signs[1])
 
         # Filled from URDF in main() (no defaults).
-        self._servo_limits: Optional[np.ndarray] = None
+        self._servo_lower_limits: Optional[np.ndarray] = None
+        self._servo_upper_limits: Optional[np.ndarray] = None
 
         # Key aliases
         self._key_w = keyboard.KeyCode.from_char("w")
@@ -424,6 +505,104 @@ class DroneController:
             keyboard.Key.shift_r,
         }
 
+    def set_prescribed_trajectory(self, trajectory: PrescribedTrajectory | None) -> None:
+        self.trajectory = trajectory
+        self.trajectory_time = 0.0
+        if trajectory is not None:
+            self.apply_trajectory_initial_conditions(trajectory.initial_conditions)
+
+    def apply_trajectory_initial_conditions(self, initial: dict) -> None:
+        if not initial:
+            return
+        self.init_pos = _as_vec3(initial.get("pos"), self.init_pos, "pos")
+        self.init_vel = _as_vec3(initial.get("vel"), self.init_vel, "vel")
+        self.init_euler = _as_vec3(initial.get("euler_deg", initial.get("euler")), self.init_euler, "euler_deg")
+        self.init_ang_vel = _as_vec3(initial.get("ang_vel"), self.init_ang_vel, "ang_vel")
+        if "throttle" in initial:
+            self.throttle = float(np.clip(float(initial["throttle"]), self._throttle_min, self._throttle_max))
+
+        controls = dict(initial.get("controls", {}) or {})
+        for key in (
+            "joint_targets",
+            "joints",
+            "servo_targets",
+            "sweep_symmetric",
+            "sweep_asymmetric",
+            "elevator",
+            "rudder",
+        ):
+            if key in initial and key not in controls:
+                controls[key] = initial[key]
+        if controls:
+            self._apply_control_dict(controls)
+
+    def _apply_control_dict(self, controls: dict) -> None:
+        if self.servo_cmd.size:
+            target = self.servo_cmd.copy()
+            direct_targets = self._direct_joint_targets_from_controls(controls)
+            for joint_name, value in direct_targets.items():
+                target[self._joint_index_by_name[joint_name]] = float(value)
+
+            if not direct_targets:
+                target = self._apply_semantic_control_targets(target, controls)
+
+            self.servo_cmd = target
+
+        if "throttle" in controls:
+            self.throttle = float(np.clip(float(controls["throttle"]), self._throttle_min, self._throttle_max))
+
+    def _direct_joint_targets_from_controls(self, controls: dict) -> dict[str, float]:
+        direct: dict[str, float] = {}
+        for key in ("joint_targets", "joints", "servo_targets"):
+            mapping = controls.get(key)
+            if mapping is None:
+                continue
+            if not isinstance(mapping, dict):
+                raise TypeError(f"Trajectory '{key}' must be a dict of joint_name -> target_rad.")
+            for joint_name, value in mapping.items():
+                joint_name = str(joint_name)
+                if joint_name not in self._joint_index_by_name:
+                    raise KeyError(
+                        f"Trajectory commands unknown joint '{joint_name}'. "
+                        f"Known servo joints: {self.servo_joint_names}"
+                    )
+                direct[joint_name] = float(value)
+
+        for joint_name, value in controls.items():
+            joint_name = str(joint_name)
+            if joint_name in self._joint_index_by_name:
+                direct[joint_name] = float(value)
+        return direct
+
+    def _apply_semantic_control_targets(self, target: np.ndarray, controls: dict) -> np.ndarray:
+        if self.servo_cmd.size:
+            sw_l = self._role_index.get("sweep_left")
+            sw_r = self._role_index.get("sweep_right")
+            sw = self._role_index.get("sweep")
+            ele = self._role_index.get("elevator")
+            rud = self._role_index.get("rudder")
+
+            sym = float(controls.get("sweep_symmetric", 0.0))
+            asym = float(controls.get("sweep_asymmetric", 0.0))
+            if sw_l is not None:
+                target[sw_l] = self._sweep_left_sign * (sym + asym)
+            if sw_r is not None:
+                target[sw_r] = self._sweep_right_sign * (sym - asym)
+            if sw is not None and sw_l is None and sw_r is None:
+                target[sw] = sym
+            if ele is not None and "elevator" in controls:
+                target[ele] = self._elevator_sign * float(controls["elevator"])
+            if rud is not None and "rudder" in controls:
+                target[rud] = self._rudder_sign * float(controls["rudder"])
+        return target
+
+    def update_prescribed_trajectory(self, dt: float) -> None:
+        if self.trajectory is None:
+            return
+        if dt > 0.0:
+            self.trajectory_time += float(dt)
+        self._apply_control_dict(self.trajectory.command(self.trajectory_time))
+
     # ------------------------ Attach drone / indices ------------------------
 
     def attach_drone(self, drone, servo_dof_indices: List[int]):
@@ -438,14 +617,46 @@ class DroneController:
         self.init_joint_position = np.zeros(n_dofs, dtype=np.float32)
 
     def set_servo_limits(self, limits: np.ndarray):
-        limits = np.asarray(limits, dtype=np.float32).reshape(-1)
-        if limits.shape[0] != len(self.servo_joint_names):
+        arr = np.asarray(limits, dtype=np.float32)
+        if arr.ndim == 1:
+            if arr.shape[0] != len(self.servo_joint_names):
+                raise ValueError(
+                    f"Expected {len(self.servo_joint_names)} joint limits, got shape {arr.shape}."
+                )
+            lower = -arr
+            upper = arr
+        elif arr.shape == (len(self.servo_joint_names), 2):
+            lower = arr[:, 0]
+            upper = arr[:, 1]
+        else:
             raise ValueError(
-                f"Expected {len(self.servo_joint_names)} joint limits, got shape {limits.shape}."
+                f"Expected limits shape ({len(self.servo_joint_names)}, 2), got {arr.shape}."
             )
-        if not np.all(np.isfinite(limits)) or np.any(limits <= 0.0):
-            raise ValueError(f"Invalid joint limits: {limits}")
-        self._servo_limits = limits
+        if (
+            not np.all(np.isfinite(lower))
+            or not np.all(np.isfinite(upper))
+            or np.any(lower >= upper)
+        ):
+            raise ValueError(f"Invalid joint limits: {arr}")
+        self._servo_lower_limits = lower
+        self._servo_upper_limits = upper
+
+    def _clip_servo_cmd_to_limits(self) -> None:
+        if self._servo_lower_limits is None or self._servo_upper_limits is None:
+            raise RuntimeError("Servo limits are not initialized. Load them from the URDF before running.")
+        self.servo_cmd = np.clip(self.servo_cmd, self._servo_lower_limits, self._servo_upper_limits)
+
+    def sync_initial_joint_state_from_commands(self, base_dofs: int) -> None:
+        if self.servo_dof_indices is None or self.servo_cmd.size == 0:
+            return
+        if self._servo_lower_limits is not None and self._servo_upper_limits is not None:
+            self._clip_servo_cmd_to_limits()
+        for dof_idx, cmd in zip(self.servo_dof_indices.tolist(), self.servo_cmd.tolist()):
+            joint_idx = int(dof_idx) - int(base_dofs)
+            if 0 <= joint_idx < self.init_joint_position.shape[0]:
+                self.init_joint_position[joint_idx] = float(cmd)
+            if 0 <= joint_idx < self.init_joint_velocity.shape[0]:
+                self.init_joint_velocity[joint_idx] = 0.0
 
     # ------------------------------ Keyboard --------------------------------
 
@@ -467,6 +678,8 @@ class DroneController:
 
     def update_thrust(self, dt: float):
         """Integrate keyboard input (↑/↓) into throttle [0..1]."""
+        if self.trajectory is not None:
+            return
         if dt <= 0.0:
             return
         if keyboard.Key.up in self.pressed_keys:
@@ -574,9 +787,7 @@ class DroneController:
                 self.servo_cmd[rud] -= self._rudder_sign * self._tail_rate * dt
 
         # Clamp joint targets to safe range
-        if self._servo_limits is None:
-            raise RuntimeError("Servo limits are not initialized. Load them from the URDF before running.")
-        self.servo_cmd = np.clip(self.servo_cmd, -self._servo_limits, self._servo_limits)
+        self._clip_servo_cmd_to_limits()
 
     def apply_joint_commands(self, dt: float):
         """Send PD position targets for the servo joints."""
@@ -586,7 +797,10 @@ class DroneController:
             or self.servo_cmd.size == 0
         ):
             return
-        self._update_servo_targets(dt)
+        if self.trajectory is None:
+            self._update_servo_targets(dt)
+        else:
+            self._clip_servo_cmd_to_limits()
         pairs = sorted(
             zip(self.servo_dof_indices.tolist(), self.servo_cmd.tolist()),
             key=lambda x: x[0],
@@ -603,6 +817,7 @@ def _servo_gains_from_catalog(
     drone_model,
     joint_names: Sequence[str],
     fallback_gains: tuple[float, float] | None = None,
+    solver_kind: str | None = None,
 ):
     """
     Fetch kp/kv for joints using actuator names from the aero config / actuators.csv.
@@ -613,12 +828,24 @@ def _servo_gains_from_catalog(
     if drone_model is None or not hasattr(drone_model, "urdf_path"):
         raise ValueError("servo gain loading requires a DroneAeroModel with a valid urdf_path.")
 
+    def apply_solver_overrides(kp_arr: np.ndarray, kv_arr: np.ndarray):
+        if (solver_kind or "").strip().lower() == "lisparrow":
+            from genesis.engine.solvers.drones.lisparrow import lisparrow_servo_gain_override
+
+            for i, name in enumerate(joint_names):
+                override = lisparrow_servo_gain_override(name)
+                if override is None:
+                    continue
+                kp_arr[i] = float(override[0])
+                kv_arr[i] = float(override[1])
+        return kp_arr, kv_arr
+
     csv_path = Path(str(drone_model.urdf_path)).parent / "actuators.csv"
     if not csv_path.exists():
         if fallback_gains is None:
             raise FileNotFoundError(f"Missing actuator catalog: {csv_path}")
         kp_f, kv_f = fallback_gains
-        return (
+        return apply_solver_overrides(
             np.full(len(joint_names), float(kp_f), dtype=np.float32),
             np.full(len(joint_names), float(kv_f), dtype=np.float32),
         )
@@ -712,7 +939,10 @@ def _servo_gains_from_catalog(
         kp.append(float(kp_i))
         kv.append(float(kv_i))
 
-    return np.array(kp, dtype=np.float32), np.array(kv, dtype=np.float32)
+    kp_arr = np.array(kp, dtype=np.float32)
+    kv_arr = np.array(kv, dtype=np.float32)
+
+    return apply_solver_overrides(kp_arr, kv_arr)
 
 
 class DroneModel:
@@ -846,6 +1076,18 @@ class DroneModel:
                 idx = int(idx[0])
             out.append(float(q[idx]))
         return np.asarray(out, dtype=np.float32)
+
+    def root_position(self) -> np.ndarray | None:
+        if self.drone is None:
+            return None
+        if self._root_link is not None:
+            root_pos_t = self._root_link.get_pos(envs_idx=0)
+        else:
+            root_pos_t = self.drone.get_pos(envs_idx=0)
+        root_pos = root_pos_t.detach().cpu().numpy()
+        if root_pos.ndim > 1:
+            root_pos = root_pos[0]
+        return np.asarray(root_pos, dtype=np.float32).reshape(-1)
 
     # ----------------------- Fetch solver debug data ----------------------
 
@@ -1008,6 +1250,7 @@ class DroneModel:
         output_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = output_dir / f"winged_drone_summary_{ts}.png"
+        csv_path = output_dir / f"winged_drone_data_{ts}.csv"
 
         t = np.asarray(self._history["time"], dtype=np.float32)
         root_pos = np.asarray(self._history["root_pos"], dtype=np.float32)
@@ -1028,6 +1271,29 @@ class DroneModel:
         prop_thrust = np.asarray(self._history["prop_thrust"], dtype=np.float32)
         surf_names = list(self._history["surface_names"])
         joint_names = list(self._history["joint_names"])
+
+        self._save_history_csv(
+            csv_path,
+            t,
+            root_pos,
+            root_vel,
+            root_ang,
+            root_rpy,
+            throttle,
+            prop_thrust,
+            servo_cmd,
+            joint_pos,
+            joint_names,
+            surf_names,
+            alpha_deg,
+            beta_deg,
+            lift,
+            drag,
+            side,
+            flow,
+            cp_local,
+            joint_angle,
+        )
 
         fig, axes = plt.subplots(6, 3, figsize=(24, 28), constrained_layout=True)
         axs = axes.reshape(-1)
@@ -1121,7 +1387,128 @@ class DroneModel:
             plt.close(fig)
         print(f"[PLOT] saved summary plot to {out_path}")
         print(f"[PLOT] saved summary plot to {out_path}", file=CONSOLE, flush=True)
+        print(f"[CSV] saved flight data to {csv_path}")
+        print(f"[CSV] saved flight data to {csv_path}", file=CONSOLE, flush=True)
         return out_path
+
+    def _save_history_csv(
+        self,
+        path: Path,
+        t: np.ndarray,
+        root_pos: np.ndarray,
+        root_vel: np.ndarray,
+        root_ang: np.ndarray,
+        root_rpy: np.ndarray,
+        throttle: np.ndarray,
+        prop_thrust: np.ndarray,
+        servo_cmd: np.ndarray,
+        joint_pos: np.ndarray,
+        joint_names: Sequence[str],
+        surf_names: Sequence[str],
+        alpha_deg: np.ndarray,
+        beta_deg: np.ndarray,
+        lift: np.ndarray,
+        drag: np.ndarray,
+        side: np.ndarray,
+        flow: np.ndarray,
+        cp_local: np.ndarray,
+        joint_angle: np.ndarray,
+    ) -> None:
+        def clean_name(name: str) -> str:
+            return str(name).strip().replace(" ", "_").replace("/", "_")
+
+        header = [
+            "time_s",
+            "root_pos_x_m",
+            "root_pos_y_m",
+            "root_pos_z_m",
+            "root_vel_x_mps",
+            "root_vel_y_mps",
+            "root_vel_z_mps",
+            "root_ang_vel_x_radps",
+            "root_ang_vel_y_radps",
+            "root_ang_vel_z_radps",
+            "root_roll_deg",
+            "root_pitch_deg",
+            "root_yaw_deg",
+            "throttle_cmd",
+            "prop_thrust_n",
+        ]
+        for name in joint_names:
+            cname = clean_name(name)
+            header.append(f"servo_cmd_{cname}_rad")
+            header.append(f"joint_pos_{cname}_rad")
+            header.append(f"joint_tracking_error_{cname}_rad")
+        for name in surf_names:
+            cname = clean_name(name)
+            header.extend(
+                [
+                    f"surface_alpha_{cname}_deg",
+                    f"surface_beta_{cname}_deg",
+                    f"surface_lift_{cname}_n",
+                    f"surface_drag_{cname}_n",
+                    f"surface_side_{cname}_n",
+                    f"surface_joint_angle_{cname}_rad",
+                    f"surface_force_local_{cname}_x_n",
+                    f"surface_force_local_{cname}_y_n",
+                    f"surface_force_local_{cname}_z_n",
+                    f"surface_flow_local_{cname}_x_mps",
+                    f"surface_flow_local_{cname}_y_mps",
+                    f"surface_flow_local_{cname}_z_mps",
+                    f"surface_cp_local_{cname}_x_m",
+                    f"surface_cp_local_{cname}_y_m",
+                    f"surface_cp_local_{cname}_z_m",
+                ]
+            )
+
+        force = np.asarray(self._history["surface_force_local"], dtype=np.float32)
+
+        with path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for i in range(len(t)):
+                row = [
+                    float(t[i]),
+                    float(root_pos[i, 0]),
+                    float(root_pos[i, 1]),
+                    float(root_pos[i, 2]),
+                    float(root_vel[i, 0]),
+                    float(root_vel[i, 1]),
+                    float(root_vel[i, 2]),
+                    float(root_ang[i, 0]),
+                    float(root_ang[i, 1]),
+                    float(root_ang[i, 2]),
+                    float(root_rpy[i, 0]),
+                    float(root_rpy[i, 1]),
+                    float(root_rpy[i, 2]),
+                    float(throttle[i]),
+                    float(prop_thrust[i]),
+                ]
+                for j, _ in enumerate(joint_names):
+                    cmd = float(servo_cmd[i, j]) if servo_cmd.size else 0.0
+                    pos = float(joint_pos[i, j]) if joint_pos.size else 0.0
+                    row.extend([cmd, pos, pos - cmd])
+                for j, _ in enumerate(surf_names):
+                    row.extend(
+                        [
+                            float(alpha_deg[i, j]),
+                            float(beta_deg[i, j]),
+                            float(lift[i, j]),
+                            float(drag[i, j]),
+                            float(side[i, j]),
+                            float(joint_angle[i, j]),
+                            float(force[i, j, 0]),
+                            float(force[i, j, 1]),
+                            float(force[i, j, 2]),
+                            float(flow[i, j, 0]),
+                            float(flow[i, j, 1]),
+                            float(flow[i, j, 2]),
+                            float(cp_local[i, j, 0]),
+                            float(cp_local[i, j, 1]),
+                            float(cp_local[i, j, 2]),
+                        ]
+                    )
+                writer.writerow(row)
 
     # ---------------------------- Debug step ------------------------------
 
@@ -1517,14 +1904,28 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
         if dt <= 0.0:
             dt = scene.sim._substep_dt if hasattr(scene.sim, "_substep_dt") else 0.01
 
+        controller.update_prescribed_trajectory(dt)
+
         # 1) Control surfaces (servo joints)
         controller.apply_joint_commands(dt)
         if model._step_counter % model._print_every_n_steps == 0:
             print("pressed_keys:", controller.pressed_keys)
         # 2) Thrust via AeroSolver (ONLY path to apply thrust)
         controller.apply_thrust(aero_solver, dt)
+
         # 3) Step physics and refresh viewer
         scene.step()  # refresh_visualizer=True by default
+
+        root_pos = model.root_position()
+        if root_pos is not None and root_pos.shape[0] >= 3 and float(root_pos[2]) <= KILL_ALTITUDE_Z:
+            print(
+                f"[KILL] z={float(root_pos[2]):.3f} m <= {KILL_ALTITUDE_Z:.3f} m. Stopping simulation.",
+                file=CONSOLE,
+                flush=True,
+            )
+            controller.running = False
+            break
+
         model.record_step(controller)
 
         # 4) Debug visualization of aero forces (lift + drag arrows)
@@ -1541,6 +1942,7 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
 
 # ---------------------------------- Main ------------------------------------
 def main():
+    args = _parse_args()
     config = _resolve_drone_config(DRONE_NAME)
     urdf_path = Path(config["urdf_path"]).expanduser().resolve()
     if not urdf_path.exists():
@@ -1564,6 +1966,8 @@ def main():
         sweep_command_signs=tuple(config.get("sweep_command_signs", (1.0, -1.0))),
         tail_command_signs=tuple(config.get("tail_command_signs", (1.0, 1.0))),
     )
+    trajectory = _load_prescribed_trajectory(args.trajectory)
+    controller.set_prescribed_trajectory(trajectory)
     servo_joint_names = controller.servo_joint_names
 
     # Scene
@@ -1652,9 +2056,12 @@ def main():
             drone_model,
             servo_joint_names,
             fallback_gains=config.get("fallback_servo_gains"),
+            solver_kind=config.get("aero_solver_kind") or AERO_SOLVER_KIND,
         )
         drone.set_dofs_kp(kp=kp, dofs_idx_local=servo_dof_indices)
         drone.set_dofs_kv(kv=kv, dofs_idx_local=servo_dof_indices)
+
+    controller.sync_initial_joint_state_from_commands(base_dofs)
 
     # Initial state (position + orientation + joints)
     if base_dofs == 6:
@@ -1706,6 +2113,8 @@ def main():
 
     # Help
     _print_controls(layout)
+    if trajectory is not None:
+        print(f"[TRAJECTORY] prescribed trajectory loaded from {trajectory.source}", file=CONSOLE, flush=True)
 
     # Simulation in background thread (viewer already running internally)
     sim_thread = threading.Thread(
@@ -1761,7 +2170,7 @@ def main():
         except KeyboardInterrupt:
             interrupted = True
             controller.running = False
-        plot_path = model.save_summary_plots(Path.cwd() / "plots")
+        plot_path = model.save_summary_plots(Path.cwd() / "winged_drone_fly_result")
         if plot_path is None:
             print("[PLOT] no plot generated.", file=CONSOLE, flush=True)
         try:

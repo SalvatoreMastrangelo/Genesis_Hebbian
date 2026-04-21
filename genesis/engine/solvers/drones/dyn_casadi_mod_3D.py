@@ -30,7 +30,7 @@ def simulate(x0, u, N, tf, dyn_fun):
 
 class IndoorUAV3D:
   def __init__(self, filename = ""):
-    self.m = 0.137 # Drone mass in [kg]
+    self.m = 0.132 # Drone mass in [kg]
     self.g = 9.801
     self.pi = 3.14159
     self.rho = 1.225
@@ -130,7 +130,7 @@ class IndoorUAV3D:
     self.motor_omega_map = -0.6713 #-0.529 #-0.504
     self.motor_tau_inv = 2.054 #2.20 #1.709
     self.T_min = 0                                        # min thrust [N]
-    self.T_max = 1.03 #1.0 #1.01 #1.01                          # max thrust [N]
+    self.T_max = 0.9 #1.0 #1.01 #1.01                          # max thrust [N]
     self.delay_mot = 0.0 #0.175                           # motor input delay [s]
                                                      
   def thrust_slipstream(self, thrust, vel_u):
@@ -492,7 +492,7 @@ class IndoorUAV3D:
 
     return ca.vertcat(omega_mot_norm_dot, x_sw_dot_l[0], x_sw_dot_l[1], x_sw_dot_r[0], x_sw_dot_r[1], x_ele_dot, x_rud_dot)
   
-  def dynamics(self, x, u, case='mpopt'):  #x_sw_sym is a 2x1 column
+  def dynamics(self, x, u, case=None):  #x_sw_sym is a 2x1 column
 
     # State vector x ordered as: [pos_x, pos_y, pos_z, vel_u, vel_v, vel_w, q_x, q_y, q_z, q_w, ome_p, ome_q, ome_r, omega_mot_norm, x_sw_sym_l_0, x_sw_sym_l_1, x_sw_sym_r_0, x_sw_sym_r_1, x_ele, x_rud]
     # Control vector u ordered as: [u_thr, u_sw_l, u_sw_r, u_ele_dot, u_rud_dot]
@@ -500,7 +500,7 @@ class IndoorUAV3D:
     pos_x, pos_y, pos_z, vel_u, vel_v, vel_w, q_x, q_y, q_z, q_w, ome_p, ome_q, ome_r = x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10], x[11], x[12]
     omega_mot_norm, x_sw_sym_l_0, x_sw_sym_l_1, x_sw_sym_r_0, x_sw_sym_r_1, x_ele, x_rud = x[13], x[14], x[15], x[16], x[17], x[18], x[19] #ca.fmax(ca.fmin(x[13], 1.0), 0.0), ca.fmax(ca.fmin(x[14], 1.0 - self.sweep_offset), -1.0), x[15], ca.fmax(ca.fmin(x[16], 1.0 - self.sweep_offset), -1.0), x[17], ca.fmax(ca.fmin(x[18], 1.0), -1.0), ca.fmax(ca.fmin(x[19], 1.0), -1.0) #Clamp states to min/max values: 0 to 1 for motor omega norm, -1 to 0.5 for sweeps, -1 to 1 for elevator and rudder
     u_thr, u_sw_l, u_sw_r, u_ele, u_rud = ca.fmax(ca.fmin(u[0], 1.0), self.throttle_offset), ca.fmax(ca.fmin(u[1], 1.0 - self.sweep_offset), -1.0), ca.fmax(ca.fmin(u[2], 1.0 - self.sweep_offset), -1.0), ca.fmax(ca.fmin(u[3], 1.0), -1.0), ca.fmax(ca.fmin(u[4], 1.0), -1.0) #Clamp inputs to min/max values: 0 to 1 for throttle, -1 to 0.5 for sweeps, -1 to 1 for elevons and rudder
-
+    
     quat = ca.vertcat(q_x, q_y, q_z, q_w) #Quaternion vector
     vel_body = ca.vertcat(vel_u, vel_v, vel_w) #Velocity vector in body frame
     omega_body = ca.vertcat(ome_p, ome_q, ome_r) #Angular velocity vector in body frame
@@ -556,10 +556,12 @@ class IndoorUAV3D:
 
     pos_dot = R @ vel_body #Position derivative in body frame (position in world frame)
 
-    if case == 'mpopt':
-      state_dot = [pos_dot[0], pos_dot[1], pos_dot[2], uvw_dot[0], uvw_dot[1], uvw_dot[2], q_dot[0], q_dot[1], q_dot[2], q_dot[3], omega_dot[0], omega_dot[1], omega_dot[2], omega_mot_norm_dot, x_sw_dot_l[0], x_sw_dot_l[1], x_sw_dot_r[0], x_sw_dot_r[1], x_ele_dot, x_rud_dot]
-    else:
+    if case == 'casadi':
       state_dot = ca.vertcat(pos_dot, uvw_dot, q_dot, omega_dot, omega_mot_norm_dot, x_sw_dot_l[0], x_sw_dot_l[1], x_sw_dot_r[0], x_sw_dot_r[1], x_ele_dot, x_rud_dot)
+    elif case == 'casadi_2D':
+      state_dot = ca.vertcat(pos_dot[0], pos_dot[2], uvw_dot[0], uvw_dot[2], omega_body[1], omega_dot[1], omega_mot_norm_dot, x_sw_dot_l[0], x_sw_dot_l[1], x_ele_dot)
+    else:
+      state_dot = [pos_dot[0], pos_dot[1], pos_dot[2], uvw_dot[0], uvw_dot[1], uvw_dot[2], q_dot[0], q_dot[1], q_dot[2], q_dot[3], omega_dot[0], omega_dot[1], omega_dot[2], omega_mot_norm_dot, x_sw_dot_l[0], x_sw_dot_l[1], x_sw_dot_r[0], x_sw_dot_r[1], x_ele_dot, x_rud_dot]
 
     return state_dot
     
@@ -575,6 +577,65 @@ if __name__ == "__main__":
   phis = [0] #[-np.pi/6, 0, np.pi/6] #np.linspace(-45,45,50)*(np.pi/180)
   
   obj = IndoorUAV3D()
+
+  simulate_variable_trajectory = True
+
+  ### Trajectory simulation ###################################################
+
+  # Simulate dynamics for a sample input and an initial sample state
+  x_sw_l_0 = -0.25
+  x_sw_r_0 = -0.25
+  
+  u0 = np.array([[0.75, -0.25, -0.25, -0.1, 0.0]]).reshape((1,5)) #Throttle, left wing sweep, right wing sweep, elevator, rudder
+  omega_mot_norm_0 = obj.motor_throttle_to_omega(u0[0,0])
+  x_sw_l_0 = np.array((ca.inv(obj.A_sw) @ -(obj.B_sw @ u0[0,1]))).flatten()
+  x_sw_r_0 = np.array((ca.inv(obj.A_sw) @ -(obj.B_sw @ u0[0,2]))).flatten()
+  x0 = np.array([0,0,0,vel_norm,0,0,0,0,0,1,0,0,0,omega_mot_norm_0,x_sw_l_0[0],x_sw_l_0[1],x_sw_r_0[0],x_sw_r_0[1],u0[0,3],u0[0,4]])
+
+  # print(x0)
+
+  N_steps = 100
+  t_end = 1.5
+
+  if not simulate_variable_trajectory:
+    u = np.repeat(u0, N_steps, axis=0)
+  else:
+    ele_amp = -0.5
+    ele_mean = -0.1
+    ele_freq = 2.0
+    rud_amp = 0.0
+    rud_mean = 0.0
+    rud_freq = 5.0
+    a_sw_amp = 0.0
+    sw_mean = -0.25
+    sw_rand_freq = 10.0
+    a_sw_freq = 0.0
+    thr_mean = 0.75
+    thr_rand_range = 0.7
+    thr_rand_freq = 5.0
+    sw_rand_range = 0.75
+    u = np.repeat(u0, N_steps, axis=0)
+    for i in range(N_steps):
+      if i % int(N_steps/(sw_rand_freq*t_end)) == 0:
+        d_sw_sym = np.random.uniform(-sw_rand_range, sw_rand_range)
+      if i % int(N_steps/(thr_rand_freq*t_end)) == 0:
+        d_thr_sym = np.random.uniform(-thr_rand_range, thr_rand_range)
+
+      u[i,0] = np.clip(thr_mean + d_thr_sym, 0.05, 1.0) #Add some random variation to throttle input to create a variable trajectory for testing
+      u[i,1] = np.clip(sw_mean + d_sw_sym + a_sw_amp*np.sin(2 * np.pi * a_sw_freq * (i / N_steps) * t_end), -1.0, 0.5)  #Add some random variation to left wing sweep input to create a variable trajectory for testing
+      u[i,2] = np.clip(sw_mean + d_sw_sym - a_sw_amp*np.sin(2 * np.pi * a_sw_freq * (i / N_steps) * t_end), -1.0, 0.5)  #Add some random variation to right wing sweep input to create a variable trajectory for testing
+      u[i,3] = np.clip(ele_mean + ele_amp*np.sin(2 * np.pi * ele_freq * (i / N_steps) * t_end), -1.0, 1.0) #Vary elevator input sinusoidally to create a variable trajectory for testing
+      u[i,4] = np.clip(rud_mean + rud_amp*np.sin(2 * np.pi * rud_freq * (i / N_steps) * t_end), -1.0, 1.0) #Vary rudder input sinusoidally to create a variable trajectory for testing
+
+  t_sim, x_sim, u_sim, x_dot_sim = simulate(x0, u, N_steps, t_end, obj.dynamics)
+
+  alpha = np.arctan(-x_sim.transpose()[5]/x_sim.transpose()[3])*(180/3.14)
+
+  plt.plot(x_sim.transpose()[0], x_sim.transpose()[2])
+  #plt.plot(x_sim.transpose()[0], x_sim.transpose()[18])
+
+
+  ### FORCE ESTIMATION ###################################################
   # fig,ax = plt.subplots(1)
 
   # # Simulate dynamics one step given a sample input and a zero sample state
@@ -613,16 +674,6 @@ if __name__ == "__main__":
       
   # plt.show()
 
-  # Simulate dynamics for a sample input and an initial sample state
-  x0 = np.array([0,0,0,vel_norm,0,0.0,0,0,0,1,0,0,0,0.75,-1.0,0.0,-1.0,0.0,0.0,0.0])
-  u0 = np.array([[0.75, -1.0, -1.0, -0.8, 0.0]]).reshape((1,5)) #Throttle, left wing sweep, right wing sweep, elevator, rudder
-
-  N_steps = 100
-  u = np.repeat(u0, N_steps, axis=0)
-  t_end = 2.0
-
-  t_sim, x_sim, u_sim, x_dot_sim = simulate(x0, u, N_steps, t_end, obj.dynamics)
-
   # x_dot = obj.dynamics(x0, u0[0])
   # a = obj.accelerations_only(x0[:13], [x0[13], x0[14], x0[16], x0[18], x0[19]])
   # act = obj.actuator_dynamics(x0[13:20], u0[0])
@@ -630,10 +681,6 @@ if __name__ == "__main__":
   # # print(x_dot)
   # # print(a)
   # # print(act)
-
-  alpha = np.arctan(-x_sim.transpose()[5]/x_sim.transpose()[3])*(180/3.14)
-
-  plt.plot(x_sim.transpose()[0], x_sim.transpose()[1])
   # plt.plot(x_sim.transpose()[0], alpha)
   # plt.plot(t_sim, x_dot_sim.transpose()[11])
 
@@ -647,75 +694,3 @@ if __name__ == "__main__":
 
   # a_jac_xact_val = a_jac_xact_fun(x0[:13], x0[[13,14,16,18,19]])
   # print(a_jac_xact_val)
-
-    # print(F_tot)
-    # print(M_tot)
-  
-  # for theta_sw in theta_sw_syms: 
-  #   AR, S, ac_x, geo_x, pos_cg_x  = obj.wing_geometry(theta_sw)
-  #   for aoa in alphas:
-  #     # ax.scatter(aoa*180/3.14,obj.wing_coefficients(aoa,AR,ac_x,geo_x)[1])
-  #     vel_u = np.sqrt((vel_norm**2)/(1+np.tan(aoa)**2))
-  #     vel_w = -vel_u * np.tan(aoa)
-  #     # ax.scatter(aoa*180/3.14, Fx)
-  #     for q in q_vec:
-  #       Fx, Fz, M, downwash, pos_cg_x = obj.wing_aerodynamics(0.0, vel_u, vel_w, q, theta_sw)    
-  #       Fx_t, Fz_t, M_t = obj.hor_tail_aerodynamics(0.0, vel_u, vel_w, q, downwash, pos_cg_x, elevator_angs[0])
-  #       c_d_drag_eff = (Fx + Fx_t)/(0.5*obj.rho*S*vel_norm**2)
-  #       ax.scatter(aoa*(180/3.14), c_d_drag_eff)
-
-  # # Simulate model for sample input
-  # u_sweeps = [-1.0, -0.25, 0.5]
-  # leg = []
-
-  # for u_sw in u_sweeps:
-  #   t_end = 1.75
-  #   N_steps = 100
-  #   u_0_thr = 0.5 #ca.DM(obj.throttle_offset)
-  #   u_0_ele = ca.DM(-1.0)
-  #   u_0_sw = ca.DM(u_sw)
-  #   u_sw = ca.DM(u_sw)
-  #   x_ele_0 = u_0_ele #ca.inv(obj.A_ele) @ (- obj.B_ele @ ca.DM([(u_0_ele)]))
-  #   x_sw_sym_0 = ca.inv(obj.A_sw) @ (- obj.B_sw @ ca.DM([(u_0_sw)]))
-  #   theta_0 = 0.0*(np.pi/180)
-  #   vel_u_0 = 6.0
-  #   vel_w_0 = 0.0
-  #   pos_x_0 = 0.0
-  #   pos_z_0 = 0.0
-  #   q_0 = 0.0
-  #   omega_mot_0 = 0.4
-
-  #   u0 = np.array([[u_0_thr, 0.0, u_0_sw]]).reshape((1,3))
-
-  #   x0 = np.array([pos_x_0, pos_z_0, vel_u_0, vel_w_0, theta_0, q_0, omega_mot_0, x_sw_sym_0[0], x_sw_sym_0[1], x_ele_0])
-  #   print(x0)
-
-  #   u = np.repeat(u0, N_steps, axis=0)
-
-  #   # test = obj.dynamics(x0,u0[0])W
-
-  #   t_sim, x_sim, u_sim, x_dot_sim = simulate(x0, u, N_steps, t_end, obj.dynamics)
-
-  #   pos_x, pos_z, vel_u, vel_w, theta, q, omega_mot, theta_sw, theta_sw_dot, x_ele = x_sim.transpose()
-  #   alpha_deg = np.arctan(-vel_w/vel_u)*(180/3.14)
-  #   V = np.sqrt(vel_u**2 + vel_w**2)
-  #   # plt.plot(t_sim, alpha_deg)
-
-  #   # print(t_sim)
-  #   # M_tails = np.array(obj.M_tails).flatten()
-  #   # M_wings = np.array(obj.M_wings).flatten()
-  #   # print(M_tails)
-  #   # plt.plot(t_sim[:-1], M_wings)
-  #   #plt.plot(t_sim, theta*(180/3.14))
-  #   plt.plot(pos_x, vel_u)
-  #   leg.append(str(u_sw))
-  # # plt.plot(t_sim, x_dot_sim.transpose()[0])
-  # # plt.plot(t_sim, u_sim
-
-  # # x_init = ca.vertcat(0,0,6,0,0,0,0.0,0,0)
-  # # x_dot_new = obj.dynamics(0,0,6,0,0,0,0.0,np.array([0,0]),1.0,0.0,0.0)*0.1
-  # # u_new = ca.vertcat(x_dot_new + x_init,1.0,0.0,0.0)
-  # # # x_dot_new = obj.dynamics(u_new[0,:],u_new[1,:],u_new[2,:],u_new[3,:],u_new[4,:],u_new[5,:],u_new[6,:],ca.vertcat(u_new[7,:],u_new[8,:]),u_new[9,:],u_new[10,:],u_new[11,:])*0.1
-  # # # print(u_new + x_dot_new)
-
-  # plt.legend(leg)
