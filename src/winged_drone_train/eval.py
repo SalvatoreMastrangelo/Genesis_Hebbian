@@ -419,29 +419,45 @@ def evaluation(
     if cfg_path is not None:
         candidate = Path(cfg_path).expanduser()
         if candidate.is_dir():
-            candidate = candidate / "cfgs.pkl"
+            for _name in ("cfgs.pkl", "config.yaml"):
+                if (candidate / _name).is_file():
+                    candidate = candidate / _name
+                    break
+            else:
+                candidate = candidate / "cfgs.pkl"
         if candidate.is_file():
             cfg_path_resolved = candidate.resolve()
         else:
             print(
-                f"[evaluation][warn] cfgs.pkl not found at {candidate}; "
-                f"falling back to {log_dir / 'cfgs.pkl'}"
+                f"[evaluation][warn] config not found at {candidate}; "
+                f"falling back to {log_dir}"
             )
     if cfg_path_resolved is None:
-        cfg_path_resolved = log_dir / "cfgs.pkl"
+        for _name in ("cfgs.pkl", "config.yaml"):
+            _candidate = log_dir / _name
+            if _candidate.is_file():
+                cfg_path_resolved = _candidate
+                break
+        else:
+            cfg_path_resolved = log_dir / "cfgs.pkl"
     cfg_path = cfg_path_resolved
     log_dir_str = str(cfg_path.parent)
     if not cfg_path.is_file():
-        raise FileNotFoundError(f"Missing cfgs.pkl at {cfg_path}")
+        raise FileNotFoundError(f"Missing cfgs.pkl or config.yaml at {cfg_path}")
 
-    with cfg_path.open("rb") as f:
-        cfg_data = pickle.load(f)
-    # Handle both old format (5 elements) and new format (6 elements with runtime_seed)
-    if len(cfg_data) == 6:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, training_seed = cfg_data
-        print(f"[evaluation] Loaded training runtime_seed={training_seed} (not used in eval)")
+    if cfg_path.suffix == ".yaml":
+        from WP1.config import RunConfig
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = RunConfig.from_yaml(cfg_path).to_legacy_cfgs()
+        print(f"[evaluation] Loaded config from {cfg_path.name}")
     else:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
+        with cfg_path.open("rb") as f:
+            cfg_data = pickle.load(f)
+        # Handle both old format (5 elements) and new format (6 elements with runtime_seed)
+        if len(cfg_data) == 6:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, training_seed = cfg_data
+            print(f"[evaluation] Loaded training runtime_seed={training_seed} (not used in eval)")
+        else:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
     runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
 
     # Command range used in this evaluation
@@ -449,10 +465,9 @@ def evaluation(
     command_cfg["max_speed"] = float(vmax)
     command_speed_range = _command_speed_range(command_cfg)
 
-    # Keep the same noise magnitudes as training, while sampling fresh noise.
     obs_cfg_eval = dict(obs_cfg)
+    obs_cfg_eval["add_genome_obs_actor"] = False  # actor never gets genome (design rule)
     if obs_genome is not None:
-        obs_cfg_eval["add_genome_obs_actor"] = bool(obs_genome)
         obs_cfg_eval["add_genome_obs_critic"] = bool(obs_genome)
 
     # Evaluation-specific environment tweaks
@@ -668,31 +683,31 @@ if __name__ == "__main__":
     parser.add_argument("--vmax", type=float, default=25.0)
     parser.add_argument("--gpu", default="cuda")
     parser.add_argument(
-        "--drone",
-        type=str,
-        default=None,
-        help="Drone key for a known default URDF, e.g. 'mydrone' or 'lisparrow'.",
-    )
-    parser.add_argument(
-        "--urdf-file",
-        type=str,
-        default=None,
-        help="Explicit URDF path. Overrides --drone if both are provided.",
+        "--log_dir",
+        default="logs",
+        help="Base directory that contains the <exp_name> subfolder (default: logs).",
     )
     args = parser.parse_args()
 
     # ---------------- Load configs ------------------------------------- #
-    log_dir = f"logs/{args.exp_name}"
-    # Overwrite log_dir if needed coming from cluster
-    log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2815165/logs/ea/foundation-mixture"
-    with open(os.path.join(log_dir, "cfgs.pkl"), "rb") as f:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+    log_dir = os.path.join(args.log_dir, args.exp_name)
+    _exp_stem = os.path.basename(os.path.normpath(args.exp_name))
+    _pkl_path = os.path.join(log_dir, "cfgs.pkl")
+    _yaml_path = os.path.join(log_dir, "config.yaml")
+    if os.path.exists(_pkl_path):
+        with open(_pkl_path, "rb") as f:
+            cfg_data = pickle.load(f)
+        if len(cfg_data) == 6:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, _ = cfg_data
+        else:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
+    elif os.path.exists(_yaml_path):
+        from WP1.config import RunConfig
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = RunConfig.from_yaml(_yaml_path).to_legacy_cfgs()
+    else:
+        raise FileNotFoundError(f"Could not find cfgs.pkl or config.yaml in {log_dir}")
 
-    env_cfg.setdefault("property_randomization", {})
-    env_cfg["property_randomization"]["joint_target_episode_bias_std"] = 0.0
-    env_cfg["property_randomization"]["joint_target_step_noise_std"] = 0.0
-
-    eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
+    eval_log_dir = os.path.join(args.log_dir, f"{_exp_stem}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
 
     gs.init(logging_level="error")
@@ -710,10 +725,8 @@ if __name__ == "__main__":
     command_cfg["max_speed"] = args.vmax
     command_speed_range = _command_speed_range(command_cfg)
 
-    # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
-    obs_cfg_eval["add_genome_obs_actor"] = False
-    obs_cfg_eval["add_genome_obs_critic"] = False
+    obs_cfg_eval["add_genome_obs_actor"] = False  # actor never gets genome (design rule)
 
     # Print configs for sanity check
     print("\nEnvironment Configuration (eval):")
@@ -832,13 +845,13 @@ if __name__ == "__main__":
     plotter.plot_joint_diff_heatmap(
         traces_all,
         "sweep",
-        out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_joint_behaviour_heatmap_sweep.png",
+        out=f"{eval_log_dir}/{_exp_stem}_{args.ckpt}_joint_behaviour_heatmap_sweep.png",
         command_speed_range=command_speed_range,
     )
     plotter.plot_joint_diff_heatmap(
         traces_all,
         "twist",
-        out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_joint_behaviour_heatmap_twist.png",
+        out=f"{eval_log_dir}/{_exp_stem}_{args.ckpt}_joint_behaviour_heatmap_twist.png",
         command_speed_range=command_speed_range,
     )
 
@@ -847,7 +860,7 @@ if __name__ == "__main__":
         COT,
         progress,
         v_cmd,
-        html_out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_3D_speed_energy_progress.html",
+        html_out=f"{eval_log_dir}/{_exp_stem}_{args.ckpt}_3D_speed_energy_progress.html",
         velocity_range=command_speed_range,
     )
 
@@ -857,7 +870,7 @@ if __name__ == "__main__":
         progress,
         v_cmd,
         win_frac=win_frac,
-        html_out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_3D_speed_energy_progress_MA.html",
+        html_out=f"{eval_log_dir}/{_exp_stem}_{args.ckpt}_3D_speed_energy_progress_MA.html",
         velocity_range=command_speed_range,
     )
 
@@ -868,7 +881,7 @@ if __name__ == "__main__":
         progress,
         win_frac=win_frac,
         minimal_p=250.0,  # same value as original script
-        out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_total_plot.png",
+        out=f"{eval_log_dir}/{_exp_stem}_{args.ckpt}_total_plot.png",
         velocity_range=command_speed_range,
     )
 
@@ -879,6 +892,6 @@ if __name__ == "__main__":
         progress,
         win_frac=win_frac,
         minimal_p=250.0,
-        out=f"{eval_log_dir}/{args.exp_name}_{args.ckpt}_total_plot_points_instead_of_ma.png",
+        out=f"{eval_log_dir}/{_exp_stem}_{args.ckpt}_total_plot_points_instead_of_ma.png",
         velocity_range=command_speed_range,
     )
