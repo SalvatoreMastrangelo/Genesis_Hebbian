@@ -5,7 +5,7 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: single_new  # Name of the experiment for logging/tracking
+exp_name: single_new_2  # Name of the experiment for logging/tracking
 
 ##############################################################################
 # PPO (Proximal Policy Optimization) hyperparameters
@@ -29,7 +29,7 @@ ppo:
 # Policy network architecture
 ##############################################################################
 policy:
-  actor_hidden_dims: [64, 32]               # Hidden layer dimensions for actor network (input → 64 → 32 → output)
+  actor_hidden_dims: [128, 32]              # Hidden layer dimensions for actor network (input → 64 → 32 → output)
   critic_hidden_dims: [128, 128]            # Hidden layer dimensions for critic network
   activation: elu                           # Activation function type (elu, relu, tanh, etc.)
   init_noise_std: 0.3                       # Initial standard deviation for action noise
@@ -45,7 +45,7 @@ policy:
 ##############################################################################
 training:
   num_envs: 16384                           # Number of parallel environments for data collection
-  max_iterations: 2000                      # Maximum training iterations
+  max_iterations: 850                       # Maximum training iterations
   num_steps_per_env: 25                     # Timesteps collected per environment per iteration (experience = num_envs × num_steps)
   save_interval: 50                         # Save checkpoint every N iterations
   eval_interval: 200                        # Run full evaluation every N iterations
@@ -158,7 +158,7 @@ command:
 catalog:
   n_urdf: 1                                 # Number of different drone morphologies in catalog
   catalog_dir: null                         # Directory containing custom URDF files (null = use default)
-  urdf_seed: 20                             # Seed for reproducible URDF generation
+  urdf_seed: 42                             # Seed for reproducible URDF generation
 
 ##############################################################################
 # Logical Super-Scene (LSS) configuration (WP2.5 multi-scene training)
