@@ -157,3 +157,4 @@ dmypy.json
 
 # Additional ignores
 **/test_catalog/
+**/tests/eval_visual

@@ -432,6 +432,7 @@ class HebbianCMAES:
                     wp1_cfg=self._wp1_cfg,
                     device=self.cfg.device,
                     num_envs_per_drone=envs_per_drone,
+                    num_workers=int(getattr(self.cfg.evaluation, "num_eval_workers", 1)),
                 )
                 self._env_urdf_path = list(self._urdf_paths)
                 print(f"[HebbianCMAES] MultiSceneEvalEnv ready")

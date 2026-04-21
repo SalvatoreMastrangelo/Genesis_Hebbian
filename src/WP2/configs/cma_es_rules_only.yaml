@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: multi_drone_0.005_0.05
+exp_name: generalist_256_single_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -46,19 +46,22 @@ evolution:
 
 cmaes:
   sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
-  population_size: 64 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
+  population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
 
 catalog:
   path: ""             # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
-  num_urdfs: 4         # N: number of URDFs, each in its own Genesis scene
+  num_urdfs: 1         # N: number of URDFs, each in its own Genesis scene
   num_episodes: 1      # rollout episodes per generation
   force_multi_urdf: false  # route N=1 through the multi-URDF path (for verification)
 
 evaluation:
-  num_eval_envs: 16384 # TOTAL slots across all URDFs and all individuals
+  num_eval_envs: 12800 # TOTAL slots across all URDFs and all individuals
                        # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
+  num_eval_workers: 1  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
+                       # N=2 typically saturates the GPU when a single scene uses ~50%
+                       # watch VRAM: each worker holds D/N independent Genesis scenes
   vmin: 10.0
   vmax: 20.0
   stochastic: true
@@ -66,6 +69,6 @@ evaluation:
   x_upper: 500         # override forest corridor length [m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
 
-seed: 1
+seed: 55
 device: "cuda:0"
 base_dir: "logs/runs_hebbian"

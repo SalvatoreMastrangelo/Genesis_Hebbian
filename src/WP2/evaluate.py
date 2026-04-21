@@ -488,8 +488,13 @@ def _build_multi_urdf_env(
     wp1_cfg,
     device: str,
     num_envs_per_drone: int,
+    num_workers: int = 1,
 ):
-    """Build a ``MultiSceneEvalEnv`` — one Genesis scene per URDF.
+    """Build a multi-URDF eval env — one Genesis scene per URDF.
+
+    When ``num_workers > 1`` returns a ``ParallelMultiSceneEvalEnv`` that
+    dispatches D/N URDFs to N worker processes concurrently, exploiting GPU
+    headroom.  Otherwise returns the default sequential ``MultiSceneEvalEnv``.
 
     We mirror ``WP1.train``'s ``Gen_Env`` pattern: each URDF gets its own
     ``WingedDroneEnv`` (its own rigid solver, aero Taichi state, and
@@ -521,7 +526,7 @@ def _build_multi_urdf_env(
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
 
-    return MultiSceneEvalEnv(
+    env_cls_kwargs = dict(
         urdf_paths=urdf_paths,
         num_envs_per_drone=num_envs_per_drone,
         env_cfg=env_cfg,
@@ -530,6 +535,10 @@ def _build_multi_urdf_env(
         command_cfg=command_cfg,
         device=device,
     )
+    if num_workers > 1:
+        from WP2.parallel_multi_scene_eval_env import ParallelMultiSceneEvalEnv
+        return ParallelMultiSceneEvalEnv(**env_cls_kwargs, num_workers=num_workers)
+    return MultiSceneEvalEnv(**env_cls_kwargs)
 
 
 @torch.no_grad()
