@@ -1599,11 +1599,15 @@ def main() -> None:
 
     # Load training configurations
     cfg_path = os.path.join(train_log_dir, "cfgs.pkl")
-    if not os.path.exists(cfg_path):
-        raise FileNotFoundError(f"Could not find cfgs.pkl in {train_log_dir}")
-
-    with open(cfg_path, "rb") as f:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+    yaml_path = os.path.join(train_log_dir, "config.yaml")
+    if os.path.exists(cfg_path):
+        with open(cfg_path, "rb") as f:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+    elif os.path.exists(yaml_path):
+        from WP1.config import RunConfig
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = RunConfig.from_yaml(yaml_path).to_legacy_cfgs()
+    else:
+        raise FileNotFoundError(f"Could not find cfgs.pkl or config.yaml in {train_log_dir}")
 
     urdf_file = _resolve_urdf(args)
 
