@@ -5558,8 +5558,16 @@ def kernel_apply_aero_wrenches_link_frame(
 
         tq_local = ti.Vector([0.0, 0.0, 0.0], dt=gs.ti_float)
         if i_l == L - 1:
-            tq_local[2] = func_finite_or_zero_scalar(-kappa_prop_field[env] * force_local[2])
-            tq_local[2] = ti.math.clamp(tq_local[2], -cap, cap)
+            # Apply propeller reaction torque about the actual thrust axis of the
+            # last aerodynamic surface. This preserves the simple-drone behavior
+            # when thrust is along local +Z and also supports vehicles whose prop
+            # thrust axis is aligned with another local axis (e.g. +X).
+            force_norm = force_local.norm()
+            if force_norm > 1e-9:
+                thrust_axis_local = force_local / force_norm
+                torque_mag = func_finite_or_zero_scalar(-kappa_prop_field[env] * force_norm)
+                torque_mag = ti.math.clamp(torque_mag, -cap, cap)
+                tq_local = thrust_axis_local * torque_mag
             tq_world = gu.ti_transform_by_quat(tq_local, links_state.quat[link, env])
             func_apply_coupling_torque(tq_world, link, env, links_state)
 

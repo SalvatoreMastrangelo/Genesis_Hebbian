@@ -1,11 +1,13 @@
 import os
 import time
 import threading
+import signal
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 from pathlib import Path
 import csv
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 from pynput import keyboard
 import numpy as np
@@ -27,6 +29,7 @@ import sys
 # -------- Redirect ONLY print() output to file --------
 log_file = open("winged_drone_output.txt", "w", buffering=1)
 sys.stdout = log_file
+CONSOLE = sys.__stderr__
 
 
 # Batch size: keep 1 for now, but code is structured to extend to B > 1.
@@ -46,25 +49,42 @@ DRONE_CONFIGS = {
         "urdf_path": MYDRONE_URDF,
         "naca": "3416",
         "servo_joint_names": None,
+        "servo_role_names": None,
         "debug_links": ["fuselage", "left_wing", "right_wing", "elevator_hinge", "rudder"],
         "fallback_servo_gains": None,
         "aero_solver_kind": None,
+        "sweep_command_signs": (1.0, -1.0),  # (left, right)
         "tail_command_signs": (1.0, 1.0),  # (elevator, rudder)
     },
     "lisparrow": {
         "urdf_path": LISPARROW_URDF,
         "naca": None,
-        "servo_joint_names": None,
+        "servo_joint_names": [
+            "joint_left_outer_wing_hinged",
+            "joint_right_outer_wing_hinged",
+            "joint_elevator_hinged",
+            "joint_rudder_hinged",
+        ],
+        "servo_role_names": {
+            "sweep_left": "joint_left_outer_wing_hinged",
+            "sweep_right": "joint_right_outer_wing_hinged",
+            "elevator": "joint_elevator_hinged",
+            "rudder": "joint_rudder_hinged",
+        },
         "debug_links": [
             "fuselage",
-            "center_wing",
-            "left_outer_wing",
-            "right_outer_wing",
-            "elevator",
-            "rudder",
+            "root_wing_fixed",
+            "left_outer_wing_hinged",
+            "right_outer_wing_hinged",
+            "elevator_hinged",
+            "rudder_hinged",
+            "propeller_fixed",
         ],
         "fallback_servo_gains": (20.0, 2.0),
         "aero_solver_kind": "lisparrow",
+        # The Lisparrow wing joints have mirrored axes in the URDF
+        # (left: -Z, right: +Z), so equal target signs produce symmetric sweep.
+        "sweep_command_signs": (1.0, 1.0),  # (left, right)
         # Lisparrow joints are mounted with opposite sign vs keyboard semantics.
         # q=up elevator, a=left rudder.
         "tail_command_signs": (-1.0, -1.0),  # (elevator, rudder)
@@ -121,6 +141,12 @@ def _resolve_drone_config(name: str) -> dict:
 def _classify_joint_role(name: str) -> str | None:
     lname = name.lower()
     if "sweep" in lname:
+        if "left" in lname:
+            return "sweep_left"
+        if "right" in lname:
+            return "sweep_right"
+        return "sweep"
+    if "outer_wing" in lname:
         if "left" in lname:
             return "sweep_left"
         if "right" in lname:
@@ -186,6 +212,40 @@ def _resolve_servo_layout(urdf_path: str, preferred_names: Sequence[str] | None 
         if name:
             role_index[role] = len(names)
             names.append(name)
+
+    return ServoLayout(joint_names=names, role_index=role_index)
+
+
+def _servo_layout_from_role_names(
+    urdf_path: str,
+    role_names: dict[str, str] | None,
+    preferred_names: Sequence[str] | None = None,
+) -> ServoLayout | None:
+    if not role_names:
+        return None
+
+    root = ET.parse(str(urdf_path)).getroot()
+    joint_set = {
+        j.get("name")
+        for j in root.findall(".//joint")
+        if j.get("name")
+    }
+
+    names = list(preferred_names) if preferred_names is not None else []
+    for role in ("sweep_left", "sweep_right", "twist_left", "twist_right", "elevator", "rudder", "sweep", "twist"):
+        name = role_names.get(role)
+        if not name:
+            continue
+        if name not in joint_set:
+            raise ValueError(f"Missing servo joint '{name}' for role '{role}' in URDF.")
+        if name not in names:
+            names.append(name)
+
+    role_index: dict[str, int] = {}
+    for role, name in role_names.items():
+        if name not in names:
+            continue
+        role_index[role] = names.index(name)
 
     return ServoLayout(joint_names=names, role_index=role_index)
 
@@ -302,11 +362,16 @@ class DroneController:
         * apply_joint_commands(dt): integrate keys → servo DOF targets
     """
 
-    def __init__(self, layout: ServoLayout, tail_command_signs: tuple[float, float] = (1.0, 1.0)):
+    def __init__(
+        self,
+        layout: ServoLayout,
+        sweep_command_signs: tuple[float, float] = (1.0, -1.0),
+        tail_command_signs: tuple[float, float] = (1.0, 1.0),
+    ):
         # Initial spawn state for the drone
         self.init_pos = np.array([0.0, 0.0, 20.0], dtype=np.float32)
-        self.init_vel = np.array([10.0, 0.0, -1.0], dtype=np.float32)
-        self.init_euler = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        self.init_vel = np.array([6.0, 0.0, 1.0], dtype=np.float32)
+        self.init_euler = np.array([0.0, -15.0, 0.0], dtype=np.float32)
         self.init_ang_vel = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.init_joint_velocity = np.zeros(0, dtype=np.float32)
         self.init_joint_position = np.zeros(0, dtype=np.float32)
@@ -316,7 +381,7 @@ class DroneController:
         self.pressed_keys: set = set()
 
         # Throttle state (broadcast inside AeroSolver to all envs)
-        self.throttle: float = 0.25
+        self.throttle: float = 0.75
         self._throttle_min: float = 0.0
         self._throttle_max: float = 1.0
         self._throttle_rate: float = 0.2  # change per second
@@ -337,6 +402,8 @@ class DroneController:
         self._twist_rate_sym = 0.2
         self._twist_rate_asym = 0.02
         self._tail_rate = 0.2
+        self._sweep_left_sign = float(sweep_command_signs[0])
+        self._sweep_right_sign = float(sweep_command_signs[1])
         self._elevator_sign = float(tail_command_signs[0])
         self._rudder_sign = float(tail_command_signs[1])
 
@@ -449,16 +516,16 @@ class DroneController:
         # Symmetric sweep (w/s)
         if self._key_w in self.pressed_keys:
             if sw_l is not None:
-                self.servo_cmd[sw_l] += self._sweep_rate * dt
+                self.servo_cmd[sw_l] += self._sweep_left_sign * self._sweep_rate * dt
             if sw_r is not None:
-                self.servo_cmd[sw_r] -= self._sweep_rate * dt
+                self.servo_cmd[sw_r] += self._sweep_right_sign * self._sweep_rate * dt
             if sw is not None and sw_l is None and sw_r is None:
                 self.servo_cmd[sw] += self._sweep_rate * dt
         if self._key_s in self.pressed_keys:
             if sw_l is not None:
-                self.servo_cmd[sw_l] -= self._sweep_rate * dt
+                self.servo_cmd[sw_l] -= self._sweep_left_sign * self._sweep_rate * dt
             if sw_r is not None:
-                self.servo_cmd[sw_r] += self._sweep_rate * dt
+                self.servo_cmd[sw_r] -= self._sweep_right_sign * self._sweep_rate * dt
             if sw is not None and sw_l is None and sw_r is None:
                 self.servo_cmd[sw] -= self._sweep_rate * dt
 
@@ -695,6 +762,28 @@ class DroneModel:
         self._print_every_n_steps: int = 20
         self._step_counter: int = 0
         self._debug_links: List[str] = []
+        self._history: dict[str, list] = {
+            "time": [],
+            "root_pos": [],
+            "root_vel": [],
+            "root_ang_vel": [],
+            "root_rpy_deg": [],
+            "throttle_cmd": [],
+            "servo_cmd": [],
+            "joint_pos": [],
+            "joint_names": [],
+            "surface_force_local": [],
+            "surface_cp_local": [],
+            "surface_alpha_deg": [],
+            "surface_beta_deg": [],
+            "surface_lift": [],
+            "surface_drag": [],
+            "surface_side": [],
+            "surface_flow_local": [],
+            "surface_joint_angle": [],
+            "surface_names": [],
+            "prop_thrust": [],
+        }
 
     # -------------------------- Attach + setup ---------------------------
 
@@ -742,6 +831,21 @@ class DroneModel:
 
     def set_debug_links(self, link_names: Sequence[str]) -> None:
         self._debug_links = [str(name) for name in link_names if name]
+
+    def _snapshot_joint_positions(self, drone, joint_names: Sequence[str]) -> np.ndarray:
+        if not joint_names:
+            return np.zeros(0, dtype=np.float32)
+        q = drone.scene.sim.rigid_solver.get_dofs_position()[0]
+        out = []
+        for name in joint_names:
+            j = drone.get_joint(name)
+            idx = getattr(j, "dofs_idx_local", None)
+            if idx is None:
+                idx = j.dof_idx_local
+            if isinstance(idx, (list, tuple, np.ndarray)):
+                idx = int(idx[0])
+            out.append(float(q[idx]))
+        return np.asarray(out, dtype=np.float32)
 
     # ----------------------- Fetch solver debug data ----------------------
 
@@ -802,6 +906,222 @@ class DroneModel:
             None if flow_l is None else flow_l.detach().cpu().numpy(),
             None if joint_angle is None else joint_angle.detach().cpu().numpy(),
         )
+
+    def record_step(self, controller: DroneController) -> None:
+        if self.scene is None or self.drone is None or self.aero_solver is None:
+            return
+
+        tensors = self._get_debug_tensors()
+        if tensors is None:
+            return
+
+        (
+            fb_np,
+            cp_np,
+            alpha_np,
+            beta_np,
+            lift_np,
+            drag_np,
+            side_np,
+            _alpha_tail_raw_np,
+            _downwash_eps_np,
+            _cl_wing_tail_np,
+            _k_eps_tail_np,
+            flow_l_np,
+            joint_angle_np,
+        ) = tensors
+
+        if self._root_link is not None:
+            root_pos_t = self._root_link.get_pos(envs_idx=0)
+            root_vel_t = self._root_link.get_vel(envs_idx=0)
+            root_ang_t = self._root_link.get_ang(envs_idx=0)
+            root_quat_t = self._root_link.get_quat(envs_idx=0)
+        else:
+            root_pos_t = self.drone.get_pos(envs_idx=0)
+            root_vel_t = self.drone.get_vel(envs_idx=0)
+            root_ang_t = self.drone.get_ang(envs_idx=0)
+            root_quat_t = self.drone.get_quat(envs_idx=0)
+
+        root_pos = root_pos_t.detach().cpu().numpy()
+        root_vel = root_vel_t.detach().cpu().numpy()
+        root_ang = root_ang_t.detach().cpu().numpy()
+        root_quat = root_quat_t.detach().cpu().numpy()
+        if root_pos.ndim > 1:
+            root_pos = root_pos[0]
+        if root_vel.ndim > 1:
+            root_vel = root_vel[0]
+        if root_ang.ndim > 1:
+            root_ang = root_ang[0]
+        if root_quat.ndim > 1:
+            root_quat = root_quat[0]
+        root_rpy_deg = (
+            quat_to_xyz(torch.from_numpy(root_quat.astype(np.float32)[None, :]), rpy=True, degrees=True)[0]
+            .detach()
+            .cpu()
+            .numpy()
+        )
+
+        t = float(len(self._history["time"])) * float(getattr(self.scene.sim, "_substep_dt", 0.01))
+        prop_idx = next((i for i, n in enumerate(self._aero_frames) if "prop" in n.lower()), None)
+        prop_thrust = float(np.linalg.norm(fb_np[prop_idx])) if prop_idx is not None else 0.0
+
+        self._history["time"].append(t)
+        self._history["root_pos"].append(root_pos.astype(np.float32))
+        self._history["root_vel"].append(root_vel.astype(np.float32))
+        self._history["root_ang_vel"].append(root_ang.astype(np.float32))
+        self._history["root_rpy_deg"].append(root_rpy_deg.astype(np.float32))
+        self._history["throttle_cmd"].append(float(controller.throttle))
+        self._history["servo_cmd"].append(np.asarray(controller.servo_cmd, dtype=np.float32).copy())
+        self._history["joint_pos"].append(self._snapshot_joint_positions(self.drone, controller.servo_joint_names))
+        self._history["joint_names"] = list(controller.servo_joint_names)
+        self._history["surface_force_local"].append(np.asarray(fb_np, dtype=np.float32).copy())
+        self._history["surface_cp_local"].append(np.asarray(cp_np, dtype=np.float32).copy())
+        self._history["surface_alpha_deg"].append(np.degrees(alpha_np).astype(np.float32))
+        self._history["surface_beta_deg"].append(np.degrees(beta_np).astype(np.float32))
+        self._history["surface_lift"].append(np.asarray(lift_np, dtype=np.float32).copy())
+        self._history["surface_drag"].append(np.asarray(drag_np, dtype=np.float32).copy())
+        self._history["surface_side"].append(np.asarray(side_np, dtype=np.float32).copy())
+        self._history["surface_flow_local"].append(
+            np.asarray(flow_l_np, dtype=np.float32).copy() if flow_l_np is not None else np.zeros_like(fb_np, dtype=np.float32)
+        )
+        self._history["surface_joint_angle"].append(
+            np.asarray(joint_angle_np, dtype=np.float32).copy()
+            if joint_angle_np is not None
+            else np.zeros(len(self._aero_frames), dtype=np.float32)
+        )
+        self._history["surface_names"] = list(self._aero_frames)
+        self._history["prop_thrust"].append(prop_thrust)
+
+    def save_summary_plots(self, output_dir: Path) -> Optional[Path]:
+        if len(self._history["time"]) < 2:
+            print("[PLOT] Not enough samples collected, skipping summary plot.")
+            return None
+
+        os.environ.setdefault("MPLCONFIGDIR", "/tmp/mpl")
+        import matplotlib
+
+        has_display = bool(os.environ.get("DISPLAY"))
+        if not has_display:
+            matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = output_dir / f"winged_drone_summary_{ts}.png"
+
+        t = np.asarray(self._history["time"], dtype=np.float32)
+        root_pos = np.asarray(self._history["root_pos"], dtype=np.float32)
+        root_vel = np.asarray(self._history["root_vel"], dtype=np.float32)
+        root_ang = np.asarray(self._history["root_ang_vel"], dtype=np.float32)
+        root_rpy = np.asarray(self._history["root_rpy_deg"], dtype=np.float32)
+        throttle = np.asarray(self._history["throttle_cmd"], dtype=np.float32)
+        servo_cmd = np.asarray(self._history["servo_cmd"], dtype=np.float32)
+        joint_pos = np.asarray(self._history["joint_pos"], dtype=np.float32)
+        alpha_deg = np.asarray(self._history["surface_alpha_deg"], dtype=np.float32)
+        beta_deg = np.asarray(self._history["surface_beta_deg"], dtype=np.float32)
+        lift = np.asarray(self._history["surface_lift"], dtype=np.float32)
+        drag = np.asarray(self._history["surface_drag"], dtype=np.float32)
+        side = np.asarray(self._history["surface_side"], dtype=np.float32)
+        flow = np.asarray(self._history["surface_flow_local"], dtype=np.float32)
+        cp_local = np.asarray(self._history["surface_cp_local"], dtype=np.float32)
+        joint_angle = np.asarray(self._history["surface_joint_angle"], dtype=np.float32)
+        prop_thrust = np.asarray(self._history["prop_thrust"], dtype=np.float32)
+        surf_names = list(self._history["surface_names"])
+        joint_names = list(self._history["joint_names"])
+
+        fig, axes = plt.subplots(6, 3, figsize=(24, 28), constrained_layout=True)
+        axs = axes.reshape(-1)
+
+        def _plot_xyz(ax, arr, title, ylabel):
+            ax.plot(t, arr[:, 0], label="x")
+            ax.plot(t, arr[:, 1], label="y")
+            ax.plot(t, arr[:, 2], label="z")
+            ax.set_title(title)
+            ax.set_xlabel("time [s]")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8)
+
+        def _plot_surface_series(ax, arr, title, ylabel):
+            for i, name in enumerate(surf_names):
+                ax.plot(t, arr[:, i], label=name)
+            ax.set_title(title)
+            ax.set_xlabel("time [s]")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=7, ncol=2)
+
+        def _plot_joint_series(ax, arr, title, ylabel):
+            if arr.size == 0:
+                ax.set_title(title)
+                ax.text(0.5, 0.5, "no joints", ha="center", va="center", transform=ax.transAxes)
+                ax.axis("off")
+                return
+            for i, name in enumerate(joint_names):
+                ax.plot(t, arr[:, i], label=name)
+            ax.set_title(title)
+            ax.set_xlabel("time [s]")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=7)
+
+        _plot_xyz(axs[0], root_pos, "Root Position", "m")
+        _plot_xyz(axs[1], root_vel, "Root Linear Velocity", "m/s")
+        _plot_xyz(axs[2], root_ang, "Root Angular Velocity", "rad/s")
+        _plot_xyz(axs[3], root_rpy, "Root Euler Angles", "deg")
+
+        axs[4].plot(t, throttle, label="throttle_cmd")
+        axs[4].plot(t, prop_thrust, label="prop_thrust_norm [N]")
+        axs[4].set_title("Throttle And Propeller Thrust")
+        axs[4].set_xlabel("time [s]")
+        axs[4].grid(True, alpha=0.3)
+        axs[4].legend(fontsize=8)
+
+        _plot_joint_series(axs[5], servo_cmd, "Servo Command Targets", "rad")
+        _plot_joint_series(axs[6], joint_pos, "Actual Joint Positions", "rad")
+        if servo_cmd.size and joint_pos.size and servo_cmd.shape == joint_pos.shape:
+            _plot_joint_series(axs[7], joint_pos - servo_cmd, "Joint Tracking Error", "rad")
+        else:
+            axs[7].axis("off")
+
+        _plot_surface_series(axs[8], alpha_deg, "Alpha Per Surface", "deg")
+        _plot_surface_series(axs[9], beta_deg, "Beta Per Surface", "deg")
+        _plot_surface_series(axs[10], lift, "Lift Debug Scalar Per Surface", "N")
+        _plot_surface_series(axs[11], drag, "Drag Debug Scalar Per Surface", "N")
+        _plot_surface_series(axs[12], side, "Side Force Debug Scalar Per Surface", "N")
+        _plot_surface_series(axs[13], joint_angle, "Solver Surface Joint Angles", "rad")
+
+        _plot_surface_series(axs[14], np.linalg.norm(flow, axis=2), "Local Flow Magnitude Per Surface", "m/s")
+        _plot_surface_series(axs[15], np.linalg.norm(cp_local, axis=2), "CP Local Distance Per Surface", "m")
+
+        axs[16].plot(t, np.linalg.norm(root_vel, axis=1), label="|v|")
+        axs[16].plot(t, np.linalg.norm(root_ang, axis=1), label="|omega|")
+        axs[16].set_title("Velocity Magnitudes")
+        axs[16].set_xlabel("time [s]")
+        axs[16].grid(True, alpha=0.3)
+        axs[16].legend(fontsize=8)
+
+        axs[17].plot(t, root_pos[:, 2], label="altitude z")
+        axs[17].plot(t, root_vel[:, 0], label="forward vx")
+        axs[17].set_title("Altitude And Forward Speed")
+        axs[17].set_xlabel("time [s]")
+        axs[17].grid(True, alpha=0.3)
+        axs[17].legend(fontsize=8)
+
+        fig.suptitle(f"Winged Drone Flight Summary: {DRONE_NAME}", fontsize=18)
+        fig.savefig(out_path, dpi=180)
+
+        if has_display and "PYTEST_VERSION" not in os.environ:
+            try:
+                plt.show()
+            except Exception:
+                plt.close(fig)
+                pass
+        else:
+            plt.close(fig)
+        print(f"[PLOT] saved summary plot to {out_path}")
+        print(f"[PLOT] saved summary plot to {out_path}", file=CONSOLE, flush=True)
+        return out_path
 
     # ---------------------------- Debug step ------------------------------
 
@@ -932,7 +1252,7 @@ class DroneModel:
             is_prop = "prop" in name.lower()
 
             if is_prop:
-                axis_local_t = torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32)
+                axis_local_t = torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float32)
                 axis_world = transform_by_quat(axis_local_t, quat_world_t)[0].detach().cpu().numpy()
                 axis_world /= (np.linalg.norm(axis_world) + 1e-12)
 
@@ -944,7 +1264,7 @@ class DroneModel:
                         pos=cp_world,
                         vec=axis_vec,
                         radius=self.arrow_radius * 0.5,
-                        color=(1.0, 1.0, 0.0, 1.0),  # yellow = prop +Z axis
+                        color=(1.0, 1.0, 0.0, 1.0),  # yellow = prop +X axis
                     )
                     self.scene.draw_debug_arrow(
                         pos=cp_world,
@@ -1184,6 +1504,10 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
     last_time = time.time()
 
     while controller.running:
+        v = scene.viewer
+        if v is not None and hasattr(v, "is_alive") and not v.is_alive():
+            controller.running = False
+            break
 
         now = time.time()
         dt = now - last_time
@@ -1199,16 +1523,15 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
             print("pressed_keys:", controller.pressed_keys)
         # 2) Thrust via AeroSolver (ONLY path to apply thrust)
         controller.apply_thrust(aero_solver, dt)
-
         # 3) Step physics and refresh viewer
         scene.step()  # refresh_visualizer=True by default
+        model.record_step(controller)
 
         # 4) Debug visualization of aero forces (lift + drag arrows)
         model.debug_step()
         model.print_joint_positions(drone, controller.servo_joint_names)
 
         # 5) Limit loop rate to viewer max FPS
-        v = scene.viewer
         if v is not None and v.max_FPS > 0:
             time.sleep(1.0 / v.max_FPS)
 
@@ -1229,9 +1552,16 @@ def main():
     solver_kind = config.get("aero_solver_kind") or AERO_SOLVER_KIND
     _configure_aero_solver(str(solver_kind))
 
-    layout = _resolve_servo_layout(urdf_path, config.get("servo_joint_names"))
+    layout = _servo_layout_from_role_names(
+        urdf_path,
+        config.get("servo_role_names"),
+        config.get("servo_joint_names"),
+    )
+    if layout is None:
+        layout = _resolve_servo_layout(urdf_path, config.get("servo_joint_names"))
     controller = DroneController(
         layout,
+        sweep_command_signs=tuple(config.get("sweep_command_signs", (1.0, -1.0))),
         tail_command_signs=tuple(config.get("tail_command_signs", (1.0, 1.0))),
     )
     servo_joint_names = controller.servo_joint_names
@@ -1387,20 +1717,59 @@ def main():
     # The arrows are thicker and colored so they stay visible even when partly hidden.
 
     # Keep main thread alive while viewer is open
+    interrupted = False
+    old_sigint = signal.getsignal(signal.SIGINT)
     try:
+        def _handle_sigint(signum, frame):
+            nonlocal interrupted
+            interrupted = True
+            controller.running = False
+            print("[INFO] Ctrl+C received, stopping simulation and generating summary plot...", file=CONSOLE, flush=True)
+            try:
+                if scene.viewer is not None and hasattr(scene.viewer, "stop"):
+                    scene.viewer.stop()
+            except Exception:
+                pass
+
+        signal.signal(signal.SIGINT, _handle_sigint)
         while controller.running:
-            time.sleep(0.1)
-    finally:
+            if scene.viewer is not None and hasattr(scene.viewer, "is_alive") and not scene.viewer.is_alive():
+                controller.running = False
+                break
+            time.sleep(0.01)
+    except KeyboardInterrupt:
+        interrupted = True
         controller.running = False
+        print("[INFO] Ctrl+C received, stopping simulation and generating summary plot...", file=CONSOLE, flush=True)
+    finally:
+        try:
+            signal.signal(signal.SIGINT, old_sigint)
+        except Exception:
+            pass
+        controller.running = False
+        try:
+            if scene.viewer is not None and hasattr(scene.viewer, "stop"):
+                scene.viewer.stop()
+        except Exception:
+            pass
         try:
             listener.stop()
         except NotImplementedError:
             pass
-        sim_thread.join(timeout=2.0)
+        try:
+            sim_thread.join(timeout=2.0)
+        except KeyboardInterrupt:
+            interrupted = True
+            controller.running = False
+        plot_path = model.save_summary_plots(Path.cwd() / "plots")
+        if plot_path is None:
+            print("[PLOT] no plot generated.", file=CONSOLE, flush=True)
         try:
             log_file.close()
         except Exception:
             pass
+        if interrupted:
+            return
 
 
 

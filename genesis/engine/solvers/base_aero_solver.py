@@ -378,7 +378,10 @@ class BaseAeroSolver(Solver):
     ):
         prop_idx = ti.max(0, self.L - 1)
         for b in range(self.B):
-            thrust = ti.abs(self.force_b[b, prop_idx][2])
+            # The propeller thrust axis is solver-specific (e.g. +z for the
+            # simple drone, +x for Lisparrow). Export the force magnitude so
+            # external logging/eval code does not silently assume one axis.
+            thrust = self.force_b[b, prop_idx].norm()
             if ti.math.isnan(thrust) or ti.math.isinf(thrust):
                 thrust = 0.0
             out_thrust[b] = thrust
@@ -390,8 +393,16 @@ class BaseAeroSolver(Solver):
         out_beta0: ti.types.ndarray(dtype=ti.f32, ndim=1),
     ):
         for b in range(self.B):
-            out_alpha0[b] = ti.cast(self.alpha_dbg[b, 0], ti.f32)
-            out_beta0[b] = ti.cast(self.beta_dbg[b, 0], ti.f32)
+            idx = 0
+            if ti.static(hasattr(self, "kind")):
+                found = 0
+                for l in range(self.L):
+                    k = ti.cast(self.kind[l], ti.i32)
+                    if found == 0 and k != 0 and k != 4:
+                        idx = l
+                        found = 1
+            out_alpha0[b] = ti.cast(self.alpha_dbg[b, idx], ti.f32)
+            out_beta0[b] = ti.cast(self.beta_dbg[b, idx], ti.f32)
 
     # ---------------------------------------------------------------------
     # Taichi kernels / device-side logic (generic helpers)

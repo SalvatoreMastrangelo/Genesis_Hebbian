@@ -43,12 +43,16 @@ def configure_runtime_aero_solver(solver_kind: str | None) -> None:
     interactive scripts. Environments that do not call this function keep
     the default Genesis `AeroSolver` export.
     """
-    if not is_lisparrow_profile(solver_kind):
-        return
-
-    from genesis.engine.solvers.drones.lisparrow import LisparrowAeroSolver
+    from genesis.engine.solvers.drones.simple_drone import SimpleDroneAeroSolver
     import genesis.engine.simulator as gs_sim
     import genesis.engine.solvers as gs_solvers
 
-    gs_sim.AeroSolver = LisparrowAeroSolver
-    gs_solvers.AeroSolver = LisparrowAeroSolver
+    if is_lisparrow_profile(solver_kind):
+        from genesis.engine.solvers.drones.lisparrow import LisparrowAeroSolver
+
+        gs_sim.AeroSolver = LisparrowAeroSolver
+        gs_solvers.AeroSolver = LisparrowAeroSolver
+        return
+
+    gs_sim.AeroSolver = SimpleDroneAeroSolver
+    gs_solvers.AeroSolver = SimpleDroneAeroSolver
