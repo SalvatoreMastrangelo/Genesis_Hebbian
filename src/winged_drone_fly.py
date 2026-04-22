@@ -1904,7 +1904,8 @@ def run_sim(scene: gs.Scene, drone, controller: DroneController, model: DroneMod
         if dt <= 0.0:
             dt = scene.sim._substep_dt if hasattr(scene.sim, "_substep_dt") else 0.01
 
-        controller.update_prescribed_trajectory(dt)
+        sim_dt = float(getattr(scene.sim, "_substep_dt", dt))
+        controller.update_prescribed_trajectory(sim_dt)
 
         # 1) Control surfaces (servo joints)
         controller.apply_joint_commands(dt)

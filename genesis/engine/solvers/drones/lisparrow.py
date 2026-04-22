@@ -25,12 +25,14 @@ LISPARROW_S_OUTER_ZERO = 0.01629
 
 LISPARROW_SERVO_GAIN_OVERRIDES: dict[str, tuple[float, float]] = {
     # Genesis PD gains are torque/rad and torque/(rad/s).  The actuator CSV
-    # keeps dyn_casadi normalized-state coefficients; apply the inertia-scaled
-    # runtime values here for the Lisparrow rigid-body joints.
-    "joint_left_outer_wing_hinged": (10.0, 2.0),
-    "joint_right_outer_wing_hinged": (10.0, 2.0),
-    "joint_elevator_hinged": (10.0, 2.0),
-    "joint_rudder_hinged": (10.0, 2.0),
+    # keeps catalog coefficients that are not the dyn_casadi actuator model.
+    # These Lisparrow-only runtime values keep enough stiffness for roughly
+    # 10 m/s aerodynamic loads.  The Lisparrow URDF also carries passive joint
+    # damping/friction, so kv is only the active PD damping contribution.
+    "joint_left_outer_wing_hinged":  (10.0, 1.5),
+    "joint_right_outer_wing_hinged": (10.0, 1.5),
+    "joint_elevator_hinged":         (10.0, 1.5),
+    "joint_rudder_hinged":           (10.0, 1.5),
 }
 
 
@@ -83,7 +85,9 @@ class LisparrowAeroDefaults:
         # dyn_casadi motor_tau_inv = 2.054 rad/s.  The existing solver
         # parameter is named as a cutoff frequency, so keep the equivalent Hz.
         "prop_cutoff_hz": 2.054 / (2.0 * math.pi),
-        "kappa_prop": 0.002,
+        # dyn_casadi applies thrust at pos_prop but does not include a
+        # propeller spin reaction torque.
+        "kappa_prop": 0.0,
         "throttle_offset": 0.05,
         "motor_omega_map": -0.6713,
         "motor_tau_inv": 2.054,
@@ -1539,10 +1543,9 @@ class LisparrowAeroSolver(BaseAeroSolver):
             # first-order motor lag, then thrust proportional to omega^2.
             u_thr = ti.math.clamp(ti.cast(self._thr_raw[b], ti.f32), self.throttle_offset[b], 1.0)
             omega_des = self._motor_throttle_to_omega(b, u_thr)
-            motor_tau_inv = ti.max(1e-6, 2.0 * ti.math.pi * self.prop_cutoff_hz[b])
-            self.omega_mot_norm[b] += self._substep_dt * motor_tau_inv * (
-                omega_des - self.omega_mot_norm[b]
-            )
+            motor_tau_inv = ti.max(1e-6, self.motor_tau_inv[b])
+            motor_alpha = 1.0 - ti.exp(-self._substep_dt * motor_tau_inv)
+            self.omega_mot_norm[b] += motor_alpha * (omega_des - self.omega_mot_norm[b])
             self.omega_mot_norm[b] = ti.math.clamp(self.omega_mot_norm[b], 0.0, 1.0)
             self._thr_flt[b] = self.omega_mot_norm[b]
             thrust_mag = (self.omega_mot_norm[b] * self.omega_mot_norm[b]) * ti.max(0.0, self.max_thrust[b])

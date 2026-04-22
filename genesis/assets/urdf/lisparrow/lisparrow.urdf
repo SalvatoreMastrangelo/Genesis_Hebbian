@@ -152,8 +152,11 @@
     <limit
       lower="-0.5"
       upper="0.5"
-      effort="1.0"
-      velocity="3.665191429" />
+      effort="1.5"
+      velocity="25.0" />
+    <dynamics
+      damping="0.01"
+      friction="0.03" />
   </joint>
   <link
     name="vertical_tail_fixed">
@@ -263,8 +266,11 @@
     <limit
       lower="-0.5"
       upper="0.5"
-      effort="1.0"
-      velocity="3.665191429" />
+      effort="1.5"
+      velocity="25.0" />
+    <dynamics
+      damping="0.01"
+      friction="0.03" />
   </joint>
   <link
     name="root_wing_fixed">
@@ -375,7 +381,10 @@
       lower="-1.4"
       upper="0.2"
       effort="1.5"
-      velocity="3.665191429" />
+      velocity="20.0" />
+    <dynamics
+      damping="0.01"
+      friction="0.05" />
   </joint>
   <link
     name="right_outer_wing_hinged">
@@ -433,7 +442,10 @@
       lower="-1.4"
       upper="0.2"
       effort="1.5"
-      velocity="3.665191429" />
+      velocity="20.0" />
+    <dynamics
+      damping="0.01"
+      friction="0.05" />
   </joint>
   <link
     name="propeller_fixed">
