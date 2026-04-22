@@ -121,6 +121,15 @@ class EvaluationConfig:
     dens_min: Optional[float] = None  # override forest density at x=0 [trees/m]
     dens_max: Optional[float] = None  # override forest density at x=x_upper [trees/m]
     refresh_forests_per_generation: bool = False
+    # When True and num_urdfs > 1, pack all N URDFs into ONE Genesis scene via
+    # MultiDroneEnv (single scene.step per timestep). Auto-resets crashed envs
+    # to keep shared Taichi state NaN-free. Retained as an opt-in path for
+    # future hardware or Genesis versions where heterogeneous-entity scenes
+    # become efficient. On the current Genesis rigid solver this is SLOWER
+    # per timestep than the default multi-scene path (the constraint solver
+    # scales super-linearly with entities-per-scene), so leave False unless
+    # benchmarking single-scene specifically.
+    use_single_scene_multi_urdf: bool = False
 
 
 @dataclass

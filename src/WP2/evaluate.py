@@ -548,24 +548,39 @@ def _build_multi_urdf_env(
     num_envs_per_drone: int,
     num_workers: int = 1,
 ):
-    """Build a multi-URDF eval env — one Genesis scene per URDF.
+    """Build a multi-URDF eval env.
 
-    When ``num_workers > 1`` returns a ``ParallelMultiSceneEvalEnv`` that
-    dispatches D/N URDFs to N worker processes concurrently, exploiting GPU
-    headroom.  Otherwise returns the default sequential ``MultiSceneEvalEnv``.
+    Three backends, dispatched by config:
 
-    We mirror ``WP1.train``'s ``Gen_Env`` pattern: each URDF gets its own
-    ``WingedDroneEnv`` (its own rigid solver, aero Taichi state, and
-    contact/constraint buffers).  The legacy single-scene multi-URDF env
-    shared Taichi state across D URDFs, which caused NaN from one URDF's
-    crashed physics to contaminate every env on the next reset → we avoid
-    that failure mode entirely by isolating the scenes.
+    - ``cfg.evaluation.use_single_scene_multi_urdf`` → wraps ``MultiDroneEnv``
+      (all N URDFs in one Genesis scene, single ``scene.step`` per timestep).
+      Uses ``auto_reset_on_crash=True`` so a crashed env's physics state is
+      sanitized before the next step, preventing NaN contamination of the
+      shared Taichi rigid/aero state. Note: on the current Genesis rigid
+      solver this path is measurably SLOWER per timestep than the default
+      multi-scene one (constraint solver cost scales super-linearly with
+      entities-per-scene). Retained opt-in as a correctness-ready reference
+      and future-proof hook, not as a speedup.
 
-    The WP1 config is translated through ``to_legacy_cfgs()`` — exactly the
-    same pipeline ``WP1.train`` uses — and then patched with the same
-    eval-time overrides as the legacy single-URDF path (episode length,
-    optional ``x_upper``, disabled genome obs).
+    - ``num_workers > 1`` → ``ParallelMultiSceneEvalEnv`` (D/N workers, each
+      owning a slice of the catalog in its own process). Useful when a
+      single GPU has genuine spare compute; otherwise IPC + CUDA context
+      contention cancel the parallelism gain on small batches.
+
+    - default → ``MultiSceneEvalEnv`` (N isolated ``WingedDroneEnv`` scenes
+      stepped sequentially). The multi-scene physics cost scales sub-linearly
+      with E, so increasing envs-per-scene is the cheapest lever for
+      throughput.
     """
+    if cfg.evaluation.use_single_scene_multi_urdf:
+        return _build_single_scene_multi_urdf_env(
+            urdf_paths=urdf_paths,
+            cfg=cfg,
+            wp1_cfg=wp1_cfg,
+            device=device,
+            num_envs_per_drone=num_envs_per_drone,
+        )
+
     from WP2.multi_scene_eval_env import MultiSceneEvalEnv
 
     env_cfg, obs_cfg, reward_cfg, command_cfg, _ = wp1_cfg.to_legacy_cfgs()
@@ -601,6 +616,62 @@ def _build_multi_urdf_env(
         from WP2.parallel_multi_scene_eval_env import ParallelMultiSceneEvalEnv
         return ParallelMultiSceneEvalEnv(**env_cls_kwargs, num_workers=num_workers)
     return MultiSceneEvalEnv(**env_cls_kwargs)
+
+
+def _build_single_scene_multi_urdf_env(
+    urdf_paths: List[str],
+    cfg: HebbianEvolutionConfig,
+    wp1_cfg,
+    device: str,
+    num_envs_per_drone: int,
+):
+    """Single-scene multi-URDF eval env via ``MultiDroneEnv``.
+
+    Packs all N URDFs into one Genesis scene as separate entities, each with
+    its own aero solver. One ``scene.step`` advances all N×E drone instances
+    together. The intended upside was 1 scene.step/timestep vs N sequential
+    scene.step calls; empirically the current Genesis rigid solver handles
+    heterogeneous entities per scene less efficiently than N homogeneous
+    scenes, so this path is a correctness reference rather than a speedup.
+
+    The ``auto_reset_on_crash=True`` knob is required: crashed drones would
+    otherwise leave NaN in the shared Taichi rigid/aero state and contaminate
+    every other env on the next step. Auto-reset sanitizes the per-env DOF
+    and aero solver state while the WP2 rollout's persistent-done tracker
+    still records the termination event for metric purposes.
+    """
+    import copy
+    from multi_urdf_utils.multi_drone_env import MultiDroneEnv
+
+    # Clone wp1_cfg and apply the same eval-time overrides the MultiSceneEvalEnv
+    # path applies via ``to_legacy_cfgs`` — MultiDroneEnv takes ``wp1_cfg``
+    # directly, so we mutate a local copy rather than the caller's instance.
+    wp1_cfg_local = copy.deepcopy(wp1_cfg)
+    wp1_cfg_local.env.episode_length_s = 200.0
+    if cfg.evaluation.x_upper is not None:
+        wp1_cfg_local.env.x_upper = float(cfg.evaluation.x_upper)
+        wp1_cfg_local.env.forest_x_limit = float(cfg.evaluation.x_upper)
+    if cfg.evaluation.dens_min is not None:
+        wp1_cfg_local.env.dens_min = float(cfg.evaluation.dens_min)
+    if cfg.evaluation.dens_max is not None:
+        wp1_cfg_local.env.dens_max = float(cfg.evaluation.dens_max)
+    # Policy sees no genome; only the evaluated drone's morphology matters
+    # implicitly via the actual URDF it's flying.
+    wp1_cfg_local.obs.add_genome_obs_actor = False
+    wp1_cfg_local.obs.add_genome_obs_critic = False
+
+    env = MultiDroneEnv(
+        urdf_paths=urdf_paths,
+        num_envs=num_envs_per_drone,
+        wp1_cfg=wp1_cfg_local,
+        device=device,
+        vmin=float(cfg.evaluation.vmin),
+        vmax=float(cfg.evaluation.vmax),
+        record=False,
+        training_mode=False,          # eval thresholds (roll 100°, collision_tol 0.01)
+        auto_reset_on_crash=True,     # NaN-safety: sanitize crashed envs' physics state
+    )
+    return env
 
 
 @torch.no_grad()

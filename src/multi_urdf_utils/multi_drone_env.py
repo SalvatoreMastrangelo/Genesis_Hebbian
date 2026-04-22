@@ -101,6 +101,7 @@ class _DroneState:
         # --- Rewards ---
         "rew_buf",
         "episode_sums", "last_reward_components", "last_reward_total",
+        "reward_names", "reward_scales",  # exposed for WP2 rollout per-drone access
         # --- Observations ---
         "priv_obs_buf",
         "commands", "obs",
@@ -152,6 +153,7 @@ class MultiDroneEnv:
         vmax: float = 30.0,
         record: bool = False,
         training_mode: bool = False,
+        auto_reset_on_crash: bool = False,
     ):
         self.D = len(urdf_paths)
         self.E = num_envs
@@ -160,6 +162,13 @@ class MultiDroneEnv:
         self.vmin = vmin
         self.vmax = vmax
         self.training_mode = training_mode
+        # Eval-mode NaN-safety knob: when True, crashed envs get their physics
+        # state fully sanitized via ``_reset_drone_idx`` after termination
+        # detection, even though we're not in training mode. This prevents a
+        # single NaN-inducing crash from contaminating the shared Taichi state
+        # across all D URDFs in the scene. WP2's rollout tracks permanent-done
+        # via its own accumulator, so the auto-reset is invisible to metrics.
+        self.auto_reset_on_crash = auto_reset_on_crash
 
         # Extract env parameters from WP1 config
         env_cfg = wp1_cfg.to_env_cfg()
@@ -471,6 +480,10 @@ class MultiDroneEnv:
                 name: torch.zeros(self.E, device=self.device)
                 for name in self.reward_names
             }
+            # Per-drone aliases so WP2 rollout can read reward metadata via
+            # ``env.drones[0].reward_names`` (mirrors the WingedDroneEnv API).
+            ds.reward_names = self.reward_names
+            ds.reward_scales = self.reward_scales
             # Target height and success threshold
             ds.target_height = self.target_height
             ds._success_x_limit_train = self._success_x_limit_train
@@ -682,6 +695,34 @@ class MultiDroneEnv:
                 term = self._check_termination(ds)
                 ds.done |= term
                 self.done_buf[i] = ds.done
+
+                # Optional NaN-safety sanitation: crashed envs get their
+                # physics state reset BEFORE the next scene.step() so they
+                # cannot feed NaN forces into the shared Taichi rigid/aero
+                # state. ``ds.reset_buf`` stays True for these envs so the
+                # WP2 rollout's persistent-done tracker still sees the
+                # termination event this step.
+                if self.auto_reset_on_crash:
+                    reset_env_ids = term.nonzero(as_tuple=False).flatten()
+                    if reset_env_ids.numel() > 0:
+                        # Snapshot the per-step crash breakdown + NaN flag
+                        # BEFORE ``_reset_drone_idx`` clears them, then
+                        # restore after reset so the WP2 rollout (which
+                        # reads these AFTER env.step returns) still sees
+                        # the correct termination reason / NaN status for
+                        # this step.
+                        pre_coll = ds.pre_collision[reset_env_ids].clone()
+                        pre_wall = ds.pre_wall_crash[reset_env_ids].clone()
+                        pre_ang = ds.pre_angle_limit[reset_env_ids].clone()
+                        pre_nan_envs = ds.nan_envs[reset_env_ids].clone()
+                        self._reset_drone_idx(ds, reset_env_ids)
+                        # Rebuild obs at the fresh state so the next
+                        # env.step() starts from a consistent starting point.
+                        self._compute_obs(i, ds)
+                        ds.pre_collision[reset_env_ids] = pre_coll
+                        ds.pre_wall_crash[reset_env_ids] = pre_wall
+                        ds.pre_angle_limit[reset_env_ids] = pre_ang
+                        ds.nan_envs[reset_env_ids] = pre_nan_envs
 
         # 4. Build extras dict
         if self.training_mode:
