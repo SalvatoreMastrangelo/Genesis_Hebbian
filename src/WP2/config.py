@@ -118,6 +118,8 @@ class EvaluationConfig:
     stochastic: bool = True
     run_baseline: bool = False
     x_upper: Optional[float] = None  # override WP1 forest corridor length [m]
+    dens_min: Optional[float] = None  # override forest density at x=0 [trees/m]
+    dens_max: Optional[float] = None  # override forest density at x=x_upper [trees/m]
     refresh_forests_per_generation: bool = False
 
 
