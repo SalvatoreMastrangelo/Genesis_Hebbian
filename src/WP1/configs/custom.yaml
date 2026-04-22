@@ -151,6 +151,9 @@ reward:
 ##############################################################################
 command:
   num_commands: 1                           # Number of simultaneous command types (1 = single waypoint navigation)
+  min_speed: 5.0                            # Minimum sampled forward speed during training (m/s)
+  max_speed: 25.0                           # Maximum sampled forward speed during training (m/s)
+  eval_speed: 12.0                          # Fixed forward speed used during single-env evaluation (m/s)
 
 ##############################################################################
 # Multi-drone URDF catalog (for multi-agent training)

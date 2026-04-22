@@ -404,15 +404,16 @@ def create_overlay_video(
     vel_commanded = np.full_like(t_all, v_commanded, dtype=np.float32)
 
     # Layout: left column = videos, right column = plots; optional full-width
-    # heatmap row appended at the bottom for Hebbian runs.
-    fig_h = 9 if not has_heatmap else 11
+    # heatmap row appended at the bottom for Hebbian runs, plus an extra
+    # time-series row below the heatmap for weight-drift / step-size curves.
+    fig_h = 9 if not has_heatmap else 13
     fig = plt.figure(figsize=(16, fig_h), dpi=dpi)
     if has_heatmap:
         gs = GridSpec(
-            nrows=8,
+            nrows=9,
             ncols=3,
             width_ratios=[1.8, 0.06, 1.0],
-            height_ratios=[1.3, 1.3, 1.3, 1.0, 1.0, 0.7, 0.2, 1.6],
+            height_ratios=[1.3, 1.3, 1.3, 1.0, 1.0, 0.7, 0.2, 1.6, 1.0],
             wspace=0.08,
             hspace=0.30,
         )
@@ -522,6 +523,58 @@ def create_overlay_video(
         )
         fig.colorbar(im_heatmap, cax=ax_cbar)
 
+    # Hebbian-only dynamic curves: cumulative drift and per-step change of
+    # the last-layer weights, summed over all (action, hidden) entries.
+    # Uses a twin y-axis so the (small) per-step curve stays readable next
+    # to the (much larger) cumulative-drift curve.
+    ln_drift = ln_step = None
+    ax_wstats = ax_wstats_step = None
+    drift_sq = step_sq = None
+    if has_heatmap:
+        drift_sq = (weight_delta.astype(np.float64) ** 2).sum(axis=(1, 2))
+        step_diff = np.diff(weight_delta.astype(np.float64), axis=0)
+        step_sq = np.concatenate(
+            [[0.0], (step_diff ** 2).sum(axis=(1, 2))]
+        )
+
+        gs_ws = GridSpecFromSubplotSpec(
+            1, 2, subplot_spec=gs[8, :], width_ratios=[1.0, 0.015], wspace=0.02
+        )
+        ax_wstats = fig.add_subplot(gs_ws[0, 0])
+        ax_wstats.grid(True, lw=0.3, alpha=0.4)
+        ax_wstats.set_xlabel("t [s]")
+
+        color_drift = "tab:blue"
+        color_step = "tab:red"
+
+        y_top_drift = float(drift_sq.max())
+        if not np.isfinite(y_top_drift) or y_top_drift <= 0.0:
+            y_top_drift = 1e-8
+        ax_wstats.set_ylim(0.0, y_top_drift * 1.1)
+        ax_wstats.set_ylabel(r"$\Sigma (W - W_{ckpt})^2$", color=color_drift)
+        ax_wstats.tick_params(axis="y", labelcolor=color_drift)
+        (ln_drift,) = ax_wstats.plot(
+            [], [], lw=1.8, color=color_drift,
+            label=r"$\Sigma (W - W_{ckpt})^2$",
+        )
+
+        ax_wstats_step = ax_wstats.twinx()
+        y_top_step = float(step_sq.max())
+        if not np.isfinite(y_top_step) or y_top_step <= 0.0:
+            y_top_step = 1e-8
+        ax_wstats_step.set_ylim(0.0, y_top_step * 1.1)
+        ax_wstats_step.set_ylabel(r"$\Sigma (W_t - W_{t-1})^2$", color=color_step)
+        ax_wstats_step.tick_params(axis="y", labelcolor=color_step)
+        (ln_step,) = ax_wstats_step.plot(
+            [], [], lw=1.4, color=color_step,
+            label=r"$\Sigma (W_t - W_{t-1})^2$",
+        )
+
+        ax_wstats.legend(
+            handles=[ln_drift, ln_step],
+            fontsize=9, frameon=False, loc="upper left", ncol=2,
+        )
+
     # First frames
     okC, frm_cam = cap_cam.read()
     okT, frm_td = cap_td.read()
@@ -583,6 +636,13 @@ def create_overlay_video(
             if im_heatmap is not None:
                 hm_idx = min(idx, weight_delta.shape[0] - 1)
                 im_heatmap.set_data(weight_delta[hm_idx])
+
+            if ln_drift is not None:
+                ws_idx = min(idx, drift_sq.shape[0] - 1)
+                ln_drift.set_data(t_all[: ws_idx + 1], drift_sq[: ws_idx + 1])
+                ln_step.set_data(t_all[: ws_idx + 1], step_sq[: ws_idx + 1])
+                ax_wstats.set_xlim(0, max(t_all[ws_idx], 1e-6))
+                ax_wstats_step.set_xlim(0, max(t_all[ws_idx], 1e-6))
 
             writer.grab_frame()
 

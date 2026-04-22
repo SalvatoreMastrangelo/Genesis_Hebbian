@@ -309,12 +309,12 @@ def _print_generation_table(
         if baseline is not None:
             breakdown_headers = [
                 "Reward Component",
-                "Best-Fit (Hebb)", "Mean (Hebb)", "Worst-Fit (Hebb)",
+                "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)",
                 "Std", "Baseline",
             ]
         else:
             breakdown_headers = [
-                "Reward Component", "Best-Fit", "Mean", "Worst-Fit", "Std",
+                "Reward Component", "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)", "Std",
             ]
 
         print("\n  Reward Breakdown (per-component episode sum):")

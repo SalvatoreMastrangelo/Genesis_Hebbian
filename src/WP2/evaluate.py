@@ -65,6 +65,10 @@ def _build_env(
     if cfg.evaluation.x_upper is not None:
         env_cfg["x_upper"] = cfg.evaluation.x_upper
         env_cfg["forest_x_limit"] = cfg.evaluation.x_upper
+    if cfg.evaluation.dens_min is not None:
+        env_cfg["dens_min"] = float(cfg.evaluation.dens_min)
+    if cfg.evaluation.dens_max is not None:
+        env_cfg["dens_max"] = float(cfg.evaluation.dens_max)
     if base_init_pos is not None:
         env_cfg["base_init_pos"] = list(base_init_pos)
 
@@ -271,6 +275,10 @@ def _build_env_from_urdf(
     if cfg.evaluation.x_upper is not None:
         env_cfg["x_upper"] = cfg.evaluation.x_upper
         env_cfg["forest_x_limit"] = cfg.evaluation.x_upper
+    if cfg.evaluation.dens_min is not None:
+        env_cfg["dens_min"] = float(cfg.evaluation.dens_min)
+    if cfg.evaluation.dens_max is not None:
+        env_cfg["dens_max"] = float(cfg.evaluation.dens_max)
     obs_cfg["add_genome_obs_actor"] = False
     obs_cfg["add_genome_obs_critic"] = False
 
@@ -567,6 +575,10 @@ def _build_multi_urdf_env(
     if cfg.evaluation.x_upper is not None:
         env_cfg["x_upper"] = float(cfg.evaluation.x_upper)
         env_cfg["forest_x_limit"] = float(cfg.evaluation.x_upper)
+    if cfg.evaluation.dens_min is not None:
+        env_cfg["dens_min"] = float(cfg.evaluation.dens_min)
+    if cfg.evaluation.dens_max is not None:
+        env_cfg["dens_max"] = float(cfg.evaluation.dens_max)
 
     obs_cfg = dict(obs_cfg)
     obs_cfg["add_genome_obs_actor"] = False
