@@ -5,7 +5,7 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: single_new_2  # Name of the experiment for logging/tracking
+exp_name: single_new_3  # Name of the experiment for logging/tracking
 
 ##############################################################################
 # PPO (Proximal Policy Optimization) hyperparameters
@@ -65,7 +65,7 @@ env:
   termination_if_y_greater_than: 50.0       # Terminate if drone y-position exceeds this (meters)
   termination_if_z_greater_than: 50.0       # Terminate if drone z-position exceeds this (meters)
   base_init_pos: [-30.0, 0.0, 15.0]         # Initial position [x, y, z] in meters
-  base_init_quat: [1.0, 0.0, 0.0, 0.0]     # Initial orientation as quaternion [w, x, y, z]
+  base_init_quat: [1.0, 0.0, 0.0, 0.0]      # Initial orientation as quaternion [w, x, y, z]
   randomize_init_quat: false                # Randomize initial orientation each episode
   randomize_joint_pos: false                # Randomize initial joint positions
   episode_length_s: 100.0                   # Episode duration in seconds
@@ -129,7 +129,7 @@ obs:
   noise_std_joint_pos: 0.0                  # Noise on joint positions (if critic privileged obs)
   noise_std_joint_vel: 0.0                  # Noise on joint velocities (if critic privileged obs)
   noise_std_ang_vel: 0.0                    # Noise on angular velocity (if critic privileged obs)
-  noise_std_effective_thrust: 0.0            # Noise on effective thrust observation (if critic privileged obs)
+  noise_std_effective_thrust: 0.0           # Noise on effective thrust observation (if critic privileged obs)
 
 ##############################################################################
 # Reward function weights (all components summed for total reward)
