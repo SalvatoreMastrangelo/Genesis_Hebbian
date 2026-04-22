@@ -551,7 +551,7 @@ def create_overlay_video(
         if not np.isfinite(y_top_drift) or y_top_drift <= 0.0:
             y_top_drift = 1e-8
         ax_wstats.set_ylim(0.0, y_top_drift * 1.1)
-        ax_wstats.set_ylabel(r"$\Sigma (W - W_{ckpt})^2$", color=color_drift)
+        ax_wstats.set_ylabel("cumulative", color=color_drift)
         ax_wstats.tick_params(axis="y", labelcolor=color_drift)
         (ln_drift,) = ax_wstats.plot(
             [], [], lw=1.8, color=color_drift,
@@ -563,7 +563,7 @@ def create_overlay_video(
         if not np.isfinite(y_top_step) or y_top_step <= 0.0:
             y_top_step = 1e-8
         ax_wstats_step.set_ylim(0.0, y_top_step * 1.1)
-        ax_wstats_step.set_ylabel(r"$\Sigma (W_t - W_{t-1})^2$", color=color_step)
+        ax_wstats_step.set_ylabel("per step", color=color_step)
         ax_wstats_step.tick_params(axis="y", labelcolor=color_step)
         (ln_step,) = ax_wstats_step.plot(
             [], [], lw=1.4, color=color_step,
