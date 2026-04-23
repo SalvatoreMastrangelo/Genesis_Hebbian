@@ -19,19 +19,19 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: generalist_256_single_urdf_0.01_0.05
+exp_name: generalist_256_single_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.01                     # 0.0025 seems better for multi-urdf controllers. of course you dumb fuck, you're setting the hebbian effect lower, so it's just more similar to the baseline
+  eta: 0.005                     # 0.0025 seems better for multi-urdf controllers. of course you dumb fuck, you're setting the hebbian effect lower, so it's just more similar to the baseline
   evolve_eta: false
   decay: 0.05
   evolve_decay: false
   use_oja_coefficient: false
-  initialize_rules_to_zero: true
+  initialize_rules_to_zero: false
   w_max: 5000.0
   A_range: [-1.5, 1.5]
   B_range: [-1.5, 1.5]
@@ -68,7 +68,7 @@ evaluation:
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor each gen for comparison
   x_upper: 500         # override forest corridor length [m]; null = use WP1 config value
   dens_min: 0.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
-  dens_max: 5.5        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
+  dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
 
 seed: 55

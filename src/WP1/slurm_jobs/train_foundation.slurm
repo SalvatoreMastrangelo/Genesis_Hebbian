@@ -26,6 +26,13 @@ CFG_FILE=${CFG_FILE:-configs/foundation.yaml}
 RUN_TAG=${RUN_TAG:-wp1_foundation_${SLURM_JOB_ID}}
 CLI_OVERRIDES=${CLI_OVERRIDES:-}
 
+# Resume: set RESUME=1 to restart from the latest checkpoint found in RUN_DIR.
+# run_parallel.sh forwards this automatically when invoked with RESUME=1.
+# Example: sbatch --export=ALL,RESUME=1,CFG_FILE=... train_foundation.slurm
+RESUME=${RESUME:-0}
+RESUME_FLAG=""
+[ "${RESUME}" -ne 0 ] && RESUME_FLAG="--resume"
+
 # Multi-GPU: set MULTI_GPU=N to split the URDF catalog across N GPUs.
 # MULTI_GPU must be <= the number of --gpus requested above.
 # Example: sbatch --gpus=2 --export=ALL,MULTI_GPU=2,CFG_FILE=... train_foundation.slurm
@@ -165,12 +172,12 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
     echo \"[RUNTIME] Logical-super-scene mode enabled (using YAML config)\"
     python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} \
       --cfg.lss.enabled true \
-      ${CLI_OVERRIDES}
+      ${RESUME_FLAG} ${CLI_OVERRIDES}
   elif [ \"${MULTI_GPU:-1}\" -gt 1 ]; then
     echo \"[RUNTIME] Multi-GPU mode: distributing across ${MULTI_GPU} GPUs\"
-    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} --multi-gpu ${MULTI_GPU} ${CLI_OVERRIDES}
+    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} --multi-gpu ${MULTI_GPU} ${RESUME_FLAG} ${CLI_OVERRIDES}
   else
-    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} ${CLI_OVERRIDES}
+    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} ${RESUME_FLAG} ${CLI_OVERRIDES}
   fi
 "
 

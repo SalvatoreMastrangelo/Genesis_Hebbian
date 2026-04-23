@@ -92,7 +92,7 @@ env:
   growing_forest: true                      # Regenerate random forest layout each episode
   aero_noise: true                          # Add aerodynamic noise to forces/moments
   aero_noise_sigma0: 0.05                   # Base aerodynamic noise standard deviation
-  noise_sigma_param: 0.15                   # Scaling parameter for aerodynamic noise
+  noise_sigma_param: 0.1                    # Scaling parameter for aerodynamic noise
 
 ##############################################################################
 # Evaluation-specific environment overrides (for videos/evaluation episodes)
@@ -139,7 +139,7 @@ reward:
   angular: -0.005                           # Penalty for high angular velocity (encourage stable flight)
   crash: -10.0                              # Large penalty for collision with ground/obstacles
   obstacle: -0.1                            # Penalty for proximity to obstacles
-  energy: -0.0004                           # Penalty for high power consumption
+  energy: -0.002                            # Penalty for high power consumption
   progress: 0.5                             # Reward for moving toward target waypoint
   height: -0.005                            # Penalty for flying too low (safety bonus)
   success: 0.0                              # Reward for reaching target (0 = no explicit bonus)

@@ -14,6 +14,11 @@
 #
 # Multi-GPU: pass MULTI_GPU=N as an environment variable to use N GPUs per job.
 #   MULTI_GPU=2 bash run_parallel.sh src/WP1/experiments/ --gpus=2
+#
+# Resume: pass RESUME=1 to restart all jobs from their latest checkpoint.
+# Job names and RUN_TAGs are deterministic, so the same RUN_DIR on scratch
+# is reused and the existing checkpoints are found automatically.
+#   RESUME=1 bash run_parallel.sh src/WP1/experiments/batch_5/
 
 set -euo pipefail
 
@@ -62,11 +67,16 @@ for YAML_PATH in "${YAMLS[@]}"; do
       MULTI_GPU_EXPORT=",MULTI_GPU=${MULTI_GPU}"
     fi
 
+    RESUME_EXPORT=""
+    if [ -n "${RESUME:-}" ] && [ "${RESUME}" -ne 0 ]; then
+      RESUME_EXPORT=",RESUME=1"
+    fi
+
     JOB_ID=$(sbatch -q long \
       --job-name="wp1_${EXP_NAME}_r${i}" \
       --output="/home/%u/slurm_logs/${RUN_TAG}-%j.out" \
       --error="/home/%u/slurm_logs/${RUN_TAG}-%j.err" \
-      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}",CLI_OVERRIDES="--cfg.training.seed ${TRAIN_SEED} --cfg.catalog.urdf_seed ${URDF_SEED}${MULTI_GPU_EXPORT}" \
+      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}",CLI_OVERRIDES="--cfg.training.seed ${TRAIN_SEED} --cfg.catalog.urdf_seed ${URDF_SEED}${MULTI_GPU_EXPORT}"${RESUME_EXPORT} \
       "$@" \
       "${SLURM_SCRIPT}" \
       | awk '{print $NF}')
