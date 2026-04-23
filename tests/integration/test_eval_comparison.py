@@ -90,7 +90,9 @@ def _build_env(
         base_init_pos=[-50.0, 0.0, 10.0],
     ))
     obs_cfg["add_genome_obs_actor"] = False
-    obs_cfg["add_genome_obs_critic"] = False
+    # Do NOT override add_genome_obs_critic here — it must match the checkpoint's
+    # training config so that the critic LSTM input size aligns during load_state_dict.
+    # The critic is never called during inference; only the actor is used.
 
     if vmin is not None:
         command_cfg["min_speed"] = float(vmin)

@@ -8,6 +8,7 @@ rsync -av \
   --exclude='dist/' \
   --exclude='build/' \
   --exclude='logs/' \
+  --exclude='tests/' \
   --exclude='.claude/' \
   --exclude='slurm_logs/' \
   --exclude='my_container/' \

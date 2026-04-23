@@ -1069,6 +1069,14 @@ if __name__ == "__main__":
         help="Torch device override (e.g. cuda:0).",
     )
     parser.add_argument(
+        "--vmin", type=float, default=None,
+        help="Override evaluation.vmin (minimum commanded speed in m/s).",
+    )
+    parser.add_argument(
+        "--vmax", type=float, default=None,
+        help="Override evaluation.vmax (maximum commanded speed in m/s).",
+    )
+    parser.add_argument(
         "--stochastic", action=argparse.BooleanOptionalAction, default=None,
         help="Sample from the policy distribution (--stochastic) or use the mean "
              "(--no-stochastic). Overrides evaluation.stochastic from the run config.",
@@ -1114,6 +1122,10 @@ if __name__ == "__main__":
         cfg.device = args.device
     if args.num_envs:
         cfg.evaluation.num_eval_envs = args.num_envs
+    if args.vmin is not None:
+        cfg.evaluation.vmin = args.vmin
+    if args.vmax is not None:
+        cfg.evaluation.vmax = args.vmax
     if args.stochastic is not None:
         cfg.evaluation.stochastic = args.stochastic
     cfg.catalog.num_episodes = args.episodes
