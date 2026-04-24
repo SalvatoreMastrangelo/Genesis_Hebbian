@@ -205,8 +205,27 @@ def list_urdfs(catalog_dir: Path) -> List[Path]:
             p = p.expanduser().resolve()
             if p.is_file():
                 urdfs.append(p)
+                continue
+
+            params = _parse_params_from_name(s)
+            if params is None:
+                logger.warning("URDF listed in catalog.txt not found and cannot parse params: %s", p)
+                continue
+            if len(params) != 15:
+                logger.warning("URDF params from catalog.txt must be length 15, got %d: %s", len(params), s)
+                continue
+            if not gs._initialized:
+                gs.init(logging_level="error", backend=gs.gpu)
+            try:
+                path_str = UrdfMaker(params, out_dir=base).create_urdf()
+                generated = Path(path_str).expanduser().resolve()
+            except Exception as exc:
+                logger.warning("URDF generation failed for catalog entry %s: %s", s, exc)
+                continue
+            if generated.is_file():
+                urdfs.append(generated)
             else:
-                logger.warning("URDF listed in catalog.txt not found: %s", p)
+                logger.warning("URDF listed in catalog.txt not found after generation attempt: %s", generated)
         return sorted(urdfs)
 
     # Fallback: use all URDF files in the directory.
@@ -1386,22 +1405,23 @@ def run_pipeline(
             )
         logger.info("Loaded %d URDFs from CSV %s", len(urdf_list), nsga_csv)
     else:
-        if n_urdf <= 0:
-            raise RuntimeError(
-                "nsga.csv path is None, so a random catalog is required. "
-                "Please set --n-urdf > 0."
+        if n_urdf > 0:
+            logger.info(
+                "Building a fresh URDF catalog with %d entries into %s",
+                n_urdf,
+                catalog_dir,
             )
-        logger.info(
-            "Building a fresh URDF catalog with %d entries into %s",
-            n_urdf,
-            catalog_dir,
-        )
-        build_catalog(
-            catalog_dir=catalog_dir,
-            n=n_urdf,
-            seed=urdf_seed,
-            include_standard_mydrone=True,
-        )
+            build_catalog(
+                catalog_dir=catalog_dir,
+                n=n_urdf,
+                seed=urdf_seed,
+                include_standard_mydrone=True,
+            )
+        else:
+            logger.info(
+                "Using existing URDF catalog from %s because --n-urdf <= 0 and --nsga-csv was not provided",
+                catalog_dir,
+            )
         urdf_list = list_urdfs(catalog_dir)
     if not urdf_list:
         raise RuntimeError(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from multiprocessing.connection import wait
@@ -31,6 +33,108 @@ class LogicalSuperSceneOrchestrator:
     Each worker owns one shard (one Gen_Env with a subset of URDFs). The orchestrator
     exposes a single global-batch API suitable for PPO collection.
     """
+
+    @staticmethod
+    def _gpu_usage_snapshot() -> List[str]:
+        """
+        Return one or more human-readable lines describing GPU compute processes.
+
+        We rely on ``nvidia-smi`` because the orchestrator runs in the main process and
+        needs a device-wide view, not just PyTorch allocator stats.
+        """
+        if shutil.which("nvidia-smi") is None:
+            return ["[logical-super-scene][gpu-usage] nvidia-smi not available"]
+
+        try:
+            gpu_query = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,uuid,name,memory.total,memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            proc_query = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
+                    "--format=csv,noheader,nounits",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            suffix = f": {stderr}" if stderr else ""
+            return [f"[logical-super-scene][gpu-usage] nvidia-smi query failed{suffix}"]
+
+        gpu_rows: List[Dict[str, object]] = []
+        for raw_line in gpu_query.stdout.splitlines():
+            parts = [item.strip() for item in raw_line.split(",")]
+            if len(parts) < 5:
+                continue
+            try:
+                total_mb = int(parts[3])
+                used_mb = int(parts[4])
+            except ValueError:
+                continue
+            gpu_rows.append(
+                {
+                    "index": parts[0],
+                    "uuid": parts[1],
+                    "name": parts[2],
+                    "total_mb": total_mb,
+                    "used_mb": used_mb,
+                    "processes": [],
+                }
+            )
+
+        gpu_by_uuid = {str(row["uuid"]): row for row in gpu_rows}
+        for raw_line in proc_query.stdout.splitlines():
+            parts = [item.strip() for item in raw_line.split(",")]
+            if len(parts) < 4:
+                continue
+            gpu_uuid = parts[0]
+            row = gpu_by_uuid.get(gpu_uuid)
+            if row is None:
+                continue
+            try:
+                used_mb = int(parts[3])
+            except ValueError:
+                used_mb = -1
+            row["processes"].append(
+                {
+                    "pid": parts[1],
+                    "name": parts[2],
+                    "used_mb": used_mb,
+                }
+            )
+
+        if not gpu_rows:
+            return ["[logical-super-scene][gpu-usage] no GPU rows returned by nvidia-smi"]
+
+        lines: List[str] = []
+        for row in gpu_rows:
+            total_mb = int(row["total_mb"])
+            used_mb = int(row["used_mb"])
+            pct = (100.0 * used_mb / total_mb) if total_mb > 0 else 0.0
+            processes = row["processes"]
+            if processes:
+                proc_desc = "; ".join(
+                    f"pid={proc['pid']} name={proc['name']} mem={proc['used_mb']}MiB"
+                    for proc in processes
+                )
+            else:
+                proc_desc = "no compute processes"
+            lines.append(
+                "[logical-super-scene][gpu-usage] "
+                f"gpu={row['index']} name={row['name']} mem={used_mb}/{total_mb}MiB ({pct:.1f}%) "
+                f"procs=[{proc_desc}]"
+            )
+        return lines
 
     def __init__(
         self,
@@ -130,6 +234,7 @@ class LogicalSuperSceneOrchestrator:
         total_scenes = int(sum(len(shard) for shard in shards))
         completed_scenes = 0
         worker_scene_counts: Dict[int, int] = {}
+        next_progress_report_pct = 10
         while pending_workers:
             for parent_conn in wait(list(pending_workers.keys())):
                 i, worker_device, urdfs_i, p = pending_workers[parent_conn]
@@ -153,6 +258,18 @@ class LogicalSuperSceneOrchestrator:
                         f"last_build_s={float(reply.payload.get('scene_build_s', 0.0)):.3f} "
                         f"urdf='{str(reply.payload.get('urdf', ''))}'"
                     )
+                    while (
+                        total_scenes > 0
+                        and next_progress_report_pct <= 100
+                        and completed_scenes * 100 >= total_scenes * next_progress_report_pct
+                    ):
+                        print(
+                            "[logical-super-scene] "
+                            f"GPU process snapshot at {next_progress_report_pct}% env initialization"
+                        )
+                        for line in self._gpu_usage_snapshot():
+                            print(line)
+                        next_progress_report_pct += 10
                     continue
 
                 if event != "ready":

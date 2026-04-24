@@ -38,7 +38,10 @@ from rsl_rl.runners import OnPolicyRunner
 from winged_drone_train.analysis.eval_plotter import EvaluationPlotter
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh
 from winged_drone_train.rl.logging import RLTrainingLogger
-from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.env import (
+    LISPARROW_SERVO_JOINT_NAMES,
+    WingedDroneEnv,
+)
 from winged_drone_train.noise_config import configure_solver_noise
 from winged_drone_train.runtime_random import seed_runtime_randomness
 from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
@@ -242,6 +245,8 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
         "property_randomization": {
             "mass_shift_std": 0.02,      # additive std scaled by nominal link mass
             "com_shift_std": 0.004,       # additive std in meters
+            "joint_target_episode_bias_std": 0.01,
+            "joint_target_step_noise_std": 0.005,
         },
         "warmup_runtime_kernels": False,
 
@@ -256,7 +261,8 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
 
         # Whether to add Gaussian noise to actor observations
         "add_noise": True,
-        "add_genome_obs": False,
+        "actor_genome_obs": False,
+        "critic_genome_obs": False,
         "privileged_obs": {
             "base_ang_vel": True,
             "joint_position": True,
@@ -292,7 +298,7 @@ def get_cfgs() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str
             "smooth": -1e-1,
             "angular": -5e-3,
             "crash": -10.0,
-            "obstacle": -0.1,
+            "obstacle": -1e-1,
             "energy": -1e-3,#-5e-4,   
             "progress": 5e-1,
             "height": -3e-3, #-5e-3,
@@ -325,6 +331,27 @@ def _write_cfg_snapshot(
     """Persist the full config tuple used for the run."""
     with cfg_path.open("wb") as f:
         pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
+
+
+def _apply_train_drone_overrides(
+    env_cfg: Dict[str, Any],
+    *,
+    drone_key: Optional[str] = None,
+    urdf_file: Optional[str | Path] = None,
+) -> Dict[str, Any]:
+    cfg = dict(env_cfg)
+    key = str(drone_key or cfg.get("drone") or "").strip().lower()
+    urdf_s = str(urdf_file or cfg.get("urdf_file") or "").strip().lower()
+    is_lisparrow = ("lisparrow" in key) or ("lisparrow" in urdf_s)
+    if not is_lisparrow:
+        return cfg
+
+    cfg["drone"] = "lisparrow"
+    cfg["aero_solver_kind"] = "lisparrow"
+    cfg["servo_joint_names"] = list(LISPARROW_SERVO_JOINT_NAMES)
+    cfg["fallback_servo_gains"] = (20.0, 2.0)
+    cfg["naca"] = None
+    return cfg
 
 
 def _build_runner(
@@ -480,9 +507,14 @@ def training(
 
     # Build configs
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
-    if obs_cfg.get("add_genome_obs", False):
-        print("[train_single] add_genome_obs enabled in cfg → forcing off for evolution training.")
-        obs_cfg["add_genome_obs"] = False
+    env_cfg = _apply_train_drone_overrides(env_cfg, urdf_file=urdf_file)
+    if (
+        obs_cfg.get("actor_genome_obs", False)
+        or obs_cfg.get("critic_genome_obs", False)
+    ):
+        print("[train_single] genome observations enabled in cfg -> forcing off for evolution training.")
+        obs_cfg["actor_genome_obs"] = False
+        obs_cfg["critic_genome_obs"] = False
     train_cfg = get_train_cfg(exp_name, max_iterations, runtime_seed)
 
     # Save cfg snapshot
@@ -630,14 +662,17 @@ def main() -> None:
 
     train_cfg = get_train_cfg(args.exp_name, args.max_iterations, runtime_seed)
 
-    # Snapshot of all configurations for reproducibility
-    cfg_path = log_dir / "cfgs.pkl"
-    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg)
-    
     urdf_file = resolve_or_generate_urdf(
         urdf_file=args.urdf_file,
         drone_key=args.drone or env_cfg.get("drone"),
     )
+    env_cfg = _apply_train_drone_overrides(
+        env_cfg,
+        drone_key=args.drone or str(env_cfg.get("drone", "")),
+        urdf_file=urdf_file,
+    )
+    cfg_path = log_dir / "cfgs.pkl"
+    _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg)
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #

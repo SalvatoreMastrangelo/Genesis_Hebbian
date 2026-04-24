@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import csv
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 
 _TB_ADD_SCALAR_PATCHED = False
@@ -433,6 +439,72 @@ class RLTrainingLogger:
             return stats
         return stats
 
+    def _collect_ram_stats(self) -> Dict[str, float]:
+        stats: Dict[str, float] = {}
+        try:
+            if psutil is None:
+                return stats
+            proc = psutil.Process(os.getpid())
+            mem = proc.memory_info()
+            stats["RAM/rss_gb"] = float(mem.rss / (1024.0 ** 3))
+            stats["RAM/vms_gb"] = float(mem.vms / (1024.0 ** 3))
+
+            sys_mem = psutil.virtual_memory()
+            stats["RAM/system_used_gb"] = float(sys_mem.used / (1024.0 ** 3))
+            stats["RAM/system_available_gb"] = float(sys_mem.available / (1024.0 ** 3))
+            stats["RAM/system_percent"] = float(sys_mem.percent)
+        except Exception:
+            return stats
+        return stats
+
+    def _collect_nvidia_smi_stats(self) -> Dict[str, float]:
+        stats: Dict[str, float] = {}
+        if shutil.which("nvidia-smi") is None:
+            return stats
+        try:
+            out = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,memory.total,memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            return stats
+
+        try:
+            for raw_line in out.stdout.splitlines():
+                parts = [item.strip() for item in raw_line.split(",")]
+                if len(parts) < 3:
+                    continue
+                gpu_idx = int(parts[0])
+                total_mb = float(parts[1])
+                used_mb = float(parts[2])
+                prefix = f"NvidiaSMI/gpu_{gpu_idx}"
+                stats[f"{prefix}/memory_used_gb"] = used_mb / 1024.0
+                stats[f"{prefix}/memory_total_gb"] = total_mb / 1024.0
+                if total_mb > 1e-9:
+                    stats[f"{prefix}/memory_used_ratio"] = used_mb / total_mb
+        except Exception:
+            return {}
+        return stats
+
+    def log_resource_usage(self, step: int, include_cuda: bool = True) -> Dict[str, float]:
+        stats: Dict[str, float] = {}
+        try:
+            stats.update(self._collect_ram_stats())
+            stats.update(self._collect_nvidia_smi_stats())
+            if include_cuda:
+                stats.update(self._collect_cuda_mem_stats())
+            for tag, val in stats.items():
+                self._safe_add_scalar(tag, val, step)
+        except Exception:
+            return {}
+        return stats
+
     def _flatten_batch_tensor(self, x: Any) -> Optional[torch.Tensor]:
         try:
             if not torch.is_tensor(x):
@@ -818,14 +890,21 @@ class RLTrainingLogger:
                 console_metrics["early_stop"] = opt_stats.get("PPO/early_stop_count")
                 console_metrics["skipped"] = opt_stats.get("PPO/update_skipped")
 
-                if torch.cuda.is_available() and (step % self.cuda_mem_log_every == 0):
-                    cuda_stats = self._collect_cuda_mem_stats()
-                    for tag, val in cuda_stats.items():
-                        self._safe_add_scalar(tag, val, step)
+                if step % self.cuda_mem_log_every == 0:
+                    resource_stats = self.log_resource_usage(step, include_cuda=torch.cuda.is_available())
+                    cuda_stats = {
+                        k: v for k, v in resource_stats.items() if k.startswith("CUDA/")
+                    }
+                    ram_stats = {
+                        k: v for k, v in resource_stats.items() if k.startswith("RAM/")
+                    }
                     console_metrics["cuda_alloc_gb"] = cuda_stats.get("CUDA/memory_allocated_gb")
                     console_metrics["cuda_reserved_gb"] = cuda_stats.get("CUDA/memory_reserved_gb")
                     console_metrics["cuda_max_alloc_gb"] = cuda_stats.get("CUDA/max_memory_allocated_gb")
                     console_metrics["cuda_alloc_res"] = cuda_stats.get("CUDA/alloc_reserved_ratio")
+                    console_metrics["ram_rss_gb"] = ram_stats.get("RAM/rss_gb")
+                    console_metrics["ram_vms_gb"] = ram_stats.get("RAM/vms_gb")
+                    console_metrics["ram_sys_pct"] = ram_stats.get("RAM/system_percent")
 
                 for k in list(console_metrics.keys()):
                     console_metrics[k] = self._to_float(console_metrics.get(k))
@@ -848,6 +927,9 @@ class RLTrainingLogger:
                     f"lr={self._fmt_metric(console_metrics.get('lr'))} "
                     f"early_stop={self._fmt_metric(console_metrics.get('early_stop'))} "
                     f"skipped={self._fmt_metric(console_metrics.get('skipped'))} "
+                    f"ram_rss_gb={self._fmt_metric(console_metrics.get('ram_rss_gb'))} "
+                    f"ram_vms_gb={self._fmt_metric(console_metrics.get('ram_vms_gb'))} "
+                    f"ram_sys_pct={self._fmt_metric(console_metrics.get('ram_sys_pct'))} "
                     f"cuda_alloc_gb={self._fmt_metric(console_metrics.get('cuda_alloc_gb'))} "
                     f"cuda_reserved_gb={self._fmt_metric(console_metrics.get('cuda_reserved_gb'))} "
                     f"cuda_max_alloc_gb={self._fmt_metric(console_metrics.get('cuda_max_alloc_gb'))} "

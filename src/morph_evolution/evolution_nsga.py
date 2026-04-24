@@ -66,9 +66,11 @@ from morph_evolution.utils.runtime import resolve_urdf_dir as _resolve_urdf_dir
 
 DEFAULT_RESUME_SUFFIX = "second"
 DEFAULT_POLICY_PATHS = [
-    "/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2655024/logs/ea/foundation-mixture/model_1900.pt",
-    "/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2663796/logs/ea/1/model_1900.pt",
-    "/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2663633/logs/ea/1/model_1900.pt",
+    "/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2788680/logs/ea/foundation-mixture/model_1900.pt",
+    "/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2815165/logs/ea/foundation-mixture/model_1900.pt",
+    "/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2821322/logs/ea/foundation-mixture/model_1900.pt",
+    "/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2821324/logs/ea/foundation-mixture/model_1900.pt",
+    "/home/avicari/binding/genesis_runs/training_general/foundation-mixture_2821332/logs/ea/foundation-mixture/model_1900.pt",
 ]
 
 
@@ -2168,7 +2170,7 @@ def main() -> None:
         "--policy_paths",
         type=str,
         nargs="+",
-        default=list(DEFAULT_POLICY_PATHS),
+        default=None,
         help="Optional list of pre-trained policies to average in eval-only mode.",
     )
     parser.add_argument(
@@ -2226,7 +2228,7 @@ def main() -> None:
     cfg.pct_above = args.pct_above
     cfg.gen_policy = bool(args.gen_policy)
     cfg.policy_path = args.policy_path
-    cfg.policy_paths = args.policy_paths
+    cfg.policy_paths = list(args.policy_paths) if args.policy_paths is not None else list(DEFAULT_POLICY_PATHS)
     cfg.run_name = args.run_name
     if args.base_dir is not None:
         cfg.base_dir = args.base_dir

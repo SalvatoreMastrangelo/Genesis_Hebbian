@@ -19,7 +19,7 @@ import pickle
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import genesis as gs
@@ -28,6 +28,7 @@ from rsl_rl.runners import OnPolicyRunner
 from winged_drone_train.train import (
     _configure_cache_root,
     _init_genesis_with_retry,
+    _maybe_load_init_checkpoint,
     get_cfgs,
     get_train_cfg,
 )
@@ -86,6 +87,91 @@ def _resolve_catalog_path(catalog_dir: Optional[str], n_urdf: Optional[int]) -> 
     return Path(resolved_dir).expanduser() if resolved_dir else None
 
 
+def _load_cfg_snapshot(cfg_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Load the serialized config snapshot saved in a previous training logdir."""
+    with cfg_path.open("rb") as f:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+    return env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg
+
+
+def _resolve_inherited_log_dir(path: Path) -> Path:
+    """
+    Accept either a direct training logdir or a run root directory and return the
+    concrete logdir that contains cfgs.pkl and model_*.pt files.
+    """
+    path = path.expanduser().resolve()
+    if (path / "cfgs.pkl").is_file():
+        return path
+
+    candidates = []
+    for candidate in (path / "logs" / "ea").glob("*"):
+        if not candidate.is_dir():
+            continue
+        if (candidate / "cfgs.pkl").is_file() and any(candidate.glob("model_*.pt")):
+            candidates.append(candidate.resolve())
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise FileNotFoundError(
+            f"Could not resolve an inherited training logdir from: {path}"
+        )
+    raise RuntimeError(
+        f"Multiple inherited training logdirs found under {path / 'logs' / 'ea'}: {candidates}"
+    )
+
+
+def _latest_checkpoint_path(log_dir: Path) -> Optional[Path]:
+    """Return the highest-index model_*.pt checkpoint in a log directory."""
+    candidates: list[tuple[int, Path]] = []
+    for path in log_dir.glob("model_*.pt"):
+        stem = path.stem
+        try:
+            step = int(stem.split("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        candidates.append((step, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1]
+
+
+def _resolve_inherited_catalog_dir(log_dir: Path) -> Optional[Path]:
+    """
+    Resolve the catalog directory associated with a previous run.
+
+    Preference order:
+      1. A nearby `urdf_generated/` directory in the run ancestors.
+      2. `inherit_meta.pkl` saved in the logdir.
+
+    We prefer the inherited run's own local `urdf_generated/` first because
+    older metadata may contain container-local paths like `/workspace/out/...`.
+    In a new inheritance job that path can exist again, but point to the new
+    empty output directory instead of the source run.
+    """
+    for parent in [log_dir, *log_dir.parents]:
+        candidate = parent / "urdf_generated"
+        if candidate.is_dir() and ((candidate / "catalog.txt").is_file() or any(candidate.glob("*.urdf"))):
+            return candidate.resolve()
+
+    meta_path = log_dir / "inherit_meta.pkl"
+    if meta_path.is_file():
+        try:
+            with meta_path.open("rb") as f:
+                meta = pickle.load(f)
+            catalog_dir = meta.get("catalog_dir")
+            if catalog_dir:
+                candidate = Path(str(catalog_dir)).expanduser().resolve()
+                if candidate.is_dir() and (
+                    (candidate / "catalog.txt").is_file() or any(candidate.glob("*.urdf"))
+                ):
+                    return candidate
+        except Exception:
+            pass
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Training                                                                   #
 # --------------------------------------------------------------------------- #
@@ -102,6 +188,8 @@ def train(
     urdf_shard_size: int = 0,
     num_workers: int = 0,
     collection_gpus: int = 1,
+    inherit_run: Optional[str] = None,
+    init_policy_path: Optional[str] = None,
     vis: bool = False,
 ) -> None:
     """
@@ -160,30 +248,69 @@ def train(
         shutil.rmtree(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    if inherit_run is not None and init_policy_path is not None:
+        raise ValueError("--inherit-run and --init-policy-path are mutually exclusive.")
+
     # ------------------------------------------------------------------ #
     # Load configs                                                       #
     # ------------------------------------------------------------------ #
-    env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
-    if headless_no_gl:
-        env_cfg = dict(env_cfg)
-        env_cfg["enable_rendering"] = False
     runtime_seed = seed_runtime_randomness(f"train_gen:{experiment_name}")
-    train_cfg = get_train_cfg(experiment_name, max_iterations, runtime_seed)
-    train_cfg_overrides = {
-        "num_mini_batches": None,
-        "actor_hidden_dims": [128, 128], 
-        "critic_hidden_dims": [128, 128],
-        "rnn_hidden_size": 128,
-    }
-    _apply_train_cfg_overrides(
-        train_cfg,
-        num_mini_batches=train_cfg_overrides["num_mini_batches"],
-        actor_hidden_dims=train_cfg_overrides["actor_hidden_dims"],
-        critic_hidden_dims=train_cfg_overrides["critic_hidden_dims"],
-        rnn_hidden_size=train_cfg_overrides["rnn_hidden_size"],
-    )
+    if inherit_run is not None:
+        inherit_source_dir = Path(inherit_run).expanduser().resolve()
+        inherit_dir = _resolve_inherited_log_dir(inherit_source_dir)
+        cfg_path = inherit_dir / "cfgs.pkl"
+        if not cfg_path.is_file():
+            raise FileNotFoundError(f"Missing cfgs.pkl in inherited run: {cfg_path}")
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = _load_cfg_snapshot(cfg_path)
+        inherited_ckpt = _latest_checkpoint_path(inherit_dir)
+        if inherited_ckpt is None:
+            raise FileNotFoundError(f"No model_*.pt checkpoint found in inherited run: {inherit_dir}")
+        init_policy_path = str(inherited_ckpt)
+        inherited_catalog_dir = _resolve_inherited_catalog_dir(inherit_dir)
+        if inherited_catalog_dir is None:
+            raise FileNotFoundError(
+                f"Could not resolve a catalog directory for inherited run: {inherit_source_dir}"
+            )
+        catalog_dir = str(inherited_catalog_dir)
+        print(f"[train] Inheriting run source from {inherit_source_dir}")
+        print(f"[train] Resolved inherited logdir to {inherit_dir}")
+        print(f"[train] Inheriting cfgs from {cfg_path}")
+        print(f"[train] Inheriting latest checkpoint from {inherited_ckpt}")
+        print(f"[train] Inheriting catalog from {inherited_catalog_dir}")
+    else:
+        env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
+        train_cfg = get_train_cfg(experiment_name, max_iterations, runtime_seed)
+        train_cfg_overrides = {
+            "num_mini_batches": None,
+            "actor_hidden_dims": [128, 128],
+            "critic_hidden_dims": [128, 128],
+            "rnn_hidden_size": 128,
+        }
+        _apply_train_cfg_overrides(
+            train_cfg,
+            num_mini_batches=train_cfg_overrides["num_mini_batches"],
+            actor_hidden_dims=train_cfg_overrides["actor_hidden_dims"],
+            critic_hidden_dims=train_cfg_overrides["critic_hidden_dims"],
+            rnn_hidden_size=train_cfg_overrides["rnn_hidden_size"],
+        )
+        obs_cfg["actor_genome_obs"] = False
+        obs_cfg["critic_genome_obs"] = True
 
-    obs_cfg["add_genome_obs"] = True  # Always include genome observation
+    env_cfg = dict(env_cfg)
+    obs_cfg = dict(obs_cfg)
+    reward_cfg = dict(reward_cfg)
+    command_cfg = dict(command_cfg)
+    train_cfg = dict(train_cfg)
+    runner_cfg = dict(train_cfg.get("runner", {}))
+    runner_cfg["experiment_name"] = experiment_name
+    runner_cfg["max_iterations"] = max_iterations
+    runner_cfg["resume"] = False
+    runner_cfg["resume_path"] = None
+    train_cfg["runner"] = runner_cfg
+    train_cfg["seed"] = runtime_seed
+
+    if headless_no_gl:
+        env_cfg["enable_rendering"] = False
 
     cfg_snapshot_path = log_dir / "cfgs.pkl"
     with cfg_snapshot_path.open("wb") as f:
@@ -193,6 +320,17 @@ def train(
             protocol=pickle.HIGHEST_PROTOCOL,
         )
     print(f"[train] Config snapshot saved to {cfg_snapshot_path}")
+    inherit_meta_path = log_dir / "inherit_meta.pkl"
+    with inherit_meta_path.open("wb") as f:
+        pickle.dump(
+            {
+                "catalog_dir": str(Path(catalog_dir).expanduser().resolve()) if catalog_dir else None,
+                "source_run_dir": str(Path(inherit_run).expanduser().resolve()) if inherit_run else None,
+                "source_checkpoint": str(Path(init_policy_path).expanduser().resolve()) if init_policy_path else None,
+            },
+            f,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
 
     # ------------------------------------------------------------------ #
     # Catalog resolution + optional building                             #
@@ -246,6 +384,7 @@ def train(
             num_workers=num_workers,
             collection_gpus=collection_gpus,
             device=device,
+            init_policy_path=init_policy_path,
             vis=vis,
         )
         return
@@ -300,8 +439,10 @@ def train(
     # RSL-RL runner                                                      #
     # ------------------------------------------------------------------ #
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
+    _maybe_load_init_checkpoint(runner, init_policy_path, tag="train_gen")
     rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=max_iterations)
     rl_logger.attach()
+    rl_logger.log_resource_usage(step=0, include_cuda=torch.cuda.is_available())
     try:
         runner.learn(
             num_learning_iterations=max_iterations,
@@ -426,6 +567,24 @@ def _parse_args() -> argparse.Namespace:
         help="Torch/Genesis device string (e.g., 'cuda:0', 'cpu').",
     )
     parser.add_argument(
+        "--inherit-run",
+        type=str,
+        default=None,
+        help=(
+            "Existing log directory to inherit from. Loads cfgs.pkl and the latest "
+            "model_*.pt checkpoint from that run before starting a new run."
+        ),
+    )
+    parser.add_argument(
+        "--init-policy-path",
+        type=str,
+        default=None,
+        help=(
+            "Optional checkpoint path used to warm-start training. "
+            "Starts a new run but initializes matching model weights from this file."
+        ),
+    )
+    parser.add_argument(
         "-v", "--vis", action="store_true", default=False,
         help="Enable Genesis viewer visualization.",
     )
@@ -448,6 +607,8 @@ def main() -> None:
         urdf_shard_size=args.urdf_shard_size,
         num_workers=args.num_workers,
         collection_gpus=args.collection_gpus,
+        inherit_run=args.inherit_run,
+        init_policy_path=args.init_policy_path,
         vis=args.vis,
     )
 

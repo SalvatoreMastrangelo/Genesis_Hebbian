@@ -17,7 +17,10 @@ from genesis.utils.geom import quat_to_xyz, transform_by_quat, inv_quat, xyz_to_
 from genesis.assets.urdf.aero_model import DroneAeroModel, SurfaceKind
 
 from morph_evolution.chromosome_drone import Chromosome_Drone
-from winged_drone_train.aero_profile import resolve_aero_config
+from winged_drone_train.aero_profile import (
+    configure_runtime_aero_solver,
+    resolve_aero_config,
+)
 from winged_drone_train.perception import depth as depth_utils
 from winged_drone_train.perception import forest as forest_utils
 from winged_drone_train.perception import obs as obs_utils
@@ -25,9 +28,106 @@ from winged_drone_train.control import power as power_utils
 from winged_drone_train.defaults import resolve_default_urdf_for_drone
 
 
+LISPARROW_SERVO_JOINT_NAMES: tuple[str, ...] = (
+    "joint_left_outer_wing_hinged",
+    "joint_right_outer_wing_hinged",
+    "joint_elevator_hinged",
+    "joint_rudder_hinged",
+)
+
+
+def _scalar_like_to_float(value, device: torch.device | str | None = None) -> Optional[float]:
+    if value is None:
+        return None
+    if hasattr(value, "to_torch"):
+        try:
+            tensor = value.to_torch(device=device or "cpu")
+            if torch.is_tensor(tensor) and tensor.numel() > 0:
+                return float(tensor.reshape(-1)[0].item())
+        except Exception:
+            pass
+    if torch.is_tensor(value):
+        if value.numel() == 0:
+            return None
+        return float(value.reshape(-1)[0].item())
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        return _scalar_like_to_float(value[0], device=device)
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _resolve_wingspan_from_aero_config(aero_config: Optional[Dict]) -> Optional[float]:
+    if not aero_config:
+        return None
+    links = aero_config.get("links", {}) or {}
+    total_span = 0.0
+    for info in links.values():
+        if not isinstance(info, dict):
+            continue
+        if str(info.get("type", "")).strip().lower() != "wing":
+            continue
+        span = _scalar_like_to_float(info.get("span"))
+        if span is None or span <= 0.0:
+            continue
+        total_span += span
+    if total_span <= 0.0:
+        return None
+    return float(total_span)
+
+
+def _resolve_prop_diameter(
+    aero_solver,
+    aero_config: Optional[Dict],
+    device: torch.device | str,
+) -> torch.Tensor:
+    radius = _scalar_like_to_float(getattr(aero_solver, "prop_radius", None), device=device)
+    if radius is None or radius <= 0.0:
+        global_cfg = (aero_config or {}).get("global", {}) or {}
+        radius = _scalar_like_to_float(global_cfg.get("prop_radius"))
+    if radius is None or radius <= 0.0:
+        raise RuntimeError("Unable to resolve propeller radius from aero solver or aero config.")
+    return torch.tensor([2.0 * radius], device=device, dtype=torch.float32)
+
+
+def _infer_drone_profile(drone_key: str | None, urdf_path: str | None = None) -> str:
+    key = (drone_key or "").strip().lower()
+    if "lisparrow" in key:
+        return "lisparrow"
+    if urdf_path:
+        up = str(urdf_path).strip().lower()
+        if "lisparrow" in up:
+            return "lisparrow"
+    return "simple"
+
+
+def _apply_drone_profile_defaults(env_cfg: Dict, urdf_path: str | None = None) -> Dict:
+    cfg = dict(env_cfg)
+    profile = _infer_drone_profile(cfg.get("drone"), urdf_path)
+    if profile != "lisparrow":
+        return cfg
+
+    cfg["drone"] = "lisparrow"
+    cfg.setdefault("aero_solver_kind", "lisparrow")
+    cfg.setdefault("servo_joint_names", list(LISPARROW_SERVO_JOINT_NAMES))
+    cfg.setdefault("fallback_servo_gains", (20.0, 2.0))
+    if cfg.get("naca", None):
+        cfg["naca"] = None
+    return cfg
+
+
 def _classify_joint_role(name: str) -> Optional[str]:
     lname = name.lower()
     if "sweep" in lname:
+        if "left" in lname:
+            return "sweep_left"
+        if "right" in lname:
+            return "sweep_right"
+        return "sweep"
+    if "outer_wing" in lname:
         if "left" in lname:
             return "sweep_left"
         if "right" in lname:
@@ -170,7 +270,7 @@ def _servo_gains_from_catalog(
         side = side_from_name(name)
         act = None
         info = None
-        if "sweep" in lname:
+        if "sweep" in lname or "outer_wing" in lname:
             info = pick_info(SurfaceKind.WING, side)
             if info is not None:
                 act = info.yaw_actuator or info.actuator
@@ -271,6 +371,8 @@ class WingedDroneEnv:
         return {
             "mass_shift_std": _get_std("mass_shift_std", legacy_name="mass_shift"),
             "com_shift_std": _get_std("com_shift_std", legacy_name="com_shift"),
+            "joint_target_episode_bias_std": _get_std("joint_target_episode_bias_std"),
+            "joint_target_step_noise_std": _get_std("joint_target_step_noise_std"),
         }
 
     def _apply_dynamics_noise(self, env_ids: torch.Tensor) -> None:
@@ -312,7 +414,6 @@ class WingedDroneEnv:
         device: str = "cuda",
     ) -> None:
         env_init_start = time.perf_counter()
-        self.aero_solver_kind = str(env_cfg.get("aero_solver_kind", "simple")).strip().lower()
         # ------------------------------------------------------------------ #
         # Basic configuration                                               #
         # ------------------------------------------------------------------ #
@@ -399,6 +500,9 @@ class WingedDroneEnv:
         self.urdf_file = str(urdf_file)
         if not Path(self.urdf_file).exists():
             raise FileNotFoundError(f"URDF not found: {self.urdf_file}")
+        self.env_cfg = _apply_drone_profile_defaults(self.env_cfg, self.urdf_file)
+        self.aero_solver_kind = str(self.env_cfg.get("aero_solver_kind", "simple")).strip().lower()
+        configure_runtime_aero_solver(self.aero_solver_kind)
         self._aero_config = self._resolve_aero_config(self.aero_solver_kind, self.urdf_file)
         self._property_rand_cfg = self._resolve_property_randomization_cfg()
         self.drone_model = DroneAeroModel(self.urdf_file, config_override=self._aero_config)
@@ -532,27 +636,10 @@ class WingedDroneEnv:
             self._create_follow_camera()
 
         # ------------------------------------------------------------------ #
-        # IMU sensor on the fuselage                                         #
-        # ------------------------------------------------------------------ #
-        imu_link = self.drone.get_link("fuselage")  # guaranteed by links_to_keep
-
-        # Some Genesis versions may require gs.sensors.imu.IMUOptions
-        # instead of gs.sensors.IMUOptions.
-        self.imu = self.scene.add_sensor(
-            gs.sensors.IMU(
-                entity_idx=self.drone.idx,
-                link_idx_local=imu_link.idx_local,
-                # Keep noise disabled for deterministic debugging.
-                acc_axes_skew=(0.0, 0.0, 0.0),
-                gyro_axes_skew=(0.0, 0.0, 0.0),
-                delay=0.0,
-                jitter=0.0,
-            )
-        )
-        # ------------------------------------------------------------------ #
         # Genome handling (optional)                                        #
         # ------------------------------------------------------------------ #
-        self.add_genome_obs = bool(self.obs_cfg.get("add_genome_obs", False))
+        self.actor_genome_obs = bool(self.obs_cfg.get("actor_genome_obs", False))
+        self.critic_genome_obs = bool(self.obs_cfg.get("critic_genome_obs", False))
         self._genome_vec: Optional[torch.Tensor] = None
         self._genome_base_vec: Optional[torch.Tensor] = None
         self._genome_obs_scratch: Optional[torch.Tensor] = None
@@ -640,7 +727,12 @@ class WingedDroneEnv:
         if naca_code and hasattr(self.aero_solver, "apply_naca_wing_override"):
             self.aero_solver.apply_naca_wing_override(naca_code)
 
-        self.span = self.aero_solver.tip_to_tip
+        span_value = _scalar_like_to_float(getattr(self.aero_solver, "tip_to_tip", None), device=self.device)
+        if span_value is None or span_value <= 0.0:
+            span_value = _resolve_wingspan_from_aero_config(self._aero_config)
+        if span_value is None or span_value <= 0.0:
+            raise RuntimeError("Unable to resolve wingspan from aero solver or aero config.")
+        self.span = float(span_value)
         self.nominal_mass = float(sum(link.get_mass() for link in self.drone.links))
         self._link_masses = torch.tensor(
             [link.get_mass() for link in self.drone.links],
@@ -734,7 +826,8 @@ class WingedDroneEnv:
             num_sectors_actor=self.NUM_SECTORS_ACTOR,
             joint_limits_max=self.joint_limit_max,
             obs_cfg=self.obs_cfg,
-            add_genome_obs=self.add_genome_obs and (self._genome_vec is not None),
+            actor_genome_obs=self.actor_genome_obs and (self._genome_vec is not None),
+            critic_genome_obs=self.critic_genome_obs and (self._genome_vec is not None),
             genome_vec=self._genome_vec,
             genome_min=self.GENOME_MIN if self._genome_vec is not None else None,
             genome_max=self.GENOME_MAX if self._genome_vec is not None else None,
@@ -785,7 +878,6 @@ class WingedDroneEnv:
         self.base_lin_vel = torch.zeros((self.num_envs, 3), device=self.device)
         self.base_ang_vel = torch.zeros((self.num_envs, 3), device=self.device)
         self._base_ang_vel_body_buf = torch.empty((self.num_envs, 3), device=self.device)
-        self.accelerations = torch.zeros((self.num_envs, 6), device=self.device)
         # Reused at every reset to avoid repeated tensor allocations.
         self._reset_lin_vel = torch.tensor([15.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
         self._reset_ang_vel = torch.tensor([0.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
@@ -794,6 +886,9 @@ class WingedDroneEnv:
         self._rand_scalar_scratch = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
         self._rand_servo_scratch = torch.empty((self.num_envs, self.num_servos), device=self.device, dtype=torch.float32)
         self._randint_scratch = torch.empty((self.num_envs,), device=self.device, dtype=torch.long)
+        self._joint_target_episode_bias = torch.zeros(
+            (self.num_envs, self.num_servos), device=self.device, dtype=torch.float32
+        )
 
         self.joint_position = torch.zeros((self.num_envs, self.num_servos), device=self.device)
         self.joint_velocity = torch.zeros((self.num_envs, self.num_servos), device=self.device)
@@ -826,7 +921,7 @@ class WingedDroneEnv:
         self._thrust_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
         self._prop_rpm_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
         self._prop_axial_speed_buf = torch.empty((self.num_envs,), device=self.device, dtype=torch.float32)
-        self._prop_diameter = torch.tensor([2.0 * float(self.aero_solver.prop_radius)], device=self.device, dtype=torch.float32)
+        self._prop_diameter = _resolve_prop_diameter(self.aero_solver, self._aero_config, self.device)
 
         # Episode bookkeeping
         self.episode_length_buf = torch.zeros((self.num_envs,), device=self.device, dtype=torch.long)
@@ -1271,6 +1366,17 @@ class WingedDroneEnv:
         servo_targets, throttle = self.actuator.process_actions(actions)
         servo_targets = self._sanitize_nonfinite_rows(servo_targets, fill_value=0.0)
         throttle = self._sanitize_nonfinite_rows(throttle, fill_value=0.0)
+        if self.num_servos > 0:
+            servo_targets = servo_targets + self._joint_target_episode_bias
+            sigma_step = float(self._property_rand_cfg.get("joint_target_step_noise_std", 0.0))
+            if sigma_step > 0.0:
+                servo_noise = self._rand_servo_scratch
+                servo_noise.normal_()
+                servo_targets = servo_targets + sigma_step * servo_noise
+            servo_targets = torch.max(
+                torch.min(servo_targets, self.joint_limit_max.unsqueeze(0)),
+                self.joint_limit_min.unsqueeze(0),
+            )
 
         # Store applied (scaled + delayed) actions
         self.last_actions.copy_(self.actions)
@@ -1341,19 +1447,6 @@ class WingedDroneEnv:
                 self.alpha = self.aero_solver.alpha_dbg.to_torch(device=self.device)[0, 0]
                 self.beta = self.aero_solver.beta_dbg.to_torch(device=self.device)[0, 0]
 
-        # ------------------------- IMU readings --------------------------- #
-        '''
-        imu_data = self.imu.read()
-        lin_acc = imu_data.lin_acc      # shape: (num_envs, 3)
-        ang_vel = imu_data.ang_vel      # shape: (num_envs, 3)
-
-        # Optional explicit dtype/device normalization:
-        lin_acc = lin_acc.to(dtype=torch.float32, device=self.device)
-        ang_vel = ang_vel.to(dtype=torch.float32, device=self.device)
-
-        self.accelerations[:, 0:3] = lin_acc
-        self.accelerations[:, 3:6] = ang_vel
-        '''
         # ------------------------- Terminations ---------------------------- #
         self._compute_termination_flags()
 
@@ -1434,30 +1527,30 @@ class WingedDroneEnv:
 
         # Forward speed
         r.uniform_(0.0, 1.0)
-        self.base_lin_vel[env_ids, 0] = r * 22.0 + 4.0
+        self.base_lin_vel[env_ids, 0] = r * 20.0 + 5.0
         # Lateral speed
         r.normal_()
-        self.base_lin_vel[env_ids, 1] = torch.clamp(r * 2.0, min=-8.0, max=8.0)
+        self.base_lin_vel[env_ids, 1] = torch.clamp(r * 1.0, min=-8.0, max=8.0)
         # Vertical speed
         r.normal_()
-        self.base_lin_vel[env_ids, 2] = torch.clamp(r * 2.0, min=-8.0, max=8.0)
+        self.base_lin_vel[env_ids, 2] = torch.clamp(r * 1.0, min=-8.0, max=8.0)
 
         self.base_euler[env_ids, 1] = torch.atan2(-self.base_lin_vel[env_ids, 2], self.base_lin_vel[env_ids, 0])
         self.base_euler[env_ids, 2] = torch.atan2(self.base_lin_vel[env_ids, 1], self.base_lin_vel[env_ids, 0])
 
         # Small attitude perturbations
         r.normal_()
-        self.base_euler[env_ids, 0] += torch.clamp(r * 0.2, min=-0.8, max=0.8)
+        self.base_euler[env_ids, 0] += torch.clamp(r * 0.0, min=-0.8, max=0.8)
         r.normal_()
-        self.base_euler[env_ids, 1] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
+        self.base_euler[env_ids, 1] += torch.clamp(r * 0.0, min=-0.2, max=0.2)
         r.normal_()
-        self.base_euler[env_ids, 2] += torch.clamp(r * 0.05, min=-0.2, max=0.2)
+        self.base_euler[env_ids, 2] += torch.clamp(r * 0.0, min=-0.2, max=0.2)
 
         # Joint positions noise
         if self.num_servos > 0:
             rs = self._rand_servo_scratch[:n]
             rs.normal_()
-            self.joint_position[env_ids] += torch.clamp(rs * 0.01, min=-0.04, max=0.04)
+            self.joint_position[env_ids] += torch.clamp(rs * 0.0, min=-0.04, max=0.04)
 
     # ---------------------------------------------------------------------- #
     # Reset                                                                 #
@@ -1539,6 +1632,14 @@ class WingedDroneEnv:
         self.rigid_solver.set_dofs_velocity(initial_vel, envs_idx=env_ids)
 
         self._apply_dynamics_noise(env_ids)
+        if self.num_servos > 0:
+            episode_bias = self._joint_target_episode_bias[env_ids]
+            episode_bias.zero_()
+            sigma_episode = float(self._property_rand_cfg.get("joint_target_episode_bias_std", 0.0))
+            if sigma_episode > 0.0:
+                rs = self._rand_servo_scratch[:n]
+                rs.normal_()
+                episode_bias.add_(sigma_episode * rs)
         self._resample_genome_episode_noise(env_ids)
 
         # Optional aero parameter randomization

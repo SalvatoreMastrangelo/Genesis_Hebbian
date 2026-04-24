@@ -7,6 +7,7 @@ from typing import Dict, List, Sequence
 import torch
 from rsl_rl.runners import OnPolicyRunner
 
+from winged_drone_train.train import _maybe_load_init_checkpoint
 from winged_drone_train.rl.logging import RLTrainingLogger
 
 from .catalog import chunk_list, load_catalog_urdfs, split_even
@@ -141,6 +142,7 @@ def run_logical_super_scene_training(
     num_workers: int,
     collection_gpus: int,
     device: str,
+    init_policy_path: str | None,
     vis: bool,
 ) -> None:
     """
@@ -212,8 +214,10 @@ def run_logical_super_scene_training(
     )
     env = LogicalSuperSceneVecEnv(orchestrator=orchestrator, device=device)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=device)
+    _maybe_load_init_checkpoint(runner, init_policy_path, tag="logical-super-scene")
     rl_logger = RLTrainingLogger(runner=runner, log_dir=log_dir, max_iterations=max_iterations)
     rl_logger.attach()
+    rl_logger.log_resource_usage(step=0, include_cuda=torch.cuda.is_available())
 
     try:
         runner.learn(

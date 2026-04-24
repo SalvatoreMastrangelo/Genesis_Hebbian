@@ -33,7 +33,7 @@ import builtins
 builtins.ActorCriticTanh = ActorCriticTanh  # for model loading
 
 import genesis as gs
-from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.env import WingedDroneEnv, _apply_drone_profile_defaults
 from rsl_rl.runners import OnPolicyRunner
 from tensorboard.backend.event_processing import event_accumulator
 
@@ -223,6 +223,8 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
           - "s": list of 1D arrays of distance.
           - "j_pos": list of 2D arrays (T_i, num_joints).
           - "v_cmd": array of commanded velocities, one per env.
+    mean_z_at_progress_threshold : float
+        Mean z position when environments first reach ``minimal_progress``.
     """
     B, dt, dev = env.num_envs, env.dt, env.device
 
@@ -234,6 +236,7 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
     reward_acc = torch.zeros(B, device=dev)
     dx_eff = torch.zeros(B, device=dev)
     E_eff = torch.zeros(B, device=dev)
+    z_at_min_progress = torch.full((B,), float("nan"), device=dev)
     reached_min = torch.zeros(B, dtype=torch.bool, device=dev)
     final_reason = torch.full((B,), 3, dtype=torch.int8, device=dev)
 
@@ -275,6 +278,7 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
                 if newly_reached.any():
                     reached_min[newly_reached] = True
                     dx_eff[newly_reached] = minimal_progress
+                    z_at_min_progress[newly_reached] = env.base_pos[newly_reached, 2]
 
             # Store traces only when downstream heatmaps are requested.
             if extra_data:
@@ -319,6 +323,13 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
     progress_all = dx_acc.cpu().numpy()
     valid_mask = ~nan_indices.cpu().numpy()
     progress = progress_all[valid_mask]
+    z_at_min_progress = z_at_min_progress[~nan_indices].detach().cpu().numpy()
+    reached_progress_mask = np.isfinite(z_at_min_progress)
+    mean_z_at_progress_threshold = (
+        float(np.mean(z_at_min_progress[reached_progress_mask]))
+        if reached_progress_mask.any()
+        else float("nan")
+    )
     final_reason = final_reason.cpu().numpy()
     reward_total = reward_acc.cpu().numpy()
     reward_total[nan_indices.cpu().numpy()] = np.nan
@@ -336,7 +347,16 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
             else:
                 traces_all["j_pos"][i] = np.empty((0, num_joints), dtype=float)
 
-    return v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total
+    return (
+        v_mean,
+        COT,
+        v_cmd,
+        progress,
+        final_reason,
+        traces_all,
+        reward_total,
+        mean_z_at_progress_threshold,
+    )
 
 
 # ---------------------------------------------------------------------- #
@@ -416,6 +436,11 @@ def evaluation(
 
     with cfg_path.open("rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+
+    env_cfg.setdefault("property_randomization", {})
+    env_cfg["property_randomization"]["joint_target_episode_bias_std"] = 0.0
+    env_cfg["property_randomization"]["joint_target_step_noise_std"] = 0.0
+    
     urdf_file = resolve_or_generate_urdf(urdf_file=urdf_file, drone_key=env_cfg.get("drone"))
     urdf_path = Path(urdf_file).expanduser()
     clean_stem = safe_urdf_stem(urdf_path)
@@ -433,7 +458,8 @@ def evaluation(
     # Keep the same noise magnitudes as training, while sampling fresh noise.
     obs_cfg_eval = dict(obs_cfg)
     if obs_genome is not None:
-        obs_cfg_eval["add_genome_obs"] = bool(obs_genome)
+        obs_cfg_eval["actor_genome_obs"] = bool(obs_genome)
+        obs_cfg_eval["critic_genome_obs"] = bool(obs_genome)
 
     # Evaluation-specific environment tweaks
     _apply_eval_env_overrides(env_cfg)
@@ -466,7 +492,7 @@ def evaluation(
     env.aero_solver._aero_log = False
 
     # Use traces when saving plots to enable heatmaps.
-    v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total = run_eval(
+    v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total, mean_z_at_progress_threshold = run_eval(
         env,
         policy,
         extra_data=bool(save_plots),
@@ -475,6 +501,10 @@ def evaluation(
     print(
         f"[evaluation] rollout done | v_mean={len(v_mean)} v_cmd={len(v_cmd)} "
         f"progress_shape={np.shape(progress)} extra_data={bool(save_plots)}"
+    )
+    print(
+        f"[evaluation] average z position at {minimal_progress:.0f} m progress: "
+        f"{mean_z_at_progress_threshold:.2f} m"
     )
 
     gs.destroy()
@@ -660,9 +690,13 @@ if __name__ == "__main__":
     # ---------------- Load configs ------------------------------------- #
     log_dir = f"logs/{args.exp_name}"
     # Overwrite log_dir if needed coming from cluster
-    #log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2563577/logs/ea/{args.exp_name}"
+    log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2815165/logs/ea/foundation-mixture"
     with open(os.path.join(log_dir, "cfgs.pkl"), "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+
+    env_cfg.setdefault("property_randomization", {})
+    env_cfg["property_randomization"]["joint_target_episode_bias_std"] = 0.0
+    env_cfg["property_randomization"]["joint_target_step_noise_std"] = 0.0
 
     eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
@@ -676,6 +710,7 @@ if __name__ == "__main__":
     )
     if args.drone:
         env_cfg["drone"] = args.drone
+    env_cfg = _apply_drone_profile_defaults(env_cfg, urdf_file)
 
     command_cfg["min_speed"] = args.vmin
     command_cfg["max_speed"] = args.vmax
@@ -683,7 +718,8 @@ if __name__ == "__main__":
 
     # Disable observation noise during evaluation
     obs_cfg_eval = dict(obs_cfg)
-    obs_cfg_eval["add_genome_obs"] = False
+    #obs_cfg_eval["actor_genome_obs"] = False
+    #obs_cfg_eval["critic_genome_obs"] = False
 
     # Print configs for sanity check
     print("\nEnvironment Configuration (eval):")
@@ -723,7 +759,7 @@ if __name__ == "__main__":
     v_cmd_all = np.linspace(args.vmin, args.vmax, args.envs)
 
     # Single evaluation rollout
-    v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total = run_eval(
+    v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total, mean_z_at_progress_threshold = run_eval(
         env,
         policy,
         extra_data=True,
@@ -794,7 +830,8 @@ if __name__ == "__main__":
         f"{top_vel['mean_v']:.2f} m/s   |  "
         f"COT: {top_eff['mean_E']:.2f} J/Nm   |  "
         f"Progress: {top_prog['mean_progress']:.2f} m   |  "
-        f"Eval reward mean: {eval_reward_mean:.3f}"
+        f"Eval reward mean: {eval_reward_mean:.3f}   |  "
+        f"Avg z at 250 m: {mean_z_at_progress_threshold:.2f} m"
     )
 
     # Plots in eval log dir

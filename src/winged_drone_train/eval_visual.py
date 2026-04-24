@@ -38,11 +38,11 @@ from rsl_rl.runners import OnPolicyRunner
 
 # Local imports: environment + policy
 try:
-    from winged_drone_train.env import WingedDroneEnv
+    from winged_drone_train.env import WingedDroneEnv, _apply_drone_profile_defaults
     from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
 except ModuleNotFoundError:
     # Backward-compatible path when running this file directly.
-    from env import WingedDroneEnv  # type: ignore
+    from env import WingedDroneEnv, _apply_drone_profile_defaults  # type: ignore
     from urdf_resolver import resolve_or_generate_urdf  # type: ignore
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh  # same as in train.py
 
@@ -167,6 +167,21 @@ def _extract_filtered_throttle(env: WingedDroneEnv) -> torch.Tensor:
     torch.nan_to_num_(env._thr_flt_buf, nan=0.0, posinf=0.0, neginf=0.0)
     env._thr_flt_buf.clamp_(min=0.0, max=1.0)
     return env._thr_flt_buf
+
+
+def _resolve_debug_surface_index(env: WingedDroneEnv, target_kind: int) -> Optional[int]:
+    """Return the first aero-surface index whose solver kind matches ``target_kind``."""
+    solver = getattr(env, "aero_solver", None)
+    if solver is None or not hasattr(solver, "kind"):
+        return None
+    try:
+        kind = solver.kind.to_torch(device=env.device).detach().view(-1).cpu()
+    except Exception:
+        return None
+    matches = (kind == int(target_kind)).nonzero(as_tuple=False).flatten()
+    if matches.numel() == 0:
+        return None
+    return int(matches[0].item())
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +460,20 @@ def create_overlay_video(
         thrust_n_sum = np.asarray(thrust_n_series).sum(axis=1)
     else:
         thrust_n_sum = None
+    max_thrust_total = traj.get("max_thrust", None)
+    if max_thrust_total is not None:
+        max_thrust_total = float(np.asarray(max_thrust_total).reshape(-1).sum())
+    thrust_frac = None
+    if (
+        thrust_n_sum is not None
+        and max_thrust_total is not None
+        and np.isfinite(max_thrust_total)
+        and max_thrust_total > 1e-6
+    ):
+        thrust_frac = np.clip(thrust_n_sum / max_thrust_total, 0.0, None)
     jp = traj["joint_positions"]
+    joint_names = [str(name) for name in traj.get("joint_names", [])]
+    n_joints = int(jp.shape[1]) if jp.ndim == 2 else 0
     vlin = traj["lin_vel"]
     alpha_deg = traj.get("alpha_deg", None)
     beta_deg = traj.get("beta_deg", None)
@@ -486,11 +514,14 @@ def create_overlay_video(
 
     # Axis limits and grids
     ax_T.set_ylim(0.0, 1.0)
-    ax_T.set_ylabel("Throttle [-]")
+    ax_T.set_ylabel("Throttle / thrust ratio [-]")
     ax_T_right = ax_T.twinx()
-    thrust_n_limit = traj.get("max_thrust", None)
-    if thrust_n_limit is not None:
-        thrust_n_limit = float(np.asarray(thrust_n_limit).reshape(-1)[0])
+    # Make the twinned axes coexist cleanly: same panel geometry, no opaque
+    # patch on the right axis, and the throttle axis kept slightly in front.
+    ax_T.set_zorder(2)
+    ax_T_right.set_zorder(1)
+    ax_T_right.patch.set_visible(False)
+    thrust_n_limit = max_thrust_total
     if thrust_n_limit is not None and np.isfinite(thrust_n_limit) and thrust_n_limit > 0.0:
         ax_T_right.set_ylim(0.0, thrust_n_limit)
     elif thrust_n_sum is not None and thrust_n_sum.size:
@@ -520,18 +551,60 @@ def create_overlay_video(
     for ax in ts_axes:
         pos = ax.get_position()
         ax.set_position([pos.x0, pos.y0, pos.width * 0.92, pos.height])
+    ax_T_right.set_position(ax_T.get_position())
+
+    def _zeros_upto(i: int) -> np.ndarray:
+        return np.zeros((i + 1,), dtype=np.float32)
+
+    def _joint_series(idx: int) -> np.ndarray:
+        if 0 <= idx < n_joints:
+            return jp[: idx_frame + 1, idx]
+        return _zeros_upto(idx_frame)
 
     # Time series lines
-    lnThrCmd, = ax_T.plot([], [], lw=2.0, color="tab:blue", label="Throttle")
+    lnThrCmd, = ax_T.plot([], [], lw=2.2, color="tab:blue", label="Throttle", zorder=4)
+    lnThrustFrac = None
+    if thrust_frac is not None:
+        lnThrustFrac, = ax_T.plot(
+            [],
+            [],
+            lw=2.2,
+            color="tab:orange",
+            linestyle="--",
+            label="Thrust / T_max",
+            zorder=5,
+        )
     lnThrustN = None
     if thrust_n_sum is not None:
-        lnThrustN, = ax_T_right.plot([], [], lw=2.0, color="tab:red", label="Thrust [N]")
-    lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Mean")
-    lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Diff")
-    lnJ2, = ax_J23.plot([], [], lw=1.6, label="Twist Mean")
-    lnJ3, = ax_J23.plot([], [], lw=1.6, label="Twist Diff")
-    lnJ4, = ax_J45.plot([], [], lw=1.6, label="Elevator")
-    lnJ5, = ax_J45.plot([], [], lw=1.6, label="Rudder")
+        lnThrustN, = ax_T_right.plot(
+            [],
+            [],
+            lw=1.8,
+            color="tab:red",
+            linestyle=":",
+            label="Thrust [N]",
+            zorder=3,
+        )
+    is_lisparrow = (
+        n_joints == 4
+        and any("outer_wing" in name for name in joint_names)
+        and any("elevator" in name for name in joint_names)
+        and any("rudder" in name for name in joint_names)
+    )
+    if is_lisparrow:
+        lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Left")
+        lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Right")
+        lnJ2, = ax_J23.plot([], [], lw=1.6, label="Elevator")
+        lnJ3, = ax_J23.plot([], [], lw=1.6, label="Rudder")
+        lnJ4, = ax_J45.plot([], [], lw=1.6, label="Sweep Mean")
+        lnJ5, = ax_J45.plot([], [], lw=1.6, label="Sweep Diff")
+    else:
+        lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Mean")
+        lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Diff")
+        lnJ2, = ax_J23.plot([], [], lw=1.6, label="Twist Mean")
+        lnJ3, = ax_J23.plot([], [], lw=1.6, label="Twist Diff")
+        lnJ4, = ax_J45.plot([], [], lw=1.6, label="Elevator")
+        lnJ5, = ax_J45.plot([], [], lw=1.6, label="Rudder")
 
     lnVx, = ax_VLIN.plot([], [], lw=1.6, label="vx")
     lnVy, = ax_VLIN.plot([], [], lw=1.6, label="vy")
@@ -547,6 +620,8 @@ def create_overlay_video(
     for ax in ts_axes[1:]:
         ax.legend(fontsize=8.5, frameon=False, loc="upper right", ncol=2, handlelength=1.8, columnspacing=1.0)
     thrust_handles = [lnThrCmd]
+    if lnThrustFrac is not None:
+        thrust_handles.append(lnThrustFrac)
     if lnThrustN is not None:
         thrust_handles.append(lnThrustN)
     thrust_labels = [h.get_label() for h in thrust_handles]
@@ -587,18 +662,38 @@ def create_overlay_video(
 
             t_now = k * dt
             idx = max(np.searchsorted(t_all, t_now) - 1, 0)
+            idx_frame = idx
 
             # Update time series
             lnThrCmd.set_data(t_all[: idx + 1], throttle_sum[: idx + 1])
+            if lnThrustFrac is not None and thrust_frac is not None:
+                lnThrustFrac.set_data(t_all[: idx + 1], thrust_frac[: idx + 1])
             if lnThrustN is not None and thrust_n_sum is not None:
                 lnThrustN.set_data(t_all[: idx + 1], thrust_n_sum[: idx + 1])
-
-            lnJ0.set_data(t_all[: idx + 1], (jp[: idx + 1, 0] - jp[: idx + 1, 1]) / 2)
-            lnJ1.set_data(t_all[: idx + 1], (jp[: idx + 1, 0] + jp[: idx + 1, 1]))
-            lnJ2.set_data(t_all[: idx + 1], (jp[: idx + 1, 2] + jp[: idx + 1, 3]) / 2)
-            lnJ3.set_data(t_all[: idx + 1], (jp[: idx + 1, 2] - jp[: idx + 1, 3]))
-            lnJ4.set_data(t_all[: idx + 1], jp[: idx + 1, 4])
-            lnJ5.set_data(t_all[: idx + 1], jp[: idx + 1, 5])
+            if is_lisparrow:
+                left = _joint_series(0)
+                right = _joint_series(1)
+                elevator = _joint_series(2)
+                rudder = _joint_series(3)
+                lnJ0.set_data(t_all[: idx + 1], left)
+                lnJ1.set_data(t_all[: idx + 1], right)
+                lnJ2.set_data(t_all[: idx + 1], elevator)
+                lnJ3.set_data(t_all[: idx + 1], rudder)
+                lnJ4.set_data(t_all[: idx + 1], 0.5 * (left + right))
+                lnJ5.set_data(t_all[: idx + 1], left - right)
+            else:
+                left = _joint_series(0)
+                right = _joint_series(1)
+                twist_left = _joint_series(2)
+                twist_right = _joint_series(3)
+                elev = _joint_series(4)
+                rud = _joint_series(5)
+                lnJ0.set_data(t_all[: idx + 1], 0.5 * (left - right))
+                lnJ1.set_data(t_all[: idx + 1], left + right)
+                lnJ2.set_data(t_all[: idx + 1], 0.5 * (twist_left + twist_right))
+                lnJ3.set_data(t_all[: idx + 1], twist_left - twist_right)
+                lnJ4.set_data(t_all[: idx + 1], elev)
+                lnJ5.set_data(t_all[: idx + 1], rud)
 
             lnVx.set_data(t_all[: idx + 1], vlin[: idx + 1, 0])
             lnVy.set_data(t_all[: idx + 1], vlin[: idx + 1, 1])
@@ -883,6 +978,7 @@ def run_and_record(env,
     x_init = torch.zeros(B, device=device)
     x_progress = torch.zeros(B, device=device)
     x_eff = torch.zeros(B, device=device)
+    z_at_min_progress = torch.full((B,), float("nan"), device=device)
     reached_min = torch.zeros(B, dtype=torch.bool, device=device)
     straight = torch.zeros(B, device=device)
     final_reason = [""] * B  # "collision", "wall_crash", "angle_limit", "success", "timeout", ...
@@ -899,6 +995,7 @@ def run_and_record(env,
         reward_comp_b = []
         reward_names = None
         depth_b = []              # depth sectors at each time step
+        fuselage_dbg_idx = _resolve_debug_surface_index(env, target_kind=0)
 
     # Camera video (if available and requested)
     if collect_video and getattr(env, "rec_cam", None) is not None and B == 1:
@@ -934,8 +1031,18 @@ def run_and_record(env,
             v = env.base_lin_vel[0].detach().cpu().numpy()
             lin_vel_b.append(v.copy())
 
-            alpha_deg_b.append(env.alpha.detach().cpu().item() * 180.0 / math.pi)
-            beta_deg_b.append(env.beta.detach().cpu().item() * 180.0 / math.pi)
+            alpha_deg_val = float(env.alpha.detach().cpu().item() * 180.0 / math.pi)
+            beta_deg_val = float(env.beta.detach().cpu().item() * 180.0 / math.pi)
+            if fuselage_dbg_idx is not None:
+                try:
+                    alpha_dbg = env.aero_solver.alpha_dbg.to_torch(device=device)
+                    beta_dbg = env.aero_solver.beta_dbg.to_torch(device=device)
+                    alpha_deg_val = float(alpha_dbg[0, fuselage_dbg_idx].detach().cpu().item() * 180.0 / math.pi)
+                    beta_deg_val = float(beta_dbg[0, fuselage_dbg_idx].detach().cpu().item() * 180.0 / math.pi)
+                except Exception:
+                    pass
+            alpha_deg_b.append(alpha_deg_val)
+            beta_deg_b.append(beta_deg_val)
 
             # ----------------------------------------------------------
             #  Log propulsion state: applied throttle and physical thrust [N]
@@ -1017,6 +1124,7 @@ def run_and_record(env,
             if newly_reached.any():
                 reached_min[newly_reached] = True
                 x_eff[newly_reached] = MINIMAL_PROGRESS_M
+                z_at_min_progress[newly_reached] = env.base_pos[newly_reached, 2]
 
         # --------------------------------------------------------------
         #  Final reason for envs that just terminated
@@ -1064,6 +1172,10 @@ def run_and_record(env,
     n_completed_20s = int(success_mask.sum().item())
 
     mean_x = x_progress.mean().item()
+    reached_z_mask = ~torch.isnan(z_at_min_progress)
+    mean_z_at_progress_threshold = (
+        z_at_min_progress[reached_z_mask].mean().item() if reached_z_mask.any() else float("nan")
+    )
     mean_survival_time = time_acc.mean().item()
     mean_energy_total = energy_acc.mean().item()
     not_reached = ~reached_min
@@ -1109,6 +1221,7 @@ def run_and_record(env,
     stats = dict(
         n_completed_20s=n_completed_20s,
         mean_x=mean_x,
+        mean_z_at_progress_threshold=mean_z_at_progress_threshold,
         mean_survival_time=mean_survival_time,
         mean_energy_total=mean_energy_total,
         mean_energy_per_m_x=mean_energy_per_m_x,
@@ -1134,6 +1247,7 @@ def run_and_record(env,
                 dtype=np.float32,
             ),
             joint_positions=np.vstack(joint_positions_b).astype(np.float32),
+            joint_names=np.array(list(getattr(env, "servo_joint_names", [])), dtype=object),
             lin_vel=np.vstack(lin_vel_b).astype(np.float32),
             time_steps=np.array(t_b, dtype=np.float32),
             end_reason=final_reason[0],
@@ -1161,6 +1275,10 @@ def pretty_print_stats(stats: Dict) -> None:
     print("\n=== Evaluation statistics (single episode batch) ===")
     print(f"- Completed {SUCCESS_TIME_SEC:.0f}s episodes: {stats['n_completed_20s']}")
     print(f"- Mean forward progress       : {stats['mean_x']:.1f} m")
+    print(
+        f"- Mean z at {MINIMAL_PROGRESS_M:.0f} m progress : "
+        f"{stats['mean_z_at_progress_threshold']:.2f} m"
+    )
     print(f"- Mean survival time          : {stats['mean_survival_time']:.1f} s")
     print(f"- Mean total energy           : {stats['mean_energy_total']:.1f} J")
     print(
@@ -1225,7 +1343,8 @@ def main() -> None:
     # Paths: training logs and evaluation outputs
     train_log_dir = os.path.join("logs", args.exp_name)
     # Overwrite log_dir if needed coming from cluster
-    #train_log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2663796/logs/ea/{args.exp_name}"
+    train_log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2817429/logs/ea/foundation-mixture"
+
     eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
 
@@ -1237,13 +1356,15 @@ def main() -> None:
     with open(cfg_path, "rb") as f:
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
 
+    selected_drone = args.drone or env_cfg.get("drone")
     urdf_file = resolve_or_generate_urdf(
         urdf_file=args.urdf_file,
-        drone_key=args.drone,
+        drone_key=selected_drone,
     )
 
     # Build evaluation-specific environment config (do not modify original dict)
     env_cfg_eval = dict(env_cfg)
+    rec_cam_follow_distance = float(env_cfg.get("rec_cam_follow_distance", 1.5))
     env_cfg_eval.update(
         dict(
             # eval_visual exists to render videos, so keep rendering enabled here
@@ -1259,6 +1380,7 @@ def main() -> None:
             forest_x_limit=600,
             tree_radius=env_cfg.get("tree_radius", 0.75),
             base_init_pos=env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0]),
+            rec_cam_follow_distance=max(0.5, rec_cam_follow_distance),
             aero_noise=False,
             aero_noise_sigma0=0.0,
             noise_sigma_param=0.0,
@@ -1266,6 +1388,7 @@ def main() -> None:
     )
     if args.drone:
         env_cfg_eval["drone"] = args.drone
+    env_cfg_eval = _apply_drone_profile_defaults(env_cfg_eval, urdf_file)
     command_cfg["eval_speed"] = args.vtgt
 
     obs_cfg_eval = dict(obs_cfg)
