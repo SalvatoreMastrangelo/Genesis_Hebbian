@@ -936,6 +936,7 @@ class HebbianCMAES:
     def run(
         self,
         resume_from_gen: Optional[int] = None,
+        x0_override: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, float]:
         """Run the full CMA-ES optimisation.
 
@@ -944,6 +945,11 @@ class HebbianCMAES:
         resume_from_gen : int, optional
             If given, restores the CMA-ES state and population from the
             checkpoint saved at that generation and continues from there.
+        x0_override : np.ndarray, optional
+            When starting fresh (no resume), initialise the CMA-ES mean from
+            this genome instead of the config default. Used by the outer
+            loop to carry the best rules from the previous outer generation
+            forward as the starting point for the new CMA-ES search.
 
         Returns
         -------
@@ -1010,8 +1016,15 @@ class HebbianCMAES:
             # Recover last solutions + fitnesses for display purposes
             last_solutions, last_fitnesses = self._load_generation(resume_from_gen)
         else:
-            # Fresh start: initial mean at 0.5 (centre of [0,1]^n)
-            if self.cfg.hebbian.initialize_rules_to_zero:
+            # Fresh start: choose initial mean
+            if x0_override is not None:
+                x0 = np.clip(np.asarray(x0_override, dtype=float), 0.0, 1.0)
+                if x0.shape != (self.n_genes,):
+                    raise ValueError(
+                        f"x0_override shape {x0.shape} != expected ({self.n_genes},)"
+                    )
+                print(f"[HebbianCMAES] Using x0_override (carried-over rules)")
+            elif self.cfg.hebbian.initialize_rules_to_zero:
                 # 0.5 in normalised space maps to 0.0 for symmetric [-1,1] ranges
                 x0 = np.full(self.n_genes, 0.5)
             else:
