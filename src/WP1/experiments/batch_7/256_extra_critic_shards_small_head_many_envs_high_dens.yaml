@@ -5,7 +5,8 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: single_new_less_noise_64  # Name of the experiment for logging/tracking
+exp_name: 256_extra_critic_shards_small_head_many_envs_high_dens  # Name of the experiment for logging/tracking
+repeat: 4  # number of times to submit this config as independent jobs
 
 ##############################################################################
 # PPO (Proximal Policy Optimization) hyperparameters
@@ -29,13 +30,13 @@ ppo:
 # Policy network architecture
 ##############################################################################
 policy:
-  actor_hidden_dims: [64, 64]               # Hidden layer dimensions for actor network (input → 64 → 32 → output)
-  critic_hidden_dims: [64, 64]              # Hidden layer dimensions for critic network
+  actor_hidden_dims: [128, 32]              # Hidden layer dimensions for actor network (input → 64 → 32 → output)
+  critic_hidden_dims: [128, 128]            # Hidden layer dimensions for critic network
   activation: elu                           # Activation function type (elu, relu, tanh, etc.)
   init_noise_std: 0.3                       # Initial standard deviation for action noise
   rnn_type: lstm                            # Type of RNN: lstm, gru, or none
-  rnn_hidden_size: 64                       # Hidden size for actor RNN
-  critic_rnn_hidden_size: 64                # Hidden size for critic RNN (null = same as rnn_hidden_size)
+  rnn_hidden_size: 128                      # Hidden size for actor RNN
+  critic_rnn_hidden_size: 128               # Hidden size for critic RNN (null = same as rnn_hidden_size)
   rnn_num_layers: 1                         # Number of RNN layers
   max_servo: 1.0                            # Maximum servo command magnitude (wing sweep, elevator, rudder)
   max_throttle: 1.0                         # Maximum throttle magnitude
@@ -44,8 +45,8 @@ policy:
 # Training configuration
 ##############################################################################
 training:
-  num_envs: 16384                           # Number of parallel environments for data collection
-  max_iterations: 850                       # Maximum training iterations
+  num_envs: 65536                           # Number of parallel environments for data collection
+  max_iterations: 1000                      # Maximum training iterations
   num_steps_per_env: 25                     # Timesteps collected per environment per iteration (experience = num_envs × num_steps)
   save_interval: 50                         # Save checkpoint every N iterations
   eval_interval: 200                        # Run full evaluation every N iterations
@@ -65,7 +66,7 @@ env:
   termination_if_y_greater_than: 50.0       # Terminate if drone y-position exceeds this (meters)
   termination_if_z_greater_than: 50.0       # Terminate if drone z-position exceeds this (meters)
   base_init_pos: [-30.0, 0.0, 15.0]         # Initial position [x, y, z] in meters
-  base_init_quat: [1.0, 0.0, 0.0, 0.0]      # Initial orientation as quaternion [w, x, y, z]
+  base_init_quat: [1.0, 0.0, 0.0, 0.0]     # Initial orientation as quaternion [w, x, y, z]
   randomize_init_quat: false                # Randomize initial orientation each episode
   randomize_joint_pos: false                # Randomize initial joint positions
   episode_length_s: 100.0                   # Episode duration in seconds
@@ -86,13 +87,13 @@ env:
   forest_x_limit: 150.0                     # Forest extent x-limit (meters)
   x_upper: 150.0                            # Maximum x position (meters)
   dens_min: 0.0                             # Minimum forest density (trees per unit area)
-  dens_max: 4.0                             # Maximum forest density
+  dens_max: 5.0                             # Maximum forest density
   dens_min_min: 0.0                         # Lower bound for randomizing dens_min
   dens_min_max: 3.0                         # Upper bound for randomizing dens_min
   growing_forest: true                      # Regenerate random forest layout each episode
   aero_noise: true                          # Add aerodynamic noise to forces/moments
   aero_noise_sigma0: 0.05                   # Base aerodynamic noise standard deviation
-  noise_sigma_param: 0.10                   # Scaling parameter for aerodynamic noise
+  noise_sigma_param: 0.15                   # Scaling parameter for aerodynamic noise
 
 ##############################################################################
 # Evaluation-specific environment overrides (for videos/evaluation episodes)
@@ -129,7 +130,7 @@ obs:
   noise_std_joint_pos: 0.0                  # Noise on joint positions (if critic privileged obs)
   noise_std_joint_vel: 0.0                  # Noise on joint velocities (if critic privileged obs)
   noise_std_ang_vel: 0.0                    # Noise on angular velocity (if critic privileged obs)
-  noise_std_effective_thrust: 0.0           # Noise on effective thrust observation (if critic privileged obs)
+  noise_std_effective_thrust: 0.0            # Noise on effective thrust observation (if critic privileged obs)
 
 ##############################################################################
 # Reward function weights (all components summed for total reward)
@@ -139,7 +140,7 @@ reward:
   angular: -0.005                           # Penalty for high angular velocity (encourage stable flight)
   crash: -10.0                              # Large penalty for collision with ground/obstacles
   obstacle: -0.1                            # Penalty for proximity to obstacles
-  energy: -0.002                            # Penalty for high power consumption
+  energy: -0.0004                           # Penalty for high power consumption
   progress: 0.5                             # Reward for moving toward target waypoint
   height: -0.005                            # Penalty for flying too low (safety bonus)
   success: 0.0                              # Reward for reaching target (0 = no explicit bonus)
@@ -151,23 +152,20 @@ reward:
 ##############################################################################
 command:
   num_commands: 1                           # Number of simultaneous command types (1 = single waypoint navigation)
-  min_speed: 5.0                            # Minimum sampled forward speed during training (m/s)
-  max_speed: 25.0                           # Maximum sampled forward speed during training (m/s)
-  eval_speed: 12.0                          # Fixed forward speed used during single-env evaluation (m/s)
 
 ##############################################################################
 # Multi-drone URDF catalog (for multi-agent training)
 ##############################################################################
 catalog:
-  n_urdf: 1                                 # Number of different drone morphologies in catalog
+  n_urdf: 256                               # Number of different drone morphologies in catalog
   catalog_dir: null                         # Directory containing custom URDF files (null = use default)
-  urdf_seed: 68                             # Seed for reproducible URDF generation
+  urdf_seed: 20                             # Seed for reproducible URDF generation
 
 ##############################################################################
 # Logical Super-Scene (LSS) configuration (WP2.5 multi-scene training)
 ##############################################################################
 lss:
-  enabled: false                            # Enable logical super-scene training
-  urdf_shard_size: 16                       # Batch size for URDF processing
+  enabled: true                             # Enable logical super-scene training
+  urdf_shard_size: 32                       # Batch size for URDF processing
   num_workers: 0                            # Number of worker processes for scene collection
-  collection_gpus: 1                        # Number of GPUs for multi-scene collection
+  collection_gpus: 2                        # Number of GPUs for multi-scene collection

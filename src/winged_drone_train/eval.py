@@ -377,6 +377,8 @@ def evaluation(
     obs_genome: bool | None = False,
     save_plots: bool = True,
     eval_dir: str | Path | None = None,
+    dens_min: float | None = None,
+    dens_max: float | None = None,
 ):
     """
     Programmatic evaluation entry point.
@@ -472,6 +474,10 @@ def evaluation(
 
     # Evaluation-specific environment tweaks
     _apply_eval_env_overrides(env_cfg)
+    if dens_min is not None:
+        env_cfg["dens_min"] = float(dens_min)
+    if dens_max is not None:
+        env_cfg["dens_max"] = float(dens_max)
 
     env = WingedDroneEnv(
         num_envs=envs,
@@ -681,6 +687,20 @@ if __name__ == "__main__":
     parser.add_argument("--envs", type=int, default=8192)
     parser.add_argument("--vmin", type=float, default=5.0)
     parser.add_argument("--vmax", type=float, default=25.0)
+    parser.add_argument(
+        "--dens-min",
+        dest="dens_min",
+        type=float,
+        default=None,
+        help="Override forest density at x=x_lower [trees/m].",
+    )
+    parser.add_argument(
+        "--dens-max",
+        dest="dens_max",
+        type=float,
+        default=None,
+        help="Override forest density at x=x_upper [trees/m].",
+    )
     parser.add_argument("--gpu", default="cuda")
     parser.add_argument(
         "--log_dir",
@@ -740,6 +760,10 @@ if __name__ == "__main__":
 
     # Evaluation-specific environment settings
     _apply_eval_env_overrides(env_cfg)
+    if args.dens_min is not None:
+        env_cfg["dens_min"] = float(args.dens_min)
+    if args.dens_max is not None:
+        env_cfg["dens_max"] = float(args.dens_max)
 
     env = WingedDroneEnv(
         num_envs=args.envs,

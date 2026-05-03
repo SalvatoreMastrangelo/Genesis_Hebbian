@@ -1346,6 +1346,11 @@ def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, 
     )
     command_cfg["eval_speed"] = args.vtgt
 
+    if getattr(args, "dens_min", None) is not None:
+        env_cfg_eval["dens_min"] = float(args.dens_min)
+    if getattr(args, "dens_max", None) is not None:
+        env_cfg_eval["dens_max"] = float(args.dens_max)
+
     obs_cfg_eval = dict(obs_cfg)
 
     print("\nEnvironment Configuration (eval):")
@@ -1597,6 +1602,20 @@ def main() -> None:
         type=float,
         default=12.0,
         help="Commanded target Velocity.",
+    )
+    parser.add_argument(
+        "--dens-min",
+        dest="dens_min",
+        type=float,
+        default=None,
+        help="Override forest density at x=x_lower [trees/m].",
+    )
+    parser.add_argument(
+        "--dens-max",
+        dest="dens_max",
+        type=float,
+        default=None,
+        help="Override forest density at x=x_upper [trees/m].",
     )
     parser.add_argument(
         "--log_dir",
