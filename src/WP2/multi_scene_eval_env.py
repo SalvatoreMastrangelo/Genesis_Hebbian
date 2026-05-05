@@ -155,6 +155,11 @@ class MultiSceneEvalEnv:
     #  Forest regeneration
     # ------------------------------------------------------------------
 
+    def set_dens_min(self, value: float) -> None:
+        """Propagate a new ``dens_min`` to every sub-env's forest generator."""
+        for sub in self.drones:
+            sub.set_dens_min(value)
+
     def refresh_forests(self) -> None:
         """Regenerate the forest pool and synchronise it across all sub-envs.
 

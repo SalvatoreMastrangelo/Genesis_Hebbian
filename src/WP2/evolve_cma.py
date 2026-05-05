@@ -938,6 +938,25 @@ class HebbianCMAES:
             # Sample new candidate solutions
             solutions = es.ask()   # list of np.ndarray, each shape (n_genes,)
 
+            # Per-generation linear ramp on dens_min: dens_min(g) = base + slope * g.
+            # Only applied when dens_min is explicitly set in the eval config so the
+            # WP1-config default is preserved when the override is null.
+            slope = float(getattr(self.cfg.evaluation, "dens_min_slope", 0.0))
+            base_dens_min = self.cfg.evaluation.dens_min
+            if (
+                slope != 0.0
+                and base_dens_min is not None
+                and self._env is not None
+                and hasattr(self._env, "set_dens_min")
+            ):
+                current_dens_min = float(base_dens_min) + slope * gen
+                self._env.set_dens_min(current_dens_min)
+                if verbose or gen % 10 == 0:
+                    print(
+                        f"[HebbianCMAES] gen {gen}: dens_min = {current_dens_min:.4f} "
+                        f"(base={base_dens_min} + slope={slope} * gen={gen})"
+                    )
+
             # Optionally refresh forest layouts so each generation sees new trees.
             if self.cfg.evaluation.refresh_forests_per_generation and self._env is not None:
                 self._env.refresh_forests()

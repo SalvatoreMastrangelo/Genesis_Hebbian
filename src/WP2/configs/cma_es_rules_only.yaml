@@ -19,17 +19,17 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: generalist_256_single_urdf_0.005_0.05
+exp_name: generalist_256_10_urdf_density_eta_decay_evolution # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.005                     # 0.0025 seems better for multi-urdf controllers. of course you dumb fuck, you're setting the hebbian effect lower, so it's just more similar to the baseline
-  evolve_eta: false
+  eta: 0.005                     # global default; overridden per-weight when evolve_eta=true
+  evolve_eta: true
   decay: 0.05
-  evolve_decay: false
+  evolve_decay: true
   use_oja_coefficient: false
   initialize_rules_to_zero: false
   w_max: 5000.0
@@ -38,21 +38,21 @@ hebbian:
   C_range: [-1.5, 1.5]
   D_range: [-1.5, 1.5]
   decay_range: [0.0, 0.1]
-  eta_range: [0.0, 0.1]
+  eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 50
+  num_generations: 75
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
-  sigma0: 0.075         # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
-  population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
+  sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
+  population_size: 64  # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
 
 catalog:
   path: ""             # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
-  num_urdfs: 1         # N: number of URDFs, each in its own Genesis scene
+  num_urdfs: 10        # N: number of URDFs, each in its own Genesis scene
   num_episodes: 1      # rollout episodes per generation
   force_multi_urdf: false  # route N=1 through the multi-URDF path (for verification)
 
@@ -68,6 +68,7 @@ evaluation:
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor each gen for comparison
   x_upper: 500         # override forest corridor length [m]; null = use WP1 config value
   dens_min: 0.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
+  dens_min_slope: 0.06 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
   dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
 

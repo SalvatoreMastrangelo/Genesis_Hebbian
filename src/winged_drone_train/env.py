@@ -1158,6 +1158,12 @@ class WingedDroneEnv:
             return
         self.cylinders_xy[env_ids] = self.cylinders_array[self.forest_ids[env_ids], :, :2]
 
+    def set_dens_min(self, value: float) -> None:
+        """Override the forest generator's ``dens_min`` for the next refresh."""
+        if self._forest_generator is None:
+            return
+        self._forest_generator.config.dens_min = float(value)
+
     def refresh_forests(self) -> None:
         """Regenerate the full forest pool (new random tree positions).
 

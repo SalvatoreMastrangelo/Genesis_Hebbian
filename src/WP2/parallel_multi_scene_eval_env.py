@@ -165,6 +165,10 @@ def _worker_main(
                 env._fixed_forest_ids = payload
                 ack_q.put(("ok",))
 
+            elif cmd == "set_dens_min":
+                env.set_dens_min(float(payload))
+                ack_q.put(("ok",))
+
             elif cmd == "set_speed_grid":
                 env._eval_speed_grid = payload
                 ack_q.put(("ok",))
@@ -344,6 +348,9 @@ class ParallelMultiSceneEvalEnv:
 
     def refresh_forests(self) -> None:
         self._send_all("refresh_forests", random.randint(0, 2**31 - 1))
+
+    def set_dens_min(self, value: float) -> None:
+        self._send_all("set_dens_min", float(value))
 
     # ── forest / speed properties ─────────────────────────────────────────────
 

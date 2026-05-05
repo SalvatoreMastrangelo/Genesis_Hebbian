@@ -119,6 +119,7 @@ class EvaluationConfig:
     run_baseline: bool = False
     x_upper: Optional[float] = None  # override WP1 forest corridor length [m]
     dens_min: Optional[float] = None  # override forest density at x=0 [trees/m]
+    dens_min_slope: float = 0.0  # per-generation linear ramp added to dens_min
     dens_max: Optional[float] = None  # override forest density at x=x_upper [trees/m]
     refresh_forests_per_generation: bool = False
 
