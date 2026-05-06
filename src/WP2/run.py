@@ -136,7 +136,7 @@ def main() -> None:
     print(f"  WP1 Config:    {cfg.checkpoint_config_path}")
     print(f"  Seed:          {cfg.seed}")
     print(f"  Device:        {cfg.device}")
-    print(f"  Genome dim:    {cfg.total_genome_dim()} (Hebbian rules only)")
+    print(f"  Genome dim:    {cfg.total_genome_dim()}")
     print(f"  Catalog:       {catalog_info}")
     print(f"  CMA sigma0:    {cfg.cmaes.sigma0}")
     print(f"  CMA popsize:   {'auto ≈ ' + str(expected_pop) if n_pop_cfg == 0 else n_pop_cfg}")

@@ -152,8 +152,14 @@ def _rollout_episode_reward_sum(
             energy_acc[alive] += env.power[alive] * dt
             v_dev_acc[alive] += (env.base_lin_vel[alive, 0] - env.commands[alive, 0]).abs() * dt
 
-        just_done = (~done) & term
+        # Terminating step: env auto-resets base_pos before step() returns, so
+        # we can't trust positional state; but last_reward_{total,components}
+        # were filled pre-reset and still carry the crash penalty.
+        just_done = (~done) & term & (~nan_mask)
         if just_done.any():
+            reward_sum[just_done] += env.last_reward_total[just_done]
+            if reward_comp_sum is not None:
+                reward_comp_sum[just_done] += env.last_reward_components[just_done][:, active_idx_t]
             for attr in ("pre_collision", "pre_wall_crash", "pre_angle_limit"):
                 flag = getattr(env, attr, None)
                 if flag is not None:
@@ -706,8 +712,16 @@ def _rollout_episode_multi_urdf(
                     ds.base_lin_vel[alive_d, 0] - ds.commands[alive_d, 0]
                 ).abs() * dt
 
-            just_done = (~done[d]) & term_d
+            # Terminating step: env auto-resets base_pos before step() returns,
+            # so positional state is invalid; reward buffers were filled
+            # pre-reset and still carry the crash penalty.
+            just_done = (~done[d]) & term_d & (~nan_d)
             if just_done.any():
+                reward_sum[d, just_done] += ds.last_reward_total[just_done]
+                if reward_comp_sum is not None:
+                    reward_comp_sum[d, just_done] += (
+                        ds.last_reward_components[just_done][:, active_idx_t]
+                    )
                 for attr in ("pre_collision", "pre_wall_crash", "pre_angle_limit"):
                     flag = getattr(ds, attr, None)
                     if flag is not None:

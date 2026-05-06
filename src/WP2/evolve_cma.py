@@ -236,7 +236,11 @@ def _print_generation_table(
         ("Crash Rate",       metrics["crash_flags"],   "crash_rate"),
     ]
 
-    lower_is_better = {"Crash Rate", "COT", "Vel. Dev. [m/s]"}
+    # "Best/Worst" always refer to the fitness-best / fitness-worst individual,
+    # so every row in the summary (and the breakdown below) describes the
+    # *same* drone in the Best column and the *same* drone in the Worst column.
+    best_idx = int(np.argmax(fitnesses))
+    worst_idx = int(np.argmin(fitnesses))
 
     if baseline is not None:
         headers = [
@@ -246,16 +250,12 @@ def _print_generation_table(
         ]
         table_rows = []
         for name, arr, key in rows:
-            if name in lower_is_better:
-                best, worst = arr.min(), arr.max()
-            else:
-                best, worst = arr.max(), arr.min()
             bv = baseline.get(key, float("nan"))
             table_rows.append([
                 name,
-                f"{best:.4g}",
+                f"{arr[best_idx]:.4g}",
                 f"{arr.mean():.4g}",
-                f"{worst:.4g}",
+                f"{arr[worst_idx]:.4g}",
                 f"{arr.std():.4g}",
                 f"{bv:.4g}",
             ])
@@ -263,15 +263,11 @@ def _print_generation_table(
         headers = ["Metric", "Best", "Mean", "Worst", "Std"]
         table_rows = []
         for name, arr, key in rows:
-            if name in lower_is_better:
-                best, worst = arr.min(), arr.max()
-            else:
-                best, worst = arr.max(), arr.min()
             table_rows.append([
                 name,
-                f"{best:.4g}",
+                f"{arr[best_idx]:.4g}",
                 f"{arr.mean():.4g}",
-                f"{worst:.4g}",
+                f"{arr[worst_idx]:.4g}",
                 f"{arr.std():.4g}",
             ])
 
@@ -288,8 +284,6 @@ def _print_generation_table(
     comp_arr = metrics.get("reward_components")
     comp_names = metrics.get("reward_names") or []
     if comp_arr is not None and len(comp_names) and comp_arr.size:
-        best_idx = int(np.argmax(fitnesses))
-        worst_idx = int(np.argmin(fitnesses))
         base_comps = (baseline or {}).get("reward_components", {}) if baseline else {}
 
         breakdown_rows = []
@@ -871,7 +865,7 @@ class HebbianCMAES:
         import time
 
         print(f"\n[HebbianCMAES] Run directory: {self.run_dir}")
-        print(f"[HebbianCMAES] Genome dim: {self.n_genes} (Hebbian rules only)")
+        print(f"[HebbianCMAES] Genome dim: {self.n_genes}")
         print(f"[HebbianCMAES] Generations: {self.cfg.evolution.num_generations}")
         if self._use_multi_urdf:
             print(f"[HebbianCMAES] URDFs: {len(self._urdf_paths)} (multi-URDF path)")

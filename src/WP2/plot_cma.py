@@ -104,8 +104,8 @@ def _load_population_csv(run_dir: Path) -> Optional[Dict[str, np.ndarray]]:
     return result
 
 
-def _load_checkpoint_last_layer(run_dir: Path) -> Optional[np.ndarray]:
-    """Return the last Linear layer's weights as a flat (7*64,) numpy array."""
+def _load_checkpoint_last_layer(run_dir: Path, expected_shape: tuple[int, int]) -> Optional[np.ndarray]:
+    """Return the last Linear layer's weights as a flat numpy array, matching expected_shape."""
     ckpt_path = run_dir / "reproducibility" / "wp1_actor.pt"
     if not ckpt_path.is_file():
         return None
@@ -113,10 +113,9 @@ def _load_checkpoint_last_layer(run_dir: Path) -> Optional[np.ndarray]:
         import torch
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         state_dict = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
-        # The last Linear layer is (7, 64) — find it by shape
         last_weight = None
         for v in state_dict.values():
-            if hasattr(v, "shape") and tuple(v.shape) == (7, 64):
+            if hasattr(v, "shape") and tuple(v.shape) == expected_shape:
                 last_weight = v
         if last_weight is None:
             return None
@@ -245,7 +244,8 @@ def plot_rule_weight_correlation(run_dir: str | Path) -> None:
         print("[plot_cma] No genome data found — skipping correlation plot.")
         return
 
-    w0 = _load_checkpoint_last_layer(run_dir)
+    expected_shape = (cfg.hebbian.num_actions, cfg.hebbian.hidden_dim)
+    w0 = _load_checkpoint_last_layer(run_dir, expected_shape)
     if w0 is None:
         print("[plot_cma] Could not load checkpoint weights — skipping correlation plot.")
         return
