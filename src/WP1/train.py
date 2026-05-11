@@ -87,7 +87,7 @@ from winged_drone_train.rl.A2C_modified import ActorCriticTanh
 from winged_drone_train.rl.logging import RLTrainingLogger
 from winged_drone_train.train import configure_solver_noise, _configure_cache_root
 from winged_drone_train.env import WingedDroneEnv
-from winged_drone_train.defaults import default_mydrone_urdf_path
+from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
 
 from WP1.config import RunConfig
 from WP1.run_manager import RunManager
@@ -281,7 +281,7 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
             device=cfg.training.device,
         )
     else:
-        urdf_file = str(default_mydrone_urdf_path())
+        urdf_file = resolve_or_generate_urdf()
         print(f"[WP1.train] Single-URDF mode: {urdf_file}")
         env = WingedDroneEnv(
             num_envs=cfg.training.num_envs,

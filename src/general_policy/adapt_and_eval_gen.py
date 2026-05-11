@@ -100,7 +100,11 @@ def _resolve_cfg_path(
 
 def _load_cfg_tuple(cfg_path: Path) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     with cfg_path.open("rb") as f:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+        cfg_data = pickle.load(f)
+    if len(cfg_data) == 6:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, _ = cfg_data
+    else:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
     return (
         copy.deepcopy(env_cfg),
         copy.deepcopy(obs_cfg),

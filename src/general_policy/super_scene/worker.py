@@ -192,6 +192,7 @@ def worker_main(
 
         torch.no_grad().__enter__()
 
+        initial_reset_start = time.perf_counter()
         obs, info = env.reset()
         critic = info.get("observations", {}).get("critic")
         if critic is None:

@@ -460,6 +460,13 @@ def evaluation(
             print(f"[evaluation] Loaded training runtime_seed={training_seed} (not used in eval)")
         else:
             env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
+
+    urdf_path = Path(urdf_file).expanduser()
+    clean_stem = safe_urdf_stem(urdf_path)
+    print(
+        f"[evaluation] exp={exp_name} ckpt={ckpt} urdf={urdf_path.name} "
+        f"clean={clean_stem} envs={envs} save_plots={save_plots} eval_dir={eval_dir}"
+    )
     runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
 
     # Command range used in this evaluation
@@ -701,11 +708,31 @@ if __name__ == "__main__":
         default=None,
         help="Override forest density at x=x_upper [trees/m].",
     )
+    parser.add_argument(
+        "--init-vx",
+        dest="init_vx",
+        type=float,
+        default=None,
+        help="Override initial body velocity along +X at reset [m/s].",
+    )
     parser.add_argument("--gpu", default="cuda")
     parser.add_argument(
         "--log_dir",
         default="logs",
         help="Base directory that contains the <exp_name> subfolder (default: logs).",
+    )
+    parser.add_argument(
+        "--drone",
+        type=str,
+        default=None,
+        help="Drone key for a known default URDF, e.g. 'mydrone' or 'lisparrow'.",
+    )
+    parser.add_argument(
+        "--urdf-file",
+        dest="urdf_file",
+        type=str,
+        default=None,
+        help="Explicit URDF path. Overrides --drone if both are provided.",
     )
     args = parser.parse_args()
 
@@ -748,7 +775,14 @@ if __name__ == "__main__":
     obs_cfg_eval = dict(obs_cfg)
     obs_cfg_eval["add_genome_obs_actor"] = False  # actor never gets genome (design rule)
 
-    # Print configs for sanity check
+    # Evaluation-specific environment settings
+    _apply_eval_env_overrides(env_cfg)
+    if args.dens_min is not None:
+        env_cfg["dens_min"] = float(args.dens_min)
+    if args.dens_max is not None:
+        env_cfg["dens_max"] = float(args.dens_max)
+
+    # Print configs for sanity check (after overrides so what's printed matches what's used)
     print("\nEnvironment Configuration (eval):")
     print(env_cfg)
     print("\nObservation Configuration (eval):")
@@ -757,13 +791,6 @@ if __name__ == "__main__":
     print(reward_cfg)
     print("\nCommand Configuration:")
     print(command_cfg)
-
-    # Evaluation-specific environment settings
-    _apply_eval_env_overrides(env_cfg)
-    if args.dens_min is not None:
-        env_cfg["dens_min"] = float(args.dens_min)
-    if args.dens_max is not None:
-        env_cfg["dens_max"] = float(args.dens_max)
 
     env = WingedDroneEnv(
         num_envs=args.envs,
@@ -776,6 +803,9 @@ if __name__ == "__main__":
         eval=True,
         device=args.gpu,
     )
+    if args.init_vx is not None:
+        env._reset_lin_vel[0] = float(args.init_vx)
+        print(f"[evaluation] Overriding initial body velocity (x): {args.init_vx:.2f} m/s")
 
     plotter = EvaluationPlotter()
     plotter.plot_forest(env)

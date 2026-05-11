@@ -90,7 +90,11 @@ def _resolve_catalog_path(catalog_dir: Optional[str], n_urdf: Optional[int]) -> 
 def _load_cfg_snapshot(cfg_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Load the serialized config snapshot saved in a previous training logdir."""
     with cfg_path.open("rb") as f:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+        cfg_data = pickle.load(f)
+    if len(cfg_data) == 6:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, _ = cfg_data
+    else:
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
     return env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg
 
 

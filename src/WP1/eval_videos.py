@@ -141,7 +141,11 @@ def _load_legacy_cfgs(run_dir: Path) -> Tuple[Dict, Dict, Dict, Dict, Dict]:
     pkl_path = run_dir / "cfgs.pkl"
     if pkl_path.exists():
         with open(pkl_path, "rb") as f:
-            return pickle.load(f)
+            cfg_data = pickle.load(f)
+        # New format includes a trailing runtime_seed; older runs omit it.
+        if len(cfg_data) == 6:
+            return tuple(cfg_data[:5])
+        return tuple(cfg_data)
 
     # Load from config.yaml
     cfg = _load_run_config(run_dir)

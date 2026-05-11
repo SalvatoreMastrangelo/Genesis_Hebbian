@@ -40,10 +40,12 @@ from rsl_rl.runners import OnPolicyRunner
 try:
     from winged_drone_train.env import WingedDroneEnv, _apply_drone_profile_defaults
     from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
+    from winged_drone_train.defaults import default_mydrone_urdf_path
 except ModuleNotFoundError:
     # Backward-compatible path when running this file directly.
     from env import WingedDroneEnv, _apply_drone_profile_defaults  # type: ignore
     from urdf_resolver import resolve_or_generate_urdf  # type: ignore
+    from defaults import default_mydrone_urdf_path  # type: ignore
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh  # same as in train.py
 
 import builtins
@@ -509,21 +511,21 @@ def create_overlay_video(
             hspace=0.30,
         )
 
-    # Left column: camera / depth / top-down
-    ax_cam = fig.add_subplot(left_gs[0, 0])
+    # Left column (col 0): camera spans rows 0-2, depth row 3, top-down rows 4-5
+    ax_cam = fig.add_subplot(gs[0:3, 0])
     ax_cam.axis("off")
-    ax_depth = fig.add_subplot(left_gs[1, 0])
+    ax_depth = fig.add_subplot(gs[3, 0])
     ax_depth.axis("off")
-    ax_td = fig.add_subplot(left_gs[2, 0])
+    ax_td = fig.add_subplot(gs[4:6, 0])
     ax_td.axis("off")
 
-    # Right column: time-series
-    ax_T = fig.add_subplot(right_gs[0, 0])
-    ax_J01 = fig.add_subplot(right_gs[1, 0])
-    ax_J23 = fig.add_subplot(right_gs[2, 0])
-    ax_J45 = fig.add_subplot(right_gs[3, 0])
-    ax_VLIN = fig.add_subplot(right_gs[4, 0])
-    ax_aero = fig.add_subplot(right_gs[5, 0])
+    # Right column (col 2): six time-series stacked one per row
+    ax_T = fig.add_subplot(gs[0, 2])
+    ax_J01 = fig.add_subplot(gs[1, 2])
+    ax_J23 = fig.add_subplot(gs[2, 2])
+    ax_J45 = fig.add_subplot(gs[3, 2])
+    ax_VLIN = fig.add_subplot(gs[4, 2])
+    ax_aero = fig.add_subplot(gs[5, 2])
     ts_axes = [ax_T, ax_J01, ax_J23, ax_J45, ax_VLIN, ax_aero]
 
     # Axis limits and grids
@@ -1030,6 +1032,7 @@ def run_and_record(env,
     obs, _ = env.reset()
     if debug_aero:
         _print_aero_geometry_debug(env)
+    fuselage_dbg_idx = _resolve_debug_surface_index(env, target_kind=0)
     x_init[:] = env.base_pos[:, 0]
     t = torch.zeros(B, device=device)
     step_idx = 0
@@ -1681,7 +1684,11 @@ def main() -> None:
     yaml_path = os.path.join(train_log_dir, "config.yaml")
     if os.path.exists(cfg_path):
         with open(cfg_path, "rb") as f:
-            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
+            cfg_data = pickle.load(f)
+        if len(cfg_data) == 6:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, _ = cfg_data
+        else:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
     elif os.path.exists(yaml_path):
         from WP1.config import RunConfig
         env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = RunConfig.from_yaml(yaml_path).to_legacy_cfgs()

@@ -662,8 +662,7 @@ def main() -> None:
     )
     cfg_path = log_dir / "cfgs.pkl"
     _write_cfg_snapshot(cfg_path, env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, runtime_seed)
-    
-    urdf_file = str(default_mydrone_urdf_path())
+
     # --------------------------------------------------------------------- #
     #  Environment creation                                                #
     # --------------------------------------------------------------------- #
