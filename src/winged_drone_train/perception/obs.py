@@ -217,6 +217,10 @@ class ObservationBuilder:
 
         self.priv_obs_dim += critic_extra_dim
 
+        self._base_actor_obs_dim = base_kin_dim + depth_dim_actor + last_act_dim + cmd_dim
+        self._actor_scratch: Optional[torch.Tensor] = None
+        self._critic_scratch: Optional[torch.Tensor] = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -238,7 +242,6 @@ class ObservationBuilder:
         genome_vec: Optional[torch.Tensor] = None,
         joint_positions: Optional[torch.Tensor] = None,
         joint_velocities: Optional[torch.Tensor] = None,
-        base_ang_vel: Optional[torch.Tensor] = None,
         effective_thrust: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Construct actor and critic observations.
@@ -358,6 +361,8 @@ class ObservationBuilder:
             obs_actor[:, idx : idx + self.num_actions - 1].copy_(last_jnts)
         idx += self.num_actions - 1
         obs_actor[:, idx : idx + 1].copy_(v_tgt_norm)
+        # Snapshot clean base features for the critic before noise is added.
+        obs_clean = obs_actor.clone()
         # --------------------------- Add noise ------------------------------
         if self.add_noise and self.noise_std:
             std_cfg = self.noise_std

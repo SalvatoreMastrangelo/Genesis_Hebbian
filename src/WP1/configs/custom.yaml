@@ -5,7 +5,7 @@
 # Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
 ##############################################################################
 
-exp_name: single_new_less_noise_64  # Name of the experiment for logging/tracking
+exp_name: single_new_less_noise_64_andre_drag  # Name of the experiment for logging/tracking
 
 ##############################################################################
 # PPO (Proximal Policy Optimization) hyperparameters
@@ -61,7 +61,7 @@ env:
   dt: 0.01                                  # Physics simulation timestep (seconds)
   drone: morphing_drone                     # Drone model type (e.g., morphing_drone, simple_drone)
   naca: "3416"                              # NACA airfoil profile for wings
-  termination_if_close_to_ground: 0.1       # Terminate episode if drone altitude < this value (meters)
+  termination_if_close_to_ground: 0.5       # Terminate episode if drone altitude < this value (meters)
   termination_if_y_greater_than: 50.0       # Terminate if drone y-position exceeds this (meters)
   termination_if_z_greater_than: 50.0       # Terminate if drone z-position exceeds this (meters)
   base_init_pos: [-30.0, 0.0, 15.0]         # Initial position [x, y, z] in meters
@@ -113,7 +113,7 @@ obs:
   num_obs: 36                               # Total number of observations (auto-computed if using privileged critic obs)
   add_noise: true                           # Add Gaussian noise to observations
   add_genome_obs_actor: false               # CRITICAL: Actor should NOT see morphology (genome) to enable generalization
-  add_genome_obs_critic: true               # Critic can see morphology for better value estimation
+  add_genome_obs_critic: false              # Critic can see morphology for better value estimation
   include_joint_pos_critic: true            # Critic receives joint positions (privileged obs)
   include_joint_vel_critic: true            # Critic receives joint velocities (privileged obs)
   include_ang_vel_critic: true              # Critic receives angular velocity (privileged obs)
@@ -139,9 +139,9 @@ reward:
   angular: -0.005                           # Penalty for high angular velocity (encourage stable flight)
   crash: -10.0                              # Large penalty for collision with ground/obstacles
   obstacle: -0.1                            # Penalty for proximity to obstacles
-  energy: -0.002                            # Penalty for high power consumption
+  energy: -0.001                            # Penalty for high power consumption
   progress: 0.5                             # Reward for moving toward target waypoint
-  height: -0.005                            # Penalty for flying too low (safety bonus)
+  height: -0.003                            # Penalty for flying too low (safety bonus)
   success: 0.0                              # Reward for reaching target (0 = no explicit bonus)
   cosmetic: -1.0                            # Penalty for ground collision (cosmetic)
   stability: 0.0                            # Reward for stable flight (0 = disabled)
