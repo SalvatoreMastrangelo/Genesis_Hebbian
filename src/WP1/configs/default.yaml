@@ -1,12 +1,29 @@
 ##############################################################################
-# Default RunConfig — all parameters in one place.
+# WP1 default config — minimum-deviation overlay on the dicts produced by
+# winged_drone_train.train.get_cfgs() and get_train_cfg().
 #
-# Override from CLI with:  --cfg.section.key value
-# Example:  --cfg.ppo.learning_rate 3e-4  --cfg.training.num_envs 4096
+# Any key omitted here falls back to that module's defaults. CLI overrides
+# (--cfg.section.key value) are deep-merged on top of this file.
 ##############################################################################
 
 exp_name: drone-forest
 
+##############################################################################
+# Training loop / runner
+##############################################################################
+training:
+  num_envs: 16384          # parallel environments
+  max_iterations: 1000     # PPO updates
+  device: cuda:0
+  # Forwarded into train_cfg (RSL-RL):
+  num_steps_per_env: 25
+  save_interval: 100
+  seed: 1
+  empirical_normalization: true
+
+##############################################################################
+# PPO (forwarded into train_cfg["algorithm"])
+##############################################################################
 ppo:
   clip_param: 0.15
   desired_kl: 0.006
@@ -22,6 +39,9 @@ ppo:
   value_loss_coef: 0.3
   normalize_advantage_per_mini_batch: true
 
+##############################################################################
+# Policy network (forwarded into train_cfg["policy"])
+##############################################################################
 policy:
   actor_hidden_dims: [64, 64]
   critic_hidden_dims: [64, 64]
@@ -29,33 +49,21 @@ policy:
   init_noise_std: 0.3
   rnn_type: lstm
   rnn_hidden_size: 64
-  critic_rnn_hidden_size: 32  # null = same as rnn_hidden_size
   rnn_num_layers: 1
   max_servo: 1.0
   max_throttle: 1.0
 
-training:
-  num_envs: 8192
-  max_iterations: 850
-  num_steps_per_env: 25
-  save_interval: 100
-  eval_interval: 200
-  seed: 1
-  empirical_normalization: true
-  device: "cuda:0"
-
+##############################################################################
+# Environment (WingedDroneEnv)
+##############################################################################
 env:
-  num_actions: 7
-  dt: 0.01
   drone: morphing_drone
   naca: "3416"
-  termination_if_close_to_ground: 0.1
+  termination_if_close_to_ground: 0.5
   termination_if_y_greater_than: 50.0
   termination_if_z_greater_than: 50.0
   base_init_pos: [-30.0, 0.0, 15.0]
   base_init_quat: [1.0, 0.0, 0.0, 0.0]
-  randomize_init_quat: true
-  randomize_joint_pos: true
   episode_length_s: 100.0
   at_target_threshold: 0.1
   resampling_time_s: 3.0
@@ -67,73 +75,106 @@ env:
   visualize_target: false
   visualize_camera: true
   max_visualize_FPS: 15
+
+  # Forest geometry
   tree_radius: 0.75
   tree_height: 100.0
+  x_lower: 0.0
+  x_upper: 150.0
+  forest_x_limit: 150.0
   y_lower: -50.0
   y_upper: 50.0
-  forest_x_limit: 150.0
-  x_upper: 150.0
+
+  # Forest density profile (see custom.yaml for full notes)
+  growing_forest: true
+  unique_forests_eval: true
   dens_min: 0.0
   dens_max: 4.0
   dens_min_min: 0.0
   dens_min_max: 3.0
-  growing_forest: true
+  num_trees: 100
+  num_trees_eval: 100
+
+  # Aerodynamic noise (single switch + magnitudes)
   aero_noise: true
   aero_noise_sigma0: 0.05
-  noise_sigma_param: 0.15
+  noise_sigma_param: 0.1
 
-# Evaluation-specific environment overrides (for videos/evaluation episodes)
-# If a field is null, the training env value is used
-eval:
-  episode_length_s: 300.0      # Longer eval episodes
-  aero_noise: false             # No noise during eval
-  forest_x_limit: 300.0         # 2x longer forest corridor
-  x_upper: 300.0
-  dens_min: null                # Use training value
-  dens_max: null                # Use training value
+  # Per-env physical randomization
+  property_randomization:
+    mass_shift_std: 0.02
+    com_shift_std: 0.004
+    joint_target_episode_bias_std: 0.01
+    joint_target_step_noise_std: 0.005
+  warmup_runtime_kernels: false
 
+##############################################################################
+# Observations (ObservationBuilder)
+##############################################################################
 obs:
   num_obs: 36
   add_noise: true
-  add_genome_obs_actor: false
-  add_genome_obs_critic: false
-  include_joint_pos_critic: false
-  include_joint_vel_critic: false
-  include_ang_vel_critic: false
-  noise_std_z: 0.01
-  noise_std_quat: 0.01
-  noise_std_vel: 0.02
-  noise_std_depth: 0.05
-  noise_std_last_thr: 0.0
-  noise_std_last_jnts: 0.0
-  noise_std_v_tgt: 0.0
-  noise_std_genome: 0.05
-  noise_std_joint_pos: 0.0
-  noise_std_joint_vel: 0.0
-  noise_std_ang_vel: 0.0
+  actor_genome_obs: false
+  critic_genome_obs: false
+  depth_backend: taichi    # "taichi" or "cpu"
 
+  privileged_obs:
+    base_ang_vel: true
+    joint_position: true
+    joint_velocity: true
+    actual_thrust: true
+
+  genome_obs_noise:
+    episode_std: 0.1
+    step_std: 0.02
+
+  noise_std:
+    z: 0.01
+    quat: 0.01
+    vel: 0.02
+    depth: 0.05
+    last_thr: 0.0
+    last_jnts: 0.0
+    v_tgt: 0.0
+
+##############################################################################
+# Reward weights (forwarded into reward_cfg["reward_scales"])
+##############################################################################
 reward:
   smooth: -0.1
   angular: -0.005
   crash: -10.0
   obstacle: -0.1
-  energy: -0.002
+  energy: -0.001
   progress: 0.5
-  height: -0.005
+  height: -0.003
   success: 0.0
   cosmetic: -1.0
   stability: 0.0
 
+##############################################################################
+# Command sampler
+##############################################################################
 command:
   num_commands: 1
+  min_speed: 5.0
+  max_speed: 25.0
 
+##############################################################################
+# Multi-URDF (catalog) training — leave at defaults for single-URDF mode.
+##############################################################################
 catalog:
-  n_urdf: null
+  n_urdf: null     # integer > 0 → build catalog and use general_policy.env_gen.Gen_Env
   catalog_dir: null
   urdf_seed: 0
 
+##############################################################################
+# Logical Super-Scene (sharded multi-URDF worker training).
+# Requires a catalog (catalog.n_urdf > 0 or catalog.catalog_dir set).
+##############################################################################
 lss:
   enabled: false
-  urdf_shard_size: 64
+  urdf_shard_size: 0
   num_workers: 0
   collection_gpus: 1
+

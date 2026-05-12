@@ -158,3 +158,5 @@ dmypy.json
 # Additional ignores
 **/test_catalog/
 **/tests/eval_visual
+src/WP1_OLD/
+src/winged_drone_train_old/

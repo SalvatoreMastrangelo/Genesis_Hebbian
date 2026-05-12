@@ -1,183 +1,107 @@
 """
-Run-folder management — standardised, timestamped directory layout.
-====================================================================
+Run-folder management for WP1.
 
-Every training run is stored in a self-contained folder under
-``logs/runs/`` with a deterministic structure that makes any run fully
-reproducible from its artefacts alone.
-
-Directory layout
-----------------
-::
+Every training run lands in a self-contained, timestamped folder under
+``logs/runs/`` so the artefacts uniquely identify the run::
 
     logs/runs/<YYYY-MM-DD_HH-MM-SS>_<exp_name>/
-    ├── config.yaml          # frozen RunConfig snapshot
-    ├── catalog.txt          # URDF filenames used (if multi-morph)
-    ├── tb/                  # TensorBoard event files (includes model_*.pt checkpoints)
-    ├── eval/                # per-iteration CSV logs
-    └── plots/               # auto-generated diagnostic figures
-
-The ``RunManager`` class creates this layout at the start of a run,
-saves the config snapshot, and exposes the sub-directory paths as
-attributes for other modules (``CSVLogger``, ``RLTrainingLogger``,
-``plot_run``) to use.
-
-Resume behaviour
-----------------
-When ``resume=True`` is passed, the manager looks for the most recent
-existing folder whose name contains the experiment name and creates a
-new folder with the suffix ``_resumed``.  This avoids overwriting the
-original run while making the lineage clear.
-
-Usage
------
-.. code-block:: python
-
-    from WP1.config import RunConfig
-    from WP1.run_manager import RunManager
-
-    cfg = RunConfig(exp_name="my-experiment")
-    run = RunManager(cfg)
-
-    # Use run.log_dir for TensorBoard/checkpoints, run.eval_dir for CSVs, etc.
-    print(run.run_dir)      # logs/runs/2025-06-01_12-00-00_my-experiment
-    print(run.tb_dir)       # .../tb
-    print(run.eval_dir)     # .../eval
-    print(run.plots_dir)    # .../plots
+    ├── config.yaml      # YAML payload (defaults + overrides), for reproducibility
+    ├── cfgs.pkl         # legacy 5-tuple pickle (loaded by winged_drone_train.eval)
+    ├── tb/              # TensorBoard event files + model_*.pt checkpoints
+    ├── eval/            # post-training evaluation artefacts
+    └── plots/           # optional diagnostic figures
 """
 
 from __future__ import annotations
 
-import shutil
+import pickle
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from WP1.config import RunConfig
+from WP1.config_loader import dump_yaml
 
 
 class RunManager:
-    """Create and manage a timestamped run directory.
+    """Create and own the directory layout for a WP1 training run.
 
-    On instantiation the manager:
-
-    1. Generates a folder name ``<timestamp>_<exp_name>`` (or appends
-       ``_resumed`` if resuming).
-    2. Creates the folder and all required sub-directories.
-    3. Writes a ``config.yaml`` snapshot into the run folder.
-
-    Attributes
+    Parameters
     ----------
-    cfg : RunConfig
-        The configuration object for this run.
-    root : Path
-        Parent directory for all runs (default ``logs/runs``).
-    run_dir : Path
-        Full path to this run's top-level directory.
-    tb_dir : Path
-        Directory for TensorBoard event files and model checkpoints.
-    eval_dir : Path
-        Directory for per-iteration CSV evaluation logs.
-    plots_dir : Path
-        Directory for auto-generated diagnostic figures.
+    exp_name : str
+        Experiment tag used in the folder name.
+    root : str | Path
+        Parent directory of all runs. Defaults to ``logs/runs``.
+    resume : bool
+        If true, look for the latest matching folder and append ``_resumed``
+        to the new run's name rather than starting from a fresh timestamp.
     """
 
     def __init__(
         self,
-        cfg: RunConfig,
+        exp_name: str,
         root: str | Path = "logs/runs",
         resume: bool = False,
     ) -> None:
-        """Initialise the run manager and create the directory layout.
-
-        Parameters
-        ----------
-        cfg : RunConfig
-            Full training configuration.  A YAML snapshot is written to
-            ``<run_dir>/config.yaml``.
-        root : str or Path
-            Parent directory under which timestamped run folders are
-            created.  Defaults to ``logs/runs``.
-        resume : bool
-            If ``True``, find the latest existing run folder matching
-            ``cfg.exp_name`` and create a new folder with the suffix
-            ``_resumed`` appended to its name.
-        """
-        self.cfg = cfg
+        self.exp_name = exp_name
         self.root = Path(root)
 
         stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        folder_name = f"{stamp}_{cfg.exp_name}"
+        folder_name = f"{stamp}_{exp_name}"
 
         if resume:
-            # Find the latest existing folder for this experiment
-            existing = self._find_latest(cfg.exp_name)
-            if existing is not None:
-                folder_name = existing.name + "_resumed"
+            previous = self._find_latest(exp_name)
+            if previous is not None:
+                folder_name = previous.name + "_resumed"
 
         self.run_dir = self.root / folder_name
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-
-        # Sub-directories
         self.tb_dir = self.run_dir / "tb"
         self.eval_dir = self.run_dir / "eval"
         self.plots_dir = self.run_dir / "plots"
 
-        for d in (self.tb_dir, self.eval_dir, self.plots_dir):
+        for d in (self.run_dir, self.tb_dir, self.eval_dir, self.plots_dir):
             d.mkdir(parents=True, exist_ok=True)
 
-        # Save config snapshot
-        self.cfg.to_yaml(self.run_dir / "config.yaml")
         print(f"[RunManager] Run directory: {self.run_dir}")
+
+    # ------------------------------------------------------------------ #
+    # Convenience accessors
+    # ------------------------------------------------------------------ #
 
     @property
     def log_dir(self) -> Path:
-        """Path to the TensorBoard log directory.
-
-        This is the directory passed to RSL-RL's ``OnPolicyRunner`` and to
-        ``RLTrainingLogger`` as their ``log_dir``.
-        """
+        """Directory passed to ``OnPolicyRunner`` (TensorBoard + checkpoints)."""
         return self.tb_dir
 
-    def save_catalog(self, catalog_path: Optional[str | Path]) -> None:
-        """Copy ``catalog.txt`` from *catalog_path* into the run folder.
+    # ------------------------------------------------------------------ #
+    # Snapshots
+    # ------------------------------------------------------------------ #
 
-        If *catalog_path* is a directory, looks for ``catalog.txt`` inside
-        it.  If *catalog_path* is a file, copies it directly.  Does nothing
-        if *catalog_path* is ``None`` or the file does not exist.
+    def save_yaml_snapshot(self, payload: Dict[str, Any]) -> None:
+        """Write the resolved YAML payload to ``config.yaml`` inside the run."""
+        dump_yaml(payload, self.run_dir / "config.yaml")
 
-        Parameters
-        ----------
-        catalog_path : str, Path, or None
-            Path to the catalog directory or file.
+    def save_legacy_cfg_pickle(
+        self,
+        env_cfg: Dict[str, Any],
+        obs_cfg: Dict[str, Any],
+        reward_cfg: Dict[str, Any],
+        command_cfg: Dict[str, Any],
+        train_cfg: Dict[str, Any],
+    ) -> Path:
+        """Pickle the 5-tuple of cfgs into ``cfgs.pkl`` so downstream tools
+        (``winged_drone_train.eval.evaluation``, custom plotters, etc.) can
+        load this run the same way they load ``logs/ea/<exp_name>`` runs.
         """
-        if catalog_path is None:
-            return
-        src = Path(catalog_path)
-        catalog_file = src / "catalog.txt" if src.is_dir() else src
-        if catalog_file.is_file():
-            shutil.copy2(catalog_file, self.run_dir / "catalog.txt")
-            print(f"[RunManager] Saved catalog.txt from {catalog_file}")
+        path = self.run_dir / "cfgs.pkl"
+        with path.open("wb") as f:
+            pickle.dump([env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg], f)
+        return path
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
 
     def _find_latest(self, exp_name: str) -> Optional[Path]:
-        """Find the most recent run folder matching *exp_name*.
-
-        Scans ``self.root`` for directories whose names contain
-        *exp_name*, sorts them lexicographically (which is also
-        chronological since names are timestamp-prefixed), and returns
-        the last one.
-
-        Parameters
-        ----------
-        exp_name : str
-            Experiment name to search for.
-
-        Returns
-        -------
-        Path or None
-            Path to the latest matching run folder, or ``None`` if no
-            match is found.
-        """
         if not self.root.exists():
             return None
         candidates = sorted(

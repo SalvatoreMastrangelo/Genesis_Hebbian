@@ -6,24 +6,21 @@
 #
 # Examples:
 #   bash run_parallel.sh                                  # uses src/WP1/experiments/
-#   bash run_parallel.sh src/WP1/experiments/             # explicit dir
-#   bash run_parallel.sh src/WP1/experiments/ --gpus=4   # extra sbatch flags
+#   bash run_parallel.sh src/WP1/experiments/batch_3/     # explicit dir
+#   bash run_parallel.sh src/WP1/experiments/ --gpus=2    # extra sbatch flags
 #
-# All jobs are submitted immediately with no dependency — the scheduler
-# will run them as resources become available.
+# Each yaml may declare:
+#   - exp_name   : str   (used in the job/run tag)
+#   - repeat     : int   (number of independent seeds to submit, default 1)
+#   - training.seed
 #
-# Multi-GPU: pass MULTI_GPU=N as an environment variable to use N GPUs per job.
-#   MULTI_GPU=2 bash run_parallel.sh src/WP1/experiments/ --gpus=2
-#
-# Resume: pass RESUME=1 to restart all jobs from their latest checkpoint.
-# Job names and RUN_TAGs are deterministic, so the same RUN_DIR on scratch
-# is reused and the existing checkpoints are found automatically.
+# Resume: pass RESUME=1 to restart all jobs from their latest checkpoint:
 #   RESUME=1 bash run_parallel.sh src/WP1/experiments/batch_5/
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SLURM_SCRIPT="${SCRIPT_DIR}/train_foundation.slurm"
+SLURM_SCRIPT="${SCRIPT_DIR}/train.slurm"
 
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 EXPERIMENTS_DIR="${1:-${REPO_ROOT}/src/WP1/experiments}"
@@ -54,18 +51,10 @@ for YAML_PATH in "${YAMLS[@]}"; do
   REPEAT="${REPEAT:-1}"
   BASE_TRAIN_SEED=$(grep -A 10 "^training:" "${YAML_PATH}" | grep "seed:" | awk '{print $2}' || echo "1")
   BASE_TRAIN_SEED="${BASE_TRAIN_SEED:-1}"
-  BASE_URDF_SEED=$(grep -A 5 "^catalog:" "${YAML_PATH}" | grep "urdf_seed:" | awk '{print $2}' || echo "0")
-  BASE_URDF_SEED="${BASE_URDF_SEED:-0}"
 
   for ((i = 0; i < REPEAT; i++)); do
     RUN_TAG="wp1_${EXP_NAME}_r${i}"
     TRAIN_SEED=$((BASE_TRAIN_SEED + i))
-    URDF_SEED=$((BASE_URDF_SEED + i))
-
-    MULTI_GPU_EXPORT=""
-    if [ -n "${MULTI_GPU:-}" ] && [ "${MULTI_GPU}" -gt 1 ]; then
-      MULTI_GPU_EXPORT=",MULTI_GPU=${MULTI_GPU}"
-    fi
 
     RESUME_EXPORT=""
     if [ -n "${RESUME:-}" ] && [ "${RESUME}" -ne 0 ]; then
@@ -76,12 +65,12 @@ for YAML_PATH in "${YAMLS[@]}"; do
       --job-name="wp1_${EXP_NAME}_r${i}" \
       --output="/home/%u/slurm_logs/${RUN_TAG}-%j.out" \
       --error="/home/%u/slurm_logs/${RUN_TAG}-%j.err" \
-      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}",CLI_OVERRIDES="--cfg.training.seed ${TRAIN_SEED} --cfg.catalog.urdf_seed ${URDF_SEED}${MULTI_GPU_EXPORT}"${RESUME_EXPORT} \
+      --export=ALL,CFG_FILE="${CFG_FILE}",RUN_TAG="${RUN_TAG}",CLI_OVERRIDES="--cfg.training.seed ${TRAIN_SEED}"${RESUME_EXPORT} \
       "$@" \
       "${SLURM_SCRIPT}" \
       | awk '{print $NF}')
 
-    echo "[PARALLEL] Submitted job ${JOB_ID} <- ${CFG_FILE} (run ${i}/${REPEAT}, train_seed=${TRAIN_SEED}, urdf_seed=${URDF_SEED})"
+    echo "[PARALLEL] Submitted job ${JOB_ID} <- ${CFG_FILE} (run ${i}/${REPEAT}, train_seed=${TRAIN_SEED})"
     JOB_IDS+=("${JOB_ID}")
   done
 done

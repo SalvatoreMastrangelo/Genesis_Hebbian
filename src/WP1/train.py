@@ -1,70 +1,46 @@
 #!/usr/bin/env python
 """
-WP1 training entry point — config-driven, fully-logged training runs.
-======================================================================
+WP1 training entry point — thin YAML/CLI wrapper around
+``winged_drone_train.train``.
 
-This module replaces the ad-hoc training scripts (``winged_drone_train.train``
-and ``general_policy.train_gen``) with a single entry point that:
+The script:
 
-1. Reads all hyperparameters from a ``RunConfig`` (YAML file + CLI overrides).
-2. Creates a timestamped, self-contained run folder via ``RunManager``.
-3. Converts the config to legacy dicts and creates the environment
-   (``WingedDroneEnv`` for single-morphology, ``Gen_Env`` for mixture mode).
-4. Trains with RSL-RL's ``OnPolicyRunner`` while logging per-iteration
-   metrics to CSV via ``CSVLogger``.
-5. Auto-generates diagnostic plots at the end of training.
+  1. Loads a YAML config (optional) and parses ``--cfg.section.key`` CLI
+     overrides.
+  2. Deep-merges those onto the dicts produced by
+     ``winged_drone_train.train.get_cfgs()`` / ``get_train_cfg()``.
+  3. Creates a timestamped run folder via ``WP1.run_manager.RunManager``.
+  4. Hands the resulting cfgs straight to
+     ``winged_drone_train``'s helpers (``_configure_cache_root``,
+     ``_init_genesis_with_retry``, ``_build_runner``,
+     ``_apply_train_drone_overrides``, ``_maybe_load_init_checkpoint``,
+     ``_maybe_load_parent_checkpoint``, ``_write_cfg_snapshot``,
+     ``RLTrainingLogger``, ``configure_solver_noise``,
+     ``resolve_or_generate_urdf``, ``seed_runtime_randomness``).
 
-The existing environment, policy, and runner code is used *unmodified* —
-``RunConfig.to_legacy_cfgs()`` produces the exact dict format they expect.
-
-Modes
------
-**Single-morphology** (default):
-    Uses ``WingedDroneEnv`` with the standard morphing-drone URDF.
-    Activated when ``catalog.n_urdf`` is ``None`` or ``0``.
-
-**Multi-morphology / foundation training**:
-    Uses ``Gen_Env`` with a URDF catalog.  Activated when
-    ``catalog.n_urdf > 0`` or ``catalog.catalog_dir`` points to an
-    existing catalog directory.  The catalog is optionally (re)built
-    before training.
+All training mechanics — env construction, runner setup, checkpoint
+warm-start, RLTrainingLogger, learn loop — are reused verbatim from
+``winged_drone_train.train``; this module only takes care of the
+config plumbing and the run-folder layout.
 
 Usage
 -----
 .. code-block:: bash
 
-    # Default single-morphology run
+    # All defaults (matches winged_drone_train.train.main defaults)
     python -m WP1.train
 
-    # From a YAML config file
-    python -m WP1.train --cfg configs/default.yaml
+    # From a YAML config
+    python -m WP1.train --cfg src/WP1/configs/default.yaml
 
-    # Foundation multi-morphology training
-    python -m WP1.train --cfg configs/foundation.yaml
-
-    # With CLI overrides on top of a YAML base
-    python -m WP1.train --cfg configs/default.yaml \\
+    # YAML + CLI overrides
+    python -m WP1.train --cfg src/WP1/configs/custom.yaml \\
         --cfg.ppo.learning_rate 3e-4 \\
-        --cfg.training.num_envs 4096 \\
+        --cfg.training.num_envs 8192 \\
         --cfg.reward.crash -20.0
 
-    # Resume from the latest matching run
-    python -m WP1.train --cfg configs/default.yaml --resume
-
-    # With Genesis viewer enabled
-    python -m WP1.train --cfg configs/default.yaml -v
-
-Output
-------
-All artefacts are written to the run folder created by ``RunManager``::
-
-    logs/runs/<timestamp>_<exp_name>/
-    ├── config.yaml            # frozen config snapshot
-    ├── catalog.txt            # URDF list (if multi-morph)
-    ├── checkpoints/           # model_*.pt
-    ├── tb/                    # TensorBoard events
-    ├── eval/training_log.csv  # per-iteration metrics
-    └── plots/                 # reward curve, termination breakdown, ...
+    # Resume (creates <previous_run>_resumed)
+    python -m WP1.train --cfg src/WP1/configs/default.yaml --resume
 """
 
 from __future__ import annotations
@@ -72,204 +48,415 @@ from __future__ import annotations
 import argparse
 import builtins
 import os
-os.environ["GS_PARA_LEVEL"] = "4"  # max parallelization for scene compilation
+import random
+os.environ.setdefault("GS_PARA_LEVEL", "3")
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-import sys
-import time
+
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import torch
 import genesis as gs
-from rsl_rl.runners import OnPolicyRunner
 
+# winged_drone_train: reused verbatim
+from winged_drone_train.train import (
+    _apply_train_drone_overrides,
+    _build_runner,
+    _configure_cache_root,
+    _init_genesis_with_retry,
+    _maybe_load_init_checkpoint,
+    _maybe_load_parent_checkpoint,
+    _write_cfg_snapshot,
+)
+from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.noise_config import configure_solver_noise
 from winged_drone_train.rl.A2C_modified import ActorCriticTanh
 from winged_drone_train.rl.logging import RLTrainingLogger
-from winged_drone_train.train import configure_solver_noise, _configure_cache_root
-from winged_drone_train.env import WingedDroneEnv
+from winged_drone_train.runtime_random import seed_runtime_randomness
 from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
 
-from WP1.config import RunConfig
-from WP1.run_manager import RunManager
+from WP1.config_loader import build_cfgs, parse_cli_overrides
 from WP1.csv_logger import CSVLogger
 from WP1.plotting import plot_run
-from WP1.eval_videos import _generate_eval_videos
+from WP1.run_manager import RunManager
 
-# RSL-RL resolves policy classes by name via builtins
+# RSL-RL resolves policy classes by name; expose ours on builtins so the
+# runner can find it after pickle round-trips.
 builtins.ActorCriticTanh = ActorCriticTanh
 
 
-def _configure_torch_backends() -> None:
-    """Enable TF32 and cuDNN autotuning for faster GPU compute."""
-    torch.set_float32_matmul_precision("high")
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-
-
-def _init_genesis() -> None:
-    """Initialise the Genesis simulator (idempotent).
-
-    Calls ``gs.init()`` with GPU backend and error-level logging.
-    Skips initialisation if Genesis is already initialised.
-    """
-    if gs._initialized:
-        return
-    gs.init(logging_level="error", backend=gs.gpu)
+# --------------------------------------------------------------------------- #
+# Post-training diagnostics helpers (verbatim from WP1_OLD)
+# --------------------------------------------------------------------------- #
 
 
 def _enrich_csv_with_tensorboard_rewards(csv_path: Path, tb_dir: Path) -> None:
-    """Extract mean_reward values from TensorBoard and update CSV.
+    """Backfill the ``mean_reward`` column of ``training_log.csv`` from the
+    ``Train/mean_reward`` scalar series emitted by RSL-RL into TensorBoard.
 
-    Reads the TensorBoard event files from a training run to extract the
-    'Train/mean_reward' scalar values logged by RSL-RL, then updates the
-    CSV file to fill in the mean_reward column (which may be empty if the
-    runner buffers were not exposed).
-
-    Parameters
-    ----------
-    csv_path : Path
-        Path to the training_log.csv file to update.
-    tb_dir : Path
-        Path to the TensorBoard log directory (containing event files).
+    This is best-effort: missing TensorBoard, missing scalars, or an empty
+    CSV are all silently skipped. The runner's own buffers are usually
+    enough, but TensorBoard guarantees we don't lose the curve when the
+    buffer is not exposed at the moment ``_on_iteration_end`` fires.
     """
     import csv
-    import tempfile
-    from pathlib import Path
 
     try:
-        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        from tensorboard.backend.event_processing.event_accumulator import (
+            EventAccumulator,
+        )
     except ImportError:
         print("[WP1.train] tensorboard not available — skipping reward enrichment")
         return
 
-    # Load TensorBoard events
     ea = EventAccumulator(str(tb_dir))
     ea.Reload()
 
-    # Extract mean_reward scalar (iteration -> value)
-    rewards_by_step = {}
+    rewards_by_step: dict[int, float] = {}
     try:
-        scalars = ea.Scalars("Train/mean_reward")
-        for event in scalars:
-            # event is a ScalarEvent with .step and .value attributes
+        for event in ea.Scalars("Train/mean_reward"):
             rewards_by_step[event.step] = event.value
     except KeyError:
         print("[WP1.train] Train/mean_reward not found in TensorBoard")
         return
-
     if not rewards_by_step:
         print("[WP1.train] No Train/mean_reward events in TensorBoard")
         return
 
-    # Read CSV and update it
     csv_path = Path(csv_path)
+    if not csv_path.is_file():
+        return
     rows = []
-    with open(csv_path, "r") as f:
+    with csv_path.open("r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             iter_num = int(row["iter"])
             if iter_num in rewards_by_step:
                 row["mean_reward"] = f"{rewards_by_step[iter_num]:.6g}"
             rows.append(row)
+    if not rows:
+        return
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    print(
+        f"[WP1.train] Updated {csv_path.name} with "
+        f"{len([r for r in rows if r.get('mean_reward')])} mean_reward values"
+    )
 
-    # Write updated CSV back
-    with open(csv_path, "w", newline="") as f:
-        if rows:
-            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-            writer.writeheader()
-            writer.writerows(rows)
-            print(f"[WP1.train] Updated {csv_path.name} with {len([r for r in rows if r.get('mean_reward')])} mean_reward values")
 
+def _install_csv_logger_hook(runner, env, csv_logger: CSVLogger) -> None:
+    """Monkey-patch ``runner.alg.update`` so that each PPO iteration appends
+    one row to ``csv_logger``.
 
-
-
-def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
-    """Run a complete training session using the WP1 infrastructure.
-
-    This is the main programmatic entry point.  It orchestrates:
-
-    - Run-folder creation (``RunManager``)
-    - Legacy config conversion (``RunConfig.to_legacy_cfgs()``)
-    - Optional URDF catalog building (``build_catalog``)
-    - Environment creation (``WingedDroneEnv`` or ``Gen_Env``)
-    - Aerodynamic noise configuration
-    - RSL-RL runner setup with ``RLTrainingLogger`` and ``CSVLogger``
-    - Training loop (``runner.learn()``)
-    - Post-training plot generation (``plot_run()``)
-
-    Parameters
-    ----------
-    cfg : RunConfig
-        Fully-populated training configuration.
-    vis : bool
-        Enable the Genesis real-time viewer for visual debugging.
-    resume : bool
-        If ``True``, the ``RunManager`` will find the latest existing run
-        with the same experiment name and create a ``_resumed`` folder.
+    Captures every key found in ``env.extras["episode"]`` (so termination
+    counts, reward components, final-x, etc. flow into the CSV) plus the
+    PPO-side diagnostics exposed by RSL-RL.
     """
+    alg = getattr(runner, "alg", None)
+    if alg is None:
+        return
+
+    _state = {"i": 0}
+    _orig_update = alg.update
+
+    def _patched_update(*args, **kwargs):
+        result = _orig_update(*args, **kwargs)
+        it = _state["i"]
+        try:
+            extras = getattr(env, "extras", {}) or {}
+            ppo_metrics: dict[str, float] = {}
+            rewbuf = getattr(runner, "rewbuffer", None)
+            if rewbuf is not None and len(rewbuf) > 0:
+                ppo_metrics["mean_reward"] = sum(rewbuf) / len(rewbuf)
+            lenbuf = getattr(runner, "lenbuffer", None)
+            if lenbuf is not None and len(lenbuf) > 0:
+                ppo_metrics["mean_episode_length"] = sum(lenbuf) / len(lenbuf)
+            for metric_name in (
+                "actor_loss", "critic_loss", "entropy", "ppo_loss", "value_loss",
+            ):
+                val = getattr(alg, metric_name, None)
+                if val is not None:
+                    ppo_metrics[metric_name] = val
+            csv_logger.log(it, extras, ppo_metrics=ppo_metrics)
+        except Exception as e:
+            print(f"[WP1.train] CSV log error at iter {it}: {e}")
+        _state["i"] = it + 1
+        return result
+
+    alg.update = _patched_update
+
+
+# --------------------------------------------------------------------------- #
+# Argument parser
+# --------------------------------------------------------------------------- #
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="WP1 training entry point (wraps winged_drone_train.train)."
+    )
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        default=None,
+        help="Path to a YAML config file. If omitted, all defaults are used.",
+    )
+    parser.add_argument(
+        "-v", "--vis",
+        action="store_true",
+        help="Enable Genesis viewer visualisation.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the latest run matching the experiment name.",
+    )
+    parser.add_argument(
+        "--drone",
+        type=str,
+        default=None,
+        help="Drone key for a known default URDF, e.g. 'mydrone' or 'lisparrow'.",
+    )
+    parser.add_argument(
+        "--urdf-file",
+        type=str,
+        default=None,
+        help="Explicit URDF path. Overrides --drone if both are provided.",
+    )
+    parser.add_argument(
+        "--parent-exp",
+        type=str,
+        default=None,
+        help="Parent experiment name for policy inheritance (logs/<name>).",
+    )
+    parser.add_argument(
+        "--parent-ckpt",
+        type=int,
+        default=None,
+        help="Parent checkpoint number used together with --parent-exp.",
+    )
+    parser.add_argument(
+        "--init-policy-path",
+        type=str,
+        default=None,
+        help=(
+            "Optional checkpoint path used to warm-start this run. "
+            "Mutually exclusive with --parent-exp / --parent-ckpt."
+        ),
+    )
+    parser.add_argument(
+        "--exp-name",
+        type=str,
+        default=None,
+        help="Override the experiment name without editing the YAML.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Set env_cfg['debug']=True for verbose env-side prints.",
+    )
+    return parser
+
+
+# --------------------------------------------------------------------------- #
+# Programmatic entry point
+# --------------------------------------------------------------------------- #
+
+
+def train(
+    cfg_path: Optional[str] = None,
+    *,
+    vis: bool = False,
+    resume: bool = False,
+    drone_key: Optional[str] = None,
+    urdf_file: Optional[str] = None,
+    parent_exp: Optional[str] = None,
+    parent_ckpt: Optional[int] = None,
+    init_policy_path: Optional[str] = None,
+    exp_name_override: Optional[str] = None,
+    debug: bool = False,
+    cli_overrides: Optional[dict] = None,
+) -> Path:
+    """Run a full WP1 training session.
+
+    Returns the run directory.
+
+    The body mirrors ``winged_drone_train.train.main`` step-by-step,
+    swapping argparse for YAML/CLI overrides and ``logs/<exp>`` for a
+    timestamped run folder.
+    """
+    if init_policy_path is not None and (parent_exp is not None or parent_ckpt is not None):
+        raise ValueError(
+            "--init-policy-path is mutually exclusive with --parent-exp / --parent-ckpt."
+        )
+
+    # ----- 1. Resolve config (defaults ← YAML ← CLI overrides). ---------- #
+    cfg = build_cfgs(
+        yaml_path=cfg_path,
+        cli_overrides=cli_overrides,
+        exp_name_override=exp_name_override,
+    )
+
+    exp_name: str = cfg["exp_name"]
+    env_cfg = cfg["env_cfg"]
+    obs_cfg = cfg["obs_cfg"]
+    reward_cfg = cfg["reward_cfg"]
+    command_cfg = cfg["command_cfg"]
+    train_cfg = cfg["train_cfg"]
+    num_envs = cfg["num_envs"]
+    max_iterations = cfg["max_iterations"]
+    device = cfg["device"]
+    yaml_payload = cfg["yaml_payload"]
+    user_seed_explicit = cfg["user_seed_explicit"]
+
+    if debug:
+        env_cfg["debug"] = True
+
+    # ----- 2. Cache + Genesis init (reused). ----------------------------- #
     _configure_cache_root()
-    _configure_torch_backends()
-    # In multi-scene mode Genesis runs only inside worker subprocesses;
-    # the main process must NOT call gs.init() (would conflict with workers).
-    if not cfg.multi_scene.enabled:
-        _init_genesis()
+    # In LSS (sharded) mode Genesis runs inside worker subprocesses only;
+    # the main / coordinator process must NOT call ``gs.init`` here, or it
+    # will fight the workers for CUDA contexts.
+    lss_enabled = bool(cfg["lss_cfg"].get("enabled", False))
+    if not lss_enabled:
+        _init_genesis_with_retry()
 
-    # --- Run manager (creates timestamped folder) ---
-    run = RunManager(cfg, resume=resume)
+    # Seeding policy:
+    #   - If the user pinned ``training.seed`` (YAML or CLI), honour it.
+    #   - Otherwise, draw a fresh OS-entropy seed, matching
+    #     ``winged_drone_train.train.main`` default behaviour.
+    if user_seed_explicit:
+        seed = int(train_cfg["seed"])
+        random.seed(seed)
+        np.random.seed(seed % (2**32))
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        print(f"[WP1.train] Using user-supplied seed: {seed}")
+    else:
+        seed = seed_runtime_randomness(f"train:{exp_name}")
+        train_cfg["seed"] = int(seed)
 
-    # --- Build legacy config dicts ---
-    env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg.to_legacy_cfgs()
+    # ----- 3. Run folder. ----------------------------------------------- #
+    run = RunManager(exp_name=exp_name, resume=resume)
+    run.save_yaml_snapshot(yaml_payload)
 
-    # --- Decide single-URDF vs mixture mode ---
-    use_mixture = False
+    # ----- 4. Decide mode: single-URDF / multi-URDF (Gen_Env) / LSS. ---- #
+    catalog_cfg = cfg["catalog_cfg"]
+    lss_cfg = cfg["lss_cfg"]
+    use_catalog = (
+        (catalog_cfg.get("n_urdf") is not None and int(catalog_cfg["n_urdf"]) > 0)
+        or (catalog_cfg.get("catalog_dir") is not None)
+    )
+
+    if lss_enabled and not use_catalog:
+        raise RuntimeError(
+            "lss.enabled=true requires catalog.n_urdf > 0 or catalog.catalog_dir."
+        )
+    if lss_enabled and int(lss_cfg.get("urdf_shard_size", 0)) <= 0:
+        raise RuntimeError(
+            "lss.enabled=true requires lss.urdf_shard_size > 0."
+        )
+
+    urdf_path: Optional[str] = None
     catalog_path: Optional[Path] = None
 
-    print(f"[WP1.train] Config check: multi_scene.enabled={cfg.multi_scene.enabled}")
-    if cfg.multi_scene.enabled:
-        print(
-            f"[WP1.train] Multi-scene config: S={cfg.multi_scene.S}, "
-            f"N={cfg.multi_scene.N}, E={cfg.multi_scene.E}, "
-            f"cpu_threads_per_worker={cfg.multi_scene.cpu_threads_per_worker}"
-        )
-
-    if cfg.catalog.catalog_dir is not None:
-        catalog_path = Path(cfg.catalog.catalog_dir)
-        print(f"[WP1.train] Using existing catalog_dir: {catalog_path}")
-    if cfg.catalog.n_urdf is not None and cfg.catalog.n_urdf > 0:
-        if catalog_path is None:
-            # Build new catalog inside the run folder
+    if use_catalog:
+        if catalog_cfg.get("catalog_dir") is not None:
+            catalog_path = Path(catalog_cfg["catalog_dir"]).expanduser().resolve()
+        else:
             catalog_path = run.run_dir / "catalog"
-        # Build catalog
-        from general_policy.catalog import build_catalog
-        print(f"[WP1.train] Building catalog: n={cfg.catalog.n_urdf}, seed={cfg.catalog.urdf_seed}")
-        build_catalog(catalog_path, n=cfg.catalog.n_urdf, seed=cfg.catalog.urdf_seed)
-        use_mixture = True
-    elif catalog_path is not None and catalog_path.is_dir():
-        use_mixture = True
 
-    # Save catalog info to run folder
-    run.save_catalog(catalog_path)
+        n_urdf = catalog_cfg.get("n_urdf")
+        if n_urdf is not None and int(n_urdf) > 0:
+            from general_policy.catalog import build_catalog
+            print(
+                f"[WP1.train] Building catalog: n={n_urdf}, "
+                f"seed={catalog_cfg.get('urdf_seed', 0)}, "
+                f"dir={catalog_path}"
+            )
+            build_catalog(
+                catalog_path,
+                n=int(n_urdf),
+                seed=int(catalog_cfg.get("urdf_seed", 0)),
+            )
+        else:
+            print(f"[WP1.train] Using existing catalog at {catalog_path}")
 
-    # --- Create environment ---
-    t0 = time.perf_counter()
-    if cfg.multi_scene.enabled:
-        # Multi-scene mode: S parallel Genesis subprocesses, each with E envs.
-        # Genesis is NOT initialised in the main process — workers own it.
-        from WP1.virtual_env import VirtualMultiSceneEnv
-        ms = cfg.multi_scene
-        total_envs = ms.S * ms.N * ms.E
-        print(
-            f"[WP1.train] **MULTI-SCENE MODE ACTIVE**: S={ms.S} scenes × "
-            f"N={ms.N} URDFs × E={ms.E} envs = {total_envs} total envs"
+        # In catalog mode we don't apply per-drone overrides — Gen_Env / LSS
+        # workers use one WingedDroneEnv per URDF with the right drone key.
+    else:
+        # ----- Single-URDF: resolve / generate, apply drone overrides. --- #
+        urdf_path = resolve_or_generate_urdf(
+            urdf_file=urdf_file,
+            drone_key=drone_key or env_cfg.get("drone"),
         )
-        print(f"[WP1.train] Catalog path for multi-scene: {catalog_path}")
-        env = VirtualMultiSceneEnv(cfg, catalog_path=catalog_path)
-    elif use_mixture:
+        env_cfg = _apply_train_drone_overrides(
+            env_cfg,
+            drone_key=drone_key or str(env_cfg.get("drone", "")),
+            urdf_file=urdf_path,
+        )
+
+    # ----- 5. Persist the legacy 5-tuple inside the run folder so the rest
+    #         of the codebase (eval, plotters, custom controllers) can pick
+    #         this run up without any extra plumbing.
+    _write_cfg_snapshot(
+        run.run_dir / "cfgs.pkl",
+        env_cfg,
+        obs_cfg,
+        reward_cfg,
+        command_cfg,
+        train_cfg,
+    )
+
+    # ----- 6. LSS branch: delegate the whole training loop. ------------- #
+    if lss_enabled:
+        from general_policy.super_scene import run_logical_super_scene_training
+        print(
+            f"[WP1.train] LSS mode: shards={lss_cfg.get('urdf_shard_size')}, "
+            f"num_workers={lss_cfg.get('num_workers')}, "
+            f"collection_gpus={lss_cfg.get('collection_gpus')}, "
+            f"catalog={catalog_path}"
+        )
+        try:
+            # Passing ``eval_dir`` makes the LSS runner write
+            # ``training_log.csv`` via ``WP1.csv_logger.CSVLogger``,
+            # mirroring what the non-LSS branch sets up below.
+            run_logical_super_scene_training(
+                experiment_name=exp_name,
+                catalog_path=Path(catalog_path),
+                train_cfg=train_cfg,
+                env_cfg=env_cfg,
+                obs_cfg=obs_cfg,
+                reward_cfg=reward_cfg,
+                command_cfg=command_cfg,
+                log_dir=run.log_dir,
+                num_envs_total=num_envs,
+                max_iterations=max_iterations,
+                urdf_shard_size=int(lss_cfg["urdf_shard_size"]),
+                num_workers=int(lss_cfg.get("num_workers", 0)),
+                collection_gpus=int(lss_cfg.get("collection_gpus", 1)),
+                device=device,
+                init_policy_path=init_policy_path,
+                vis=vis,
+                eval_dir=run.eval_dir,
+            )
+        finally:
+            # Workers own Genesis; nothing to gs.destroy() in this process.
+            pass
+        _post_training(run)
+        print(f"[WP1.train] Done. Results in: {run.run_dir}")
+        return run.run_dir
+
+    # ----- 7. Build the environment (single-URDF or single-process Gen_Env). #
+    if use_catalog:
         from general_policy.env_gen import Gen_Env
-        print(f"[WP1.train] Mixture mode with catalog: {catalog_path}")
+        print(f"[WP1.train] Multi-URDF (Gen_Env) mode with catalog: {catalog_path}")
         env = Gen_Env(
-            num_envs=cfg.training.num_envs,
+            num_envs=num_envs,
             env_cfg=env_cfg,
             obs_cfg=obs_cfg,
             reward_cfg=reward_cfg,
@@ -278,280 +465,115 @@ def train(cfg: RunConfig, vis: bool = False, resume: bool = False) -> None:
             max_scenes=None,
             show_viewer=vis,
             eval=False,
-            device=cfg.training.device,
+            device=device,
         )
+        # Gen_Env applies configure_solver_noise to each sub-env internally.
     else:
-        urdf_file = resolve_or_generate_urdf()
-        print(f"[WP1.train] Single-URDF mode: {urdf_file}")
         env = WingedDroneEnv(
-            num_envs=cfg.training.num_envs,
+            num_envs=num_envs,
             env_cfg=env_cfg,
             obs_cfg=obs_cfg,
             reward_cfg=reward_cfg,
             command_cfg=command_cfg,
-            urdf_file=urdf_file,
+            urdf_file=urdf_path,
             show_viewer=vis,
             eval=False,
-            device=cfg.training.device,
+            device=device,
         )
         configure_solver_noise(env, env_cfg)
 
-    elapsed = time.perf_counter() - t0
-    num_envs_display = (
-        cfg.multi_scene.S * cfg.multi_scene.N * cfg.multi_scene.E
-        if cfg.multi_scene.enabled
-        else cfg.training.num_envs
-    )
-    print(f"[WP1.train] Env init: {elapsed:.2f}s ({num_envs_display} envs)")
+    # ----- 8. Build the runner + warm-start (reused helpers). ----------- #
+    runner = _build_runner(env, train_cfg, run.log_dir, device=device)
 
-    # --- RSL-RL runner ---
-    runner = OnPolicyRunner(env, train_cfg, str(run.log_dir), device=cfg.training.device)
-
-    # --- Compile policy for faster forward/backward passes ---
-    try:
-        runner.alg.policy = torch.compile(
-            runner.alg.policy, mode="reduce-overhead"
+    if init_policy_path is not None:
+        _maybe_load_init_checkpoint(
+            runner,
+            init_policy_path=init_policy_path,
+            tag="WP1.train",
         )
-        # Patch runner.save so checkpoints use unwrapped keys (no _orig_mod. prefix)
-        _orig_save = runner.save
+    else:
+        _maybe_load_parent_checkpoint(
+            runner,
+            parent_exp=parent_exp,
+            parent_ckpt=parent_ckpt,
+            parent_root=Path("logs"),
+            tag="WP1.train",
+        )
 
-        def _save_unwrapped(path, infos=None):
-            policy = runner.alg.policy
-            unwrapped = getattr(policy, "_orig_mod", policy)
-            runner.alg.policy = unwrapped
-            _orig_save(path, infos)
-            runner.alg.policy = policy
-
-        runner.save = _save_unwrapped
-        print("[WP1.train] torch.compile enabled (reduce-overhead mode)")
-    except Exception as e:
-        print(f"[WP1.train] torch.compile skipped: {e}")
-
-    # --- Attach PPO diagnostics logger (TensorBoard) ---
-    rl_logger = RLTrainingLogger(runner=runner, log_dir=run.log_dir)
+    # ----- 9. Logger + CSV hook + learn. -------------------------------- #
+    rl_logger = RLTrainingLogger(
+        runner=runner,
+        log_dir=run.log_dir,
+        max_iterations=max_iterations,
+    )
     rl_logger.attach()
 
-    # --- CSV logger (per-iteration metrics) ---
     csv_logger = CSVLogger(run.eval_dir / "training_log.csv")
+    _install_csv_logger_hook(runner, env, csv_logger)
 
-    # --- Hook into PPO update to capture metrics each iteration ---
-    _iter_counter = {"i": 0, "last_tot_timesteps": 0, "iter_start_time": time.perf_counter()}
-
-    # Calculate multiplier for adjusted steps/s (multi-URDF case)
-    urdf_multiplier = 1
-    if cfg.multi_scene.enabled:
-        urdf_multiplier = cfg.multi_scene.S * cfg.multi_scene.N
-
-    def _on_iteration_end() -> None:
-        """Post-update callback: write one CSV row with current metrics."""
-        it = _iter_counter["i"]
-        try:
-            extras = env.extras if hasattr(env, 'extras') else {}
-
-            # Collect all available PPO metrics
-            ppo_metrics = {}
-
-            # Extract mean reward from runner's internal tracking
-            rewbuffer = getattr(runner, 'rewbuffer', None)
-            if rewbuffer is not None and len(rewbuffer) > 0:
-                ppo_metrics["mean_reward"] = sum(rewbuffer) / len(rewbuffer)
-
-            # Extract mean episode length from runner's internal tracking
-            lenbuffer = getattr(runner, 'lenbuffer', None)
-            if lenbuffer is not None and len(lenbuffer) > 0:
-                ppo_metrics["mean_episode_length"] = sum(lenbuffer) / len(lenbuffer)
-
-            # Extract additional PPO metrics if available (actor loss, critic loss, entropy, etc.)
-            alg = getattr(runner, 'alg', None)
-            if alg is not None:
-                # Common PPO statistics that might be available
-                for metric_name in ['actor_loss', 'critic_loss', 'entropy', 'ppo_loss', 'value_loss']:
-                    val = getattr(alg, metric_name, None)
-                    if val is not None:
-                        ppo_metrics[metric_name] = val
-
-            csv_logger.log(it, extras, ppo_metrics=ppo_metrics)
-
-            # Log adjusted steps/s if using multi-URDF
-            if urdf_multiplier > 1:
-                try:
-                    tot_timesteps = getattr(runner, 'tot_timesteps', 0)
-                    iter_time = time.perf_counter() - _iter_counter["iter_start_time"]
-                    timesteps_this_iter = tot_timesteps - _iter_counter["last_tot_timesteps"]
-
-                    if iter_time > 0 and timesteps_this_iter > 0:
-                        steps_per_sec = timesteps_this_iter / iter_time
-                        adjusted_steps_per_sec = steps_per_sec * urdf_multiplier
-                        print(f"Adjusted steps/s (×{urdf_multiplier} URFDs, equivalent): {adjusted_steps_per_sec:.0f} steps/s")
-
-                    _iter_counter["last_tot_timesteps"] = tot_timesteps
-                    _iter_counter["iter_start_time"] = time.perf_counter()
-                except Exception as e:
-                    pass  # Silently fail if adjusted metric can't be computed
-        except Exception as e:
-            print(f"[WP1.train] CSV log error at iter {it}: {e}")
-        _iter_counter["i"] = it + 1
-
-    # Monkey-patch the algorithm's update to also log CSV
-    alg = getattr(runner, 'alg', None)
-    if alg is not None:
-        _orig_alg_update = alg.update
-
-        def _patched_update(*args, **kwargs):
-            """Wrapped PPO update that appends CSV logging."""
-            result = _orig_alg_update(*args, **kwargs)
-            _on_iteration_end()
-            return result
-
-        alg.update = _patched_update
-
-    # --- Train ---
     try:
         runner.learn(
-            num_learning_iterations=cfg.training.max_iterations,
-            init_at_random_ep_len=use_mixture,
+            num_learning_iterations=max_iterations,
+            # Multi-URDF rollouts benefit from random initial episode phases
+            # so the parallel scenes don't reset in lock-step.
+            init_at_random_ep_len=use_catalog,
         )
     finally:
         rl_logger.close()
         csv_logger.close()
-
-    # --- Extract mean_reward from TensorBoard and update CSV ---
-    try:
-        _enrich_csv_with_tensorboard_rewards(
-            csv_path=run.eval_dir / "training_log.csv",
-            tb_dir=run.log_dir
-        )
-    except Exception as e:
-        print(f"[WP1.train] TensorBoard reward extraction skipped: {e}")
-
-    # --- Generate evaluation videos ---
-    try:
-        _generate_eval_videos(run.run_dir)
-    except Exception as e:
-        print(f"[WP1.train] Video generation skipped: {e}")
-
-    # --- Auto-generate plots ---
-    print("[WP1.train] Generating plots...")
-    plot_run(run.run_dir)
-
-    if not cfg.multi_scene.enabled:
         try:
             gs.destroy()
         except Exception:
             pass
-    else:
-        # Workers own Genesis; ask VirtualMultiSceneEnv to shut them down.
-        try:
-            env.close()
-        except Exception:
-            pass
 
+    _post_training(run)
     print(f"[WP1.train] Done. Results in: {run.run_dir}")
+    return run.run_dir
+
+
+def _post_training(run: RunManager) -> None:
+    """Backfill TB rewards into the CSV and render diagnostic plots.
+
+    Best-effort: a missing CSV, missing TB events, or matplotlib import
+    failure each only print a notice and skip their step.
+    """
+    csv_path = run.eval_dir / "training_log.csv"
+    try:
+        _enrich_csv_with_tensorboard_rewards(csv_path=csv_path, tb_dir=run.log_dir)
+    except Exception as e:
+        print(f"[WP1.train] TensorBoard reward extraction skipped: {e}")
+    print("[WP1.train] Generating plots...")
+    try:
+        plot_run(run.run_dir)
+    except Exception as e:
+        print(f"[WP1.train] plot_run skipped: {e}")
+
+
+# --------------------------------------------------------------------------- #
+# CLI entry point
+# --------------------------------------------------------------------------- #
 
 
 def main() -> None:
-    """CLI entry point for WP1 training.
-
-    Parses command-line arguments, builds a ``RunConfig`` (from YAML +
-    CLI overrides), and calls :func:`train`.
-
-    Arguments
-    ---------
-    --cfg PATH
-        Path to a YAML config file.  If omitted, all defaults are used.
-    -v, --vis
-        Enable the Genesis real-time viewer.
-    --resume
-        Resume from the latest run matching the experiment name.
-    --cfg.<section>.<key> VALUE
-        Override any config field (processed by
-        :meth:`RunConfig.apply_cli_overrides`).
-    """
-    parser = argparse.ArgumentParser(description="WP1 training entry point.")
-    parser.add_argument("--cfg", type=str, default=None, help="Path to YAML config file.")
-    parser.add_argument(
-        "--multi-scene-cfg",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help=(
-            "Path to a supplementary multi-scene YAML (e.g. "
-            "configs/multi_scene.yaml).  Its 'multi_scene:' section is "
-            "deep-merged on top of the base config, activating parallel "
-            "scene training without touching single-scene configs."
-        ),
-    )
-    parser.add_argument(
-        "--lss-cfg",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help=(
-            "Path to a supplementary logical-super-scene YAML (e.g. "
-            "configs/logical_super_scene.yaml).  Its 'lss:' section is "
-            "merged on top of the base config, activating shard-based "
-            "URDF training without touching single-scene configs."
-        ),
-    )
-    parser.add_argument("-v", "--vis", action="store_true", help="Enable viewer.")
-    parser.add_argument("--resume", action="store_true", help="Resume from latest matching run.")
-    parser.add_argument(
-        "--multi-gpu",
-        type=int,
-        default=1,
-        metavar="N",
-        help=(
-            "Distribute physics across N GPUs using worker processes "
-            "(one Gen_Env per GPU, policy stays on the coordinator). "
-            "Requires a URDF catalog (catalog.n_urdf > 0). Default: 1 (single-GPU)."
-        ),
-    )
+    parser = _build_arg_parser()
     args, remaining = parser.parse_known_args()
+    cli_overrides, leftover = parse_cli_overrides(remaining)
+    if leftover:
+        raise SystemExit(f"Unrecognised arguments: {leftover}")
 
-    # Build config
-    if args.cfg is not None:
-        cfg = RunConfig.from_yaml(args.cfg)
-    else:
-        cfg = RunConfig()
-
-    # Merge supplementary multi-scene config if provided
-    if args.multi_scene_cfg is not None:
-        import yaml as _yaml
-        with open(args.multi_scene_cfg, "r") as _f:
-            _ms_data = _yaml.safe_load(_f) or {}
-        if "multi_scene" in _ms_data and isinstance(_ms_data["multi_scene"], dict):
-            from WP1.config import MultiSceneConfig
-            ms = MultiSceneConfig()
-            for k, v in _ms_data["multi_scene"].items():
-                if hasattr(ms, k):
-                    setattr(ms, k, v)
-            cfg.multi_scene = ms
-
-    # Merge supplementary logical-super-scene config if provided
-    if args.lss_cfg is not None:
-        import yaml as _yaml
-        with open(args.lss_cfg, "r") as _f:
-            _lss_data = _yaml.safe_load(_f) or {}
-        if "lss" in _lss_data and isinstance(_lss_data["lss"], dict):
-            from WP1.config import LogicalSuperSceneConfig
-            lss = LogicalSuperSceneConfig()
-            for k, v in _lss_data["lss"].items():
-                if hasattr(lss, k):
-                    setattr(lss, k, v)
-            cfg.lss = lss
-
-    # Apply CLI overrides like --cfg.ppo.learning_rate 3e-4
-    cfg.apply_cli_overrides(remaining)
-
-    # Priority: LSS > multi-GPU > standard
-    if cfg.lss.enabled:
-        from WP1.lss_train import train_lss
-        train_lss(cfg, vis=args.vis, resume=args.resume)
-    elif args.multi_gpu > 1:
-        from WP1.multi_gpu_train import train_multi_gpu
-        train_multi_gpu(cfg, num_gpus=args.multi_gpu, vis=args.vis, resume=args.resume)
-    else:
-        train(cfg, vis=args.vis, resume=args.resume)
+    train(
+        cfg_path=args.cfg,
+        vis=args.vis,
+        resume=args.resume,
+        drone_key=args.drone,
+        urdf_file=args.urdf_file,
+        parent_exp=args.parent_exp,
+        parent_ckpt=args.parent_ckpt,
+        init_policy_path=args.init_policy_path,
+        exp_name_override=args.exp_name,
+        debug=args.debug,
+        cli_overrides=cli_overrides,
+    )
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 #!/bin/bash -l
-#SBATCH --job-name=wp1_foundation
+#SBATCH --job-name=wp1_train
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=2
-#SBATCH --mem=160G
+#SBATCH --gpus=1
+#SBATCH --mem=80G
 #SBATCH --cpus-per-gpu=4
 #SBATCH --time=70:00:00
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
@@ -22,32 +22,28 @@ SRC="$HOME/Genesis-dev"
 # ------------------------------------------------------------
 # Run params (override via sbatch --export=...)
 # ------------------------------------------------------------
-CFG_FILE=${CFG_FILE:-configs/foundation.yaml}
-RUN_TAG=${RUN_TAG:-wp1_foundation_${SLURM_JOB_ID}}
+CFG_FILE=${CFG_FILE:-configs/default.yaml}
+RUN_TAG=${RUN_TAG:-wp1_train_${SLURM_JOB_ID}}
 CLI_OVERRIDES=${CLI_OVERRIDES:-}
 
-# Resume: set RESUME=1 to restart from the latest checkpoint found in RUN_DIR.
-# run_parallel.sh forwards this automatically when invoked with RESUME=1.
-# Example: sbatch --export=ALL,RESUME=1,CFG_FILE=... train_foundation.slurm
+# Resume: set RESUME=1 to restart from the latest matching run folder.
 RESUME=${RESUME:-0}
 RESUME_FLAG=""
 [ "${RESUME}" -ne 0 ] && RESUME_FLAG="--resume"
 
-# Multi-GPU: set MULTI_GPU=N to split the URDF catalog across N GPUs.
-# MULTI_GPU must be <= the number of --gpus requested above.
-# Example: sbatch --gpus=2 --export=ALL,MULTI_GPU=2,CFG_FILE=... train_foundation.slurm
-MULTI_GPU=${MULTI_GPU:-1}
-
-# Logical-super-scene: set LOGICAL_SUPER_SCENE=1 to enable LSS mode.
-# Mutually exclusive with MULTI_GPU > 1.
-# Example: sbatch --export=ALL,LOGICAL_SUPER_SCENE=1,URDF_SHARD_SIZE=64,LSS_COLLECTION_GPUS=2,...
-LOGICAL_SUPER_SCENE=${LOGICAL_SUPER_SCENE:-0}
-URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-64}
-LSS_COLLECTION_GPUS=${LSS_COLLECTION_GPUS:-1}
-
-# CUDA MPS controls (for multi-GPU concurrency)
-ENABLE_CUDA_MPS=${ENABLE_CUDA_MPS:-0}
-MPS_THREAD_PCT=${MPS_THREAD_PCT:-0}
+# Logical Super-Scene (sharded multi-URDF) toggle.
+# Set LSS=1 and (optionally) URDF_SHARD_SIZE / LSS_NUM_WORKERS / LSS_GPUS to
+# enable sharded training. Requires a catalog in the YAML (catalog.n_urdf>0).
+# Example:
+#   sbatch --gpus=2 --export=ALL,LSS=1,URDF_SHARD_SIZE=32,LSS_GPUS=2,... train.slurm
+LSS=${LSS:-0}
+URDF_SHARD_SIZE=${URDF_SHARD_SIZE:-0}
+LSS_NUM_WORKERS=${LSS_NUM_WORKERS:-0}
+LSS_GPUS=${LSS_GPUS:-1}
+LSS_FLAGS=""
+if [ "${LSS}" -ne 0 ]; then
+  LSS_FLAGS="--cfg.lss.enabled true --cfg.lss.urdf_shard_size ${URDF_SHARD_SIZE} --cfg.lss.num_workers ${LSS_NUM_WORKERS} --cfg.lss.collection_gpus ${LSS_GPUS}"
+fi
 
 # ------------------------------------------------------------
 # Output layout
@@ -57,7 +53,6 @@ RUN_DIR="${RUN_DIR:-${OUT_BASE}/wp1_training/${RUN_TAG}}"
 CACHE_DIR="${RUN_DIR}/.cache"
 
 mkdir -p "$RUN_DIR" "$CACHE_DIR"
-mkdir -p "${RUN_DIR}/.mps/pipe" "${RUN_DIR}/.mps/log"
 
 # Safety checks
 if [ ! -f "$IMG" ]; then
@@ -91,8 +86,6 @@ else
   CPUS_ASSIGNED=1
 fi
 export OMP_NUM_THREADS="${CPUS_ASSIGNED}"
-# OpenBLAS threads: use conservative fraction to avoid pthread_create failures
-# IZAR has low nproc limits (4096), so cap per-process threads
 OPENBLAS_THREADS=$(( CPUS_ASSIGNED / 4 ))
 if [ "$OPENBLAS_THREADS" -lt 2 ]; then
   OPENBLAS_THREADS=2
@@ -102,31 +95,6 @@ if [ "$OPENBLAS_THREADS" -gt 8 ]; then
 fi
 export OPENBLAS_NUM_THREADS="${OPENBLAS_THREADS}"
 echo "[RUNTIME] cpus_assigned=${CPUS_ASSIGNED} OMP_NUM_THREADS=${OMP_NUM_THREADS} OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS}"
-
-# ------------------------------------------------------------
-# Optional: CUDA MPS daemon
-# ------------------------------------------------------------
-MPS_STARTED=0
-if [ "${ENABLE_CUDA_MPS}" -ne 0 ]; then
-  if command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
-    export CUDA_MPS_PIPE_DIRECTORY="${RUN_DIR}/.mps/pipe"
-    export CUDA_MPS_LOG_DIRECTORY="${RUN_DIR}/.mps/log"
-    rm -f "${CUDA_MPS_PIPE_DIRECTORY}/nvidia-cuda-mps-control" || true
-    nvidia-cuda-mps-control -d
-    MPS_STARTED=1
-    echo "[MPS] started (pipe=${CUDA_MPS_PIPE_DIRECTORY})"
-  else
-    echo "[WARN] nvidia-cuda-mps-control not found; running without MPS."
-  fi
-fi
-
-cleanup_mps() {
-  if [ "${MPS_STARTED}" -eq 1 ]; then
-    echo quit | nvidia-cuda-mps-control >/dev/null 2>&1 || true
-    echo "[MPS] stopped"
-  fi
-}
-trap cleanup_mps EXIT
 
 # ------------------------------------------------------------
 # Run
@@ -140,12 +108,6 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   export TAICHI_CACHE_DIR=/workspace/out/.cache/taichi
   export GSTAICHI_CACHE_DIR=/workspace/out/.cache/gstaichi
   export MPLCONFIGDIR=/workspace/out/.cache/mpl
-
-  if [ \"${ENABLE_CUDA_MPS}\" -ne 0 ]; then
-    export CUDA_MPS_PIPE_DIRECTORY=/workspace/out/.mps/pipe
-    export CUDA_MPS_LOG_DIRECTORY=/workspace/out/.mps/log
-    export LOGICAL_SUPER_SCENE_MPS_THREAD_PERCENT=${MPS_THREAD_PCT}
-  fi
 
   mkdir -p /workspace/out/.cache
   cd /workspace/out
@@ -168,17 +130,7 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
     fi
   done
 
-  if [ \"${LOGICAL_SUPER_SCENE:-0}\" -ne 0 ]; then
-    echo \"[RUNTIME] Logical-super-scene mode enabled (using YAML config)\"
-    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} \
-      --cfg.lss.enabled true \
-      ${RESUME_FLAG} ${CLI_OVERRIDES}
-  elif [ \"${MULTI_GPU:-1}\" -gt 1 ]; then
-    echo \"[RUNTIME] Multi-GPU mode: distributing across ${MULTI_GPU} GPUs\"
-    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} --multi-gpu ${MULTI_GPU} ${RESUME_FLAG} ${CLI_OVERRIDES}
-  else
-    python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} ${RESUME_FLAG} ${CLI_OVERRIDES}
-  fi
+  python -m WP1.train --cfg /workspace/bind/src/WP1/${CFG_FILE} ${RESUME_FLAG} ${LSS_FLAGS} ${CLI_OVERRIDES}
 "
 
 # ------------------------------------------------------------
