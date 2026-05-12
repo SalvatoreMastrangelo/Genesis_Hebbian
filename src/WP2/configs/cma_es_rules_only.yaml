@@ -66,7 +66,7 @@ evaluation:
   vmax: 25.0
   stochastic: true
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor each gen for comparison
-  x_upper: 600         # override forest corridor length [m]; null = use WP1 config value
+  x_upper: 250         # override forest corridor length [m]; null = use WP1 config value
   dens_min: 0.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
   dens_min_slope: 0.00 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
   dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
