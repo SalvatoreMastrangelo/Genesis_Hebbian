@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: post_rebuild_test # generalist_256_10_urdf_0.005_0.05
+exp_name: post_rebuild_test_high_sigma # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -45,7 +45,8 @@ evolution:
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
-  sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
+  algorithm: "sep-cmaes"   # "cmaes" (full covariance) or "sep-cmaes" (diagonal-only, scales linearly with genome dim)
+  sigma0: 0.4          # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
   population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
@@ -71,6 +72,21 @@ evaluation:
   dens_min_slope: 0.00 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
   dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
+
+  # ------------------------------------------------------------------
+  # Per-slot noise toggles (true = drawn independently per env slot, so it
+  # produces per-individual variance; false = force-disabled in this WP2 eval
+  # so the source contributes no per-individual variance, regardless of the
+  # WP1 checkpoint setting).  Stochastic actor sampling is the dominant
+  # source and is controlled separately by `stochastic` above.
+  # ------------------------------------------------------------------
+  noise:
+    action_latency: true              # ActuatorDynamics latency (per-episode draw per env)
+    mass_shift: true                  # property_randomization.mass_shift_std
+    com_shift: true                   # property_randomization.com_shift_std
+    joint_target_episode_bias: true   # property_randomization.joint_target_episode_bias_std
+    joint_target_step_noise: true     # property_randomization.joint_target_step_noise_std
+    aero_noise: true                  # aero solver param + magnitude/direction noise
 
 seed: 420
 device: "cuda:0"

@@ -92,6 +92,30 @@ class EvolutionConfig:
 
 
 @dataclass
+class NoiseConfig:
+    """Per-slot stochastic noise toggles.
+
+    Each flag corresponds to a noise source that is sampled INDEPENDENTLY per
+    env slot (i.e. NOT shared across individuals occupying the same forest
+    slot).  ``True`` keeps the WP1 checkpoint's setting intact; ``False``
+    force-disables the source for the WP2 evaluation env (the WP1 magnitude is
+    overridden to 0 / off so the source produces no per-individual variance).
+
+    Shared factors — forest layout, commanded speed, initial drone pose —
+    are deterministic in eval mode and have no toggle here.
+
+    Stochastic actor sampling has its own switch at ``evaluation.stochastic``.
+    """
+
+    action_latency: bool = True              # simulate_action_latency
+    mass_shift: bool = True                  # property_randomization.mass_shift_std
+    com_shift: bool = True                   # property_randomization.com_shift_std
+    joint_target_episode_bias: bool = True   # property_randomization.joint_target_episode_bias_std
+    joint_target_step_noise: bool = True     # property_randomization.joint_target_step_noise_std
+    aero_noise: bool = True                  # aero_noise (aero solver param + magnitude/direction noise)
+
+
+@dataclass
 class EvaluationConfig:
     """Population-level vectorized rollout configuration for fitness evaluation.
 
@@ -109,6 +133,10 @@ class EvaluationConfig:
         Forward velocity command range [m/s] during rollout.
     stochastic : bool
         If True, sample from the policy distribution; otherwise use the mean.
+    noise : NoiseConfig
+        Per-slot noise toggles (see ``NoiseConfig``).  Sources flagged
+        ``False`` are force-disabled so they cannot produce per-individual
+        variance.
     """
 
     num_eval_episodes: int = 1
@@ -122,6 +150,7 @@ class EvaluationConfig:
     dens_min_slope: float = 0.0  # per-generation linear ramp added to dens_min
     dens_max: Optional[float] = None  # override forest density at x=x_upper [trees/m]
     refresh_forests_per_generation: bool = False
+    noise: NoiseConfig = field(default_factory=NoiseConfig)
 
 
 @dataclass
@@ -134,6 +163,21 @@ class CMAESConfig:
 
     Attributes
     ----------
+    algorithm : str
+        Which CMA-ES variant to use. Supported values:
+
+        - ``"cmaes"`` (default): standard CMA-ES with a full covariance
+          matrix. Scales as O(n^2) memory / O(n^3) per-generation work, so
+          it is best for low-to-moderate genome dimensions (≲ a few
+          hundred genes).
+        - ``"sep-cmaes"``: separable CMA-ES (diagonal covariance
+          throughout). Scales linearly with genome size and recommended
+          for high-dimensional searches (thousands of genes). Cannot
+          model correlations between dimensions but converges much
+          faster in wall-clock terms for large n.
+
+        Implemented via pycma's ``CMA_diagonal`` option (``True`` for
+        sep-CMA-ES, ``0`` for standard).
     sigma0 : float
         Initial step size.  The genome lives in [0,1], so 0.3 spans ~30% of
         the domain.
@@ -146,6 +190,7 @@ class CMAESConfig:
         Convergence threshold on fitness spread.  0 disables.
     """
 
+    algorithm: str = "cmaes"   # "cmaes" or "sep-cmaes"
     sigma0: float = 0.3
     population_size: int = 0
     tol_sigma: float = 0.0
@@ -273,10 +318,22 @@ class HebbianEvolutionConfig:
             "cmaes": CMAESConfig,
             "catalog": CatalogConfig,
         }
+        # Nested dataclass fields inside top-level sections (section -> {field: cls}).
+        nested_sub_map = {
+            "evaluation": {"noise": NoiseConfig},
+        }
         for key, val in data.items():
             if key in sub_map and isinstance(val, dict):
                 sub = sub_map[key]()
+                nested = nested_sub_map.get(key, {})
                 for sk, sv in val.items():
+                    if sk in nested and isinstance(sv, dict):
+                        nsub = nested[sk]()
+                        for nk, nv in sv.items():
+                            if hasattr(nsub, nk):
+                                setattr(nsub, nk, nv)
+                        setattr(sub, sk, nsub)
+                        continue
                     if hasattr(sub, sk):
                         current = getattr(sub, sk)
                         if isinstance(current, tuple) and isinstance(sv, list):
@@ -311,7 +368,17 @@ class HebbianEvolutionConfig:
             arg = argv[i]
             if arg.startswith("--cfg."):
                 parts = arg[len("--cfg."):].split(".")
-                if len(parts) == 2 and i + 1 < len(argv):
+                if len(parts) == 3 and i + 1 < len(argv):
+                    section, sub_section, key = parts
+                    val_str = argv[i + 1]
+                    sub = getattr(self, section, None)
+                    nested = getattr(sub, sub_section, None) if sub is not None else None
+                    if nested is not None and hasattr(nested, key):
+                        current = getattr(nested, key)
+                        setattr(nested, key, _cast(val_str, current))
+                        i += 2
+                        continue
+                elif len(parts) == 2 and i + 1 < len(argv):
                     section, key = parts
                     val_str = argv[i + 1]
                     sub = getattr(self, section, None)

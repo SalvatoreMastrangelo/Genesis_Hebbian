@@ -903,6 +903,19 @@ class HebbianCMAES:
         opts["tolflatfitness"] = -1.0 # disable flat fitness detection
         opts["verbose"] = -9         # suppress pycma's own output
 
+        algo = self.cfg.cmaes.algorithm.lower().strip()
+        if algo in ("cmaes", "cma-es", "cma"):
+            opts["CMA_diagonal"] = 0          # full covariance (standard CMA-ES)
+        elif algo in ("sep-cmaes", "sep-cma-es", "sep_cmaes", "sep"):
+            opts["CMA_diagonal"] = True       # diagonal-only (separable CMA-ES)
+        else:
+            raise ValueError(
+                f"[HebbianCMAES] Unknown cmaes.algorithm '{self.cfg.cmaes.algorithm}'. "
+                f"Supported: 'cmaes', 'sep-cmaes'."
+            )
+        print(f"[HebbianCMAES] Algorithm: {algo} "
+              f"(CMA_diagonal={opts['CMA_diagonal']})")
+
         if self.cfg.cmaes.population_size > 0:
             opts["popsize"] = self.cfg.cmaes.population_size
 

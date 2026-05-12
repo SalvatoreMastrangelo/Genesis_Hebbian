@@ -32,6 +32,45 @@ from WP2.utils import decode_hebbian_genes
 #  Environment construction
 # ============================================================================
 
+def _apply_noise_toggles(env_cfg: dict, cfg: HebbianEvolutionConfig) -> None:
+    """Force-disable per-slot noise sources marked False in ``cfg.evaluation.noise``.
+
+    Mutates ``env_cfg`` in place.  ``True`` toggles leave the WP1 checkpoint
+    setting untouched; ``False`` toggles zero out the corresponding magnitude
+    or flip the enabling flag.  Only affects sources that are NOT shared
+    across individuals (forest layout / commanded speed are deterministic and
+    have no toggle).
+
+    When every toggle is ``True`` this is a strict no-op: ``env_cfg`` is not
+    touched at all, so the WP1 checkpoint's behavior is preserved byte-for-byte.
+    """
+    n = cfg.evaluation.noise
+
+    if not n.action_latency:
+        env_cfg["simulate_action_latency"] = False
+
+    if not n.aero_noise:
+        env_cfg["aero_noise"] = False
+
+    prop_overrides_needed = (
+        not n.mass_shift
+        or not n.com_shift
+        or not n.joint_target_episode_bias
+        or not n.joint_target_step_noise
+    )
+    if prop_overrides_needed:
+        prop = dict(env_cfg.get("property_randomization", {}) or {})
+        if not n.mass_shift:
+            prop["mass_shift_std"] = 0.0
+        if not n.com_shift:
+            prop["com_shift_std"] = 0.0
+        if not n.joint_target_episode_bias:
+            prop["joint_target_episode_bias_std"] = 0.0
+        if not n.joint_target_step_noise:
+            prop["joint_target_step_noise_std"] = 0.0
+        env_cfg["property_randomization"] = prop
+
+
 def _build_env(
     cfg: HebbianEvolutionConfig,
     wp1_cfg,
@@ -74,6 +113,8 @@ def _build_env(
 
     obs_cfg["add_genome_obs_actor"] = False
     obs_cfg["add_genome_obs_critic"] = False
+
+    _apply_noise_toggles(env_cfg, cfg)
 
     num_envs = num_envs_override if num_envs_override is not None else cfg.evaluation.num_eval_envs
 
@@ -593,6 +634,8 @@ def _build_multi_urdf_env(
     command_cfg = dict(command_cfg)
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
+
+    _apply_noise_toggles(env_cfg, cfg)
 
     env_cls_kwargs = dict(
         urdf_paths=urdf_paths,
