@@ -5,7 +5,7 @@
 # Difference vs sibling "high_dens" yaml: noise_sigma_param 0.15 → 0.10.
 ##############################################################################
 
-exp_name: intermediate_256_65536_32_010
+exp_name: intermediate_single_65536_32_010
 repeat: 4
 
 ##############################################################################
@@ -101,7 +101,7 @@ env:
 
   aero_noise: true
   aero_noise_sigma0: 0.05
-  noise_sigma_param: 0.10                   
+  noise_sigma_param: 0.10                  
 
   property_randomization:
     mass_shift_std: 0.02
@@ -118,7 +118,7 @@ obs:
   num_obs: 36
   add_noise: true
   actor_genome_obs: false
-  critic_genome_obs: true
+  critic_genome_obs: false
   depth_backend: taichi
 
   privileged_obs:
@@ -167,7 +167,7 @@ command:
 # Multi-URDF catalog
 ##############################################################################
 catalog:
-  n_urdf: 256
+  n_urdf: null
   catalog_dir: null
   urdf_seed: 67
 
@@ -175,7 +175,7 @@ catalog:
 # Logical Super-Scene
 ##############################################################################
 lss:
-  enabled: true
-  urdf_shard_size: 32
-  num_workers: 0                           
-  collection_gpus: 2
+  enabled: false
+  urdf_shard_size: 1
+  num_workers: 0                             
+  collection_gpus: 1

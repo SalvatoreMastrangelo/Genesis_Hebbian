@@ -3,7 +3,7 @@
 ############################################################
 global:
   rho: 1.225               # air density
-  force_cap: 10.0          # safety clamp on total aerodynamic force
+  force_cap: 50.0          # safety clamp on total aerodynamic force
 
 
 ############################################################
