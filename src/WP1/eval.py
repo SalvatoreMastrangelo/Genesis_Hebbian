@@ -237,7 +237,7 @@ def evaluate_run(
         vmax=vmax,
         win_frac=win_frac,
         minimal_progress=minimal_progress,
-        return_arrays=False,
+        return_arrays=True,
         custom_policy_path=str(ckpt_path),
         cfg_path=cfg_path,
         obs_genome=obs_genome,
@@ -264,11 +264,13 @@ def main() -> None:
         dens_min=args.dens_min,
         dens_max=args.dens_max,
     )
-    top_vel, top_eff, top_prog, max_p = result
+    top_vel, top_eff, top_prog, max_p, extra = result
     print(f"[WP1.eval] top_vel  : {top_vel}")
     print(f"[WP1.eval] top_eff  : {top_eff}")
     print(f"[WP1.eval] top_prog : {top_prog}")
     print(f"[WP1.eval] max_p    : {max_p}")
+    print(f"[WP1.eval] mean_progress_all (flat avg over all envs): "
+          f"{extra.get('mean_progress_all', float('nan')):.2f} m")
 
 
 if __name__ == "__main__":

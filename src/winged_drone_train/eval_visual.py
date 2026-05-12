@@ -421,9 +421,17 @@ def create_overlay_video(
         v_commanded: commanded forward speed (for HUD reference line).
         dpi: DPI for matplotlib.
         depth_mp4: optional path to depth video; if None, depth panel is blank.
+
+    Hebbian-only extra: if ``traj`` contains ``hebbian_weight_delta_history``
+    (shape (T, num_actions, hidden_dim)), a full-width heatmap and a pair of
+    drift curves (cumulative drift, per-step squared change) are appended at
+    the bottom of the figure.
     """
     import cv2
-    from matplotlib.gridspec import GridSpec
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+
+    weight_delta = traj.get("hebbian_weight_delta_history", None)
+    has_heatmap = weight_delta is not None and weight_delta.size > 0
 
     # Video sources
     cap_cam = cv2.VideoCapture(cam_mp4)
@@ -479,9 +487,22 @@ def create_overlay_video(
     beta_deg = traj.get("beta_deg", None)
     vel_commanded = np.full_like(t_all, v_commanded, dtype=np.float32)
 
-    fig = plt.figure(figsize=(16, 9), dpi=dpi)
-    gs = GridSpec(nrows=1, ncols=2, width_ratios=[2.50, 1.24], wspace=0.08)
-    fig.subplots_adjust(left=0.012, right=0.995, top=0.988, bottom=0.042)
+    fig_h = 13 if has_heatmap else 9
+    fig = plt.figure(figsize=(16, fig_h), dpi=dpi)
+    if has_heatmap:
+        outer = GridSpec(
+            nrows=3,
+            ncols=1,
+            height_ratios=[9.0, 1.6, 1.0],
+            hspace=0.18,
+        )
+        fig.subplots_adjust(left=0.012, right=0.995, top=0.988, bottom=0.042)
+        gs = outer[0, 0].subgridspec(
+            nrows=1, ncols=2, width_ratios=[2.50, 1.24], wspace=0.08
+        )
+    else:
+        gs = GridSpec(nrows=1, ncols=2, width_ratios=[2.50, 1.24], wspace=0.08)
+        fig.subplots_adjust(left=0.012, right=0.995, top=0.988, bottom=0.042)
 
     left_gs = gs[0, 0].subgridspec(
         nrows=3,
@@ -627,6 +648,95 @@ def create_overlay_video(
     thrust_labels = [h.get_label() for h in thrust_handles]
     ax_T.legend(thrust_handles, thrust_labels, fontsize=8.5, frameon=False, loc="upper left")
 
+    # Optional Hebbian weight-delta heatmap (full width, bottom row) plus a
+    # twin-axis "cumulative drift" / "per-step squared change" curve below it.
+    im_heatmap = None
+    vmax_hm = 0.0
+    ln_drift = ln_step = None
+    ax_wstats = ax_wstats_step = None
+    drift_sq = step_sq = None
+    if has_heatmap:
+        vmax_hm = float(np.abs(weight_delta).max())
+        if vmax_hm <= 0.0:
+            vmax_hm = 1e-8
+        gs_hm = GridSpecFromSubplotSpec(
+            1, 2, subplot_spec=outer[1, 0], width_ratios=[1.0, 0.015], wspace=0.02
+        )
+        ax_heatmap = fig.add_subplot(gs_hm[0, 0])
+        ax_cbar = fig.add_subplot(gs_hm[0, 1])
+        num_actions, hidden_dim = weight_delta.shape[1], weight_delta.shape[2]
+        im_heatmap = ax_heatmap.imshow(
+            weight_delta[0],
+            aspect="auto",
+            cmap="seismic",
+            vmin=-vmax_hm,
+            vmax=vmax_hm,
+            interpolation="nearest",
+        )
+        ax_heatmap.set_xlabel("Head neuron")
+        ax_heatmap.set_ylabel("Actuator")
+        actuator_names = [
+            "throttle",
+            "sweep_L",
+            "sweep_R",
+            "twist_L",
+            "twist_R",
+            "elevator",
+            "rudder",
+        ]
+        if num_actions == len(actuator_names):
+            ax_heatmap.set_yticks(range(num_actions))
+            ax_heatmap.set_yticklabels(actuator_names, fontsize=8)
+        ax_heatmap.set_title(
+            f"Hebbian last-layer ΔW (max |ΔW| = {vmax_hm:.4f})",
+            fontsize=10,
+        )
+        fig.colorbar(im_heatmap, cax=ax_cbar)
+
+        drift_sq = (weight_delta.astype(np.float64) ** 2).sum(axis=(1, 2))
+        step_diff = np.diff(weight_delta.astype(np.float64), axis=0)
+        step_sq = np.concatenate(
+            [[0.0], (step_diff ** 2).sum(axis=(1, 2))]
+        )
+
+        gs_ws = GridSpecFromSubplotSpec(
+            1, 2, subplot_spec=outer[2, 0], width_ratios=[1.0, 0.015], wspace=0.02
+        )
+        ax_wstats = fig.add_subplot(gs_ws[0, 0])
+        ax_wstats.grid(True, lw=0.3, alpha=0.4)
+        ax_wstats.set_xlabel("t [s]")
+
+        color_drift = "tab:blue"
+        color_step = "tab:red"
+
+        y_top_drift = float(drift_sq.max())
+        if not np.isfinite(y_top_drift) or y_top_drift <= 0.0:
+            y_top_drift = 1e-8
+        ax_wstats.set_ylim(0.0, y_top_drift * 1.1)
+        ax_wstats.set_ylabel("cumulative", color=color_drift)
+        ax_wstats.tick_params(axis="y", labelcolor=color_drift)
+        (ln_drift,) = ax_wstats.plot(
+            [], [], lw=1.8, color=color_drift,
+            label=r"$\Sigma (W - W_{ckpt})^2$",
+        )
+
+        ax_wstats_step = ax_wstats.twinx()
+        y_top_step = float(step_sq.max())
+        if not np.isfinite(y_top_step) or y_top_step <= 0.0:
+            y_top_step = 1e-8
+        ax_wstats_step.set_ylim(0.0, y_top_step * 1.1)
+        ax_wstats_step.set_ylabel("per step", color=color_step)
+        ax_wstats_step.tick_params(axis="y", labelcolor=color_step)
+        (ln_step,) = ax_wstats_step.plot(
+            [], [], lw=1.4, color=color_step,
+            label=r"$\Sigma (W_t - W_{t-1})^2$",
+        )
+
+        ax_wstats.legend(
+            handles=[ln_drift, ln_step],
+            fontsize=9, frameon=False, loc="upper left", ncol=2,
+        )
+
     # First frames
     okC, frm_cam = cap_cam.read()
     okT, frm_td = cap_td.read()
@@ -708,6 +818,17 @@ def create_overlay_video(
             for ax in ts_axes:
                 ax.set_xlim(0, t_all[idx])
             ax_T_right.set_xlim(0, t_all[idx])
+
+            if im_heatmap is not None:
+                hm_idx = min(idx, weight_delta.shape[0] - 1)
+                im_heatmap.set_data(weight_delta[hm_idx])
+
+            if ln_drift is not None:
+                ws_idx = min(idx, drift_sq.shape[0] - 1)
+                ln_drift.set_data(t_all[: ws_idx + 1], drift_sq[: ws_idx + 1])
+                ln_step.set_data(t_all[: ws_idx + 1], step_sq[: ws_idx + 1])
+                ax_wstats.set_xlim(0, max(t_all[ws_idx], 1e-6))
+                ax_wstats_step.set_xlim(0, max(t_all[ws_idx], 1e-6))
 
             writer.grab_frame()
 
@@ -951,7 +1072,8 @@ def run_and_record(env,
                    show_video: bool = False,
                    collect_video: bool = False,
                    video_cam_path: str = "camera_view.mp4",
-                   debug_aero: bool = True):
+                   debug_aero: bool = True,
+                   hebbian_actor=None):
     """
     Roll out ONE evaluation episode (usually with num_envs = 1) and:
     - collect trajectory data (positions, velocities, joints, depth)
@@ -996,6 +1118,14 @@ def run_and_record(env,
         reward_names = None
         depth_b = []              # depth sectors at each time step
         fuselage_dbg_idx = _resolve_debug_surface_index(env, target_kind=0)
+        # Hebbian-only: per-step delta of last-layer weights vs frozen checkpoint
+        log_hebb_weights = hebbian_actor is not None and hasattr(hebbian_actor, "hebbian")
+        weight_delta_b: List[np.ndarray] = []
+        if log_hebb_weights:
+            W_ckpt_np = hebbian_actor.hebbian.W_checkpoint.detach().cpu().numpy().astype(np.float32)
+    else:
+        log_hebb_weights = False
+        weight_delta_b = []
 
     # Camera video (if available and requested)
     if collect_video and getattr(env, "rec_cam", None) is not None and B == 1:
@@ -1079,6 +1209,10 @@ def run_and_record(env,
         # --------------------------------------------------------------
         with torch.no_grad():
             act = policy(obs)
+        # Capture post-update Hebbian weights (delta vs frozen checkpoint).
+        if B == 1 and log_hebb_weights:
+            W_now = hebbian_actor.hebbian.W[0].detach().cpu().numpy().astype(np.float32)
+            weight_delta_b.append(W_now - W_ckpt_np)
         obs, _, term, _ = env.step(act)
         step_idx += 1
 
@@ -1260,6 +1394,9 @@ def run_and_record(env,
                 np.vstack(depth_b).astype(np.float32) if len(depth_b) > 0 else None
             ),
             depth_max_distance=float(getattr(env, "MAX_DISTANCE", 30.0)),
+            hebbian_weight_delta_history=(
+                np.stack(weight_delta_b, axis=0) if log_hebb_weights and len(weight_delta_b) > 0 else None
+            ),
         )
         return stats, traj, cam_recording
 
@@ -1295,22 +1432,290 @@ def pretty_print_stats(stats: Dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def _run_hebbian(args) -> None:
+    """Evaluate a Hebbian controller (WP2) with a given genome and render videos."""
+    from pathlib import Path
+    import sys
+
+    # Ensure src/ is importable for WP1/WP2 modules.
+    _src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+
+    from WP1.config import RunConfig
+    from WP2.config import HebbianEvolutionConfig
+    from WP2.frozen_actor import build_isolated_population_actor
+    from WP2.utils import decode_hebbian_genes
+
+    hebbian_run = Path(args.hebbian_run).resolve()
+    genome_path = Path(args.genome).resolve()
+
+    repro = hebbian_run / "reproducibility"
+    wp2_cfg_path = repro / "config.yaml"
+    wp1_cfg_path = repro / "wp1_config.yaml"
+    wp1_ckpt_path = repro / "wp1_actor.pt"
+
+    for p in (wp2_cfg_path, wp1_cfg_path, wp1_ckpt_path, genome_path):
+        if not p.is_file():
+            raise FileNotFoundError(f"Required file not found: {p}")
+
+    gs.init(logging_level="error", backend=gs.gpu)
+
+    cfg = HebbianEvolutionConfig.from_yaml(wp2_cfg_path)
+    # Repoint to the files saved inside the run's reproducibility folder
+    # (the original paths in config.yaml are the ones used at training time and
+    # may no longer exist or may be relative to a different working directory).
+    cfg.checkpoint_path = str(wp1_ckpt_path)
+    cfg.checkpoint_config_path = str(wp1_cfg_path)
+
+    # Infer last-layer dims from checkpoint (robust to config drift)
+    _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
+    _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
+    if "actor.4.weight" in _sd:
+        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
+        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    del _ckpt, _sd
+
+    # Build env from the WP1 config embedded with the run
+    wp1_cfg = RunConfig.from_yaml(cfg.checkpoint_config_path)
+    env_cfg = wp1_cfg.to_env_cfg()
+    obs_cfg = wp1_cfg.to_obs_cfg()
+    reward_cfg = wp1_cfg.to_reward_cfg()
+    command_cfg = wp1_cfg.to_command_cfg()
+    # Hebbian evaluation always strips morphology genome from actor/critic obs
+    # (design rule: actor never sees the genome).
+    obs_cfg["actor_genome_obs"] = False
+    obs_cfg["critic_genome_obs"] = False
+
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    urdf_file = _resolve_urdf(args)
+
+    env = _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device)
+
+    # Load and decode the genome
+    genome_arr = np.load(genome_path)
+    if genome_arr.ndim == 2:
+        genome = genome_arr[0]
+        print(f"[eval] Loaded genome row 0 from {genome_path.name} (shape {genome_arr.shape})")
+    else:
+        genome = genome_arr
+        print(f"[eval] Loaded genome from {genome_path.name} (dim={genome.size})")
+
+    hebb_part = list(np.clip(genome, 0.0, 1.0))
+    rules = decode_hebbian_genes(
+        hebb_part,
+        cfg.hebbian,
+        out_features=cfg.hebbian.num_actions,
+        in_features=cfg.hebbian.hidden_dim,
+    )
+
+    actor = build_isolated_population_actor(
+        checkpoint_path=cfg.checkpoint_path,
+        wp1_cfg_path=cfg.checkpoint_config_path,
+        hebbian_rules_per_individual=[rules],
+        cfg=cfg,
+        K=1,
+        S=1,
+        device=str(device),
+        stochastic=cfg.evaluation.stochastic,
+    )
+    actor.reset_episode(device=device)
+
+    policy = actor.act
+
+    # Output directory: <hebbian_run>/eval_<genome_stem>/
+    eval_log_dir = str(hebbian_run / f"eval_{genome_path.stem}")
+    os.makedirs(eval_log_dir, exist_ok=True)
+
+    print(
+        f"\n[eval] Hebbian controller | stochastic={cfg.evaluation.stochastic} | "
+        f"rules from {genome_path}"
+    )
+    print(f"[eval] Output directory: {eval_log_dir}")
+
+    print("\nRunning evaluation episode …")
+    cam_mp4 = os.path.join(eval_log_dir, "camera_view.mp4")
+    stats, traj, cam_saved = run_and_record(
+        env,
+        policy,
+        show_video=args.visual,
+        collect_video=True,
+        video_cam_path=cam_mp4,
+        hebbian_actor=actor,
+    )
+
+    print("Final reason:", traj["end_reason"])
+    pretty_print_stats(stats)
+
+    if traj is None:
+        print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
+        return
+
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved)
+    print("\nEvaluation complete.")
+
+
+def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device) -> "WingedDroneEnv":
+    """Build and reset a single-env WingedDroneEnv with the standard eval overrides."""
+    env_cfg_eval = dict(env_cfg)
+    rec_cam_follow_distance = float(env_cfg.get("rec_cam_follow_distance", 1.5))
+    env_cfg_eval.update(
+        dict(
+            enable_rendering=True,
+            visualize_camera=False,
+            visualize_target=False,
+            max_visualize_FPS=25,
+            unique_forests_eval=False,
+            growing_forest=True,
+            episode_length_s=SUCCESS_TIME_SEC,
+            x_upper=600,
+            forest_x_limit=600,
+            tree_radius=env_cfg.get("tree_radius", 0.75),
+            base_init_pos=env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0]),
+            rec_cam_follow_distance=max(0.5, rec_cam_follow_distance),
+            aero_noise=False,
+            aero_noise_sigma0=0.0,
+            noise_sigma_param=0.0,
+        )
+    )
+    env_cfg_eval = _apply_drone_profile_defaults(env_cfg_eval, urdf_file)
+    command_cfg["eval_speed"] = args.vtgt
+
+    if getattr(args, "dens_min", None) is not None:
+        env_cfg_eval["dens_min"] = float(args.dens_min)
+    if getattr(args, "dens_max", None) is not None:
+        env_cfg_eval["dens_max"] = float(args.dens_max)
+
+    obs_cfg_eval = dict(obs_cfg)
+
+    print("\nEnvironment Configuration (eval):")
+    print(env_cfg_eval)
+    print("\nObservation Configuration (eval):")
+    print(obs_cfg_eval)
+    print("\nReward Configuration:")
+    print(reward_cfg)
+    print("\nCommand Configuration:")
+    print(command_cfg)
+
+    env = WingedDroneEnv(
+        num_envs=1,
+        env_cfg=env_cfg_eval,
+        obs_cfg=obs_cfg_eval,
+        reward_cfg=reward_cfg,
+        command_cfg=command_cfg,
+        urdf_file=urdf_file,
+        show_viewer=args.visual,
+        eval=True,
+        device=str(device),
+    )
+    _disable_all_noise_except_obs(env)
+    env.reset()
+    return env
+
+
+def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool) -> None:
+    """Render the full set of evaluation videos (top-down, depth, overlay, rewards)."""
+    topdown_mp4 = os.path.join(eval_log_dir, "eval_topdown.mp4")
+    print("\nRendering top-down video …")
+    create_topdown_video_multi(env, [traj], topdown_mp4)
+    print(f"✅ Top-down video saved to: {topdown_mp4}")
+
+    depth_video_path = None
+    if traj.get("depth_series") is not None:
+        depth_video_path = os.path.join(eval_log_dir, "depth_view.mp4")
+        print("Rendering depth video …")
+        create_depth_video(
+            depth_series=traj["depth_series"],
+            max_distance=traj.get("depth_max_distance", float(env.MAX_DISTANCE)),
+            save_path=depth_video_path,
+            fps=int(1.0 / env.dt),
+        )
+        print(f"✅ Depth video saved to: {depth_video_path}")
+    else:
+        print("No depth data recorded; skipping depth video.")
+
+    if cam_saved:
+        left_column_mp4 = os.path.join(eval_log_dir, "left_column.mp4")
+        print("Rendering left-column video …")
+        create_left_column_video(
+            cam_mp4=cam_mp4,
+            td_mp4=topdown_mp4,
+            out_mp4=left_column_mp4,
+            depth_mp4=depth_video_path,
+        )
+        print(f"✅ Left-column video saved to: {left_column_mp4}")
+
+        overlay_mp4 = os.path.join(eval_log_dir, "overlay.mp4")
+        if hasattr(env, "commands") and env.commands.shape[1] >= 3:
+            v_commanded = env.commands[0, 2].detach().cpu().item()
+        else:
+            v_commanded = env.commands[0, 0].detach().cpu().item()
+        print("Rendering camera + HUD overlay video …")
+        create_overlay_video(
+            cam_mp4=cam_mp4,
+            td_mp4=topdown_mp4,
+            traj=traj,
+            out_mp4=overlay_mp4,
+            v_commanded=v_commanded,
+            depth_mp4=depth_video_path,
+        )
+        print(f"✅ Overlay video saved to: {overlay_mp4}")
+
+        camera_rewards_mp4 = os.path.join(eval_log_dir, "camera_rewards.mp4")
+        print("Rendering camera + rewards video …")
+        create_camera_rewards_video(
+            cam_mp4=cam_mp4,
+            traj=traj,
+            out_mp4=camera_rewards_mp4,
+            dpi=240,
+        )
+        print(f"✅ Camera + rewards video saved to: {camera_rewards_mp4}")
+    else:
+        print("Camera recording was not enabled or not supported; skipping overlay/videos based on camera.")
+
+
+def _resolve_urdf(args) -> str:
+    """Return the URDF path to use, generating a random one if --random-urdf is set."""
+    if getattr(args, "random_urdf", False):
+        import tempfile
+        from pathlib import Path as _Path
+        from drone_making import UrdfMaker
+        from morph_evolution.chromosome_drone import Chromosome_Drone
+        norm_genome = np.random.uniform(0.0, 1.0, size=15).tolist()
+        phys_genome = Chromosome_Drone.to_physical(norm_genome)
+        urdf_dir = _Path(tempfile.mkdtemp(prefix="eval_random_urdf_"))
+        urdf_path = _Path(UrdfMaker(phys_genome, out_dir=str(urdf_dir)).create_urdf()).resolve()
+        print(f"[eval] Random morphology genome: {[f'{v:.3f}' for v in norm_genome]}")
+        print(f"[eval] Generated random URDF: {urdf_path}")
+        return str(urdf_path)
+    explicit = getattr(args, "urdf_file", None)
+    drone_key = getattr(args, "drone", None)
+    return resolve_or_generate_urdf(urdf_file=explicit, drone_key=drone_key)
+
+
 def main() -> None:
+    # add_help=False frees `-h` to be used as the short flag for --hebbian-run.
     parser = argparse.ArgumentParser(
-        description="Evaluate a trained winged drone policy and generate videos."
+        description="Evaluate a trained winged drone policy and generate videos.",
+        add_help=False,
+    )
+    parser.add_argument(
+        "--help",
+        action="help",
+        help="Show this help message and exit.",
     )
     parser.add_argument(
         "-e",
         "--exp_name",
         type=str,
-        required=True,
-        help="Name of the experiment (training log directory under ./logs).",
+        default=None,
+        help="Name of the experiment (training log directory under ./logs). Required in PPO mode.",
     )
     parser.add_argument(
         "--ckpt",
         type=int,
-        required=True,
-        help="Checkpoint index to load (model_<ckpt>.pt).",
+        default=None,
+        help="Checkpoint index to load (model_<ckpt>.pt). Required in PPO mode.",
     )
     parser.add_argument(
         "--visual",
@@ -1331,93 +1736,98 @@ def main() -> None:
     )
     parser.add_argument(
         "--urdf-file",
+        dest="urdf_file",
         type=str,
         default=None,
         help="Explicit URDF path. Overrides --drone if both are provided.",
     )
+    parser.add_argument(
+        "--random-urdf",
+        dest="random_urdf",
+        action="store_true",
+        help="Sample a random morphology genome and generate a fresh URDF for this evaluation.",
+    )
+    parser.add_argument(
+        "--dens-min",
+        dest="dens_min",
+        type=float,
+        default=None,
+        help="Override forest density at x=x_lower [trees/m].",
+    )
+    parser.add_argument(
+        "--dens-max",
+        dest="dens_max",
+        type=float,
+        default=None,
+        help="Override forest density at x=x_upper [trees/m].",
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default=None,
+        help="Base directory that contains the <exp_name> subfolder. Defaults to 'logs'.",
+    )
+    parser.add_argument(
+        "-h",
+        "--hebbian-run",
+        dest="hebbian_run",
+        type=str,
+        default=None,
+        help=(
+            "Path to a WP2 (Hebbian) training directory, e.g. "
+            "logs/runs_hebbian/2026-04-18_13-07-20_.... "
+            "Enables Hebbian controller mode; requires --genome."
+        ),
+    )
+    parser.add_argument(
+        "--genome",
+        type=str,
+        default=None,
+        help="Path to the genome .npy file to evaluate in Hebbian mode.",
+    )
     args = parser.parse_args()
+
+    # Hebbian mode takes precedence if -h/--hebbian-run is set.
+    if args.hebbian_run is not None:
+        if not args.genome:
+            parser.error("--genome is required when -h/--hebbian-run is set.")
+        _run_hebbian(args)
+        return
+
+    if args.exp_name is None or args.ckpt is None:
+        parser.error("-e/--exp_name and --ckpt are required in PPO mode (or use -h for Hebbian mode).")
 
     # Initialize Genesis in high-performance mode (same backend as training)
     gs.init(logging_level="error", backend=gs.gpu)
 
     # Paths: training logs and evaluation outputs
-    train_log_dir = os.path.join("logs", args.exp_name)
-    # Overwrite log_dir if needed coming from cluster
-    train_log_dir = f"/home/andrea/Documents/Genesis/src/logs/training_general/foundation-mixture_2817429/logs/ea/foundation-mixture"
-
-    eval_log_dir = os.path.join("logs", f"{args.exp_name}_eval")
+    base_dir = args.log_dir if args.log_dir is not None else "logs"
+    train_log_dir = os.path.join(base_dir, args.exp_name)
+    eval_log_dir = os.path.join(base_dir, f"{args.exp_name}_eval")
     os.makedirs(eval_log_dir, exist_ok=True)
 
-    # Load training configurations
-    cfg_path = os.path.join(train_log_dir, "cfgs.pkl")
-    if not os.path.exists(cfg_path):
-        raise FileNotFoundError(f"Could not find cfgs.pkl in {train_log_dir}")
+    # Load training configurations (pickle OR YAML)
+    _pkl_path = os.path.join(train_log_dir, "cfgs.pkl")
+    _yaml_path = os.path.join(train_log_dir, "config.yaml")
+    if os.path.exists(_pkl_path):
+        with open(_pkl_path, "rb") as f:
+            cfg_data = pickle.load(f)
+        if len(cfg_data) == 6:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg, _ = cfg_data
+        else:
+            env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = cfg_data
+    elif os.path.exists(_yaml_path):
+        from WP1.config import RunConfig
+        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = RunConfig.from_yaml(_yaml_path).to_legacy_cfgs()
+    else:
+        raise FileNotFoundError(f"Could not find cfgs.pkl or config.yaml in {train_log_dir}")
 
-    with open(cfg_path, "rb") as f:
-        env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(f)
-
-    selected_drone = args.drone or env_cfg.get("drone")
-    urdf_file = resolve_or_generate_urdf(
-        urdf_file=args.urdf_file,
-        drone_key=selected_drone,
-    )
-
-    # Build evaluation-specific environment config (do not modify original dict)
-    env_cfg_eval = dict(env_cfg)
-    rec_cam_follow_distance = float(env_cfg.get("rec_cam_follow_distance", 1.5))
-    env_cfg_eval.update(
-        dict(
-            # eval_visual exists to render videos, so keep rendering enabled here
-            # regardless of how the training config was saved.
-            enable_rendering=True,
-            visualize_camera=False,
-            visualize_target=False,
-            max_visualize_FPS=25,
-            unique_forests_eval=False,
-            growing_forest=True,
-            episode_length_s=SUCCESS_TIME_SEC,
-            x_upper=600,
-            forest_x_limit=600,
-            tree_radius=env_cfg.get("tree_radius", 0.75),
-            base_init_pos=env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0]),
-            rec_cam_follow_distance=max(0.5, rec_cam_follow_distance),
-            aero_noise=False,
-            aero_noise_sigma0=0.0,
-            noise_sigma_param=0.0,
-        )
-    )
     if args.drone:
-        env_cfg_eval["drone"] = args.drone
-    env_cfg_eval = _apply_drone_profile_defaults(env_cfg_eval, urdf_file)
-    command_cfg["eval_speed"] = args.vtgt
+        env_cfg["drone"] = args.drone
 
-    obs_cfg_eval = dict(obs_cfg)
-
-    # Print configs for sanity check
-    print("\nEnvironment Configuration (eval):")
-    print(env_cfg_eval)
-    print("\nObservation Configuration (eval):")
-    print(obs_cfg_eval)
-    print("\nReward Configuration:")
-    print(reward_cfg)
-    print("\nCommand Configuration:")
-    print(command_cfg)
-
-    # Create evaluation environment (single environment)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    env = WingedDroneEnv(
-        num_envs=1,
-        env_cfg=env_cfg_eval,
-        obs_cfg=obs_cfg_eval,
-        reward_cfg=reward_cfg,
-        command_cfg=command_cfg,
-        urdf_file=urdf_file,
-        show_viewer=args.visual,
-        eval=True,
-        device=str(device),
-    )
-    _disable_all_noise_except_obs(env)
-    env.reset()
+    urdf_file = _resolve_urdf(args)
+    env = _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, device)
 
     # Build runner and load policy
     runner_cfg = copy.deepcopy(train_cfg)
@@ -1443,76 +1853,13 @@ def main() -> None:
     )
 
     print("Final reason:", traj["end_reason"])
-
     pretty_print_stats(stats)
 
     if traj is None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    # Top-down trajectory video
-    topdown_mp4 = os.path.join(eval_log_dir, "eval_topdown.mp4")
-    print("\nRendering top-down video …")
-    create_topdown_video_multi(env, [traj], topdown_mp4)
-    print(f"✅ Top-down video saved to: {topdown_mp4}")
-
-    # Depth video (if depth data is available)
-    depth_video_path = None
-    if traj.get("depth_series") is not None:
-        depth_video_path = os.path.join(eval_log_dir, "depth_view.mp4")
-        print("Rendering depth video …")
-        create_depth_video(
-            depth_series=traj["depth_series"],
-            max_distance=traj.get("depth_max_distance", float(env.MAX_DISTANCE)),
-            save_path=depth_video_path,
-            fps=int(1.0 / env.dt),
-        )
-        print(f"✅ Depth video saved to: {depth_video_path}")
-    else:
-        print("No depth data recorded; skipping depth video.")
-
-    # Overlay video (camera + HUD)
-    if cam_saved:
-        left_column_mp4 = os.path.join(eval_log_dir, "left_column.mp4")
-        print("Rendering left-column video …")
-        create_left_column_video(
-            cam_mp4=cam_mp4,
-            td_mp4=topdown_mp4,
-            out_mp4=left_column_mp4,
-            depth_mp4=depth_video_path,
-        )
-        print(f"✅ Left-column video saved to: {left_column_mp4}")
-
-        overlay_mp4 = os.path.join(eval_log_dir, "overlay.mp4")
-        # Commanded speed: for compatibility, try commands[:,2], else [:,0]
-        if hasattr(env, "commands") and env.commands.shape[1] >= 3:
-            v_commanded = env.commands[0, 2].detach().cpu().item()
-        else:
-            v_commanded = env.commands[0, 0].detach().cpu().item()
-        print("Rendering camera + HUD overlay video …")
-        create_overlay_video(
-            cam_mp4=cam_mp4,
-            td_mp4=topdown_mp4,
-            traj=traj,
-            out_mp4=overlay_mp4,
-            v_commanded=v_commanded,
-            depth_mp4=depth_video_path,
-        )
-        print(f"✅ Overlay video saved to: {overlay_mp4}")
-
-        # Camera + rewards video
-        camera_rewards_mp4 = os.path.join(eval_log_dir, "camera_rewards.mp4")
-        print("Rendering camera + rewards video …")
-        create_camera_rewards_video(
-            cam_mp4=cam_mp4,
-            traj=traj,
-            out_mp4=camera_rewards_mp4,
-            dpi=240,
-        )
-        print(f"✅ Camera + rewards video saved to: {camera_rewards_mp4}")
-    else:
-        print("Camera recording was not enabled or not supported; skipping overlay/videos based on camera.")
-
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved)
     print("\nEvaluation complete.")
 
 

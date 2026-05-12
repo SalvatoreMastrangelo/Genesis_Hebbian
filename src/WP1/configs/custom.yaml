@@ -9,7 +9,7 @@
 #   PYTHONPATH=src python -m WP1.train --cfg src/WP1/configs/custom.yaml
 ##############################################################################
 
-exp_name: single_new_post_andre
+exp_name: shards_post_hebbian_rebuild
 
 ##############################################################################
 # Training loop / runner
@@ -205,7 +205,7 @@ command:
 # Constraint: training.num_envs >= catalog.n_urdf (each URDF gets ≥ 1 env).
 ##############################################################################
 catalog:
-  n_urdf: null                             # null → single-URDF; integer → multi-URDF
+  n_urdf: 8                                # null → single-URDF; integer → multi-URDF
   catalog_dir: null                        # explicit catalog path (overrides n_urdf)
   urdf_seed: 0                             # seed used by general_policy.catalog.build_catalog
 
@@ -217,7 +217,9 @@ catalog:
 # initialises its own Genesis context.
 ##############################################################################
 lss:
-  enabled: false                           # true → spawn one subprocess per shard
-  urdf_shard_size: 0                       # URDFs per shard; required when enabled
-  num_workers: 0                           # 0 = auto (one worker per shard)
-  collection_gpus: 1                       # CUDA devices the workers cycle through
+  enabled: true                            # true → spawn one subprocess per shard
+  urdf_shard_size: 2                       # URDFs per shard; required when enabled
+  num_workers: 0                           # 0 = auto: n_workers = ceil(n_urdf / urdf_shard_size).
+                                           # >0 = force this many workers (rebalances URDFs).
+  collection_gpus: 1                       # CUDA devices; workers are round-robined across them
+                                           # (each worker = independent Genesis context → VRAM scales)

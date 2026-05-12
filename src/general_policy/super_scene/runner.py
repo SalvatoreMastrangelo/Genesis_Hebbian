@@ -105,14 +105,17 @@ def _validate_shards(shards: Sequence[Sequence[str]], shard_env_counts: Sequence
             )
 
 
-def _choose_worker_count(n_shards: int, num_workers: int, collection_gpus: int) -> int:
+def _choose_worker_count(n_shards: int, num_workers: int) -> int:
+    """
+    Auto-mode (num_workers <= 0): honor urdf_shard_size — one worker per shard.
+    Explicit-mode (num_workers > 0): clamp the requested count to [1, n_shards]
+    and rebalance URDFs across that many workers.
+    """
     if n_shards <= 0:
         return 0
     if num_workers > 0:
         return max(1, min(int(num_workers), n_shards))
-    if collection_gpus > 0:
-        return max(1, min(n_shards, int(collection_gpus)))
-    return 1
+    return n_shards
 
 
 def _rebalance_shards_for_workers(all_urdfs: Sequence[str], num_workers: int) -> List[List[str]]:
@@ -174,19 +177,27 @@ def run_logical_super_scene_training(
         collection_gpus = 0
 
     requested_workers = int(num_workers)
-    num_workers = _choose_worker_count(n_shards, requested_workers, collection_gpus)
-    shards = _rebalance_shards_for_workers(all_urdfs, num_workers)
-    n_shards = len(shards)
+    num_workers = _choose_worker_count(n_shards, requested_workers)
+    if num_workers == n_shards:
+        shards = initial_shards
+    else:
+        shards = _rebalance_shards_for_workers(all_urdfs, num_workers)
+        n_shards = len(shards)
 
     if collection_gpus == 0:
         worker_devices = ["cpu"] * n_shards
     else:
         worker_devices = [f"cuda:{i % collection_gpus}" for i in range(n_shards)]
 
-    if collection_gpus == 1 and n_shards > 1:
+    if collection_gpus > 0 and n_shards > collection_gpus:
+        per_gpu = [0] * collection_gpus
+        for i in range(n_shards):
+            per_gpu[i % collection_gpus] += 1
         print(
             "[logical-super-scene] "
-            f"single-GPU collection enabled: all {n_shards} shard workers will share cuda:0."
+            f"{n_shards} workers round-robined across {collection_gpus} GPU(s): "
+            f"workers_per_gpu={per_gpu} (each worker holds its own Genesis context — "
+            "VRAM scales with workers/gpu)."
         )
 
     shard_env_counts = split_even(num_envs_total, n_shards)

@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: generalist_256_density_eta_decay_evolution_zero_rules # generalist_256_10_urdf_0.005_0.05
+exp_name: post_rebuild_test # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -27,9 +27,9 @@ checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 hebbian:
   enabled: true
   eta: 0.005                     # global default; overridden per-weight when evolve_eta=true
-  evolve_eta: true
-  decay: 0.01
-  evolve_decay: true
+  evolve_eta: false
+  decay: 0.05
+  evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: true
   w_max: 5000.0
@@ -66,9 +66,9 @@ evaluation:
   vmax: 25.0
   stochastic: true
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor each gen for comparison
-  x_upper: 500         # override forest corridor length [m]; null = use WP1 config value
+  x_upper: 600         # override forest corridor length [m]; null = use WP1 config value
   dens_min: 0.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
-  dens_min_slope: 0.06 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
+  dens_min_slope: 0.00 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
   dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
 
