@@ -398,6 +398,12 @@ class HebbianCMAES:
         else:
             print("[HebbianCMAES] No catalog — legacy single-URDF path "
                   "(default/fixed morphology)")
+            from general_policy.catalog import write_single_urdf_catalog
+            from winged_drone_train.defaults import default_mydrone_urdf_path
+            write_single_urdf_catalog(
+                self.run_dir / "urdfs",
+                default_mydrone_urdf_path(),
+            )
 
         # For rules-only evolution: pre-build environment once (will be reused)
         self._env = None

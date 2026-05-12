@@ -399,6 +399,14 @@ def train(
             drone_key=drone_key or str(env_cfg.get("drone", "")),
             urdf_file=urdf_path,
         )
+        # Mirror the catalog layout for single-URDF runs so every run has a
+        # ``catalog/`` folder with the URDF file + genome record.
+        from general_policy.catalog import write_single_urdf_catalog
+        write_single_urdf_catalog(
+            run.run_dir / "catalog",
+            urdf_path,
+            drone_key=drone_key or env_cfg.get("drone"),
+        )
 
     # ----- 5. Persist the legacy 5-tuple inside the run folder so the rest
     #         of the codebase (eval, plotters, custom controllers) can pick

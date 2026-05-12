@@ -737,6 +737,31 @@ def create_overlay_video(
             fontsize=9, frameon=False, loc="upper left", ncol=2,
         )
 
+        # The figure's outer subplots_adjust is tight on the sides so the
+        # camera+plots top row uses the full width. That leaves no horizontal
+        # room for the heatmap's yticklabels / ylabel and for the wstats
+        # twin-axis label on the right, so we re-position those bottom rows
+        # with explicit side margins.
+        _HM_LEFT, _HM_RIGHT = 0.060, 0.955
+        _HM_CBAR_W = 0.012
+        _HM_GAP = 0.010
+        pos_hm = ax_heatmap.get_position()
+        ax_heatmap.set_position(
+            [_HM_LEFT, pos_hm.y0,
+             _HM_RIGHT - _HM_LEFT - _HM_CBAR_W - _HM_GAP, pos_hm.height]
+        )
+        pos_cb = ax_cbar.get_position()
+        ax_cbar.set_position(
+            [_HM_RIGHT - _HM_CBAR_W, pos_cb.y0, _HM_CBAR_W, pos_cb.height]
+        )
+
+        _WS_LEFT, _WS_RIGHT = 0.060, 0.940
+        pos_ws = ax_wstats.get_position()
+        ax_wstats.set_position(
+            [_WS_LEFT, pos_ws.y0, _WS_RIGHT - _WS_LEFT, pos_ws.height]
+        )
+        ax_wstats_step.set_position(ax_wstats.get_position())
+
     # First frames
     okC, frm_cam = cap_cam.read()
     okT, frm_td = cap_td.read()
