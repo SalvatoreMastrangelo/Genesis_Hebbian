@@ -28,7 +28,7 @@ hebbian:
   enabled: true
   eta: 0.005                     # global default; overridden per-weight when evolve_eta=true
   evolve_eta: false
-  decay: 0.05
+  decay: 0.01
   evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: true

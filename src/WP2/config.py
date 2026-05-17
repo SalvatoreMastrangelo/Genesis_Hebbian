@@ -141,6 +141,7 @@ class EvaluationConfig:
 
     num_eval_episodes: int = 1
     num_eval_envs: int = 8192
+    num_eval_workers: int = 1  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
     vmin: float = 6.0
     vmax: float = 30.0
     stochastic: bool = True

@@ -958,6 +958,7 @@ def evaluate_population_multi_urdf(
             wp1_cfg=wp1_cfg,
             device=cfg.device,
             num_envs_per_drone=envs_per_drone,
+            num_workers=int(getattr(cfg.evaluation, "num_eval_workers", 1)),
         )
         env_was_built_here = True
 

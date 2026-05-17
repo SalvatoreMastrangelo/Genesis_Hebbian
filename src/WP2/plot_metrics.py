@@ -111,11 +111,12 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = False) -> None:
                     linestyle=":", label=top_label)
 
         if baseline_df is not None and col in baseline_df.columns:
-            bl = baseline_df.set_index("generation")[col].reindex(gens)
+            bl = baseline_df.set_index("generation")[col].reindex(gens).dropna()
             ax.plot(
-                gens, bl.to_numpy(),
+                bl.index.to_numpy(), bl.to_numpy(),
                 color=baseline_colour, linewidth=1.4,
-                linestyle="--", label="baseline",
+                linestyle="--", marker="o", markersize=4,
+                label="baseline",
             )
 
         title = f"{label}  (↓ better)" if lower_is_better else label

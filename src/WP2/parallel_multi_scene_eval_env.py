@@ -65,7 +65,12 @@ def _collect_state_gpu(env) -> torch.Tensor:
         row[:, _S_VEL]  = sub.base_lin_vel[:, :3].float()
         row[:, _S_CMD0] = sub.commands[:, 0].float()
         row[:, _S_REW]  = sub.last_reward_total.float()
-        row[:, _S_POW]  = sub.power.float()
+        # `self.power` is only assigned inside WingedDroneEnv.step(); it does
+        # not exist after a fresh reset (no step yet). Leave the slot at 0 in
+        # that case — the rollout never reads power before its first step.
+        power = getattr(sub, "power", None)
+        if power is not None:
+            row[:, _S_POW] = power.float()
         row[:, _S_NAN]  = sub.nan_envs.float()
         row[:, _S_RST]  = sub.reset_buf.float()
         for i, attr in enumerate(("pre_collision", "pre_wall_crash", "pre_angle_limit")):
@@ -74,13 +79,49 @@ def _collect_state_gpu(env) -> torch.Tensor:
     return buf.cpu()  # one D2H transfer for the whole shard
 
 
+def _collect_reward_comp_gpu(env, n_comp: int) -> Optional[torch.Tensor]:
+    """Pack per-component reward tensors across the shard; one bulk D2H copy.
+
+    Returns None when ``n_comp == 0`` (i.e. no active reward components).
+    """
+    if n_comp <= 0:
+        return None
+    Ds  = env.D
+    E   = env.E
+    dev = env.device
+    buf = torch.zeros(Ds, E, n_comp, device=dev)
+    for d, sub in enumerate(env.drones):
+        lrc = getattr(sub, "last_reward_components", None)
+        if lrc is not None and lrc.shape[-1] >= n_comp:
+            buf[d] = lrc[:, :n_comp].float()
+    return buf.cpu()
+
+
 # ── proxy ─────────────────────────────────────────────────────────────────────
 
 class DroneStateProxy:
-    """WingedDroneEnv-compatible view backed by a (E, _N_STATE) GPU tensor."""
+    """WingedDroneEnv-compatible view backed by GPU buffer rows.
 
-    def __init__(self, row: torch.Tensor) -> None:
-        self._r = row  # (E, _N_STATE) on main-process device
+    Per-step scalars (pos, vel, commands, rewards, flags) come from the
+    ``(E, _N_STATE)`` slice of ``_state_buf``.  Optional per-component
+    rewards come from a parallel ``(E, n_comp)`` slice of ``_comp_buf``.
+    Static metadata (``nominal_mass``, ``reward_names``, ``reward_scales``)
+    is captured once at worker init and stored as plain attributes.
+    """
+
+    def __init__(
+        self,
+        row: torch.Tensor,
+        nominal_mass: float = 0.0,
+        reward_names: Optional[List[str]] = None,
+        reward_scales: Optional[dict] = None,
+        comp_row: Optional[torch.Tensor] = None,
+    ) -> None:
+        self._r = row             # (E, _N_STATE) on main-process device
+        self._comp = comp_row     # (E, n_comp) on main-process device, or None
+        self.nominal_mass = float(nominal_mass)
+        self.reward_names = list(reward_names) if reward_names else []
+        self.reward_scales = dict(reward_scales) if reward_scales else {}
 
     @property
     def base_pos(self):          return self._r[:, _S_POS]
@@ -102,6 +143,9 @@ class DroneStateProxy:
     def pre_wall_crash(self):    return self._r[:, _S_WALL].bool()
     @property
     def pre_angle_limit(self):   return self._r[:, _S_ANG].bool()
+    @property
+    def last_reward_components(self):
+        return self._comp
 
 
 # ── worker ────────────────────────────────────────────────────────────────────
@@ -119,15 +163,34 @@ def _worker_main(
         if p not in sys.path:
             sys.path.insert(0, p)
 
+    print(f"[worker {worker_id}] entered (urdfs={len(urdf_shard)})", flush=True)
     try:
         import genesis as gs
         from WP2.multi_scene_eval_env import MultiSceneEvalEnv
 
+        print(f"[worker {worker_id}] gs.init() starting", flush=True)
         if not gs._initialized:
             gs.init(logging_level="error", backend=gs.gpu)
+        print(f"[worker {worker_id}] gs.init() done; building "
+              f"{len(urdf_shard)} sub-envs", flush=True)
 
         env = MultiSceneEvalEnv(urdf_paths=urdf_shard, **env_kwargs)
-        ack_q.put(("ready", env.num_obs, env.num_actions, float(env.dt)))
+        print(f"[worker {worker_id}] sub-envs built; sending ready", flush=True)
+
+        # Static metadata captured once and shipped in the "ready" ack so the
+        # main-process DroneStateProxy instances can expose `nominal_mass`,
+        # `reward_names`, `reward_scales` (consumed by _rollout_episode_multi_urdf).
+        nominal_masses = [float(getattr(sub, "nominal_mass", 0.0)) for sub in env.drones]
+        head = env.drones[0]
+        reward_names: List[str] = list(getattr(head, "reward_names", []) or [])
+        reward_scales: dict = {
+            k: float(v) for k, v in (getattr(head, "reward_scales", {}) or {}).items()
+        }
+        n_comp_full = len(reward_names)
+        ack_q.put((
+            "ready", env.num_obs, env.num_actions, float(env.dt),
+            nominal_masses, reward_names, reward_scales, n_comp_full,
+        ))
     except Exception as exc:
         ack_q.put(("error", str(exc)))
         return
@@ -146,11 +209,19 @@ def _worker_main(
                     np.random.seed(seed)
                     torch.manual_seed(seed)
                 obs, _ = env.reset()
-                ack_q.put(("reset_result", obs.cpu(), _collect_state_gpu(env)))
+                ack_q.put((
+                    "reset_result", obs.cpu(),
+                    _collect_state_gpu(env),
+                    _collect_reward_comp_gpu(env, n_comp_full),
+                ))
 
             elif cmd == "step":
                 obs, rew, done, _ = env.step(payload.to(env.device))
-                ack_q.put(("step_result", obs.cpu(), rew.cpu(), done.cpu(), _collect_state_gpu(env)))
+                ack_q.put((
+                    "step_result", obs.cpu(), rew.cpu(), done.cpu(),
+                    _collect_state_gpu(env),
+                    _collect_reward_comp_gpu(env, n_comp_full),
+                ))
 
             elif cmd == "refresh_forests":
                 seed = payload
@@ -162,7 +233,12 @@ def _worker_main(
                 ack_q.put(("ok",))
 
             elif cmd == "set_forest_ids":
-                env._fixed_forest_ids = payload
+                # CPU tensor crossed the mp.Queue; restore it to the worker's
+                # GPU before WingedDroneEnv indexes into it with GPU env_ids.
+                val = payload
+                if isinstance(val, torch.Tensor):
+                    val = val.to(env.device)
+                env._fixed_forest_ids = val
                 ack_q.put(("ok",))
 
             elif cmd == "set_dens_min":
@@ -170,7 +246,10 @@ def _worker_main(
                 ack_q.put(("ok",))
 
             elif cmd == "set_speed_grid":
-                env._eval_speed_grid = payload
+                val = payload
+                if isinstance(val, torch.Tensor):
+                    val = val.to(env.device)
+                env._eval_speed_grid = val
                 ack_q.put(("ok",))
 
             else:
@@ -229,6 +308,9 @@ class ParallelMultiSceneEvalEnv:
             device=device,
         )
 
+        print(f"[ParallelMultiSceneEvalEnv] launching {N} workers "
+              f"(D={D}, E={E}, shards={shard_sizes})...", flush=True)
+
         ctx = mp.get_context("spawn")
         self._cmd_qs = [ctx.Queue() for _ in range(N)]
         self._ack_qs = [ctx.Queue() for _ in range(N)]
@@ -243,24 +325,36 @@ class ParallelMultiSceneEvalEnv:
             )
             p.start()
             self._procs.append(p)
+            print(f"[ParallelMultiSceneEvalEnv]   worker {w} pid={p.pid} started",
+                  flush=True)
 
         print(f"[ParallelMultiSceneEvalEnv] spawned {N} workers "
-              f"(shards: {shard_sizes}), waiting for Genesis init…")
+              f"(shards: {shard_sizes})", flush=True)
 
-        # Collect dims — Genesis init can be slow, allow generous timeout.
+        # Collect dims + static metadata. Genesis init can be slow on cold
+        # caches, allow generous timeout.
         num_obs = num_actions = dt = None
+        reward_names: List[str] = []
+        reward_scales: dict = {}
+        n_comp_full = 0
+        nominal_masses_all: List[float] = [0.0] * D
         for w in range(N):
             msg = self._ack_qs[w].get(timeout=600)
             if msg[0] == "error":
                 raise RuntimeError(f"Worker {w} init failed: {msg[1]}")
-            _, _no, _na, _dt = msg
+            _, _no, _na, _dt, _nominal, _names, _scales, _ncomp = msg
             if num_obs is None:
                 num_obs, num_actions, dt = _no, _na, _dt
+                reward_names = list(_names)
+                reward_scales = dict(_scales)
+                n_comp_full = int(_ncomp)
             elif num_obs != _no or num_actions != _na:
                 raise RuntimeError(
                     f"Worker {w} obs/action dim mismatch: "
                     f"({_no},{_na}) vs ({num_obs},{num_actions})"
                 )
+            d0, ds = d_offsets[w], shard_sizes[w]
+            nominal_masses_all[d0: d0 + ds] = list(_nominal)
 
         self.D           = D
         self.E           = E
@@ -279,9 +373,23 @@ class ParallelMultiSceneEvalEnv:
         self._obs_buf   = torch.zeros(D, E, num_obs,   device=device)
         # State proxies live on device so arithmetic in evaluate.py stays on GPU.
         self._state_buf = torch.zeros(D, E, _N_STATE,  device=device)
-        self.drones     = [DroneStateProxy(self._state_buf[d]) for d in range(D)]
+        # Reward-component buffer (None when no active reward terms).
+        self._comp_buf: Optional[torch.Tensor] = (
+            torch.zeros(D, E, n_comp_full, device=device) if n_comp_full > 0 else None
+        )
+        self.drones = [
+            DroneStateProxy(
+                self._state_buf[d],
+                nominal_mass=nominal_masses_all[d],
+                reward_names=reward_names,
+                reward_scales=reward_scales,
+                comp_row=(self._comp_buf[d] if self._comp_buf is not None else None),
+            )
+            for d in range(D)
+        ]
 
-        print(f"[ParallelMultiSceneEvalEnv] ready  D={D}  E={E}  N={N}")
+        print(f"[ParallelMultiSceneEvalEnv] ready  D={D}  E={E}  N={N}  "
+              f"n_comp={n_comp_full}", flush=True)
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -306,10 +414,12 @@ class ParallelMultiSceneEvalEnv:
             msg = self._ack_qs[w].get()
             if msg[0] == "error":
                 raise RuntimeError(f"Worker {w} reset error: {msg[1]}")
-            _, obs_s, state_s = msg
+            _, obs_s, state_s, comp_s = msg
             d0, ds = self._d_offsets[w], self._shard_sizes[w]
             self._obs_buf[d0: d0 + ds].copy_(obs_s)       # cross-device H2D
             self._state_buf[d0: d0 + ds].copy_(state_s)
+            if comp_s is not None and self._comp_buf is not None:
+                self._comp_buf[d0: d0 + ds].copy_(comp_s)
 
         return self._obs_buf.clone(), {}
 
@@ -337,12 +447,14 @@ class ParallelMultiSceneEvalEnv:
             msg = self._ack_qs[w].get()
             if msg[0] == "error":
                 raise RuntimeError(f"Worker {w} step error: {msg[1]}")
-            _, obs_s, rew_s, done_s, state_s = msg
+            _, obs_s, rew_s, done_s, state_s, comp_s = msg
             d0, ds = self._d_offsets[w], self._shard_sizes[w]
             self._obs_buf[d0: d0 + ds].copy_(obs_s)
             rew[d0: d0 + ds].copy_(rew_s)
             done[d0: d0 + ds].copy_(done_s.bool())
             self._state_buf[d0: d0 + ds].copy_(state_s)
+            if comp_s is not None and self._comp_buf is not None:
+                self._comp_buf[d0: d0 + ds].copy_(comp_s)
 
         return self._obs_buf, rew, done, {}
 

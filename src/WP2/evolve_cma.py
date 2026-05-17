@@ -464,22 +464,32 @@ class HebbianCMAES:
 
             print(f"[HebbianCMAES] Building MultiSceneEvalEnv: N={N} URDFs × "
                   f"{envs_per_drone} envs/drone = {total_slots} slots "
-                  f"(H={H}, F={F} forests per (urdf, individual))...")
+                  f"(H={H}, F={F} forests per (urdf, individual))...", flush=True)
             try:
+                n_workers = int(getattr(self.cfg.evaluation, "num_eval_workers", 1))
                 if not gs._initialized:
-                    gs.init(logging_level="error", backend=gs.gpu)
+                    if n_workers > 1:
+                        print("[HebbianCMAES] Skipping main-process gs.init() "
+                              "(parallel workers each init Genesis in their own process)",
+                              flush=True)
+                    else:
+                        print("[HebbianCMAES] Initializing Genesis (main process)...",
+                              flush=True)
+                        gs.init(logging_level="error", backend=gs.gpu)
+                        print("[HebbianCMAES] Genesis initialized", flush=True)
                 self._env = _build_multi_urdf_env(
                     urdf_paths=self._urdf_paths,
                     cfg=self.cfg,
                     wp1_cfg=self._wp1_cfg,
                     device=self.cfg.device,
                     num_envs_per_drone=envs_per_drone,
-                    num_workers=int(getattr(self.cfg.evaluation, "num_eval_workers", 1)),
+                    num_workers=n_workers,
                 )
                 self._env_urdf_path = list(self._urdf_paths)
-                print(f"[HebbianCMAES] MultiSceneEvalEnv ready")
+                print(f"[HebbianCMAES] MultiSceneEvalEnv ready", flush=True)
             except Exception as exc:
-                print(f"[HebbianCMAES] Failed to build MultiSceneEvalEnv: {exc}")
+                print(f"[HebbianCMAES] Failed to build MultiSceneEvalEnv: {exc}",
+                      flush=True)
                 self._env = None
                 self._env_urdf_path = None
             return
