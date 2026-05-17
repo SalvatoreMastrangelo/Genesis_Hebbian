@@ -1,14 +1,14 @@
 """
-Plot per-generation mean ± std for the four evaluation metrics.
+Plot per-generation spread for the evaluation metrics.
 
 Usage
 -----
-    python -m WP2.plot_metrics <run_dir>
+    python -m WP2.plot_metrics <run_dir> [--percentile]
 
 Also callable programmatically::
 
     from WP2.plot_metrics import plot_metrics
-    plot_metrics(run_dir)
+    plot_metrics(run_dir, use_percentile=True)
 """
 
 from __future__ import annotations
@@ -34,8 +34,14 @@ _METRICS = [
 ]
 
 
-def plot_metrics(run_dir: Path | str) -> None:
-    """Read cma_population.csv and plot mean ± std per generation for all metrics."""
+def plot_metrics(run_dir: Path | str, use_percentile: bool = False) -> None:
+    """Read cma_population.csv and plot per-generation spread for all metrics.
+
+    With ``use_percentile=False`` (default) the band is mean ± 1 std.
+    With ``use_percentile=True`` the band is the IQR (25–75th percentile) and an
+    extra line shows the top decile (90th pct for higher-is-better metrics,
+    10th pct for lower-is-better). The per-generation best is always plotted.
+    """
     run_dir = Path(run_dir)
     csv_path = run_dir / "results" / "cma_population.csv"
 
@@ -47,41 +53,62 @@ def plot_metrics(run_dir: Path | str) -> None:
     grouped = df.groupby("generation")
     means = grouped.mean(numeric_only=True)
     stds  = grouped.std(ddof=0, numeric_only=True)
+    medians = grouped.median(numeric_only=True)
+    q25 = grouped.quantile(0.25, numeric_only=True)
+    q75 = grouped.quantile(0.75, numeric_only=True)
+    q10 = grouped.quantile(0.10, numeric_only=True)
+    q90 = grouped.quantile(0.90, numeric_only=True)
     gens  = means.index.to_numpy()
 
     plots_dir = run_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-
-    fig, axes = plt.subplots(2, 3, figsize=(15, 7))
-    fig.suptitle("Metrics Evolution — mean ± std", fontsize=13)
+    single_dir = plots_dir / "metrics"
+    single_dir.mkdir(parents=True, exist_ok=True)
 
     mean_colour     = "#1f77b4"
     best_colour     = "#d62728"
     baseline_colour = "#2ca02c"
+    top_colour      = "#ff7f0e"
 
     # Load baseline per-generation data if available
     baseline_csv = run_dir / "results" / "baseline_summary.csv"
     baseline_df  = pd.read_csv(baseline_csv) if baseline_csv.is_file() else None
 
-    for ax, (col, label, lower_is_better) in zip(axes.flat, _METRICS):
-        mu  = means[col].to_numpy()
-        sig = stds[col].to_numpy()
-
+    def _draw_metric(ax, col, label, lower_is_better):
         # Per-generation best: min for lower-is-better, max otherwise
         best = grouped[col].min().to_numpy() if lower_is_better else grouped[col].max().to_numpy()
 
-        # Crash rate is a rate — clip mean and best to [0, 1]
-        if col == "crash_rate":
-            mu   = np.clip(mu,   0.0, 1.0)
-            best = np.clip(best, 0.0, 1.0)
-            sig  = np.minimum(sig, 1.0 - mu)  # keep upper band from exceeding 1
+        if use_percentile:
+            centre = medians[col].to_numpy()
+            lo  = q25[col].to_numpy()
+            hi  = q75[col].to_numpy()
+            top = (q10[col] if lower_is_better else q90[col]).to_numpy()
+            centre_label = "median"
+            band_label   = "IQR (25–75%)"
+            top_label    = "10th pct" if lower_is_better else "90th pct"
+        else:
+            centre = means[col].to_numpy()
+            sig    = stds[col].to_numpy()
+            lo, hi = centre - sig, centre + sig
+            top    = None
+            centre_label = "mean"
+            band_label   = "±1 std"
 
-        ax.plot(gens, mu,   color=mean_colour, linewidth=1.8, label="mean")
-        ax.plot(gens, best, color=best_colour,  linewidth=1.4, label="best")
-        ax.fill_between(
-            gens, mu - sig, mu + sig,
-            alpha=0.25, color=mean_colour, label="±1 std",
-        )
+        # Crash rate is a rate — clip to [0, 1]
+        if col == "crash_rate":
+            centre = np.clip(centre, 0.0, 1.0)
+            best   = np.clip(best,   0.0, 1.0)
+            lo     = np.clip(lo,     0.0, 1.0)
+            hi     = np.clip(hi,     0.0, 1.0)
+            if top is not None:
+                top = np.clip(top, 0.0, 1.0)
+
+        ax.plot(gens, centre, color=mean_colour, linewidth=1.8, label=centre_label)
+        ax.plot(gens, best,   color=best_colour, linewidth=1.4, label="best")
+        ax.fill_between(gens, lo, hi, alpha=0.25, color=mean_colour, label=band_label)
+        if top is not None:
+            ax.plot(gens, top, color=top_colour, linewidth=1.2,
+                    linestyle=":", label=top_label)
 
         if baseline_df is not None and col in baseline_df.columns:
             bl = baseline_df.set_index("generation")[col].reindex(gens)
@@ -98,17 +125,37 @@ def plot_metrics(run_dir: Path | str) -> None:
         ax.legend(fontsize=9)
         ax.grid(True, linestyle="--", alpha=0.4)
 
-    fig.tight_layout()
+    suptitle = (
+        "Metrics Evolution — median, IQR & top decile"
+        if use_percentile
+        else "Metrics Evolution — mean ± std"
+    )
+    fig, axes = plt.subplots(2, 3, figsize=(15, 7))
+    fig.suptitle(suptitle, fontsize=13)
 
+    for ax, (col, label, lower_is_better) in zip(axes.flat, _METRICS):
+        _draw_metric(ax, col, label, lower_is_better)
+
+    fig.tight_layout()
     out = plots_dir / "metrics_evolution.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"[plot_metrics] Saved {out}")
-
     plt.close(fig)
+
+    for col, label, lower_is_better in _METRICS:
+        fig_s, ax_s = plt.subplots(figsize=(6, 4))
+        _draw_metric(ax_s, col, label, lower_is_better)
+        fig_s.tight_layout()
+        out_s = single_dir / f"{col}.png"
+        fig_s.savefig(out_s, dpi=150, bbox_inches="tight")
+        print(f"[plot_metrics] Saved {out_s}")
+        plt.close(fig_s)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python -m WP2.plot_metrics <run_dir>")
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    flags = {a for a in sys.argv[1:] if a.startswith("-")}
+    if not args:
+        print("Usage: python -m WP2.plot_metrics <run_dir> [--percentile]")
         sys.exit(1)
-    plot_metrics(sys.argv[1])
+    plot_metrics(args[0], use_percentile=("--percentile" in flags))

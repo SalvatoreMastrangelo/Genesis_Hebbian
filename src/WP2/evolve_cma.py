@@ -520,10 +520,10 @@ class HebbianCMAES:
     # ------------------------------------------------------------------
 
     def _evaluate_baseline(self, verbose: bool = False) -> Optional[Dict[str, float]]:
-        """Evaluate the frozen WP1 actor with zero Hebbian rules (A=B=C=D=0, decay=0).
+        """Evaluate the (optionally separate) baseline actor with zero Hebbian rules.
 
         ABCD=0 (genome=0.5 for symmetric [-1,1] ranges) means no plasticity
-        update.  Decay is also zeroed so weights stay exactly at the WP1
+        update.  Decay is also zeroed so weights stay exactly at the
         checkpoint values throughout the episode.
 
         Two paths:
@@ -531,22 +531,49 @@ class HebbianCMAES:
           config copy with decay=0.
         - evolve_decay=True:  decay genes sit at positions [4n:5n] in the
           genome; setting them to 0.0 maps to decay_range[0]=0.0.
+
+        Baseline checkpoint:
+        - If ``cfg.baseline_checkpoint_path`` is empty, the baseline reuses
+          the frozen-actor checkpoint (legacy behavior).
+        - Otherwise, ``baseline_cfg.checkpoint_path`` /
+          ``checkpoint_config_path`` are swapped to the baseline checkpoint
+          and the last-layer dims (``num_actions``, ``hidden_dim``) are
+          re-inferred from it so the baseline genome is correctly sized for
+          a possibly-different architecture.
         """
         import copy
-
-        n_weights = self.cfg.hebbian.num_actions * self.cfg.hebbian.hidden_dim
-
-        # Build baseline genome: ABCD=0.5 (→ 0 for symmetric ranges), rest=0.5
-        baseline_genome = np.full(self.n_genes, 0.5)
-
-        # Zero out evolved decay genes so they decode to decay_range[0]=0
-        if self.cfg.hebbian.evolve_decay:
-            decay_start = 4 * n_weights
-            baseline_genome[decay_start: decay_start + n_weights] = 0.0
 
         # Config copy with fixed decay forced to 0 (covers non-evolved case)
         baseline_cfg = copy.deepcopy(self.cfg)
         baseline_cfg.hebbian.decay = 0.0
+
+        # Optionally swap in the baseline-only checkpoint.
+        if self.cfg.baseline_checkpoint_path:
+            baseline_cfg.checkpoint_path = self.cfg.baseline_checkpoint_path
+            baseline_cfg.checkpoint_config_path = self.cfg.baseline_checkpoint_config_path
+
+            # Re-infer last-layer dims from the baseline checkpoint so the
+            # baseline genome length matches its architecture.
+            import torch as _torch
+            _ckpt = _torch.load(
+                self.cfg.baseline_checkpoint_path, map_location="cpu", weights_only=False
+            )
+            _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
+            if "actor.4.weight" in _sd:
+                baseline_cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
+                baseline_cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+            del _ckpt, _sd
+
+        n_weights = baseline_cfg.hebbian.num_actions * baseline_cfg.hebbian.hidden_dim
+        n_genes_baseline = baseline_cfg.hebbian_genome_dim()
+
+        # Build baseline genome: ABCD=0.5 (→ 0 for symmetric ranges), rest=0.5
+        baseline_genome = np.full(n_genes_baseline, 0.5)
+
+        # Zero out evolved decay genes so they decode to decay_range[0]=0
+        if baseline_cfg.hebbian.evolve_decay:
+            decay_start = 4 * n_weights
+            baseline_genome[decay_start: decay_start + n_weights] = 0.0
 
         existing_env = (
             (self._env, self._env_urdf_path)
@@ -1018,8 +1045,13 @@ class HebbianCMAES:
             # CMA-ES minimises — negate fitness to maximise reward
             es.tell(solutions, (-fitnesses).tolist())
 
-            # Baseline: evaluate frozen WP1 actor with zero Hebbian rules
-            baseline = self._evaluate_baseline(verbose=verbose) if self.cfg.evaluation.run_baseline else None
+            # Baseline: evaluate frozen WP1 actor with zero Hebbian rules.
+            # Cadence-gated: runs on gen 0 and every `baseline_every` generations.
+            baseline_every = max(1, int(self.cfg.evaluation.baseline_every))
+            should_run_baseline = (
+                self.cfg.evaluation.run_baseline and (gen % baseline_every == 0)
+            )
+            baseline = self._evaluate_baseline(verbose=verbose) if should_run_baseline else None
 
             # Bookkeeping
             self._after_generation(gen, solutions, fitnesses, metrics, es, baseline=baseline)

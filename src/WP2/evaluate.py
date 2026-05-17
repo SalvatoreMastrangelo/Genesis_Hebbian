@@ -97,7 +97,7 @@ def _build_env(
         visualize_camera=False,
         visualize_target=False,
         naca=naca,
-        episode_length_s=200.0,  # 5000 steps at 25 Hz
+        episode_length_s=60.0,  # 1500 steps at 25 Hz
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
@@ -315,7 +315,7 @@ def _build_env_from_urdf(
         visualize_camera=False,
         visualize_target=False,
         naca=naca,
-        episode_length_s=200.0,  # 5000 steps at 25 Hz
+        episode_length_s=60.0,  # 1500 steps at 25 Hz
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
@@ -618,7 +618,7 @@ def _build_multi_urdf_env(
     env_cfg, obs_cfg, reward_cfg, command_cfg, _ = wp1_cfg.to_legacy_cfgs()
 
     env_cfg = dict(env_cfg)
-    env_cfg["episode_length_s"] = 200.0  # 5000 steps at 25 Hz, matches legacy eval
+    env_cfg["episode_length_s"] = 60.0  # 1500 steps at 25 Hz
     if cfg.evaluation.x_upper is not None:
         env_cfg["x_upper"] = float(cfg.evaluation.x_upper)
         env_cfg["forest_x_limit"] = float(cfg.evaluation.x_upper)

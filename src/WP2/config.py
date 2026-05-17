@@ -145,6 +145,7 @@ class EvaluationConfig:
     vmax: float = 30.0
     stochastic: bool = True
     run_baseline: bool = False
+    baseline_every: int = 1  # when run_baseline=True, evaluate every N generations (gen 0 always)
     x_upper: Optional[float] = None  # override WP1 forest corridor length [m]
     dens_min: Optional[float] = None  # override forest density at x=0 [trees/m]
     dens_min_slope: float = 0.0  # per-generation linear ramp added to dens_min
@@ -246,6 +247,15 @@ class HebbianEvolutionConfig:
     exp_name: str = "hebbian_cma"
     checkpoint_path: str = ""
     checkpoint_config_path: str = ""
+
+    # Optional separate checkpoint used ONLY for the zero-rules baseline eval.
+    # When empty, the baseline reuses ``checkpoint_path`` / ``checkpoint_config_path``
+    # (preserves previous behavior). When set, the baseline actor is built from
+    # this checkpoint independently of the frozen-actor checkpoint that
+    # Hebbian rules modulate. Architecture (MLP/LSTM/last-layer sizes) may
+    # differ, but obs/action dims must still match the env.
+    baseline_checkpoint_path: str = ""
+    baseline_checkpoint_config_path: str = ""
 
     hebbian: HebbianConfig = field(default_factory=HebbianConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)

@@ -67,6 +67,17 @@ def main() -> None:
         "-v", "--vis", action="store_true",
         help="Enable Genesis viewer (not recommended for evolution).",
     )
+    parser.add_argument(
+        "--baseline-ckpt", type=str, default=None,
+        help=("Optional separate WP1 checkpoint used ONLY for the zero-rules "
+              "baseline evaluation. If omitted, the baseline reuses the frozen "
+              "actor checkpoint (--cfg.checkpoint_path)."),
+    )
+    parser.add_argument(
+        "--baseline-ckpt-cfg", type=str, default=None,
+        help=("Path to the WP1 config YAML matching --baseline-ckpt. Required "
+              "when --baseline-ckpt is set."),
+    )
 
     args, remaining = parser.parse_known_args()
 
@@ -89,6 +100,12 @@ def main() -> None:
 
     cfg.apply_cli_overrides(remaining)
 
+    # CLI flags take precedence over YAML for the baseline checkpoint pair.
+    if args.baseline_ckpt is not None:
+        cfg.baseline_checkpoint_path = args.baseline_ckpt
+    if args.baseline_ckpt_cfg is not None:
+        cfg.baseline_checkpoint_config_path = args.baseline_ckpt_cfg
+
     # --- Validation ---
     if not cfg.checkpoint_path or not Path(cfg.checkpoint_path).is_file():
         print(f"[ERROR] checkpoint_path not set or not found: {cfg.checkpoint_path}")
@@ -99,6 +116,17 @@ def main() -> None:
         print(f"[ERROR] checkpoint_config_path not set or not found: {cfg.checkpoint_config_path}")
         print("  Set it in the YAML config or via --cfg.checkpoint_config_path <path>")
         sys.exit(1)
+
+    # If a baseline-specific checkpoint is requested, both path + config must exist.
+    if cfg.baseline_checkpoint_path or cfg.baseline_checkpoint_config_path:
+        if not cfg.baseline_checkpoint_path or not Path(cfg.baseline_checkpoint_path).is_file():
+            print(f"[ERROR] baseline_checkpoint_path not set or not found: {cfg.baseline_checkpoint_path}")
+            print("  Provide both --baseline-ckpt and --baseline-ckpt-cfg, or neither.")
+            sys.exit(1)
+        if not cfg.baseline_checkpoint_config_path or not Path(cfg.baseline_checkpoint_config_path).is_file():
+            print(f"[ERROR] baseline_checkpoint_config_path not set or not found: {cfg.baseline_checkpoint_config_path}")
+            print("  Provide both --baseline-ckpt and --baseline-ckpt-cfg, or neither.")
+            sys.exit(1)
 
     if cfg.total_genome_dim() == 0:
         print("[ERROR] Total genome dimension is 0. Enable hebbian in config.")
@@ -134,6 +162,9 @@ def main() -> None:
     print(f"  Experiment:    {cfg.exp_name}")
     print(f"  Checkpoint:    {cfg.checkpoint_path}")
     print(f"  WP1 Config:    {cfg.checkpoint_config_path}")
+    if cfg.baseline_checkpoint_path:
+        print(f"  Baseline ckpt: {cfg.baseline_checkpoint_path}")
+        print(f"  Baseline cfg:  {cfg.baseline_checkpoint_config_path}")
     print(f"  Seed:          {cfg.seed}")
     print(f"  Device:        {cfg.device}")
     print(f"  Genome dim:    {cfg.total_genome_dim()}")
