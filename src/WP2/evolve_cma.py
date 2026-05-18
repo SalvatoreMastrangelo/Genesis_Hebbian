@@ -77,12 +77,19 @@ def _load_catalog_paths(catalog_path: str) -> List[str]:
     return entries
 
 
-def _generate_random_urdfs(out_dir: Path, n: int, seed: int) -> List[str]:
+def _generate_random_urdfs(
+    out_dir: Path,
+    n: int,
+    seed: int,
+    include_standard_mydrone: bool = True,
+) -> List[str]:
     """Sample ``n`` random URDFs using the same sampler as WP1 training.
 
-    The first URDF is the standard-mydrone baseline; the rest are drawn
-    uniformly in the normalized drone genome space via ``Chromosome_Drone``.
-    URDFs and a ``catalog.txt`` are written to ``out_dir`` for reproducibility.
+    When ``include_standard_mydrone`` is True (default), the first URDF is the
+    standard-mydrone baseline and the remaining ``n - 1`` are drawn uniformly
+    in the normalized drone genome space via ``Chromosome_Drone``. When False,
+    all ``n`` URDFs are randomly sampled. URDFs and a ``catalog.txt`` are
+    written to ``out_dir`` for reproducibility.
     """
     from general_policy.catalog import build_catalog
 
@@ -91,7 +98,7 @@ def _generate_random_urdfs(out_dir: Path, n: int, seed: int) -> List[str]:
         catalog_dir=out_dir,
         n=n,
         seed=seed,
-        include_standard_mydrone=True,
+        include_standard_mydrone=include_standard_mydrone,
     )
     return [str(p) for p in paths]
 
@@ -122,6 +129,7 @@ def _init_csvs(pop_path: Path, summary_path: Path) -> None:
 
 
 def _init_baseline_csv(path: Path) -> None:
+    """Initialise a single-controller (baseline or specialist) summary CSV."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -136,6 +144,7 @@ def _append_baseline_csv(
     gen: int,
     baseline: Dict[str, float],
 ) -> None:
+    """Append a baseline/specialist per-generation row."""
     with open(path, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -204,8 +213,11 @@ def _print_generation_table(
     iter_elapsed: Optional[float] = None,
     eta_seconds: Optional[float] = None,
     baseline: Optional[Dict[str, float]] = None,
+    specialist: Optional[Dict[str, float]] = None,
+    total_generations: Optional[int] = None,
 ) -> None:
-    timing_parts = [f"CMA-ES Generation {gen}", f"Population={len(fitnesses)}"]
+    gen_str = f"{gen}/{total_generations}" if total_generations is not None else str(gen)
+    timing_parts = [f"CMA-ES Generation {gen_str}", f"Population={len(fitnesses)}"]
 
     if total_elapsed is not None:
         h, m, s = _format_time(total_elapsed)
@@ -242,36 +254,36 @@ def _print_generation_table(
     best_idx = int(np.argmax(fitnesses))
     worst_idx = int(np.argmin(fitnesses))
 
+    extra_cols: List[Tuple[str, Dict[str, float]]] = []
     if baseline is not None:
-        headers = [
-            "Metric",
-            "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)",
-            "Std", "Baseline",
-        ]
-        table_rows = []
-        for name, arr, key in rows:
-            bv = baseline.get(key, float("nan"))
-            table_rows.append([
-                name,
-                f"{arr[best_idx]:.4g}",
-                f"{arr.mean():.4g}",
-                f"{arr[worst_idx]:.4g}",
-                f"{arr.std():.4g}",
-                f"{bv:.4g}",
-            ])
+        extra_cols.append(("Baseline", baseline))
+    if specialist is not None:
+        extra_cols.append(("Specialist", specialist))
+
+    base_headers = ["Metric", "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)", "Std"]
+    if extra_cols:
+        headers = base_headers + [name for name, _ in extra_cols]
     else:
         headers = ["Metric", "Best", "Mean", "Worst", "Std"]
-        table_rows = []
-        for name, arr, key in rows:
-            table_rows.append([
-                name,
-                f"{arr[best_idx]:.4g}",
-                f"{arr.mean():.4g}",
-                f"{arr[worst_idx]:.4g}",
-                f"{arr.std():.4g}",
-            ])
 
-    print("\n  Metrics Summary (Hebb | Base):" if baseline else "\n  Metrics Summary:")
+    table_rows = []
+    for name, arr, key in rows:
+        row = [
+            name,
+            f"{arr[best_idx]:.4g}",
+            f"{arr.mean():.4g}",
+            f"{arr[worst_idx]:.4g}",
+            f"{arr.std():.4g}",
+        ]
+        for _, ref in extra_cols:
+            row.append(f"{ref.get(key, float('nan')):.4g}")
+        table_rows.append(row)
+
+    if extra_cols:
+        tag = " | ".join(["Hebb"] + [name for name, _ in extra_cols])
+        print(f"\n  Metrics Summary ({tag}):")
+    else:
+        print("\n  Metrics Summary:")
     print(tabulate(
         table_rows,
         headers=headers,
@@ -284,7 +296,8 @@ def _print_generation_table(
     comp_arr = metrics.get("reward_components")
     comp_names = metrics.get("reward_names") or []
     if comp_arr is not None and len(comp_names) and comp_arr.size:
-        base_comps = (baseline or {}).get("reward_components", {}) if baseline else {}
+        extra_comps = [(label, ref.get("reward_components", {}) or {})
+                       for label, ref in extra_cols]
 
         breakdown_rows = []
         for i, name in enumerate(comp_names):
@@ -296,16 +309,15 @@ def _print_generation_table(
                 f"{col[worst_idx]:.4g}",
                 f"{col.std():.4g}",
             ]
-            if baseline is not None:
-                row.append(f"{base_comps.get(name, float('nan')):.4g}")
+            for _, comps in extra_comps:
+                row.append(f"{comps.get(name, float('nan')):.4g}")
             breakdown_rows.append(row)
 
-        if baseline is not None:
+        if extra_cols:
             breakdown_headers = [
                 "Reward Component",
-                "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)",
-                "Std", "Baseline",
-            ]
+                "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)", "Std",
+            ] + [name for name, _ in extra_cols]
         else:
             breakdown_headers = [
                 "Reward Component", "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)", "Std",
@@ -390,7 +402,12 @@ class HebbianCMAES:
             gen_dir = self.run_dir / "urdfs"
             print(f"[HebbianCMAES] No catalog — generating {n} random URDFs "
                   f"into {gen_dir}")
-            self._urdf_paths = _generate_random_urdfs(gen_dir, n, cfg.seed)
+            self._urdf_paths = _generate_random_urdfs(
+                gen_dir,
+                n,
+                cfg.seed,
+                include_standard_mydrone=cfg.catalog.include_standard_mydrone,
+            )
             self._use_multi_urdf = True
             force_note = " (force_multi_urdf=True)" if (n == 1 and cfg.catalog.force_multi_urdf) else ""
             print(f"[HebbianCMAES] Generated {len(self._urdf_paths)} URDFs "
@@ -413,8 +430,11 @@ class HebbianCMAES:
         self.pop_csv_path = self.results_dir / "cma_population.csv"
         self.summary_csv_path = self.results_dir / "cma_summary.csv"
         self.baseline_csv_path = self.results_dir / "baseline_summary.csv"
+        self.specialist_csv_path = self.results_dir / "specialist_summary.csv"
         _init_csvs(self.pop_csv_path, self.summary_csv_path)
         _init_baseline_csv(self.baseline_csv_path)
+        if self.cfg.evaluation.run_specialist:
+            _init_baseline_csv(self.specialist_csv_path)
 
         # Timing
         self._run_start_time: Optional[float] = None
@@ -526,64 +546,62 @@ class HebbianCMAES:
                 print(f"[HebbianCMAES] Warning: failed to destroy environment: {exc}")
 
     # ------------------------------------------------------------------
-    #  Baseline evaluation (frozen WP1 actor, zero Hebbian rules)
+    #  Reference controller evaluation (zero Hebbian rules)
     # ------------------------------------------------------------------
 
-    def _evaluate_baseline(self, verbose: bool = False) -> Optional[Dict[str, float]]:
-        """Evaluate the (optionally separate) baseline actor with zero Hebbian rules.
+    def _evaluate_reference_actor(
+        self,
+        label: str,
+        ckpt_path: Optional[str],
+        ckpt_cfg_path: Optional[str],
+        verbose: bool = False,
+    ) -> Optional[Dict[str, float]]:
+        """Evaluate a frozen reference actor with zero Hebbian rules.
+
+        Shared implementation for the *baseline* and the *specialist* curves.
+        The reference actor runs on the SAME env (same forests, same speed
+        grid, same URDFs) as the population, which is the whole point — every
+        generation's comparison is fair by construction.
 
         ABCD=0 (genome=0.5 for symmetric [-1,1] ranges) means no plasticity
-        update.  Decay is also zeroed so weights stay exactly at the
-        checkpoint values throughout the episode.
+        update.  Decay is also zeroed (config copy) so weights stay exactly
+        at the checkpoint values throughout the episode.
 
-        Two paths:
-        - evolve_decay=False: decay comes from cfg.hebbian.decay → pass a
-          config copy with decay=0.
-        - evolve_decay=True:  decay genes sit at positions [4n:5n] in the
-          genome; setting them to 0.0 maps to decay_range[0]=0.0.
-
-        Baseline checkpoint:
-        - If ``cfg.baseline_checkpoint_path`` is empty, the baseline reuses
-          the frozen-actor checkpoint (legacy behavior).
-        - Otherwise, ``baseline_cfg.checkpoint_path`` /
-          ``checkpoint_config_path`` are swapped to the baseline checkpoint
-          and the last-layer dims (``num_actions``, ``hidden_dim``) are
-          re-inferred from it so the baseline genome is correctly sized for
-          a possibly-different architecture.
+        Parameters
+        ----------
+        label : str
+            "Baseline" or "Specialist" — only used in log strings.
+        ckpt_path, ckpt_cfg_path : str or None
+            Reference actor checkpoint + matching WP1 config. If both are
+            None/empty the main frozen actor is reused (used by baseline's
+            legacy "same checkpoint" mode; not valid for specialist).
         """
         import copy
 
-        # Config copy with fixed decay forced to 0 (covers non-evolved case)
-        baseline_cfg = copy.deepcopy(self.cfg)
-        baseline_cfg.hebbian.decay = 0.0
+        ref_cfg = copy.deepcopy(self.cfg)
+        ref_cfg.hebbian.decay = 0.0
 
-        # Optionally swap in the baseline-only checkpoint.
-        if self.cfg.baseline_checkpoint_path:
-            baseline_cfg.checkpoint_path = self.cfg.baseline_checkpoint_path
-            baseline_cfg.checkpoint_config_path = self.cfg.baseline_checkpoint_config_path
+        if ckpt_path:
+            ref_cfg.checkpoint_path = ckpt_path
+            ref_cfg.checkpoint_config_path = ckpt_cfg_path
 
-            # Re-infer last-layer dims from the baseline checkpoint so the
-            # baseline genome length matches its architecture.
+            # Re-infer last-layer dims from this checkpoint so the genome
+            # length matches a (possibly different) architecture.
             import torch as _torch
-            _ckpt = _torch.load(
-                self.cfg.baseline_checkpoint_path, map_location="cpu", weights_only=False
-            )
+            _ckpt = _torch.load(ckpt_path, map_location="cpu", weights_only=False)
             _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
             if "actor.4.weight" in _sd:
-                baseline_cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
-                baseline_cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+                ref_cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
+                ref_cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
             del _ckpt, _sd
 
-        n_weights = baseline_cfg.hebbian.num_actions * baseline_cfg.hebbian.hidden_dim
-        n_genes_baseline = baseline_cfg.hebbian_genome_dim()
+        n_weights = ref_cfg.hebbian.num_actions * ref_cfg.hebbian.hidden_dim
+        n_genes_ref = ref_cfg.hebbian_genome_dim()
 
-        # Build baseline genome: ABCD=0.5 (→ 0 for symmetric ranges), rest=0.5
-        baseline_genome = np.full(n_genes_baseline, 0.5)
-
-        # Zero out evolved decay genes so they decode to decay_range[0]=0
-        if baseline_cfg.hebbian.evolve_decay:
+        ref_genome = np.full(n_genes_ref, 0.5)
+        if ref_cfg.hebbian.evolve_decay:
             decay_start = 4 * n_weights
-            baseline_genome[decay_start: decay_start + n_weights] = 0.0
+            ref_genome[decay_start: decay_start + n_weights] = 0.0
 
         existing_env = (
             (self._env, self._env_urdf_path)
@@ -592,11 +610,12 @@ class HebbianCMAES:
         )
         try:
             if verbose:
-                print("[HebbianCMAES] Evaluating baseline (zero-Hebbian, zero-decay)...")
+                print(f"[HebbianCMAES] Evaluating {label.lower()} "
+                      f"(zero-Hebbian, zero-decay)...")
             if self._use_multi_urdf:
                 fitnesses, metrics = evaluate_population_multi_urdf(
-                    [baseline_genome],
-                    baseline_cfg,
+                    [ref_genome],
+                    ref_cfg,
                     self._model_and_layer,
                     self._wp1_cfg,
                     urdf_paths=self._urdf_paths,
@@ -605,8 +624,8 @@ class HebbianCMAES:
                 )
             else:
                 fitnesses, metrics = evaluate_population_cma_batched(
-                    [baseline_genome],
-                    baseline_cfg,
+                    [ref_genome],
+                    ref_cfg,
                     self._model_and_layer,
                     self._wp1_cfg,
                     catalog=self._catalog,
@@ -629,15 +648,38 @@ class HebbianCMAES:
                 }
             if verbose:
                 print(
-                    f"[HebbianCMAES] Baseline: fitness={result['fitness']:.4g}  "
+                    f"[HebbianCMAES] {label}: fitness={result['fitness']:.4g}  "
                     f"vel={result['velocity']:.4g}  prog={result['progress']:.4g}  "
                     f"crash={result['crash_rate']:.4g}  cot={result['cot']:.4g}  "
                     f"v_dev={result['v_deviation']:.4g} m/s"
                 )
             return result
         except Exception as exc:
-            print(f"[HebbianCMAES] Baseline evaluation failed: {exc}")
+            print(f"[HebbianCMAES] {label} evaluation failed: {exc}")
             return None
+
+    def _evaluate_baseline(self, verbose: bool = False) -> Optional[Dict[str, float]]:
+        """Evaluate the (optionally separate) baseline actor with zero rules."""
+        return self._evaluate_reference_actor(
+            "Baseline",
+            ckpt_path=self.cfg.baseline_checkpoint_path or None,
+            ckpt_cfg_path=self.cfg.baseline_checkpoint_config_path or None,
+            verbose=verbose,
+        )
+
+    def _evaluate_specialist(self, verbose: bool = False) -> Optional[Dict[str, float]]:
+        """Evaluate the specialist actor with zero Hebbian rules.
+
+        Unlike the baseline, the specialist requires its own checkpoint pair
+        (validated up-front in ``run.py``); there is no "reuse the frozen
+        actor" fallback.
+        """
+        return self._evaluate_reference_actor(
+            "Specialist",
+            ckpt_path=self.cfg.specialist_checkpoint_path or None,
+            ckpt_cfg_path=self.cfg.specialist_checkpoint_config_path or None,
+            verbose=verbose,
+        )
 
     # ------------------------------------------------------------------
     #  Reproducibility
@@ -691,6 +733,7 @@ class HebbianCMAES:
         metrics: Dict[str, np.ndarray],
         es,
         baseline: Optional[Dict[str, float]] = None,
+        specialist: Optional[Dict[str, float]] = None,
     ) -> None:
         import time
 
@@ -701,6 +744,8 @@ class HebbianCMAES:
         _append_summary_csv(self.summary_csv_path, gen, fitnesses, metrics, sigma)
         if baseline is not None:
             _append_baseline_csv(self.baseline_csv_path, gen, baseline)
+        if specialist is not None:
+            _append_baseline_csv(self.specialist_csv_path, gen, specialist)
 
         # Generation checkpoint
         self._save_generation(gen, solutions, fitnesses, es)
@@ -720,6 +765,8 @@ class HebbianCMAES:
             iter_elapsed=iter_elapsed,
             eta_seconds=eta_secs,
             baseline=baseline,
+            specialist=specialist,
+            total_generations=self.cfg.evolution.num_generations,
         )
 
     # ------------------------------------------------------------------
@@ -1063,8 +1110,20 @@ class HebbianCMAES:
             )
             baseline = self._evaluate_baseline(verbose=verbose) if should_run_baseline else None
 
+            # Specialist: same idea as baseline, but with its own checkpoint.
+            specialist_every = max(1, int(self.cfg.evaluation.specialist_every))
+            should_run_specialist = (
+                self.cfg.evaluation.run_specialist and (gen % specialist_every == 0)
+            )
+            specialist = (
+                self._evaluate_specialist(verbose=verbose) if should_run_specialist else None
+            )
+
             # Bookkeeping
-            self._after_generation(gen, solutions, fitnesses, metrics, es, baseline=baseline)
+            self._after_generation(
+                gen, solutions, fitnesses, metrics, es,
+                baseline=baseline, specialist=specialist,
+            )
             self._update_best_trackers(gen, solutions, fitnesses, metrics)
 
             last_solutions = solutions

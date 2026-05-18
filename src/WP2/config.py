@@ -147,6 +147,8 @@ class EvaluationConfig:
     stochastic: bool = True
     run_baseline: bool = False
     baseline_every: int = 1  # when run_baseline=True, evaluate every N generations (gen 0 always)
+    run_specialist: bool = False
+    specialist_every: int = 1  # when run_specialist=True, evaluate every N generations (gen 0 always)
     x_upper: Optional[float] = None  # override WP1 forest corridor length [m]
     dens_min: Optional[float] = None  # override forest density at x=0 [trees/m]
     dens_min_slope: float = 0.0  # per-generation linear ramp added to dens_min
@@ -229,12 +231,19 @@ class CatalogConfig:
         Verification flag. When True, use the multi-URDF evaluation path
         even with a single URDF (useful for confirming parity with the
         legacy single-URDF path).
+    include_standard_mydrone : bool
+        When True (default), the auto-generated catalog's first URDF is the
+        fixed standard-mydrone baseline (``STANDARD_MYDRONE_GENOME``); the
+        remaining ``num_urdfs - 1`` are sampled randomly. When False, all
+        ``num_urdfs`` URDFs are sampled randomly. Ignored when ``path`` is
+        set (the existing catalog is used as-is).
     """
 
     path: str = ""
     num_urdfs: int = 1
     num_episodes: int = 1
     force_multi_urdf: bool = False
+    include_standard_mydrone: bool = True
 
 
 # ============================================================================
@@ -257,6 +266,15 @@ class HebbianEvolutionConfig:
     # differ, but obs/action dims must still match the env.
     baseline_checkpoint_path: str = ""
     baseline_checkpoint_config_path: str = ""
+
+    # Optional separate checkpoint used ONLY for the "specialist" comparison
+    # curve.  Plays the same role as the baseline: evaluated with zero Hebbian
+    # rules every ``evaluation.specialist_every`` generations on exactly the
+    # same forests / speeds / URDFs as the population.  Architecture
+    # (MLP/LSTM/last-layer sizes) may differ from the main frozen actor and
+    # from the baseline; obs/action dims must still match the env.
+    specialist_checkpoint_path: str = ""
+    specialist_checkpoint_config_path: str = ""
 
     hebbian: HebbianConfig = field(default_factory=HebbianConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)

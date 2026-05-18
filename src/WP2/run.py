@@ -78,6 +78,19 @@ def main() -> None:
         help=("Path to the WP1 config YAML matching --baseline-ckpt. Required "
               "when --baseline-ckpt is set."),
     )
+    parser.add_argument(
+        "--specialist", type=str, default=None,
+        help=("Optional second baseline controller (a 'specialist'): a WP1 "
+              "checkpoint evaluated with zero Hebbian rules on the SAME "
+              "forests/speeds/URDFs as the population, every generation "
+              "(cadence: evaluation.specialist_every). Passing this flag "
+              "auto-enables evaluation.run_specialist=True."),
+    )
+    parser.add_argument(
+        "--specialist-cfg", type=str, default=None,
+        help=("Path to the WP1 config YAML matching --specialist. Required "
+              "when --specialist is set."),
+    )
 
     args, remaining = parser.parse_known_args()
 
@@ -106,6 +119,15 @@ def main() -> None:
     if args.baseline_ckpt_cfg is not None:
         cfg.baseline_checkpoint_config_path = args.baseline_ckpt_cfg
 
+    # Specialist: passing --specialist auto-enables run_specialist=True so the
+    # CLI alone is sufficient ("just give me a path"), while YAML configs can
+    # still drive it independently.
+    if args.specialist is not None:
+        cfg.specialist_checkpoint_path = args.specialist
+        cfg.evaluation.run_specialist = True
+    if args.specialist_cfg is not None:
+        cfg.specialist_checkpoint_config_path = args.specialist_cfg
+
     # --- Validation ---
     if not cfg.checkpoint_path or not Path(cfg.checkpoint_path).is_file():
         print(f"[ERROR] checkpoint_path not set or not found: {cfg.checkpoint_path}")
@@ -126,6 +148,21 @@ def main() -> None:
         if not cfg.baseline_checkpoint_config_path or not Path(cfg.baseline_checkpoint_config_path).is_file():
             print(f"[ERROR] baseline_checkpoint_config_path not set or not found: {cfg.baseline_checkpoint_config_path}")
             print("  Provide both --baseline-ckpt and --baseline-ckpt-cfg, or neither.")
+            sys.exit(1)
+
+    # Same rule for the specialist pair.
+    if (
+        cfg.specialist_checkpoint_path
+        or cfg.specialist_checkpoint_config_path
+        or cfg.evaluation.run_specialist
+    ):
+        if not cfg.specialist_checkpoint_path or not Path(cfg.specialist_checkpoint_path).is_file():
+            print(f"[ERROR] specialist_checkpoint_path not set or not found: {cfg.specialist_checkpoint_path}")
+            print("  Provide both --specialist and --specialist-cfg, or neither.")
+            sys.exit(1)
+        if not cfg.specialist_checkpoint_config_path or not Path(cfg.specialist_checkpoint_config_path).is_file():
+            print(f"[ERROR] specialist_checkpoint_config_path not set or not found: {cfg.specialist_checkpoint_config_path}")
+            print("  Provide both --specialist and --specialist-cfg, or neither.")
             sys.exit(1)
 
     if cfg.total_genome_dim() == 0:
@@ -165,6 +202,9 @@ def main() -> None:
     if cfg.baseline_checkpoint_path:
         print(f"  Baseline ckpt: {cfg.baseline_checkpoint_path}")
         print(f"  Baseline cfg:  {cfg.baseline_checkpoint_config_path}")
+    if cfg.specialist_checkpoint_path:
+        print(f"  Specialist:    {cfg.specialist_checkpoint_path}")
+        print(f"  Specialist cfg:{cfg.specialist_checkpoint_config_path}")
     print(f"  Seed:          {cfg.seed}")
     print(f"  Device:        {cfg.device}")
     print(f"  Genome dim:    {cfg.total_genome_dim()}")

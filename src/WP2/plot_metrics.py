@@ -65,14 +65,17 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = False) -> None:
     single_dir = plots_dir / "metrics"
     single_dir.mkdir(parents=True, exist_ok=True)
 
-    mean_colour     = "#1f77b4"
-    best_colour     = "#d62728"
-    baseline_colour = "#2ca02c"
-    top_colour      = "#ff7f0e"
+    mean_colour       = "#1f77b4"
+    best_colour       = "#d62728"
+    baseline_colour   = "#2ca02c"
+    specialist_colour = "#9467bd"
+    top_colour        = "#ff7f0e"
 
-    # Load baseline per-generation data if available
-    baseline_csv = run_dir / "results" / "baseline_summary.csv"
-    baseline_df  = pd.read_csv(baseline_csv) if baseline_csv.is_file() else None
+    # Load baseline + specialist per-generation data if available
+    baseline_csv   = run_dir / "results" / "baseline_summary.csv"
+    specialist_csv = run_dir / "results" / "specialist_summary.csv"
+    baseline_df    = pd.read_csv(baseline_csv)   if baseline_csv.is_file()   else None
+    specialist_df  = pd.read_csv(specialist_csv) if specialist_csv.is_file() else None
 
     def _draw_metric(ax, col, label, lower_is_better):
         # Per-generation best: min for lower-is-better, max otherwise
@@ -117,6 +120,15 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = False) -> None:
                 color=baseline_colour, linewidth=1.4,
                 linestyle="--", marker="o", markersize=4,
                 label="baseline",
+            )
+
+        if specialist_df is not None and col in specialist_df.columns:
+            sp = specialist_df.set_index("generation")[col].reindex(gens).dropna()
+            ax.plot(
+                sp.index.to_numpy(), sp.to_numpy(),
+                color=specialist_colour, linewidth=1.4,
+                linestyle="-.", marker="s", markersize=4,
+                label="specialist",
             )
 
         title = f"{label}  (↓ better)" if lower_is_better else label
