@@ -407,6 +407,7 @@ def create_overlay_video(
     v_commanded: float = 12.0,
     dpi: int = 240,
     depth_mp4: Optional[str] = None,
+    alternative: bool = False,
 ) -> None:
     """
     Create a composite video with:
@@ -421,6 +422,9 @@ def create_overlay_video(
         v_commanded: commanded forward speed (for HUD reference line).
         dpi: DPI for matplotlib.
         depth_mp4: optional path to depth video; if None, depth panel is blank.
+        alternative: if True (Hebbian-only), drop the right-side time-series
+            column and put a transposed, enlarged weight-delta heatmap in its
+            place; double the height of the bottom wstats panel.
 
     Hebbian-only extra: if ``traj`` contains ``hebbian_weight_delta_history``
     (shape (T, num_actions, hidden_dim)), a full-width heatmap and a pair of
@@ -432,6 +436,7 @@ def create_overlay_video(
 
     weight_delta = traj.get("hebbian_weight_delta_history", None)
     has_heatmap = weight_delta is not None and weight_delta.size > 0
+    alternative_mode = bool(alternative) and has_heatmap
 
     # Video sources
     cap_cam = cv2.VideoCapture(cam_mp4)
@@ -487,9 +492,28 @@ def create_overlay_video(
     beta_deg = traj.get("beta_deg", None)
     vel_commanded = np.full_like(t_all, v_commanded, dtype=np.float32)
 
-    fig_h = 13 if has_heatmap else 9
+    if alternative_mode:
+        fig_h = 13
+    else:
+        fig_h = 13 if has_heatmap else 9
     fig = plt.figure(figsize=(16, fig_h), dpi=dpi)
-    if has_heatmap:
+    if alternative_mode:
+        # 2 rows: top row holds left video stack + transposed heatmap on the
+        # right (replacing the dropped time-series column). Bottom row is the
+        # wstats panel at double height (2.0 vs 1.0).
+        outer = GridSpec(
+            nrows=2,
+            ncols=1,
+            height_ratios=[9.0, 2.0],
+            hspace=0.16,
+        )
+        # Extra top/right margin so the heatmap title and colorbar tick
+        # labels are not clipped.
+        fig.subplots_adjust(left=0.012, right=0.955, top=0.955, bottom=0.042)
+        gs = outer[0, 0].subgridspec(
+            nrows=1, ncols=2, width_ratios=[2.20, 1.55], wspace=0.10
+        )
+    elif has_heatmap:
         outer = GridSpec(
             nrows=3,
             ncols=1,
@@ -510,11 +534,12 @@ def create_overlay_video(
         height_ratios=[5.9, 0.78, 2.42],
         hspace=0.012,
     )
-    right_gs = gs[0, 1].subgridspec(
-        nrows=6,
-        ncols=1,
-        hspace=0.24,
-    )
+    if not alternative_mode:
+        right_gs = gs[0, 1].subgridspec(
+            nrows=6,
+            ncols=1,
+            hspace=0.24,
+        )
 
     # Left column: camera / depth / top-down
     ax_cam = fig.add_subplot(left_gs[0, 0])
@@ -524,55 +549,59 @@ def create_overlay_video(
     ax_td = fig.add_subplot(left_gs[2, 0])
     ax_td.axis("off")
 
-    # Right column: time-series
-    ax_T = fig.add_subplot(right_gs[0, 0])
-    ax_J01 = fig.add_subplot(right_gs[1, 0])
-    ax_J23 = fig.add_subplot(right_gs[2, 0])
-    ax_J45 = fig.add_subplot(right_gs[3, 0])
-    ax_VLIN = fig.add_subplot(right_gs[4, 0])
-    ax_aero = fig.add_subplot(right_gs[5, 0])
-    ts_axes = [ax_T, ax_J01, ax_J23, ax_J45, ax_VLIN, ax_aero]
+    # Right column: time-series (skipped entirely in alternative mode)
+    ax_T = ax_J01 = ax_J23 = ax_J45 = ax_VLIN = ax_aero = None
+    ax_T_right = None
+    ts_axes: List = []
+    if not alternative_mode:
+        ax_T = fig.add_subplot(right_gs[0, 0])
+        ax_J01 = fig.add_subplot(right_gs[1, 0])
+        ax_J23 = fig.add_subplot(right_gs[2, 0])
+        ax_J45 = fig.add_subplot(right_gs[3, 0])
+        ax_VLIN = fig.add_subplot(right_gs[4, 0])
+        ax_aero = fig.add_subplot(right_gs[5, 0])
+        ts_axes = [ax_T, ax_J01, ax_J23, ax_J45, ax_VLIN, ax_aero]
 
-    # Axis limits and grids
-    ax_T.set_ylim(0.0, 1.0)
-    ax_T.set_ylabel("Throttle / thrust ratio [-]")
-    ax_T_right = ax_T.twinx()
-    # Make the twinned axes coexist cleanly: same panel geometry, no opaque
-    # patch on the right axis, and the throttle axis kept slightly in front.
-    ax_T.set_zorder(2)
-    ax_T_right.set_zorder(1)
-    ax_T_right.patch.set_visible(False)
-    thrust_n_limit = max_thrust_total
-    if thrust_n_limit is not None and np.isfinite(thrust_n_limit) and thrust_n_limit > 0.0:
-        ax_T_right.set_ylim(0.0, thrust_n_limit)
-    elif thrust_n_sum is not None and thrust_n_sum.size:
-        thrust_n_max = float(np.nanmax(thrust_n_sum))
-        ax_T_right.set_ylim(0.0, max(1.0, thrust_n_max))
-    else:
-        ax_T_right.set_ylim(0.0, 1.0)
-    ax_T_right.set_ylabel("Thrust [N]", labelpad=10)
-    for ax in (ax_J01, ax_J23, ax_J45):
-        ax.set_ylim(-0.3, 0.3)
-    ax_VLIN.set_ylim(-2, v_commanded + 3)
+        # Axis limits and grids
+        ax_T.set_ylim(0.0, 1.0)
+        ax_T.set_ylabel("Throttle / thrust ratio [-]")
+        ax_T_right = ax_T.twinx()
+        # Make the twinned axes coexist cleanly: same panel geometry, no opaque
+        # patch on the right axis, and the throttle axis kept slightly in front.
+        ax_T.set_zorder(2)
+        ax_T_right.set_zorder(1)
+        ax_T_right.patch.set_visible(False)
+        thrust_n_limit = max_thrust_total
+        if thrust_n_limit is not None and np.isfinite(thrust_n_limit) and thrust_n_limit > 0.0:
+            ax_T_right.set_ylim(0.0, thrust_n_limit)
+        elif thrust_n_sum is not None and thrust_n_sum.size:
+            thrust_n_max = float(np.nanmax(thrust_n_sum))
+            ax_T_right.set_ylim(0.0, max(1.0, thrust_n_max))
+        else:
+            ax_T_right.set_ylim(0.0, 1.0)
+        ax_T_right.set_ylabel("Thrust [N]", labelpad=10)
+        for ax in (ax_J01, ax_J23, ax_J45):
+            ax.set_ylim(-0.3, 0.3)
+        ax_VLIN.set_ylim(-2, v_commanded + 3)
 
-    ax_aero.set_ylim(-10, 30)
-    ax_aero.set_xlabel("t [s]")
+        ax_aero.set_ylim(-10, 30)
+        ax_aero.set_xlabel("t [s]")
 
-    for ax in ts_axes:
-        ax.grid(True, lw=0.35, alpha=0.35)
-        ax.tick_params(labelsize=9)
-    ax_T_right.grid(False)
-    ax_T_right.tick_params(labelsize=9)
+        for ax in ts_axes:
+            ax.grid(True, lw=0.35, alpha=0.35)
+            ax.tick_params(labelsize=9)
+        ax_T_right.grid(False)
+        ax_T_right.tick_params(labelsize=9)
 
-    for ax in ts_axes[:-1]:
-        ax.tick_params(labelbottom=False)
+        for ax in ts_axes[:-1]:
+            ax.tick_params(labelbottom=False)
 
-    # Keep the full right column allocation, but shrink each plot a bit inside
-    # that column so the right-side thrust label is not clipped.
-    for ax in ts_axes:
-        pos = ax.get_position()
-        ax.set_position([pos.x0, pos.y0, pos.width * 0.92, pos.height])
-    ax_T_right.set_position(ax_T.get_position())
+        # Keep the full right column allocation, but shrink each plot a bit inside
+        # that column so the right-side thrust label is not clipped.
+        for ax in ts_axes:
+            pos = ax.get_position()
+            ax.set_position([pos.x0, pos.y0, pos.width * 0.92, pos.height])
+        ax_T_right.set_position(ax_T.get_position())
 
     def _zeros_upto(i: int) -> np.ndarray:
         return np.zeros((i + 1,), dtype=np.float32)
@@ -582,71 +611,74 @@ def create_overlay_video(
             return jp[: idx_frame + 1, idx]
         return _zeros_upto(idx_frame)
 
-    # Time series lines
-    lnThrCmd, = ax_T.plot([], [], lw=2.2, color="tab:blue", label="Throttle", zorder=4)
-    lnThrustFrac = None
-    if thrust_frac is not None:
-        lnThrustFrac, = ax_T.plot(
-            [],
-            [],
-            lw=2.2,
-            color="tab:orange",
-            linestyle="--",
-            label="Thrust / T_max",
-            zorder=5,
-        )
-    lnThrustN = None
-    if thrust_n_sum is not None:
-        lnThrustN, = ax_T_right.plot(
-            [],
-            [],
-            lw=1.8,
-            color="tab:red",
-            linestyle=":",
-            label="Thrust [N]",
-            zorder=3,
-        )
-    is_lisparrow = (
-        n_joints == 4
-        and any("outer_wing" in name for name in joint_names)
-        and any("elevator" in name for name in joint_names)
-        and any("rudder" in name for name in joint_names)
-    )
-    if is_lisparrow:
-        lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Left")
-        lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Right")
-        lnJ2, = ax_J23.plot([], [], lw=1.6, label="Elevator")
-        lnJ3, = ax_J23.plot([], [], lw=1.6, label="Rudder")
-        lnJ4, = ax_J45.plot([], [], lw=1.6, label="Sweep Mean")
-        lnJ5, = ax_J45.plot([], [], lw=1.6, label="Sweep Diff")
-    else:
-        lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Mean")
-        lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Diff")
-        lnJ2, = ax_J23.plot([], [], lw=1.6, label="Twist Mean")
-        lnJ3, = ax_J23.plot([], [], lw=1.6, label="Twist Diff")
-        lnJ4, = ax_J45.plot([], [], lw=1.6, label="Elevator")
-        lnJ5, = ax_J45.plot([], [], lw=1.6, label="Rudder")
-
-    lnVx, = ax_VLIN.plot([], [], lw=1.6, label="vx")
-    lnVy, = ax_VLIN.plot([], [], lw=1.6, label="vy")
-    lnVz, = ax_VLIN.plot([], [], lw=1.6, label="vz")
-    lnVCOM, = ax_VLIN.plot([], [], lw=1.6, label="vCOM")
-
+    # Time series lines (skipped in alternative mode)
+    lnThrCmd = lnThrustFrac = lnThrustN = None
+    lnJ0 = lnJ1 = lnJ2 = lnJ3 = lnJ4 = lnJ5 = None
+    lnVx = lnVy = lnVz = lnVCOM = None
     ln_alpha = ln_beta = None
-    if alpha_deg is not None:
-        ln_alpha, = ax_aero.plot([], [], lw=2.0, label="Alpha [deg]")
-    if beta_deg is not None:
-        ln_beta, = ax_aero.plot([], [], lw=2.0, label="Beta [deg]")
+    is_lisparrow = False
+    if not alternative_mode:
+        lnThrCmd, = ax_T.plot([], [], lw=2.2, color="tab:blue", label="Throttle", zorder=4)
+        if thrust_frac is not None:
+            lnThrustFrac, = ax_T.plot(
+                [],
+                [],
+                lw=2.2,
+                color="tab:orange",
+                linestyle="--",
+                label="Thrust / T_max",
+                zorder=5,
+            )
+        if thrust_n_sum is not None:
+            lnThrustN, = ax_T_right.plot(
+                [],
+                [],
+                lw=1.8,
+                color="tab:red",
+                linestyle=":",
+                label="Thrust [N]",
+                zorder=3,
+            )
+        is_lisparrow = (
+            n_joints == 4
+            and any("outer_wing" in name for name in joint_names)
+            and any("elevator" in name for name in joint_names)
+            and any("rudder" in name for name in joint_names)
+        )
+        if is_lisparrow:
+            lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Left")
+            lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Right")
+            lnJ2, = ax_J23.plot([], [], lw=1.6, label="Elevator")
+            lnJ3, = ax_J23.plot([], [], lw=1.6, label="Rudder")
+            lnJ4, = ax_J45.plot([], [], lw=1.6, label="Sweep Mean")
+            lnJ5, = ax_J45.plot([], [], lw=1.6, label="Sweep Diff")
+        else:
+            lnJ0, = ax_J01.plot([], [], lw=1.6, label="Sweep Mean")
+            lnJ1, = ax_J01.plot([], [], lw=1.6, label="Sweep Diff")
+            lnJ2, = ax_J23.plot([], [], lw=1.6, label="Twist Mean")
+            lnJ3, = ax_J23.plot([], [], lw=1.6, label="Twist Diff")
+            lnJ4, = ax_J45.plot([], [], lw=1.6, label="Elevator")
+            lnJ5, = ax_J45.plot([], [], lw=1.6, label="Rudder")
 
-    for ax in ts_axes[1:]:
-        ax.legend(fontsize=8.5, frameon=False, loc="upper right", ncol=2, handlelength=1.8, columnspacing=1.0)
-    thrust_handles = [lnThrCmd]
-    if lnThrustFrac is not None:
-        thrust_handles.append(lnThrustFrac)
-    if lnThrustN is not None:
-        thrust_handles.append(lnThrustN)
-    thrust_labels = [h.get_label() for h in thrust_handles]
-    ax_T.legend(thrust_handles, thrust_labels, fontsize=8.5, frameon=False, loc="upper left")
+        lnVx, = ax_VLIN.plot([], [], lw=1.6, label="vx")
+        lnVy, = ax_VLIN.plot([], [], lw=1.6, label="vy")
+        lnVz, = ax_VLIN.plot([], [], lw=1.6, label="vz")
+        lnVCOM, = ax_VLIN.plot([], [], lw=1.6, label="vCOM")
+
+        if alpha_deg is not None:
+            ln_alpha, = ax_aero.plot([], [], lw=2.0, label="Alpha [deg]")
+        if beta_deg is not None:
+            ln_beta, = ax_aero.plot([], [], lw=2.0, label="Beta [deg]")
+
+        for ax in ts_axes[1:]:
+            ax.legend(fontsize=8.5, frameon=False, loc="upper right", ncol=2, handlelength=1.8, columnspacing=1.0)
+        thrust_handles = [lnThrCmd]
+        if lnThrustFrac is not None:
+            thrust_handles.append(lnThrustFrac)
+        if lnThrustN is not None:
+            thrust_handles.append(lnThrustN)
+        thrust_labels = [h.get_label() for h in thrust_handles]
+        ax_T.legend(thrust_handles, thrust_labels, fontsize=8.5, frameon=False, loc="upper left")
 
     # Optional Hebbian weight-delta heatmap (full width, bottom row) plus a
     # twin-axis "cumulative drift" / "per-step squared change" curve below it.
@@ -659,22 +691,7 @@ def create_overlay_video(
         vmax_hm = float(np.abs(weight_delta).max())
         if vmax_hm <= 0.0:
             vmax_hm = 1e-8
-        gs_hm = GridSpecFromSubplotSpec(
-            1, 2, subplot_spec=outer[1, 0], width_ratios=[1.0, 0.015], wspace=0.02
-        )
-        ax_heatmap = fig.add_subplot(gs_hm[0, 0])
-        ax_cbar = fig.add_subplot(gs_hm[0, 1])
         num_actions, hidden_dim = weight_delta.shape[1], weight_delta.shape[2]
-        im_heatmap = ax_heatmap.imshow(
-            weight_delta[0],
-            aspect="auto",
-            cmap="seismic",
-            vmin=-vmax_hm,
-            vmax=vmax_hm,
-            interpolation="nearest",
-        )
-        ax_heatmap.set_xlabel("Head neuron")
-        ax_heatmap.set_ylabel("Actuator")
         actuator_names = [
             "throttle",
             "sweep_L",
@@ -684,14 +701,59 @@ def create_overlay_video(
             "elevator",
             "rudder",
         ]
-        if num_actions == len(actuator_names):
-            ax_heatmap.set_yticks(range(num_actions))
-            ax_heatmap.set_yticklabels(actuator_names, fontsize=8)
-        ax_heatmap.set_title(
-            f"Hebbian last-layer ΔW (max |ΔW| = {vmax_hm:.4f})",
-            fontsize=10,
-        )
-        fig.colorbar(im_heatmap, cax=ax_cbar)
+        if alternative_mode:
+            # Heatmap goes into the top-right slot (replacing the time-series
+            # column). Transposed: shape (hidden_dim, num_actions) — tall &
+            # narrow fits the right column. Colorbar to the right.
+            gs_hm = GridSpecFromSubplotSpec(
+                1, 2, subplot_spec=gs[0, 1], width_ratios=[1.0, 0.025], wspace=0.04
+            )
+            ax_heatmap = fig.add_subplot(gs_hm[0, 0])
+            ax_cbar = fig.add_subplot(gs_hm[0, 1])
+            im_heatmap = ax_heatmap.imshow(
+                weight_delta[0].T,
+                aspect="auto",
+                cmap="seismic",
+                vmin=-vmax_hm,
+                vmax=vmax_hm,
+                interpolation="nearest",
+            )
+            ax_heatmap.set_xlabel("Actuator")
+            ax_heatmap.set_ylabel("Head neuron")
+            if num_actions == len(actuator_names):
+                ax_heatmap.set_xticks(range(num_actions))
+                ax_heatmap.set_xticklabels(
+                    actuator_names, fontsize=8, rotation=30, ha="right"
+                )
+            ax_heatmap.set_title(
+                f"Hebbian last-layer ΔW (max |ΔW| = {vmax_hm:.4f})",
+                fontsize=10,
+            )
+            fig.colorbar(im_heatmap, cax=ax_cbar)
+        else:
+            gs_hm = GridSpecFromSubplotSpec(
+                1, 2, subplot_spec=outer[1, 0], width_ratios=[1.0, 0.015], wspace=0.02
+            )
+            ax_heatmap = fig.add_subplot(gs_hm[0, 0])
+            ax_cbar = fig.add_subplot(gs_hm[0, 1])
+            im_heatmap = ax_heatmap.imshow(
+                weight_delta[0],
+                aspect="auto",
+                cmap="seismic",
+                vmin=-vmax_hm,
+                vmax=vmax_hm,
+                interpolation="nearest",
+            )
+            ax_heatmap.set_xlabel("Head neuron")
+            ax_heatmap.set_ylabel("Actuator")
+            if num_actions == len(actuator_names):
+                ax_heatmap.set_yticks(range(num_actions))
+                ax_heatmap.set_yticklabels(actuator_names, fontsize=8)
+            ax_heatmap.set_title(
+                f"Hebbian last-layer ΔW (max |ΔW| = {vmax_hm:.4f})",
+                fontsize=10,
+            )
+            fig.colorbar(im_heatmap, cax=ax_cbar)
 
         drift_sq = (weight_delta.astype(np.float64) ** 2).sum(axis=(1, 2))
         step_diff = np.diff(weight_delta.astype(np.float64), axis=0)
@@ -699,8 +761,10 @@ def create_overlay_video(
             [[0.0], (step_diff ** 2).sum(axis=(1, 2))]
         )
 
+        # wstats panel: bottom row of `outer` (row 1 in alt mode, row 2 otherwise).
+        wstats_subspec = outer[1, 0] if alternative_mode else outer[2, 0]
         gs_ws = GridSpecFromSubplotSpec(
-            1, 2, subplot_spec=outer[2, 0], width_ratios=[1.0, 0.015], wspace=0.02
+            1, 2, subplot_spec=wstats_subspec, width_ratios=[1.0, 0.015], wspace=0.02
         )
         ax_wstats = fig.add_subplot(gs_ws[0, 0])
         ax_wstats.grid(True, lw=0.3, alpha=0.4)
@@ -737,24 +801,27 @@ def create_overlay_video(
             fontsize=9, frameon=False, loc="upper left", ncol=2,
         )
 
-        # The figure's outer subplots_adjust is tight on the sides so the
-        # camera+plots top row uses the full width. That leaves no horizontal
-        # room for the heatmap's yticklabels / ylabel and for the wstats
-        # twin-axis label on the right, so we re-position those bottom rows
-        # with explicit side margins.
-        _HM_LEFT, _HM_RIGHT = 0.060, 0.955
-        _HM_CBAR_W = 0.012
-        _HM_GAP = 0.010
-        pos_hm = ax_heatmap.get_position()
-        ax_heatmap.set_position(
-            [_HM_LEFT, pos_hm.y0,
-             _HM_RIGHT - _HM_LEFT - _HM_CBAR_W - _HM_GAP, pos_hm.height]
-        )
-        pos_cb = ax_cbar.get_position()
-        ax_cbar.set_position(
-            [_HM_RIGHT - _HM_CBAR_W, pos_cb.y0, _HM_CBAR_W, pos_cb.height]
-        )
+        if not alternative_mode:
+            # The figure's outer subplots_adjust is tight on the sides so the
+            # camera+plots top row uses the full width. That leaves no horizontal
+            # room for the heatmap's yticklabels / ylabel and for the wstats
+            # twin-axis label on the right, so we re-position those bottom rows
+            # with explicit side margins.
+            _HM_LEFT, _HM_RIGHT = 0.060, 0.955
+            _HM_CBAR_W = 0.012
+            _HM_GAP = 0.010
+            pos_hm = ax_heatmap.get_position()
+            ax_heatmap.set_position(
+                [_HM_LEFT, pos_hm.y0,
+                 _HM_RIGHT - _HM_LEFT - _HM_CBAR_W - _HM_GAP, pos_hm.height]
+            )
+            pos_cb = ax_cbar.get_position()
+            ax_cbar.set_position(
+                [_HM_RIGHT - _HM_CBAR_W, pos_cb.y0, _HM_CBAR_W, pos_cb.height]
+            )
 
+        # In both layouts, the wstats panel spans the full width with margins
+        # so the twin-axis "per step" label is not clipped on the right.
         _WS_LEFT, _WS_RIGHT = 0.060, 0.940
         pos_ws = ax_wstats.get_position()
         ax_wstats.set_position(
@@ -799,54 +866,56 @@ def create_overlay_video(
             idx = max(np.searchsorted(t_all, t_now) - 1, 0)
             idx_frame = idx
 
-            # Update time series
-            lnThrCmd.set_data(t_all[: idx + 1], throttle_sum[: idx + 1])
-            if lnThrustFrac is not None and thrust_frac is not None:
-                lnThrustFrac.set_data(t_all[: idx + 1], thrust_frac[: idx + 1])
-            if lnThrustN is not None and thrust_n_sum is not None:
-                lnThrustN.set_data(t_all[: idx + 1], thrust_n_sum[: idx + 1])
-            if is_lisparrow:
-                left = _joint_series(0)
-                right = _joint_series(1)
-                elevator = _joint_series(2)
-                rudder = _joint_series(3)
-                lnJ0.set_data(t_all[: idx + 1], left)
-                lnJ1.set_data(t_all[: idx + 1], right)
-                lnJ2.set_data(t_all[: idx + 1], elevator)
-                lnJ3.set_data(t_all[: idx + 1], rudder)
-                lnJ4.set_data(t_all[: idx + 1], 0.5 * (left + right))
-                lnJ5.set_data(t_all[: idx + 1], left - right)
-            else:
-                left = _joint_series(0)
-                right = _joint_series(1)
-                twist_left = _joint_series(2)
-                twist_right = _joint_series(3)
-                elev = _joint_series(4)
-                rud = _joint_series(5)
-                lnJ0.set_data(t_all[: idx + 1], 0.5 * (left - right))
-                lnJ1.set_data(t_all[: idx + 1], left + right)
-                lnJ2.set_data(t_all[: idx + 1], 0.5 * (twist_left + twist_right))
-                lnJ3.set_data(t_all[: idx + 1], twist_left - twist_right)
-                lnJ4.set_data(t_all[: idx + 1], elev)
-                lnJ5.set_data(t_all[: idx + 1], rud)
+            # Update time series (only in non-alternative mode)
+            if not alternative_mode:
+                lnThrCmd.set_data(t_all[: idx + 1], throttle_sum[: idx + 1])
+                if lnThrustFrac is not None and thrust_frac is not None:
+                    lnThrustFrac.set_data(t_all[: idx + 1], thrust_frac[: idx + 1])
+                if lnThrustN is not None and thrust_n_sum is not None:
+                    lnThrustN.set_data(t_all[: idx + 1], thrust_n_sum[: idx + 1])
+                if is_lisparrow:
+                    left = _joint_series(0)
+                    right = _joint_series(1)
+                    elevator = _joint_series(2)
+                    rudder = _joint_series(3)
+                    lnJ0.set_data(t_all[: idx + 1], left)
+                    lnJ1.set_data(t_all[: idx + 1], right)
+                    lnJ2.set_data(t_all[: idx + 1], elevator)
+                    lnJ3.set_data(t_all[: idx + 1], rudder)
+                    lnJ4.set_data(t_all[: idx + 1], 0.5 * (left + right))
+                    lnJ5.set_data(t_all[: idx + 1], left - right)
+                else:
+                    left = _joint_series(0)
+                    right = _joint_series(1)
+                    twist_left = _joint_series(2)
+                    twist_right = _joint_series(3)
+                    elev = _joint_series(4)
+                    rud = _joint_series(5)
+                    lnJ0.set_data(t_all[: idx + 1], 0.5 * (left - right))
+                    lnJ1.set_data(t_all[: idx + 1], left + right)
+                    lnJ2.set_data(t_all[: idx + 1], 0.5 * (twist_left + twist_right))
+                    lnJ3.set_data(t_all[: idx + 1], twist_left - twist_right)
+                    lnJ4.set_data(t_all[: idx + 1], elev)
+                    lnJ5.set_data(t_all[: idx + 1], rud)
 
-            lnVx.set_data(t_all[: idx + 1], vlin[: idx + 1, 0])
-            lnVy.set_data(t_all[: idx + 1], vlin[: idx + 1, 1])
-            lnVz.set_data(t_all[: idx + 1], vlin[: idx + 1, 2])
-            lnVCOM.set_data(t_all[: idx + 1], vel_commanded[: idx + 1])
+                lnVx.set_data(t_all[: idx + 1], vlin[: idx + 1, 0])
+                lnVy.set_data(t_all[: idx + 1], vlin[: idx + 1, 1])
+                lnVz.set_data(t_all[: idx + 1], vlin[: idx + 1, 2])
+                lnVCOM.set_data(t_all[: idx + 1], vel_commanded[: idx + 1])
 
-            if ln_alpha is not None:
-                ln_alpha.set_data(t_all[: idx + 1], alpha_deg[: idx + 1])
-            if ln_beta is not None:
-                ln_beta.set_data(t_all[: idx + 1], beta_deg[: idx + 1])
+                if ln_alpha is not None:
+                    ln_alpha.set_data(t_all[: idx + 1], alpha_deg[: idx + 1])
+                if ln_beta is not None:
+                    ln_beta.set_data(t_all[: idx + 1], beta_deg[: idx + 1])
 
-            for ax in ts_axes:
-                ax.set_xlim(0, t_all[idx])
-            ax_T_right.set_xlim(0, t_all[idx])
+                for ax in ts_axes:
+                    ax.set_xlim(0, t_all[idx])
+                ax_T_right.set_xlim(0, t_all[idx])
 
             if im_heatmap is not None:
                 hm_idx = min(idx, weight_delta.shape[0] - 1)
-                im_heatmap.set_data(weight_delta[hm_idx])
+                hm_frame = weight_delta[hm_idx]
+                im_heatmap.set_data(hm_frame.T if alternative_mode else hm_frame)
 
             if ln_drift is not None:
                 ws_idx = min(idx, drift_sq.shape[0] - 1)
@@ -1576,7 +1645,7 @@ def _run_hebbian(args) -> None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved)
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False))
     print("\nEvaluation complete.")
 
 
@@ -1634,11 +1703,19 @@ def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, 
         device=str(device),
     )
     _disable_all_noise_except_obs(env)
+    if getattr(args, "ignore_angle_limit", False):
+        # Push the eval attitude limits beyond anything reachable so the
+        # rollout terminates only on collision/wall_crash/success/timeout.
+        huge = float(10.0 * math.pi)
+        env._roll_limit_eval = huge
+        env._pitch_limit_eval = huge
+        env._yaw_limit_eval = huge
+        print("[eval] --ignore-angle-limit: angle termination disabled.")
     env.reset()
     return env
 
 
-def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool) -> None:
+def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool, alternative: bool = False) -> None:
     """Render the full set of evaluation videos (top-down, depth, overlay, rewards)."""
     topdown_mp4 = os.path.join(eval_log_dir, "eval_topdown.mp4")
     print("\nRendering top-down video …")
@@ -1683,6 +1760,7 @@ def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, t
             out_mp4=overlay_mp4,
             v_commanded=v_commanded,
             depth_mp4=depth_video_path,
+            alternative=alternative,
         )
         print(f"✅ Overlay video saved to: {overlay_mp4}")
 
@@ -1810,6 +1888,25 @@ def main() -> None:
         default=None,
         help="Path to the genome .npy file to evaluate in Hebbian mode.",
     )
+    parser.add_argument(
+        "--alternative",
+        action="store_true",
+        help=(
+            "Use an alternative overlay layout (Hebbian mode): drop the right-side "
+            "time-series column and put an enlarged, transposed weight-delta "
+            "heatmap in its place; double the height of the bottom wstats panel."
+        ),
+    )
+    parser.add_argument(
+        "--ignore-angle-limit",
+        dest="ignore_angle_limit",
+        action="store_true",
+        help=(
+            "Disable the roll/pitch/yaw attitude termination so the rollout "
+            "continues until an actual collision, wall crash, success, or "
+            "timeout. The drone may tumble far past normal eval limits."
+        ),
+    )
     args = parser.parse_args()
 
     # Hebbian mode takes precedence if -h/--hebbian-run is set.
@@ -1884,7 +1981,7 @@ def main() -> None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved)
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False))
     print("\nEvaluation complete.")
 
 
