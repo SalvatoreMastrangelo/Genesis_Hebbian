@@ -367,8 +367,15 @@ def create_topdown_video_multi(
     ax.set_ylim(y0, y1)
     ax.set_xlabel("x [m]", fontsize=16, labelpad=8)
     ax.set_yticks([])
-    ax.set_xticks([0, 100, 200, 300, 400, 500, 600, 650])
+    base_init_x = float(env.env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0])[0])
+    tick_max = int(x_world1 - base_init_x)
+    xticks = list(range(0, tick_max, 100))
+    if tick_max not in xticks:
+        xticks.append(tick_max)
+    ax.set_xticks(xticks)
     ax.tick_params(axis="x", labelsize=13, width=1.2, length=5)
+    ax.set_xlim(x0, x1)
+    ax.autoscale(enable=False, axis="x")
     for spine in ("top", "right", "left"):
         ax.spines[spine].set_visible(False)
     ax.spines["bottom"].set_alpha(0.5)
