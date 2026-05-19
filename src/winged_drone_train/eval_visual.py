@@ -30,7 +30,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, Polygon
+from matplotlib.patches import Circle, Polygon, Rectangle
 from matplotlib.animation import FFMpegWriter
 
 import genesis as gs
@@ -150,6 +150,77 @@ def _print_aero_step_debug(env: WingedDroneEnv, step_idx: int) -> None:
     )
 
 
+def _find_wing_surface_indices(env: WingedDroneEnv, side: int) -> List[int]:
+    """Return all aerodynamic surface indices that are wings on the given side.
+
+    `side` follows the solver convention: -1 for left, +1 for right. Handles
+    multi-surface wings (e.g. lisparrow inner/outer) by returning every match.
+    """
+    solver = getattr(env, "aero_solver", None)
+    if solver is None or not all(hasattr(solver, n) for n in ("kind", "side")):
+        return []
+    try:
+        kind = solver.kind.to_torch(device=env.device).detach().cpu().numpy()
+        sides = solver.side.to_torch(device=env.device).detach().cpu().numpy()
+    except Exception:
+        return []
+    return [i for i in range(len(kind)) if int(kind[i]) == 1 and int(sides[i]) == side]
+
+
+def _scale_wing_lift_slope(env: WingedDroneEnv, side: int, scale: float) -> bool:
+    """Multiply the lift-curve slope of wings on the given side by ``scale``.
+
+    The SimpleDrone solver overrides the per-link ``cl_alpha_2d_link`` value
+    with a per-env side-cached field inside ``_compute_coeff`` (see
+    ``simple_drone.py:_compute_coeff`` → ``_wing_param``). To actually affect
+    wing lift we must scale those side-cached fields:
+      ``cl_alpha_2d_wing_left[b]``  (side = -1)
+      ``cl_alpha_2d_wing_right[b]`` (side = +1)
+
+    Falls back to writing ``cl_alpha_2d_link[:, l_wing]`` for solvers that do
+    not maintain side-cached fields (e.g. some Lisparrow configurations).
+
+    Parameters
+    ----------
+    scale : float
+        Multiplier applied to the lift slope (1.0 = no change, 0.5 = 50%
+        lift loss, 0.0 = no lift). Caller must pass a non-negative value.
+
+    Returns True iff at least one field was modified.
+    """
+    solver = getattr(env, "aero_solver", None)
+    if solver is None:
+        return False
+
+    side_field_name = "cl_alpha_2d_wing_left" if side < 0 else "cl_alpha_2d_wing_right"
+    side_field = getattr(solver, side_field_name, None)
+    if side_field is not None:
+        arr = side_field.to_torch(device=env.device)
+        before = float(arr.reshape(-1)[0].item())
+        arr.mul_(scale)
+        side_field.from_torch(arr)
+        after = float(arr.reshape(-1)[0].item())
+        print(f"[break] cl_alpha {side_field_name}: {before:.4f} -> {after:.4f}")
+        return True
+
+    # Fallback: write per-link (works only if the solver actually reads from
+    # cl_alpha_2d_link for wings).
+    if not hasattr(solver, "cl_alpha_2d_link"):
+        return False
+    indices = _find_wing_surface_indices(env, side)
+    if not indices:
+        return False
+    field = solver.cl_alpha_2d_link
+    arr = field.to_torch(device=env.device)
+    for l in indices:
+        before = float(arr[0, l].item())
+        arr[:, l] *= scale
+        after = float(arr[0, l].item())
+        print(f"[break] cl_alpha_2d_link[*, l={l}]: {before:.4f} -> {after:.4f}")
+    field.from_torch(arr)
+    return True
+
+
 def _extract_filtered_throttle(env: WingedDroneEnv) -> torch.Tensor:
     """Extract the actual filtered prop throttle from the AeroSolver."""
     if not hasattr(env, "aero_solver"):
@@ -229,6 +300,32 @@ def compute_fov(
     return np.vstack((pos_xy, arc_points))
 
 
+def compute_half_fov(
+    pos_xy: np.ndarray,
+    yaw: float,
+    roll: float,
+    side: str,
+    fov_angle_nom: float = 40.0,
+    fov_x_max: float = 30.0,
+    n_points: int = 16,
+) -> np.ndarray:
+    """Half of the FOV fan: ``side`` is "left" (+y body) or "right" (-y body)."""
+    alpha_eff = max(fov_angle_nom * abs(math.cos(roll)), 2.0)
+    a = math.radians(alpha_eff)
+    if side == "left":
+        thetas = np.linspace(0.0, a, n_points) + yaw
+    elif side == "right":
+        thetas = np.linspace(-a, 0.0, n_points) + yaw
+    else:
+        raise ValueError(f"unknown side '{side}'")
+    arc_points = np.stack(
+        [fov_x_max * np.cos(thetas), fov_x_max * np.sin(thetas)],
+        axis=1,
+    )
+    arc_points += pos_xy
+    return np.vstack((pos_xy, arc_points))
+
+
 # ---------------------------------------------------------------------------
 # Video generation: top-down trajectory with forest
 # ---------------------------------------------------------------------------
@@ -257,7 +354,7 @@ def create_topdown_video_multi(
     """
     x_world0, x_world1 = -40.0, env.env_cfg.get("x_upper", 400.0)
     x_offset = -x_world0
-    x0, x1 = 0.0, 650.0
+    x0, x1 = 0.0, (x_world1 - x_world0) + 50.0
     y0 = env.env_cfg.get("y_lower", -60.0)
     y1 = env.env_cfg.get("y_upper", 60.0)
     W, H = (x1 - x0), (y1 - y0)
@@ -299,6 +396,8 @@ def create_topdown_video_multi(
     N = len(trajectories)
     cmap = plt.get_cmap("tab10")
     lines, markers, polys = [], [], []
+    break_left_polys: List[Optional[Polygon]] = []
+    break_right_polys: List[Optional[Polygon]] = []
     for i in range(N):
         col = cmap(i % 10)
         lines.append(ax.plot([], [], lw=8.0, color=col)[0])
@@ -312,6 +411,28 @@ def create_topdown_video_multi(
         )
         ax.add_patch(poly)
         polys.append(poly)
+        # Brake-wing red half-fans (hidden until trigger fires)
+        tr = trajectories[i]
+        break_l = tr.get("break_left_time", None)
+        break_r = tr.get("break_right_time", None)
+        if break_l is not None:
+            p_l = Polygon(
+                np.empty((0, 2)), closed=True,
+                edgecolor="red", facecolor="red", alpha=0.85, visible=False, zorder=3,
+            )
+            ax.add_patch(p_l)
+            break_left_polys.append(p_l)
+        else:
+            break_left_polys.append(None)
+        if break_r is not None:
+            p_r = Polygon(
+                np.empty((0, 2)), closed=True,
+                edgecolor="red", facecolor="red", alpha=0.85, visible=False, zorder=3,
+            )
+            ax.add_patch(p_r)
+            break_right_polys.append(p_r)
+        else:
+            break_right_polys.append(None)
 
     # Common time grid
     t_max = max(tr["time_steps"][-1] for tr in trajectories)
@@ -334,6 +455,18 @@ def create_topdown_video_multi(
                 lines[i].set_data(pos_plot[: idx + 1, 0], pos_plot[: idx + 1, 1])
                 markers[i].set_data([pos_plot[idx, 0]], [pos_plot[idx, 1]])
                 polys[i].set_xy(compute_fov(pos_plot[idx], yaw, roll))
+                break_l = tr.get("break_left_time", None)
+                if break_left_polys[i] is not None and break_l is not None and t >= break_l:
+                    break_left_polys[i].set_xy(
+                        compute_half_fov(pos_plot[idx], yaw, roll, side="left")
+                    )
+                    break_left_polys[i].set_visible(True)
+                break_r = tr.get("break_right_time", None)
+                if break_right_polys[i] is not None and break_r is not None and t >= break_r:
+                    break_right_polys[i].set_xy(
+                        compute_half_fov(pos_plot[idx], yaw, roll, side="right")
+                    )
+                    break_right_polys[i].set_visible(True)
             writer.grab_frame()
 
     plt.close(fig)
@@ -548,6 +681,50 @@ def create_overlay_video(
     ax_depth.axis("off")
     ax_td = fig.add_subplot(left_gs[2, 0])
     ax_td.axis("off")
+
+    # Brake-wing overlays on the camera panel: a thick red side bar plus a
+    # corner badge. Hidden until the break fires; toggled inside the writer
+    # loop below.
+    break_left_time = traj.get("break_left_time", None)
+    break_right_time = traj.get("break_right_time", None)
+    break_left_loss_pct = traj.get("break_left_loss_pct", None)
+    break_right_loss_pct = traj.get("break_right_loss_pct", None)
+    break_l_bar = break_l_badge = None
+    break_r_bar = break_r_badge = None
+    if break_left_time is not None:
+        break_l_bar = Rectangle(
+            (0.0, 0.0), 0.04, 1.0,
+            transform=ax_cam.transAxes,
+            facecolor="red", edgecolor="red", visible=False, zorder=10,
+        )
+        ax_cam.add_patch(break_l_bar)
+        lbl = "BREAK LEFT"
+        if break_left_loss_pct is not None:
+            lbl = f"BREAK LEFT -{float(break_left_loss_pct):.0f}%"
+        break_l_badge = ax_cam.text(
+            0.05, 0.97, lbl,
+            transform=ax_cam.transAxes,
+            color="white", fontsize=13, fontweight="bold",
+            ha="left", va="top", visible=False, zorder=11,
+            bbox=dict(facecolor="red", edgecolor="none", pad=4),
+        )
+    if break_right_time is not None:
+        break_r_bar = Rectangle(
+            (0.96, 0.0), 0.04, 1.0,
+            transform=ax_cam.transAxes,
+            facecolor="red", edgecolor="red", visible=False, zorder=10,
+        )
+        ax_cam.add_patch(break_r_bar)
+        lbl = "BREAK RIGHT"
+        if break_right_loss_pct is not None:
+            lbl = f"BREAK RIGHT -{float(break_right_loss_pct):.0f}%"
+        break_r_badge = ax_cam.text(
+            0.95, 0.97, lbl,
+            transform=ax_cam.transAxes,
+            color="white", fontsize=13, fontweight="bold",
+            ha="right", va="top", visible=False, zorder=11,
+            bbox=dict(facecolor="red", edgecolor="none", pad=4),
+        )
 
     # Right column: time-series (skipped entirely in alternative mode)
     ax_T = ax_J01 = ax_J23 = ax_J45 = ax_VLIN = ax_aero = None
@@ -796,9 +973,43 @@ def create_overlay_video(
             label=r"$\Sigma (W_t - W_{t-1})^2$",
         )
 
+        freeze_t = traj.get("hebbian_freeze_time", None)
+        legend_handles = [ln_drift, ln_step]
+        if freeze_t is not None and np.isfinite(float(freeze_t)):
+            ln_freeze = ax_wstats.axvline(
+                float(freeze_t),
+                color="k",
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.85,
+                label=f"freeze @ {float(freeze_t):.2f} s",
+                zorder=5,
+            )
+            legend_handles.append(ln_freeze)
+        if break_left_time is not None and np.isfinite(float(break_left_time)):
+            lbl = f"break L @ {float(break_left_time):.2f} s"
+            if break_left_loss_pct is not None:
+                lbl = f"break L -{float(break_left_loss_pct):.0f}% @ {float(break_left_time):.2f} s"
+            ln_bl = ax_wstats.axvline(
+                float(break_left_time),
+                color="red", linestyle="--", linewidth=1.2, alpha=0.85,
+                label=lbl, zorder=5,
+            )
+            legend_handles.append(ln_bl)
+        if break_right_time is not None and np.isfinite(float(break_right_time)):
+            lbl = f"break R @ {float(break_right_time):.2f} s"
+            if break_right_loss_pct is not None:
+                lbl = f"break R -{float(break_right_loss_pct):.0f}% @ {float(break_right_time):.2f} s"
+            ln_br = ax_wstats.axvline(
+                float(break_right_time),
+                color="red", linestyle=":", linewidth=1.4, alpha=0.85,
+                label=lbl, zorder=5,
+            )
+            legend_handles.append(ln_br)
+
         ax_wstats.legend(
-            handles=[ln_drift, ln_step],
-            fontsize=9, frameon=False, loc="upper left", ncol=2,
+            handles=legend_handles,
+            fontsize=9, frameon=False, loc="upper left", ncol=len(legend_handles),
         )
 
         if not alternative_mode:
@@ -911,6 +1122,13 @@ def create_overlay_video(
                 for ax in ts_axes:
                     ax.set_xlim(0, t_all[idx])
                 ax_T_right.set_xlim(0, t_all[idx])
+
+            if break_l_bar is not None and t_now >= float(break_left_time):
+                break_l_bar.set_visible(True)
+                break_l_badge.set_visible(True)
+            if break_r_bar is not None and t_now >= float(break_right_time):
+                break_r_bar.set_visible(True)
+                break_r_badge.set_visible(True)
 
             if im_heatmap is not None:
                 hm_idx = min(idx, weight_delta.shape[0] - 1)
@@ -1167,7 +1385,12 @@ def run_and_record(env,
                    collect_video: bool = False,
                    video_cam_path: str = "camera_view.mp4",
                    debug_aero: bool = True,
-                   hebbian_actor=None):
+                   hebbian_actor=None,
+                   freeze_distance: Optional[float] = None,
+                   break_left_distance: Optional[float] = None,
+                   break_right_distance: Optional[float] = None,
+                   break_left_loss_pct: float = 50.0,
+                   break_right_loss_pct: float = 50.0):
     """
     Roll out ONE evaluation episode (usually with num_envs = 1) and:
     - collect trajectory data (positions, velocities, joints, depth)
@@ -1227,6 +1450,28 @@ def run_and_record(env,
         cam_recording = True
     else:
         cam_recording = False
+
+    # Hebbian weight-freeze latch: once x_progress crosses `freeze_distance`,
+    # replace `hebbian.hebbian_update` with a no-op so weights stay frozen at
+    # whatever value they reached at that step.
+    freeze_armed = (
+        freeze_distance is not None
+        and hebbian_actor is not None
+        and hasattr(hebbian_actor, "hebbian")
+    )
+    freeze_triggered = False
+    freeze_time: Optional[float] = None
+    if freeze_distance is not None and not freeze_armed:
+        print("[freeze] --freeze ignored: only active in Hebbian mode")
+
+    # Break-wing latches: --break-left-wing / --break-right-wing scale
+    # cl_alpha on the chosen side once x_progress crosses the threshold.
+    break_left_triggered = False
+    break_right_triggered = False
+    break_left_time: Optional[float] = None
+    break_right_time: Optional[float] = None
+    break_left_loss_applied: Optional[float] = None
+    break_right_loss_applied: Optional[float] = None
 
     # Reset environment and record initial state
     obs, _ = env.reset()
@@ -1343,6 +1588,53 @@ def run_and_record(env,
             torch.norm(env.base_lin_vel[still_flying, 1:], dim=1)
             / env.base_lin_vel[still_flying, 0].clamp_min(1e-6)
         )
+
+        # Latching Hebbian freeze: trigger once any env crosses freeze_distance.
+        if freeze_armed and not freeze_triggered:
+            if bool((x_progress >= freeze_distance).any().item()):
+                hebbian_actor.hebbian.hebbian_update = lambda *a, **kw: None
+                freeze_triggered = True
+                freeze_time = float(t[0].item())
+                print(
+                    f"[freeze] hebbian updates frozen at x={x_progress[0].item():.2f} m, "
+                    f"t={freeze_time:.2f} s, step {step_idx}"
+                )
+
+        # Latching wing breaks: scale cl_alpha on the chosen side once crossed.
+        # NOTE: CLI flags follow VISUAL orientation (pilot's view). The URDF
+        # naming convention is reversed relative to ROS body frame (+y = left),
+        # so --break-left-wing maps to the URDF's "right" side (side=+1, at +y)
+        # and --break-right-wing maps to the URDF's "left" side (side=-1, at -y).
+        if break_left_distance is not None and not break_left_triggered:
+            if bool((x_progress >= break_left_distance).any().item()):
+                pct = float(np.clip(break_left_loss_pct, 0.0, 100.0))
+                ok = _scale_wing_lift_slope(env, side=+1, scale=1.0 - pct / 100.0)
+                break_left_triggered = True
+                break_left_time = float(t[0].item())
+                break_left_loss_applied = pct
+                if ok:
+                    print(
+                        f"[break] left wing lift -{pct:.1f}% at "
+                        f"x={x_progress[0].item():.2f} m, "
+                        f"t={break_left_time:.2f} s, step {step_idx}"
+                    )
+                else:
+                    print("[break] --break-left-wing: no matching wing surface found")
+        if break_right_distance is not None and not break_right_triggered:
+            if bool((x_progress >= break_right_distance).any().item()):
+                pct = float(np.clip(break_right_loss_pct, 0.0, 100.0))
+                ok = _scale_wing_lift_slope(env, side=-1, scale=1.0 - pct / 100.0)
+                break_right_triggered = True
+                break_right_time = float(t[0].item())
+                break_right_loss_applied = pct
+                if ok:
+                    print(
+                        f"[break] right wing lift -{pct:.1f}% at "
+                        f"x={x_progress[0].item():.2f} m, "
+                        f"t={break_right_time:.2f} s, step {step_idx}"
+                    )
+                else:
+                    print("[break] --break-right-wing: no matching wing surface found")
 
         still_count = still_flying & (~reached_min)
         if still_count.any():
@@ -1491,6 +1783,11 @@ def run_and_record(env,
             hebbian_weight_delta_history=(
                 np.stack(weight_delta_b, axis=0) if log_hebb_weights and len(weight_delta_b) > 0 else None
             ),
+            hebbian_freeze_time=freeze_time,
+            break_left_time=break_left_time,
+            break_right_time=break_right_time,
+            break_left_loss_pct=break_left_loss_applied,
+            break_right_loss_pct=break_right_loss_applied,
         )
         return stats, traj, cam_recording
 
@@ -1636,6 +1933,11 @@ def _run_hebbian(args) -> None:
         collect_video=True,
         video_cam_path=cam_mp4,
         hebbian_actor=actor,
+        freeze_distance=getattr(args, "freeze_distance", None),
+        break_left_distance=getattr(args, "break_left_distance", None),
+        break_right_distance=getattr(args, "break_right_distance", None),
+        break_left_loss_pct=getattr(args, "break_left_loss", 50.0),
+        break_right_loss_pct=getattr(args, "break_right_loss", 50.0),
     )
 
     print("Final reason:", traj["end_reason"])
@@ -1653,6 +1955,8 @@ def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, 
     """Build and reset a single-env WingedDroneEnv with the standard eval overrides."""
     env_cfg_eval = dict(env_cfg)
     rec_cam_follow_distance = float(env_cfg.get("rec_cam_follow_distance", 1.5))
+    x_upper = float(getattr(args, "x_upper", None) or 600)
+    forest_x_limit = float(getattr(args, "forest_x_limit", None) or x_upper)
     env_cfg_eval.update(
         dict(
             enable_rendering=True,
@@ -1662,8 +1966,8 @@ def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, 
             unique_forests_eval=False,
             growing_forest=True,
             episode_length_s=SUCCESS_TIME_SEC,
-            x_upper=600,
-            forest_x_limit=600,
+            x_upper=x_upper,
+            forest_x_limit=forest_x_limit,
             tree_radius=env_cfg.get("tree_radius", 0.75),
             base_init_pos=env_cfg.get("base_init_pos", [-50.0, 0.0, 15.0]),
             rec_cam_follow_distance=max(0.5, rec_cam_follow_distance),
@@ -1865,6 +2169,20 @@ def main() -> None:
         help="Override forest density at x=x_upper [trees/m].",
     )
     parser.add_argument(
+        "--x-upper",
+        dest="x_upper",
+        type=float,
+        default=None,
+        help="Override the eval x_upper (default 600 m). Sets the world end along +X.",
+    )
+    parser.add_argument(
+        "--forest-x-limit",
+        dest="forest_x_limit",
+        type=float,
+        default=None,
+        help="Override the forest x extent (default: same as --x-upper).",
+    )
+    parser.add_argument(
         "--log_dir",
         type=str,
         default=None,
@@ -1905,6 +2223,71 @@ def main() -> None:
             "Disable the roll/pitch/yaw attitude termination so the rollout "
             "continues until an actual collision, wall crash, success, or "
             "timeout. The drone may tumble far past normal eval limits."
+        ),
+    )
+    parser.add_argument(
+        "--freeze",
+        dest="freeze_distance",
+        type=float,
+        default=None,
+        metavar="DIST",
+        help=(
+            "Hebbian mode only: freeze the last-layer weights once the drone "
+            "has travelled DIST meters along +X. The current weight values at "
+            "that step are kept for the rest of the episode (no ABCD update, "
+            "no decay-toward-checkpoint)."
+        ),
+    )
+    parser.add_argument(
+        "--break-left-wing",
+        dest="break_left_distance",
+        type=float,
+        default=None,
+        metavar="DIST",
+        help=(
+            "Hebbian mode only: reduce the lift produced by the wing on the "
+            "pilot's LEFT (visual orientation) once the drone has travelled "
+            "DIST meters along +X. The amount of lift lost is controlled by "
+            "--break-left-loss (default 50%%). The drone is expected to roll "
+            "LEFT in response. Latched, one-shot."
+        ),
+    )
+    parser.add_argument(
+        "--break-left-loss",
+        dest="break_left_loss",
+        type=float,
+        default=50.0,
+        metavar="PCT",
+        help=(
+            "Percentage of left-wing lift to lose when --break-left-wing "
+            "fires (default 50). 0 = no effect, 100 = no lift remaining. "
+            "Clamped to [0, 100]."
+        ),
+    )
+    parser.add_argument(
+        "--break-right-wing",
+        dest="break_right_distance",
+        type=float,
+        default=None,
+        metavar="DIST",
+        help=(
+            "Hebbian mode only: reduce the lift produced by the wing on the "
+            "pilot's RIGHT (visual orientation) once the drone has travelled "
+            "DIST meters along +X. The amount of lift lost is controlled by "
+            "--break-right-loss (default 50%%). The drone is expected to roll "
+            "RIGHT in response. Latched, one-shot."
+        ),
+    )
+    parser.add_argument(
+        "--break-right-loss",
+        dest="break_right_loss",
+        type=float,
+        default=50.0,
+        metavar="PCT",
+        help=(
+            "Percentage of right-wing lift to lose when --break-right-wing "
+            "fires (default 50). 0 = no effect, 100 = no lift remaining. "
+            "Clamped to [0, 100]."
         ),
     )
     args = parser.parse_args()
