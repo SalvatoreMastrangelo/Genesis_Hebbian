@@ -24,7 +24,7 @@ exp_name: outer_loop
 # --- Loop sizing ---
 outer_generations: 20        # NSGA-II generations
 inner_generations: 5         # CMA-ES generations per outer generation
-population_size: 4           # NSGA-II population P (must be even)
+population_size: 2           # NSGA-II population P (must be even)
 num_eval_envs: 256           # Total env budget per evaluation pass
 
 seed: 0

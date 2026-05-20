@@ -237,6 +237,14 @@ class CatalogConfig:
         remaining ``num_urdfs - 1`` are sampled randomly. When False, all
         ``num_urdfs`` URDFs are sampled randomly. Ignored when ``path`` is
         set (the existing catalog is used as-is).
+    refresh_urdfs_every : int
+        When > 0, every ``refresh_urdfs_every`` inner CMA-ES generations the
+        evaluation env is torn down and a brand-new random URDF population
+        (same ``num_urdfs``, respecting ``include_standard_mydrone``) is
+        sampled, written under ``urdfs_gen_XXX/``, and the env is rebuilt.
+        ``0`` (default) disables the refresh — behaviour identical to before.
+        Only effective in the multi-URDF path; ignored when running through
+        the legacy single-URDF path.
     """
 
     path: str = ""
@@ -244,6 +252,7 @@ class CatalogConfig:
     num_episodes: int = 1
     force_multi_urdf: bool = False
     include_standard_mydrone: bool = True
+    refresh_urdfs_every: int = 0
 
 
 # ============================================================================

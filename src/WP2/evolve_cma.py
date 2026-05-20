@@ -534,16 +534,63 @@ class HebbianCMAES:
             self._env_urdf_path = None
 
     def _cleanup_env(self) -> None:
-        """Destroy the pre-built environment at run end."""
-        if self._env is not None:
-            import genesis as gs
-            print("[HebbianCMAES] Destroying environment...")
+        """Destroy the pre-built environment (called at run end or before refresh)."""
+        if self._env is None:
+            return
+        import genesis as gs
+        print("[HebbianCMAES] Destroying environment...")
+        # ParallelMultiSceneEvalEnv runs its Genesis scenes inside subprocesses,
+        # so gs.destroy() on the main process can't reach them — explicitly
+        # ask the wrapper to shutdown its workers first.
+        shutdown = getattr(self._env, "shutdown", None)
+        if callable(shutdown):
             try:
-                gs.destroy()
-                self._env = None
-                self._env_urdf_path = None
+                shutdown()
             except Exception as exc:
-                print(f"[HebbianCMAES] Warning: failed to destroy environment: {exc}")
+                print(f"[HebbianCMAES] Warning: parallel env shutdown failed: {exc}")
+        try:
+            if gs._initialized:
+                gs.destroy()
+        except Exception as exc:
+            print(f"[HebbianCMAES] Warning: gs.destroy() failed: {exc}")
+        self._env = None
+        self._env_urdf_path = None
+
+    # ------------------------------------------------------------------
+    #  Periodic URDF refresh
+    # ------------------------------------------------------------------
+
+    def _refresh_urdfs(self, gen: int) -> None:
+        """Resample ``num_urdfs`` random URDFs and rebuild the eval env.
+
+        Triggered every ``catalog.refresh_urdfs_every`` inner generations
+        (multi-URDF path only). New URDFs are written under
+        ``urdfs_gen_XXX/`` for reproducibility; ``include_standard_mydrone``
+        is respected. Seed = ``cfg.seed + gen`` so each refresh is
+        deterministic given the run seed.
+        """
+        if not self._use_multi_urdf:
+            return
+        n = max(1, self.cfg.catalog.num_urdfs)
+        new_dir = self.run_dir / f"urdfs_gen_{gen:03d}"
+        print(
+            f"\n[HebbianCMAES] === Refreshing URDFs at gen {gen} → {new_dir} ==="
+        )
+        print(
+            f"[HebbianCMAES] Sampling {n} new random URDFs "
+            f"(include_standard_mydrone="
+            f"{self.cfg.catalog.include_standard_mydrone}, "
+            f"seed={self.cfg.seed + gen})"
+        )
+        new_paths = _generate_random_urdfs(
+            new_dir,
+            n,
+            self.cfg.seed + gen,
+            include_standard_mydrone=self.cfg.catalog.include_standard_mydrone,
+        )
+        self._cleanup_env()
+        self._urdf_paths = new_paths
+        self._build_env_once()
 
     # ------------------------------------------------------------------
     #  Reference controller evaluation (zero Hebbian rules)
@@ -1041,9 +1088,20 @@ class HebbianCMAES:
         # ------------------------------------------------------------------
 
         gen = start_gen
+        refresh_every = int(getattr(self.cfg.catalog, "refresh_urdfs_every", 0) or 0)
         while not es.stop() and gen <= self.cfg.evolution.num_generations:
             self._gen_start_time = time.perf_counter()
             verbose = (gen == 0)
+
+            # Periodic URDF refresh: resample the morphology pool every K gens.
+            # Disabled when refresh_every == 0 (default); also skipped on the
+            # single-URDF legacy path (handled inside _refresh_urdfs).
+            if (
+                refresh_every > 0
+                and gen > 0
+                and gen % refresh_every == 0
+            ):
+                self._refresh_urdfs(gen)
 
             # Sample new candidate solutions
             solutions = es.ask()   # list of np.ndarray, each shape (n_genes,)
