@@ -143,8 +143,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--obs-genome",
-        action="store_true",
-        help="Force-enable genome observations for the eval env.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override genome observations for the eval env (applies to both "
+            "actor and critic). Omit to inherit the actor_genome_obs / "
+            "critic_genome_obs values from cfgs.pkl."
+        ),
     )
     parser.add_argument(
         "--dens-min",
@@ -174,7 +179,7 @@ def evaluate_run(
     win_frac: float = 0.05,
     urdf_file: Optional[str] = None,
     save_plots: bool = True,
-    obs_genome: bool = False,
+    obs_genome: Optional[bool] = None,
     dens_min: Optional[float] = None,
     dens_max: Optional[float] = None,
 ):
