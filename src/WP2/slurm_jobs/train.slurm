@@ -3,9 +3,14 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=1
-#SBATCH --mem=80G
-#SBATCH --cpus-per-gpu=4
-#SBATCH --time=70:00:00
+#SBATCH --mem=160G
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=48:00:00
+# To use multiple GPUs for ParallelMultiSceneEvalEnv, override --gpus on
+# submission (e.g. `bash run_parallel.sh ... --gpus=2`). The Python code
+# auto-detects via torch.cuda.device_count() when evaluation.num_gpus is 0,
+# so no other change is needed. CPU count and OMP threads scale with --gpus
+# automatically via the SLURM_CPUS_PER_GPU block below.
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 #SBATCH --mail-user=salvatore.mastrangelo@epfl.ch

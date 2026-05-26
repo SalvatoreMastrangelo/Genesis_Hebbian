@@ -102,7 +102,7 @@ for EXP_DIR in "${EXP_DIRS[@]}"; do
     RUN_TAG="wp2_${EXP_NAME}_r${i}"
     SEED=$((BASE_SEED + i))
 
-    JOB_ID=$(sbatch -q long \
+    JOB_ID=$(sbatch \
       --job-name="wp2_${EXP_NAME}_r${i}" \
       --output="/home/%u/slurm_logs/${RUN_TAG}-%j.out" \
       --error="/home/%u/slurm_logs/${RUN_TAG}-%j.err" \

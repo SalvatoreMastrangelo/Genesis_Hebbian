@@ -142,6 +142,12 @@ class EvaluationConfig:
     num_eval_episodes: int = 1
     num_eval_envs: int = 8192
     num_eval_workers: int = 1  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
+    # Multi-GPU evaluation: when >1, workers are round-robin pinned to G GPUs
+    # (URDFs are round-robin sharded across GPUs too, so each GPU handles
+    # num_urdfs/G URDFs × envs_per_drone = num_eval_envs/G total env slots).
+    # 0 or None → auto-detect via torch.cuda.device_count(). 1 → legacy
+    # single-GPU behaviour. Clamped to min(num_gpus, num_eval_workers).
+    num_gpus: int = 0
     vmin: float = 6.0
     vmax: float = 30.0
     stochastic: bool = True

@@ -27,6 +27,8 @@ API, returning tensors on the main-process device (GPU).
 
 from __future__ import annotations
 
+import os
+import queue as _queue_mod
 import random
 import sys
 from typing import List, Optional, Tuple
@@ -34,6 +36,13 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 import torch.multiprocessing as mp
+
+
+# Default per-worker init timeout (seconds). Cold Taichi-cache builds of many
+# Genesis scenes across many workers can take 10-30 min; the previous 600s
+# default was too short for production-scale runs (e.g. D=40 across 10
+# workers). Override at runtime via env var WP2_WORKER_INIT_TIMEOUT.
+_DEFAULT_INIT_TIMEOUT_S = 1800.0
 
 # ── drone-state buffer layout ─────────────────────────────────────────────────
 _N_STATE = 14
@@ -157,13 +166,23 @@ def _worker_main(
     extra_sys_paths: List[str],
     cmd_q: "mp.Queue[tuple]",
     ack_q: "mp.Queue[tuple]",
+    gpu_id: Optional[int] = None,
 ) -> None:
+    # Pin this worker to one physical GPU BEFORE importing Genesis. After
+    # masking, the assigned GPU appears to torch/Genesis as cuda:0, which is
+    # what env_kwargs["device"] already says — so internal code that uses
+    # ``cuda:0`` continues to work, while different workers actually land on
+    # different physical GPUs.
+    if gpu_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
     # Restore sys.path so project imports work in the spawned process.
     for p in extra_sys_paths:
         if p not in sys.path:
             sys.path.insert(0, p)
 
-    print(f"[worker {worker_id}] entered (urdfs={len(urdf_shard)})", flush=True)
+    print(f"[worker {worker_id}] entered (urdfs={len(urdf_shard)}, "
+          f"gpu={gpu_id if gpu_id is not None else 'default'})", flush=True)
     try:
         import genesis as gs
         from WP2.multi_scene_eval_env import MultiSceneEvalEnv
@@ -259,19 +278,78 @@ def _worker_main(
             ack_q.put(("error", f"worker {worker_id} cmd={cmd!r}: {exc}"))
 
 
+# ── URDF/worker/GPU assignment ────────────────────────────────────────────────
+
+def _plan_assignment(
+    D: int, N: int, G: int
+) -> Tuple[List[List[int]], List[int]]:
+    """Round-robin URDFs and workers across G GPUs.
+
+    Returns
+    -------
+    worker_urdfs : List[List[int]]
+        For each worker w, the global URDF indices (in the original
+        ``urdf_paths`` list) that worker owns. Length ``N``.
+    worker_gpu : List[int]
+        For each worker w, the physical GPU id it is pinned to. Length ``N``.
+
+    Algorithm
+    ---------
+    1. Assign URDF i to GPU ``i % G`` (round-robin across GPUs).
+    2. Assign worker w to GPU ``w % G`` (round-robin across GPUs).
+    3. Within each GPU, distribute that GPU's URDFs contiguously across
+       that GPU's workers. With imbalanced counts, earlier workers on the
+       GPU pick up the extras.
+    """
+    gpu_urdfs: List[List[int]] = [[] for _ in range(G)]
+    for i in range(D):
+        gpu_urdfs[i % G].append(i)
+    gpu_workers: List[List[int]] = [[] for _ in range(G)]
+    for w in range(N):
+        gpu_workers[w % G].append(w)
+
+    worker_urdfs: List[List[int]] = [[] for _ in range(N)]
+    worker_gpu: List[int] = [0] * N
+    for g in range(G):
+        urdfs_g = gpu_urdfs[g]
+        workers_g = gpu_workers[g]
+        if not workers_g:
+            # Shouldn't happen: caller clamps G <= N.
+            continue
+        K = len(workers_g)
+        base, rem = divmod(len(urdfs_g), K)
+        idx = 0
+        for k, w in enumerate(workers_g):
+            size = base + (1 if k < rem else 0)
+            worker_urdfs[w] = urdfs_g[idx: idx + size]
+            worker_gpu[w] = g
+            idx += size
+    return worker_urdfs, worker_gpu
+
+
 # ── main class ────────────────────────────────────────────────────────────────
 
 class ParallelMultiSceneEvalEnv:
     """
     Wrap D URDFs across N worker processes, each owning a MultiSceneEvalEnv
-    shard of D/N URDFs.  Drop-in replacement for MultiSceneEvalEnv.
+    shard of D URDFs sharded across G GPUs. Drop-in replacement for
+    MultiSceneEvalEnv.
 
     Parameters
     ----------
     num_workers : int
-        Number of worker processes.  Clamped to ``len(urdf_paths)``.
+        Number of worker processes. Clamped to ``len(urdf_paths)``.
         With the GPU at 40-50% per scene, N=2 is typically enough to
-        saturate the GPU without excess memory pressure.
+        saturate one GPU without excess memory pressure.
+    num_gpus : Optional[int]
+        Number of physical GPUs to spread workers across. ``None`` or ``0``
+        auto-detects via ``torch.cuda.device_count()``. Clamped to
+        ``min(num_gpus, num_workers)``. With G GPUs, URDFs are round-robin
+        assigned to GPUs (URDF ``i`` → GPU ``i % G``) and workers are
+        round-robin assigned to GPUs (worker ``w`` → GPU ``w % G``). Each
+        GPU runs roughly ``num_eval_envs / G`` total env slots. Workers
+        pin to their GPU via ``CUDA_VISIBLE_DEVICES`` before importing
+        Genesis.
     """
 
     def __init__(
@@ -284,20 +362,25 @@ class ParallelMultiSceneEvalEnv:
         command_cfg: dict,
         device: str,
         num_workers: int = 2,
+        num_gpus: Optional[int] = None,
     ) -> None:
         D = len(urdf_paths)
         N = max(1, min(num_workers, D))
         E = int(num_envs_per_drone)
 
-        base, rem   = divmod(D, N)
-        shard_sizes = [base + (1 if i < rem else 0) for i in range(N)]
-        d_offsets   = [sum(shard_sizes[:i]) for i in range(N)]
+        # GPU count: auto-detect from torch when None/0, then clamp to N.
+        if num_gpus is None or num_gpus <= 0:
+            detected = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            G = max(1, detected)
+        else:
+            G = int(num_gpus)
+        G = max(1, min(G, N))
 
-        shards: List[List[str]] = []
-        start = 0
-        for s in shard_sizes:
-            shards.append(list(urdf_paths[start: start + s]))
-            start += s
+        worker_urdfs, worker_gpu = _plan_assignment(D, N, G)
+        shard_sizes = [len(s) for s in worker_urdfs]
+        shards: List[List[str]] = [
+            [urdf_paths[i] for i in worker_urdfs[w]] for w in range(N)
+        ]
 
         env_kwargs = dict(
             num_envs_per_drone=E,
@@ -308,8 +391,11 @@ class ParallelMultiSceneEvalEnv:
             device=device,
         )
 
-        print(f"[ParallelMultiSceneEvalEnv] launching {N} workers "
-              f"(D={D}, E={E}, shards={shard_sizes})...", flush=True)
+        print(f"[ParallelMultiSceneEvalEnv] launching {N} workers across "
+              f"{G} GPU(s) (D={D}, E={E})", flush=True)
+        for w in range(N):
+            print(f"[ParallelMultiSceneEvalEnv]   worker {w} → GPU "
+                  f"{worker_gpu[w]} | URDFs {worker_urdfs[w]}", flush=True)
 
         ctx = mp.get_context("spawn")
         self._cmd_qs = [ctx.Queue() for _ in range(N)]
@@ -320,27 +406,53 @@ class ParallelMultiSceneEvalEnv:
             p = ctx.Process(
                 target=_worker_main,
                 args=(w, shards[w], env_kwargs, sys.path[:],
-                      self._cmd_qs[w], self._ack_qs[w]),
+                      self._cmd_qs[w], self._ack_qs[w], worker_gpu[w]),
                 daemon=True,
             )
             p.start()
             self._procs.append(p)
-            print(f"[ParallelMultiSceneEvalEnv]   worker {w} pid={p.pid} started",
-                  flush=True)
+            print(f"[ParallelMultiSceneEvalEnv]   worker {w} pid={p.pid} "
+                  f"(gpu={worker_gpu[w]}) started", flush=True)
 
         print(f"[ParallelMultiSceneEvalEnv] spawned {N} workers "
-              f"(shards: {shard_sizes})", flush=True)
+              f"(shard_sizes: {shard_sizes})", flush=True)
 
-        # Collect dims + static metadata. Genesis init can be slow on cold
-        # caches, allow generous timeout.
+        # Collect dims + static metadata. Genesis init + sub-env construction
+        # can be slow on cold Taichi caches (10s of minutes for many concurrent
+        # workers + many URDFs per worker); on any failure we MUST kill every
+        # spawned worker before raising, otherwise orphans hold GPU memory
+        # and starve a subsequent retry.
+        init_timeout = float(os.environ.get(
+            "WP2_WORKER_INIT_TIMEOUT", _DEFAULT_INIT_TIMEOUT_S))
+        print(f"[ParallelMultiSceneEvalEnv] waiting for worker readies "
+              f"(timeout={init_timeout:.0f}s/worker; "
+              f"override via WP2_WORKER_INIT_TIMEOUT)...", flush=True)
         num_obs = num_actions = dt = None
         reward_names: List[str] = []
         reward_scales: dict = {}
         n_comp_full = 0
         nominal_masses_all: List[float] = [0.0] * D
+        ready_count = 0
         for w in range(N):
-            msg = self._ack_qs[w].get(timeout=600)
+            try:
+                msg = self._ack_qs[w].get(timeout=init_timeout)
+            except _queue_mod.Empty:
+                self._force_shutdown()
+                raise RuntimeError(
+                    f"Worker {w} did not reply 'ready' within "
+                    f"{init_timeout:.0f}s. Status: {ready_count}/{N} workers "
+                    f"replied successfully before the timeout fired. This "
+                    f"worker holds {len(worker_urdfs[w])} URDF(s) × E={E} "
+                    f"= {E * len(worker_urdfs[w])} env slots on GPU "
+                    f"{worker_gpu[w]}. Likely causes: cold Taichi cache + "
+                    f"many concurrent Genesis scenes, CPU oversubscription "
+                    f"(check --cpus-per-gpu vs num_eval_workers), or GPU OOM. "
+                    f"Mitigations: raise WP2_WORKER_INIT_TIMEOUT (currently "
+                    f"{init_timeout:.0f}s), reduce num_eval_workers, or "
+                    f"reduce num_urdfs."
+                ) from None
             if msg[0] == "error":
+                self._force_shutdown()
                 raise RuntimeError(f"Worker {w} init failed: {msg[1]}")
             _, _no, _na, _dt, _nominal, _names, _scales, _ncomp = msg
             if num_obs is None:
@@ -349,23 +461,33 @@ class ParallelMultiSceneEvalEnv:
                 reward_scales = dict(_scales)
                 n_comp_full = int(_ncomp)
             elif num_obs != _no or num_actions != _na:
+                self._force_shutdown()
                 raise RuntimeError(
                     f"Worker {w} obs/action dim mismatch: "
                     f"({_no},{_na}) vs ({num_obs},{num_actions})"
                 )
-            d0, ds = d_offsets[w], shard_sizes[w]
-            nominal_masses_all[d0: d0 + ds] = list(_nominal)
+            for k, d in enumerate(worker_urdfs[w]):
+                nominal_masses_all[d] = float(_nominal[k])
+            ready_count += 1
+            print(f"[ParallelMultiSceneEvalEnv]   worker {w} ready "
+                  f"({ready_count}/{N})", flush=True)
 
         self.D           = D
         self.E           = E
         self.N           = N
+        self.G           = G
         self.num_obs     = num_obs
         self.num_actions = num_actions
         self.dt          = dt
         self.device      = device
         self._command_cfg             = command_cfg
-        self._d_offsets               = d_offsets
-        self._shard_sizes             = shard_sizes
+        self._worker_urdfs            = worker_urdfs
+        self._worker_gpu              = worker_gpu
+        # Pre-build long index tensors on the main device for scatter writes.
+        self._idx_tensors = [
+            torch.as_tensor(worker_urdfs[w], dtype=torch.long, device=device)
+            for w in range(N)
+        ]
         self._fixed_forest_ids_buf:  Optional[torch.Tensor] = None
         self._eval_speed_grid_buf:   Optional[torch.Tensor] = None
 
@@ -415,11 +537,14 @@ class ParallelMultiSceneEvalEnv:
             if msg[0] == "error":
                 raise RuntimeError(f"Worker {w} reset error: {msg[1]}")
             _, obs_s, state_s, comp_s = msg
-            d0, ds = self._d_offsets[w], self._shard_sizes[w]
-            self._obs_buf[d0: d0 + ds].copy_(obs_s)       # cross-device H2D
-            self._state_buf[d0: d0 + ds].copy_(state_s)
+            idx_t = self._idx_tensors[w]
+            # Worker returns CPU tensors → scatter to main-device buffers via
+            # index_copy_. URDF rows are non-contiguous under round-robin GPU
+            # sharding, so plain slice .copy_ no longer works.
+            self._obs_buf.index_copy_(0, idx_t, obs_s.to(self.device))
+            self._state_buf.index_copy_(0, idx_t, state_s.to(self.device))
             if comp_s is not None and self._comp_buf is not None:
-                self._comp_buf[d0: d0 + ds].copy_(comp_s)
+                self._comp_buf.index_copy_(0, idx_t, comp_s.to(self.device))
 
         return self._obs_buf.clone(), {}
 
@@ -436,9 +561,10 @@ class ParallelMultiSceneEvalEnv:
         actions_cpu = actions.cpu()
 
         # Dispatch all workers simultaneously before blocking on any result.
+        # actions_cpu[urdfs] uses advanced indexing → contiguous (ds, E, A) view.
         for w in range(self.N):
-            d0, ds = self._d_offsets[w], self._shard_sizes[w]
-            self._cmd_qs[w].put(("step", actions_cpu[d0: d0 + ds].clone()))
+            urdfs = self._worker_urdfs[w]
+            self._cmd_qs[w].put(("step", actions_cpu[urdfs].clone()))
 
         rew  = torch.zeros(self.D, self.E, device=self.device)
         done = torch.zeros(self.D, self.E, dtype=torch.bool, device=self.device)
@@ -448,13 +574,13 @@ class ParallelMultiSceneEvalEnv:
             if msg[0] == "error":
                 raise RuntimeError(f"Worker {w} step error: {msg[1]}")
             _, obs_s, rew_s, done_s, state_s, comp_s = msg
-            d0, ds = self._d_offsets[w], self._shard_sizes[w]
-            self._obs_buf[d0: d0 + ds].copy_(obs_s)
-            rew[d0: d0 + ds].copy_(rew_s)
-            done[d0: d0 + ds].copy_(done_s.bool())
-            self._state_buf[d0: d0 + ds].copy_(state_s)
+            idx_t = self._idx_tensors[w]
+            self._obs_buf.index_copy_(0, idx_t, obs_s.to(self.device))
+            rew.index_copy_(0, idx_t, rew_s.to(self.device))
+            done.index_copy_(0, idx_t, done_s.bool().to(self.device))
+            self._state_buf.index_copy_(0, idx_t, state_s.to(self.device))
             if comp_s is not None and self._comp_buf is not None:
-                self._comp_buf[d0: d0 + ds].copy_(comp_s)
+                self._comp_buf.index_copy_(0, idx_t, comp_s.to(self.device))
 
         return self._obs_buf, rew, done, {}
 
@@ -514,6 +640,45 @@ class ParallelMultiSceneEvalEnv:
             p.join(timeout=5)
             if p.is_alive():
                 p.terminate()
+
+    def _force_shutdown(self) -> None:
+        """Hard-terminate all worker processes immediately.
+
+        Called when ``__init__`` fails partway through (e.g. ready timeout):
+        a graceful ``shutdown()`` would queue a 'shutdown' command and wait
+        for an ack, but stuck workers may never reach the cmd loop. We must
+        free the GPU before any retry — otherwise orphans keep holding VRAM
+        and the next attempt starves on the same machine.
+        """
+        procs = getattr(self, "_procs", None)
+        if not procs:
+            return
+        # Send SIGTERM to every still-alive worker, then SIGKILL stragglers.
+        for p in procs:
+            try:
+                if p.is_alive():
+                    p.terminate()
+            except Exception:
+                pass
+        for p in procs:
+            try:
+                p.join(timeout=3)
+            except Exception:
+                pass
+            if p.is_alive():
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        # Drain queues so torch.multiprocessing doesn't warn on GC.
+        for q in getattr(self, "_cmd_qs", []) + getattr(self, "_ack_qs", []):
+            try:
+                while not q.empty():
+                    q.get_nowait()
+            except Exception:
+                pass
+        print(f"[ParallelMultiSceneEvalEnv] force-shutdown: terminated "
+              f"{len(procs)} worker(s)", flush=True)
 
     def __del__(self) -> None:
         try:

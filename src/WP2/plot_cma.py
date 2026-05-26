@@ -2,13 +2,15 @@
 WP2 CMA-ES run analysis plots.
 ================================
 
-Three targeted plots for a CMA-ES Hebbian-rules run:
+Four targeted plots for a CMA-ES Hebbian-rules run:
 
 1. plot_rules_distribution      — A/B/C/D histograms (bins) for the best individual.
 2. plot_fitness_progress_std    — std of fitness and progress over generations.
 3. plot_rule_weight_correlation — |rule| vs |checkpoint weight| scatter per rule.
+4. plot_cma_state               — CMA-ES state variables (sigma, axis ratio,
+                                  condition number) across generations.
 
-``analyze_run(run_dir)`` generates all three.
+``analyze_run(run_dir)`` generates all four.
 
 Usage::
 
@@ -83,9 +85,8 @@ def _decode_block(genome: np.ndarray, block_idx: int, n_weights: int,
     return genome[start:start + n_weights] * (hi - lo) + lo
 
 
-def _load_population_csv(run_dir: Path) -> Optional[Dict[str, np.ndarray]]:
-    """Load cma_population.csv into a dict of numpy arrays."""
-    csv_path = run_dir / "results" / "cma_population.csv"
+def _load_csv_as_arrays(csv_path: Path) -> Optional[Dict[str, np.ndarray]]:
+    """Load a CSV with a header row into a dict of float numpy arrays."""
     if not csv_path.is_file():
         return None
     with open(csv_path, "r") as f:
@@ -102,6 +103,16 @@ def _load_population_csv(run_dir: Path) -> Optional[Dict[str, np.ndarray]]:
                 vals.append(float("nan"))
         result[key] = np.array(vals)
     return result
+
+
+def _load_population_csv(run_dir: Path) -> Optional[Dict[str, np.ndarray]]:
+    """Load cma_population.csv into a dict of numpy arrays."""
+    return _load_csv_as_arrays(run_dir / "results" / "cma_population.csv")
+
+
+def _load_summary_csv(run_dir: Path) -> Optional[Dict[str, np.ndarray]]:
+    """Load cma_summary.csv into a dict of numpy arrays."""
+    return _load_csv_as_arrays(run_dir / "results" / "cma_summary.csv")
 
 
 def _load_checkpoint_last_layer(run_dir: Path, expected_shape: tuple[int, int]) -> Optional[np.ndarray]:
@@ -279,11 +290,81 @@ def plot_rule_weight_correlation(run_dir: str | Path) -> None:
 
 
 # ============================================================================
+#  4. CMA-ES state variables (sigma, axis ratio, condition number) per gen
+# ============================================================================
+
+def _column_is_present(arr: Optional[np.ndarray]) -> bool:
+    """True if `arr` exists and has at least one finite value."""
+    return arr is not None and np.isfinite(arr).any()
+
+
+def plot_cma_state(run_dir: str | Path) -> None:
+    """Plot CMA-ES internal state variables over generations.
+
+    Always plots sigma. If `axis_ratio` and `cond_number` columns are present
+    in cma_summary.csv (newer runs), they are added as extra panels. For older
+    runs without those columns, a single-panel sigma-only figure is produced.
+    """
+    if not HAS_MPL:
+        return
+    run_dir = Path(run_dir)
+
+    data = _load_summary_csv(run_dir)
+    if data is None or "generation" not in data or "sigma" not in data:
+        print("[plot_cma] No cma_summary.csv (or missing sigma) — skipping CMA state plot.")
+        return
+
+    gens = data["generation"]
+    sigma = data["sigma"]
+    axis_ratio = data.get("axis_ratio")
+    cond_number = data.get("cond_number")
+
+    has_ar = _column_is_present(axis_ratio)
+    has_cn = _column_is_present(cond_number)
+    n_panels = 1 + int(has_ar) + int(has_cn)
+
+    fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 4), squeeze=False)
+    axes = axes[0]
+
+    axes[0].plot(gens, sigma, color="#1f77b4", linewidth=2)
+    axes[0].set_yscale("log")
+    axes[0].set_xlabel("Generation")
+    axes[0].set_ylabel("σ (step size)")
+    axes[0].set_title("CMA-ES sigma")
+    axes[0].grid(True, which="both", alpha=0.3, linestyle="--")
+
+    idx = 1
+    if has_ar:
+        axes[idx].plot(gens, axis_ratio, color="#2ca02c", linewidth=2)
+        axes[idx].set_yscale("log")
+        axes[idx].set_xlabel("Generation")
+        axes[idx].set_ylabel("axis ratio  max(D)/min(D)")
+        axes[idx].set_title("Axis ratio of C")
+        axes[idx].grid(True, which="both", alpha=0.3, linestyle="--")
+        idx += 1
+    if has_cn:
+        axes[idx].plot(gens, cond_number, color="#d62728", linewidth=2)
+        axes[idx].set_yscale("log")
+        axes[idx].set_xlabel("Generation")
+        axes[idx].set_ylabel("cond(C)")
+        axes[idx].set_title("Condition number of C")
+        axes[idx].grid(True, which="both", alpha=0.3, linestyle="--")
+
+    if not (has_ar or has_cn):
+        fig.suptitle("CMA-ES State — sigma only (axis ratio / cond unavailable for this run)",
+                     fontsize=12)
+    else:
+        fig.suptitle("CMA-ES State Variables across Generations", fontsize=13)
+    fig.tight_layout()
+    _save_fig(fig, run_dir / "plots", "cma_state")
+
+
+# ============================================================================
 #  Master analysis function
 # ============================================================================
 
 def analyze_run(run_dir: str | Path) -> None:
-    """Generate all three CMA-ES plots for a WP2 run."""
+    """Generate all CMA-ES plots for a WP2 run."""
     if not HAS_MPL:
         print("[analyze_run] matplotlib not available — skipping plots.")
         return
@@ -292,6 +373,7 @@ def analyze_run(run_dir: str | Path) -> None:
     plot_rules_distribution(run_dir)
     plot_fitness_progress_std(run_dir)
     plot_rule_weight_correlation(run_dir)
+    plot_cma_state(run_dir)
     print(f"[analyze_run] All plots saved to {run_dir / 'plots'}")
 
 

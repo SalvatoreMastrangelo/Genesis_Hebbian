@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: urdf_refresh_2 # generalist_256_10_urdf_0.005_0.05
+exp_name: random_period_4 # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -53,18 +53,18 @@ cmaes:
 
 catalog:
   path: ""                         # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
-  num_urdfs: 4                     # N: number of URDFs, each in its own Genesis scene
+  num_urdfs: 40                    # N: number of URDFs, each in its own Genesis scene
   num_episodes: 1                  # rollout episodes per generation
   force_multi_urdf: false          # route N=1 through the multi-URDF path (for verification)
   include_standard_mydrone: false  # false ⇒ all N URDFs are randomly sampled (no fixed baseline)
-  refresh_urdfs_every: 2           # >0 ⇒ resample N random URDFs every K inner generations
+  refresh_urdfs_every: 4           # >0 ⇒ resample N random URDFs every K inner generations
                                    # (tears down + rebuilds the eval env; multi-URDF path only).
                                    # 0 or null ⇒ disabled, URDFs stay fixed for the whole run.
 
 evaluation:
-  num_eval_envs: 12800 # TOTAL slots across all URDFs and all individuals
+  num_eval_envs: 51200 # TOTAL slots across all URDFs and all individuals
                        # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
-  num_eval_workers: 2  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
+  num_eval_workers: 10 # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
                        # N=2 typically saturates one GPU when a single scene uses ~50%
                        # watch VRAM: each worker holds D/N independent Genesis scenes
   num_gpus: 0          # 0 / null = auto-detect via torch.cuda.device_count()

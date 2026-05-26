@@ -594,6 +594,7 @@ def _build_multi_urdf_env(
     device: str,
     num_envs_per_drone: int,
     num_workers: int = 1,
+    num_gpus: Optional[int] = None,
 ):
     """Build a multi-URDF eval env — one Genesis scene per URDF.
 
@@ -648,7 +649,11 @@ def _build_multi_urdf_env(
     )
     if num_workers > 1:
         from WP2.parallel_multi_scene_eval_env import ParallelMultiSceneEvalEnv
-        return ParallelMultiSceneEvalEnv(**env_cls_kwargs, num_workers=num_workers)
+        return ParallelMultiSceneEvalEnv(
+            **env_cls_kwargs,
+            num_workers=num_workers,
+            num_gpus=num_gpus,
+        )
     return MultiSceneEvalEnv(**env_cls_kwargs)
 
 
@@ -959,6 +964,7 @@ def evaluate_population_multi_urdf(
             device=cfg.device,
             num_envs_per_drone=envs_per_drone,
             num_workers=int(getattr(cfg.evaluation, "num_eval_workers", 1)),
+            num_gpus=int(getattr(cfg.evaluation, "num_gpus", 0)) or None,
         )
         env_was_built_here = True
 

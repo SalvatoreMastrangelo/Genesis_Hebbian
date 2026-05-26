@@ -548,6 +548,7 @@ def create_overlay_video(
     dpi: int = 240,
     depth_mp4: Optional[str] = None,
     alternative: bool = False,
+    show_pca: bool = False,
 ) -> None:
     """
     Create a composite video with:
@@ -565,6 +566,9 @@ def create_overlay_video(
         alternative: if True (Hebbian-only), drop the right-side time-series
             column and put a transposed, enlarged weight-delta heatmap in its
             place; double the height of the bottom wstats panel.
+        show_pca: only honored when ``alternative=True``. Add a square PCA
+            trajectory panel of the last-layer weight-offset matrix next to
+            the wstats panel; the bottom row is enlarged to fit it.
 
     Hebbian-only extra: if ``traj`` contains ``hebbian_weight_delta_history``
     (shape (T, num_actions, hidden_dim)), a full-width heatmap and a pair of
@@ -577,6 +581,7 @@ def create_overlay_video(
     weight_delta = traj.get("hebbian_weight_delta_history", None)
     has_heatmap = weight_delta is not None and weight_delta.size > 0
     alternative_mode = bool(alternative) and has_heatmap
+    pca_mode = alternative_mode and bool(show_pca)
 
     # Video sources
     cap_cam = cv2.VideoCapture(cam_mp4)
@@ -632,7 +637,9 @@ def create_overlay_video(
     beta_deg = traj.get("beta_deg", None)
     vel_commanded = np.full_like(t_all, v_commanded, dtype=np.float32)
 
-    if alternative_mode:
+    if pca_mode:
+        fig_h = 14  # taller bottom row to fit a square PCA panel beside wstats
+    elif alternative_mode:
         fig_h = 13
     else:
         fig_h = 13 if has_heatmap else 9
@@ -640,11 +647,13 @@ def create_overlay_video(
     if alternative_mode:
         # 2 rows: top row holds left video stack + transposed heatmap on the
         # right (replacing the dropped time-series column). Bottom row is the
-        # wstats panel at double height (2.0 vs 1.0).
+        # wstats panel — extended in pca_mode to also host a square PCA
+        # trajectory of the weight-offset matrix on the right.
+        bottom_ratio = 4.0 if pca_mode else 2.0
         outer = GridSpec(
             nrows=2,
             ncols=1,
-            height_ratios=[9.0, 2.0],
+            height_ratios=[9.0, bottom_ratio],
             hspace=0.16,
         )
         # Extra top/right margin so the heatmap title and colorbar tick
@@ -870,6 +879,9 @@ def create_overlay_video(
     vmax_hm = 0.0
     ln_drift = ln_step = None
     ax_wstats = ax_wstats_step = None
+    ax_pca = None
+    ln_pca_path = ln_pca_dot = None
+    pc12 = None
     drift_sq = step_sq = None
     if has_heatmap:
         vmax_hm = float(np.abs(weight_delta).max())
@@ -947,10 +959,19 @@ def create_overlay_video(
 
         # wstats panel: bottom row of `outer` (row 1 in alt mode, row 2 otherwise).
         wstats_subspec = outer[1, 0] if alternative_mode else outer[2, 0]
-        gs_ws = GridSpecFromSubplotSpec(
-            1, 2, subplot_spec=wstats_subspec, width_ratios=[1.0, 0.015], wspace=0.02
-        )
-        ax_wstats = fig.add_subplot(gs_ws[0, 0])
+        if pca_mode:
+            # Bottom row splits into wstats (left, wide) + square PCA (right).
+            gs_ws = GridSpecFromSubplotSpec(
+                1, 2, subplot_spec=wstats_subspec,
+                width_ratios=[2.5, 1.0], wspace=0.18,
+            )
+            ax_wstats = fig.add_subplot(gs_ws[0, 0])
+            ax_pca = fig.add_subplot(gs_ws[0, 1])
+        else:
+            gs_ws = GridSpecFromSubplotSpec(
+                1, 2, subplot_spec=wstats_subspec, width_ratios=[1.0, 0.015], wspace=0.02
+            )
+            ax_wstats = fig.add_subplot(gs_ws[0, 0])
         ax_wstats.grid(True, lw=0.3, alpha=0.4)
         ax_wstats.set_xlabel("t [s]")
 
@@ -1019,6 +1040,46 @@ def create_overlay_video(
             fontsize=9, frameon=False, loc="upper left", ncol=len(legend_handles),
         )
 
+        # PCA trajectory of the weight-offset matrix (alternative mode only).
+        # Fit PCA once on the full (T, num_actions*hidden_dim) history so the
+        # PC1/PC2 basis is fixed; the writer loop draws a growing 2D path.
+        if ax_pca is not None:
+            T_hist = weight_delta.shape[0]
+            W_flat = weight_delta.reshape(T_hist, -1).astype(np.float64)
+            W_mean = W_flat.mean(axis=0, keepdims=True)
+            W_centered = W_flat - W_mean
+            try:
+                _, S, Vt = np.linalg.svd(W_centered, full_matrices=False)
+                pc12 = W_centered @ Vt[:2].T
+                total_var = float((S ** 2).sum())
+                if total_var > 0.0:
+                    evr = (S[:2] ** 2) / total_var
+                else:
+                    evr = np.zeros(2, dtype=np.float64)
+            except np.linalg.LinAlgError:
+                pc12 = np.zeros((T_hist, 2), dtype=np.float64)
+                evr = np.zeros(2, dtype=np.float64)
+
+            def _sym_pad(lo: float, hi: float) -> Tuple[float, float]:
+                if not (np.isfinite(lo) and np.isfinite(hi)) or hi - lo < 1e-12:
+                    return -1e-6, 1e-6
+                pad = 0.08 * (hi - lo)
+                return lo - pad, hi + pad
+
+            ax_pca.set_xlim(*_sym_pad(float(pc12[:, 0].min()), float(pc12[:, 0].max())))
+            ax_pca.set_ylim(*_sym_pad(float(pc12[:, 1].min()), float(pc12[:, 1].max())))
+            ax_pca.set_xlabel("PC1")
+            ax_pca.set_ylabel("PC2")
+            ax_pca.set_title(
+                f"ΔW PCA (EVR: PC1={evr[0]*100:.1f}%, PC2={evr[1]*100:.1f}%)",
+                fontsize=10,
+            )
+            ax_pca.grid(True, lw=0.3, alpha=0.4)
+            ax_pca.axhline(0, color="k", lw=0.5, alpha=0.4)
+            ax_pca.axvline(0, color="k", lw=0.5, alpha=0.4)
+            (ln_pca_path,) = ax_pca.plot([], [], lw=1.5, color="tab:purple", alpha=0.9)
+            (ln_pca_dot,) = ax_pca.plot([], [], "o", color="tab:purple", markersize=5)
+
         if not alternative_mode:
             # The figure's outer subplots_adjust is tight on the sides so the
             # camera+plots top row uses the full width. That leaves no horizontal
@@ -1038,14 +1099,35 @@ def create_overlay_video(
                 [_HM_RIGHT - _HM_CBAR_W, pos_cb.y0, _HM_CBAR_W, pos_cb.height]
             )
 
-        # In both layouts, the wstats panel spans the full width with margins
-        # so the twin-axis "per step" label is not clipped on the right.
-        _WS_LEFT, _WS_RIGHT = 0.060, 0.940
-        pos_ws = ax_wstats.get_position()
-        ax_wstats.set_position(
-            [_WS_LEFT, pos_ws.y0, _WS_RIGHT - _WS_LEFT, pos_ws.height]
-        )
-        ax_wstats_step.set_position(ax_wstats.get_position())
+        if pca_mode:
+            # Bottom row: wstats (wide, left) + square PCA panel (right).
+            # The PCA bbox is sized so its figure-relative width equals its
+            # height in display units (width_fig = height_fig * fig_h_in / fig_w_in),
+            # giving a true square panel.
+            _WS_LEFT = 0.060
+            _PCA_RIGHT = 0.965
+            _GAP = 0.055
+            pos_ws = ax_wstats.get_position()
+            bottom_y = pos_ws.y0
+            bottom_h = pos_ws.height
+            fig_w_in, fig_h_in = fig.get_size_inches()
+            pca_w_fig = bottom_h * (fig_h_in / fig_w_in)
+            pca_x0 = _PCA_RIGHT - pca_w_fig
+            ax_pca.set_position([pca_x0, bottom_y, pca_w_fig, bottom_h])
+            ws_right = pca_x0 - _GAP
+            ax_wstats.set_position(
+                [_WS_LEFT, bottom_y, ws_right - _WS_LEFT, bottom_h]
+            )
+            ax_wstats_step.set_position(ax_wstats.get_position())
+        else:
+            # wstats panel spans the full width with margins so the twin-axis
+            # "per step" label is not clipped on the right.
+            _WS_LEFT, _WS_RIGHT = 0.060, 0.940
+            pos_ws = ax_wstats.get_position()
+            ax_wstats.set_position(
+                [_WS_LEFT, pos_ws.y0, _WS_RIGHT - _WS_LEFT, pos_ws.height]
+            )
+            ax_wstats_step.set_position(ax_wstats.get_position())
 
     # First frames
     okC, frm_cam = cap_cam.read()
@@ -1148,6 +1230,11 @@ def create_overlay_video(
                 ln_step.set_data(t_all[: ws_idx + 1], step_sq[: ws_idx + 1])
                 ax_wstats.set_xlim(0, max(t_all[ws_idx], 1e-6))
                 ax_wstats_step.set_xlim(0, max(t_all[ws_idx], 1e-6))
+
+            if ln_pca_path is not None and pc12 is not None:
+                pca_idx = min(idx, pc12.shape[0] - 1)
+                ln_pca_path.set_data(pc12[: pca_idx + 1, 0], pc12[: pca_idx + 1, 1])
+                ln_pca_dot.set_data([pc12[pca_idx, 0]], [pc12[pca_idx, 1]])
 
             writer.grab_frame()
 
@@ -1954,7 +2041,7 @@ def _run_hebbian(args) -> None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False))
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False), show_pca=getattr(args, "pca", False))
     print("\nEvaluation complete.")
 
 
@@ -2026,7 +2113,7 @@ def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, 
     return env
 
 
-def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool, alternative: bool = False) -> None:
+def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool, alternative: bool = False, show_pca: bool = False) -> None:
     """Render the full set of evaluation videos (top-down, depth, overlay, rewards)."""
     topdown_mp4 = os.path.join(eval_log_dir, "eval_topdown.mp4")
     print("\nRendering top-down video …")
@@ -2072,6 +2159,7 @@ def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, t
             v_commanded=v_commanded,
             depth_mp4=depth_video_path,
             alternative=alternative,
+            show_pca=show_pca,
         )
         print(f"✅ Overlay video saved to: {overlay_mp4}")
 
@@ -2223,6 +2311,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--pca",
+        action="store_true",
+        help=(
+            "When used together with --alternative, add a square PCA trajectory "
+            "panel of the last-layer weight-offset matrix next to the wstats "
+            "panel at the bottom of the overlay. The bottom row is enlarged to "
+            "accommodate the square panel. No effect without --alternative."
+        ),
+    )
+    parser.add_argument(
         "--ignore-angle-limit",
         dest="ignore_angle_limit",
         action="store_true",
@@ -2371,7 +2469,7 @@ def main() -> None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False))
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False), show_pca=getattr(args, "pca", False))
     print("\nEvaluation complete.")
 
 

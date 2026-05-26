@@ -123,7 +123,7 @@ def _init_csvs(pop_path: Path, summary_path: Path) -> None:
         writer.writerow([
             "generation", "pop_size",
             "best_fitness", "mean_fitness", "worst_fitness", "std_fitness",
-            "sigma",
+            "sigma", "axis_ratio", "cond_number",
             "mean_velocity", "mean_progress", "mean_crash_rate", "mean_cot", "mean_v_deviation",
         ])
 
@@ -185,6 +185,8 @@ def _append_summary_csv(
     fitnesses: np.ndarray,
     metrics: Dict[str, np.ndarray],
     sigma: float,
+    axis_ratio: float,
+    cond_number: float,
 ) -> None:
     P = len(fitnesses)
     with open(path, "a", newline="") as f:
@@ -196,12 +198,42 @@ def _append_summary_csv(
             f"{fitnesses.min():.6g}",
             f"{fitnesses.std():.6g}",
             f"{sigma:.6g}",
+            f"{axis_ratio:.6g}",
+            f"{cond_number:.6g}",
             f"{metrics['velocities'].mean():.6g}",
             f"{metrics['progresses'].mean():.6g}",
             f"{metrics['crash_flags'].mean():.6g}",
             f"{metrics['cots'].mean():.6g}",
             f"{metrics['v_deviations'].mean():.6g}",
         ])
+
+
+def _extract_cma_state(es) -> tuple[float, float]:
+    """Return (axis_ratio, cond_number) from a pycma strategy, NaN on failure.
+
+    axis_ratio = max(D)/min(D) where D are singular values of B*D (sqrt eigenvalues of C).
+    cond_number = axis_ratio**2 = cond(C).
+    """
+    try:
+        D = getattr(es, "D", None)
+        if D is None:
+            sm = getattr(es, "sm", None)
+            D = getattr(sm, "D", None) if sm is not None else None
+        if D is None:
+            C = np.asarray(es.C)
+            eigs = np.linalg.eigvalsh(C)
+            eigs = eigs[eigs > 0]
+            if eigs.size == 0:
+                return float("nan"), float("nan")
+            D = np.sqrt(eigs)
+        D = np.asarray(D, dtype=float)
+        D = D[D > 0]
+        if D.size == 0:
+            return float("nan"), float("nan")
+        ar = float(D.max() / D.min())
+        return ar, ar * ar
+    except Exception:
+        return float("nan"), float("nan")
 
 
 def _print_generation_table(
@@ -497,6 +529,7 @@ class HebbianCMAES:
                               flush=True)
                         gs.init(logging_level="error", backend=gs.gpu)
                         print("[HebbianCMAES] Genesis initialized", flush=True)
+                n_gpus = int(getattr(self.cfg.evaluation, "num_gpus", 0)) or None
                 self._env = _build_multi_urdf_env(
                     urdf_paths=self._urdf_paths,
                     cfg=self.cfg,
@@ -504,14 +537,21 @@ class HebbianCMAES:
                     device=self.cfg.device,
                     num_envs_per_drone=envs_per_drone,
                     num_workers=n_workers,
+                    num_gpus=n_gpus,
                 )
                 self._env_urdf_path = list(self._urdf_paths)
                 print(f"[HebbianCMAES] MultiSceneEvalEnv ready", flush=True)
             except Exception as exc:
-                print(f"[HebbianCMAES] Failed to build MultiSceneEvalEnv: {exc}",
-                      flush=True)
+                # Do NOT swallow: silently continuing makes the CMA-ES loop
+                # rebuild the env from within evaluate.py, spawning ANOTHER
+                # set of workers while the just-failed ones may still hold
+                # GPU memory. That cascades into all-zero-fitness runs that
+                # waste hours. Surface the failure and stop the run.
                 self._env = None
                 self._env_urdf_path = None
+                print(f"[HebbianCMAES] Failed to build MultiSceneEvalEnv: "
+                      f"{type(exc).__name__}: {exc}", flush=True)
+                raise
             return
 
         # Legacy single-URDF path — unchanged.
@@ -785,10 +825,14 @@ class HebbianCMAES:
         import time
 
         sigma = float(es.sigma)
+        axis_ratio, cond_number = _extract_cma_state(es)
 
         # CSV logging
         _append_population_csv(self.pop_csv_path, gen, fitnesses, metrics)
-        _append_summary_csv(self.summary_csv_path, gen, fitnesses, metrics, sigma)
+        _append_summary_csv(
+            self.summary_csv_path, gen, fitnesses, metrics,
+            sigma, axis_ratio, cond_number,
+        )
         if baseline is not None:
             _append_baseline_csv(self.baseline_csv_path, gen, baseline)
         if specialist is not None:
