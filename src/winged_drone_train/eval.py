@@ -15,6 +15,7 @@ import math
 import pickle
 import argparse
 import re
+import sys
 from pathlib import Path
 from typing import Tuple, Dict, Any
 
@@ -194,6 +195,27 @@ def _extract_tb_reward_metrics(log_dir: str | Path, ckpt: int) -> Tuple[float, f
             steps90_pct = (steps_to_90 / float(total_steps)) * 100.0
 
     return final_reward, steps90_pct
+
+
+class _HebbianPolicyWrapper:
+    """Callable wrapper that lazily resets a Hebbian actor's episode state.
+
+    ``run_eval`` calls ``env.reset()`` before issuing the first policy call.
+    ``IsolatedPopulationActor`` requires ``reset_episode`` *after* env reset
+    and *before* the first ``act``. Deferring that reset to the first
+    ``__call__`` lets us reuse ``run_eval`` unchanged.
+    """
+
+    def __init__(self, actor, device) -> None:
+        self.actor = actor
+        self.device = device
+        self._needs_reset = True
+
+    def __call__(self, obs):
+        if self._needs_reset:
+            self.actor.reset_episode(device=self.device)
+            self._needs_reset = False
+        return self.actor.act(obs)
 
 
 # ---------------------------------------------------------------------- #
@@ -709,6 +731,371 @@ def evaluation(
 
 
 # ---------------------------------------------------------------------- #
+# 2b) Programmatic Hebbian-controller evaluation                         #
+# ---------------------------------------------------------------------- #
+def evaluation_hebbian(
+    hebbian_run: str | Path,
+    genome_path: str | Path,
+    *,
+    envs: int = 8192,
+    vmin: float = 5.0,
+    vmax: float = 25.0,
+    win_frac: float = 0.05,
+    minimal_progress: float = 250.0,
+    return_arrays: bool = False,
+    genome_idx: int = 0,
+    save_plots: bool = True,
+    eval_dir: str | Path | None = None,
+    dens_min: float | None = None,
+    dens_max: float | None = None,
+    x_upper: float | None = None,
+    forest_x_limit: float | None = None,
+    urdf_file: str | None = None,
+    drone_key: str | None = None,
+    init_vx: float | None = None,
+):
+    """Programmatic Hebbian-controller counterpart to :func:`evaluation`.
+
+    Loads a WP2 run + a single genome ``.npy`` file, builds a
+    :class:`WingedDroneEnv` from the WP1 config saved in the run, attaches an
+    :class:`IsolatedPopulationActor` (K=1 individual, S=``envs`` slots), runs
+    the standard speed-sweep rollout via :func:`run_eval`, and produces the
+    same plot set / summary triples as :func:`evaluation`.
+
+    The genome's morphology genes (if any) are ignored — the URDF used is the
+    one resolved from ``urdf_file`` / ``drone_key`` / ``env_cfg['drone']``,
+    matching the PPO path. To evaluate a co-evolved morphology, generate the
+    URDF separately and pass it via ``urdf_file``.
+
+    No TensorBoard scalar series exists for a WP2 run, so ``final_reward`` and
+    ``steps90_pct`` are reported as ``0.0`` for parity with :func:`evaluation`.
+    """
+    # Ensure src/ is importable for WP1/WP2 modules when called as a library.
+    _src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+
+    from WP1.config import RunConfig
+    from WP2.config import HebbianEvolutionConfig
+    from WP2.frozen_actor import build_isolated_population_actor
+    from WP2.utils import decode_hebbian_genes
+
+    hebbian_run = Path(hebbian_run).expanduser().resolve()
+    genome_path = Path(genome_path).expanduser().resolve()
+    repro = hebbian_run / "reproducibility"
+    wp2_cfg_path = repro / "config.yaml"
+    wp1_cfg_path = repro / "wp1_config.yaml"
+    wp1_ckpt_path = repro / "wp1_actor.pt"
+    for p in (wp2_cfg_path, wp1_cfg_path, wp1_ckpt_path, genome_path):
+        if not p.is_file():
+            raise FileNotFoundError(f"Required file not found: {p}")
+
+    eval_device = os.getenv("EVAL_DEVICE", "").strip()
+    if eval_device:
+        device = eval_device
+    elif torch.cuda.is_available():
+        device = "cuda:0"
+    else:
+        device = "cpu"
+
+    _configure_cache_root()
+    if not gs._initialized:
+        gs.init(logging_level="error", backend=gs.gpu)
+
+    cfg = HebbianEvolutionConfig.from_yaml(wp2_cfg_path)
+    cfg.checkpoint_path = str(wp1_ckpt_path)
+    cfg.checkpoint_config_path = str(wp1_cfg_path)
+
+    # Infer last-layer dims from the checkpoint (robust to config drift).
+    _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
+    _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
+    if "actor.4.weight" in _sd:
+        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
+        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    del _ckpt, _sd
+
+    wp1_cfg = RunConfig.from_yaml(cfg.checkpoint_config_path)
+    env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = wp1_cfg.to_legacy_cfgs()
+    # Design rule: the actor must never see the morphology genome.
+    obs_cfg["actor_genome_obs"] = False
+    obs_cfg["critic_genome_obs"] = False
+
+    selected_drone = drone_key or env_cfg.get("drone")
+    urdf_file_resolved = resolve_or_generate_urdf(
+        urdf_file=urdf_file, drone_key=selected_drone,
+    )
+    if drone_key:
+        env_cfg["drone"] = drone_key
+    env_cfg = _apply_drone_profile_defaults(env_cfg, urdf_file_resolved)
+    urdf_path = Path(urdf_file_resolved).expanduser()
+    clean_stem = safe_urdf_stem(urdf_path)
+    print(
+        f"[evaluation/hebbian] run={hebbian_run.name} genome={genome_path.name} "
+        f"urdf={urdf_path.name} envs={envs} save_plots={save_plots}"
+    )
+    runtime_seed = seed_runtime_randomness(
+        f"eval_hebbian:{hebbian_run.name}:{genome_path.stem}:{clean_stem}"
+    )
+
+    command_cfg["min_speed"] = float(vmin)
+    command_cfg["max_speed"] = float(vmax)
+    command_speed_range = _command_speed_range(command_cfg)
+
+    _apply_eval_env_overrides(env_cfg)
+    if x_upper is not None:
+        env_cfg["x_upper"] = float(x_upper)
+        env_cfg["forest_x_limit"] = float(x_upper)
+    if forest_x_limit is not None:
+        env_cfg["forest_x_limit"] = float(forest_x_limit)
+    if dens_min is not None:
+        env_cfg["dens_min"] = float(dens_min)
+    if dens_max is not None:
+        env_cfg["dens_max"] = float(dens_max)
+
+    env = WingedDroneEnv(
+        num_envs=envs,
+        env_cfg=env_cfg,
+        obs_cfg=obs_cfg,
+        reward_cfg=reward_cfg,
+        command_cfg=command_cfg,
+        urdf_file=urdf_file_resolved,
+        show_viewer=False,
+        eval=True,
+        device=device,
+    )
+    configure_solver_noise(env, env_cfg)
+    if init_vx is not None:
+        env._reset_lin_vel[0] = float(init_vx)
+        print(
+            f"[evaluation/hebbian] Overriding initial body velocity (x): "
+            f"{float(init_vx):.2f} m/s"
+        )
+
+    genome_arr = np.load(genome_path)
+    if genome_arr.ndim == 2:
+        if not (0 <= genome_idx < genome_arr.shape[0]):
+            raise IndexError(
+                f"--genome-idx {genome_idx} out of range for npy of shape "
+                f"{genome_arr.shape}"
+            )
+        genome = genome_arr[genome_idx]
+        print(
+            f"[evaluation/hebbian] Loaded genome row {genome_idx} from "
+            f"{genome_path.name} (shape {genome_arr.shape})"
+        )
+    else:
+        genome = genome_arr
+        print(
+            f"[evaluation/hebbian] Loaded genome from {genome_path.name} "
+            f"(dim={genome.size})"
+        )
+
+    hebb_part = list(np.clip(genome, 0.0, 1.0))
+    rules = decode_hebbian_genes(
+        hebb_part,
+        cfg.hebbian,
+        out_features=cfg.hebbian.num_actions,
+        in_features=cfg.hebbian.hidden_dim,
+    )
+
+    actor = build_isolated_population_actor(
+        checkpoint_path=cfg.checkpoint_path,
+        wp1_cfg_path=cfg.checkpoint_config_path,
+        hebbian_rules_per_individual=[rules],
+        cfg=cfg,
+        K=1,
+        S=int(envs),
+        device=str(device),
+        stochastic=cfg.evaluation.stochastic,
+    )
+
+    env.aero_solver._aero_log = False
+
+    policy = _HebbianPolicyWrapper(actor, device=device)
+
+    v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total, mean_z_at_progress_threshold = run_eval(
+        env,
+        policy,
+        extra_data=bool(save_plots),
+        minimal_progress=minimal_progress,
+    )
+    print(
+        f"[evaluation/hebbian] rollout done | v_mean={len(v_mean)} v_cmd={len(v_cmd)} "
+        f"progress_shape={np.shape(progress)} extra_data={bool(save_plots)} "
+        f"stochastic={cfg.evaluation.stochastic}"
+    )
+    print(
+        f"[evaluation/hebbian] average z position at {minimal_progress:.0f} m progress: "
+        f"{mean_z_at_progress_threshold:.2f} m"
+    )
+
+    gs.destroy()
+
+    # WP2 runs don't write a TB scalar series; keep these for parity with evaluation().
+    final_reward = 0.0
+    steps90_pct = 0.0
+
+    eval_reward_mean = float(np.nanmean(reward_total)) if reward_total.size else float("nan")
+    if not np.isfinite(eval_reward_mean):
+        eval_reward_mean = 0.0
+
+    v_cmd_m, v_mean_m = v_cmd, v_mean
+    E_tot_m, prog_m = COT, progress
+    reward_m = reward_total[np.isfinite(reward_total)]
+
+    mean_progress_all = float(np.mean(progress)) if progress.size else 0.0
+
+    x_s, v_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, v_mean_m, win_frac)
+    _, p_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, prog_m, win_frac)
+    _, E_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, E_tot_m, win_frac)
+    _, reward_s, _ = EvaluationPlotter.moving_avg(v_cmd_m, reward_m, win_frac)
+    idx_p = int(np.argmax(p_s)) if len(p_s) else 0
+    max_p = float(p_s[idx_p]) if len(p_s) else 0.0
+
+    idxs = np.arange(len(p_s))
+    prog_sel = p_s[idxs]
+    vel_sel = v_s[idxs]
+    energy_sel = E_s[idxs]
+
+    idx_p = int(np.argmax(prog_sel)) if len(prog_sel) else 0
+    idx_v = int(np.argmax(vel_sel)) if len(vel_sel) else 0
+    idx_e = int(np.argmin(energy_sel)) if len(energy_sel) else 0
+
+    top_vel = {
+        "mean_v": float(vel_sel[idx_v]),
+        "mean_E": float(energy_sel[idx_v]),
+        "mean_progress": float(prog_sel[idx_v]),
+    }
+    top_eff = {
+        "mean_v": float(vel_sel[idx_e]),
+        "mean_E": float(energy_sel[idx_e]),
+        "mean_progress": float(prog_sel[idx_e]),
+    }
+    top_prog = {
+        "mean_v": float(vel_sel[idx_p]),
+        "mean_E": float(energy_sel[idx_p]),
+        "mean_progress": float(prog_sel[idx_p]),
+    }
+
+    eval_dir_path = None
+    plot_paths: Dict[str, str] = {}
+    if save_plots:
+        eval_dir_path = (
+            Path(eval_dir)
+            if eval_dir is not None
+            else hebbian_run / f"eval_{genome_path.stem}"
+        )
+        eval_dir_path.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[evaluation/hebbian] Saving plots for URDF '{urdf_path.name}' "
+            f"(clean='{clean_stem}') in: {eval_dir_path}"
+        )
+        plotter = EvaluationPlotter()
+
+        sweep_out = eval_dir_path / "joint_heatmap_sweep.png"
+        twist_out = eval_dir_path / "joint_heatmap_twist.png"
+        total_out = eval_dir_path / "total_plot.png"
+        total_pts_out = eval_dir_path / "total_plot_points_instead_of_ma.png"
+
+        for p in (sweep_out, twist_out, total_out, total_pts_out):
+            if not p.exists():
+                _write_placeholder_png(p, "pre-plot placeholder")
+
+        try:
+            plotter.plot_joint_diff_heatmap(
+                traces_all,
+                "sweep",
+                out=str(sweep_out),
+                command_speed_range=command_speed_range,
+            )
+            print(f"[evaluation/hebbian] joint_heatmap_sweep → {sweep_out}")
+        except Exception as exc:
+            print(f"[evaluation/hebbian][error] joint_heatmap_sweep failed: {exc}")
+            _write_placeholder_png(sweep_out, "heatmap_sweep failed")
+
+        try:
+            plotter.plot_joint_diff_heatmap(
+                traces_all,
+                "twist",
+                out=str(twist_out),
+                command_speed_range=command_speed_range,
+            )
+            print(f"[evaluation/hebbian] joint_heatmap_twist → {twist_out}")
+        except Exception as exc:
+            print(f"[evaluation/hebbian][error] joint_heatmap_twist failed: {exc}")
+            _write_placeholder_png(twist_out, "heatmap_twist failed")
+
+        try:
+            plotter.total_plot(
+                v_mean,
+                COT,
+                v_cmd,
+                progress,
+                win_frac=win_frac,
+                minimal_p=minimal_progress,
+                out=str(total_out),
+                velocity_range=command_speed_range,
+            )
+            print(f"[evaluation/hebbian] total_plot → {total_out}")
+        except Exception as exc:
+            print(f"[evaluation/hebbian][error] total_plot failed: {exc}")
+            _write_placeholder_png(total_out, "total_plot failed")
+
+        try:
+            plotter.total_plot_points_instead_of_ma(
+                v_mean,
+                COT,
+                v_cmd,
+                progress,
+                win_frac=win_frac,
+                minimal_p=minimal_progress,
+                out=str(total_pts_out),
+                velocity_range=command_speed_range,
+            )
+            print(f"[evaluation/hebbian] total_plot_points → {total_pts_out}")
+        except Exception as exc:
+            print(f"[evaluation/hebbian][error] total_plot_points failed: {exc}")
+            _write_placeholder_png(total_pts_out, "total_plot_points failed")
+
+        for p in (sweep_out, twist_out, total_out, total_pts_out):
+            if not p.is_file():
+                _write_placeholder_png(p, "missing after plotting")
+
+        plot_paths = {
+            "total_plot": str(total_out),
+            "total_plot_points": str(total_pts_out),
+            "joint_heatmap_sweep": str(sweep_out),
+            "joint_heatmap_twist": str(twist_out),
+        }
+
+    extra = {
+        "max_p": max_p,
+        "mean_progress_all": mean_progress_all,
+        "final_reward": final_reward,
+        "steps90_pct": steps90_pct,
+        "eval_reward_mean": eval_reward_mean,
+        "eval_dir": str(eval_dir_path) if eval_dir_path else "",
+        "clean_urdf_stem": clean_stem,
+        "plot_paths": plot_paths,
+    }
+    if return_arrays:
+        extra.update(
+            {
+                "v_cmd_s": x_s,
+                "p_s": p_s,
+                "v_s": v_s,
+                "E_s": E_s,
+                "eval_reward_s": reward_s,
+            }
+        )
+
+    if return_arrays:
+        return top_vel, top_eff, top_prog, max_p, extra
+    else:
+        return top_vel, top_eff, top_prog, max_p
+
+
+# ---------------------------------------------------------------------- #
 # 3) CLI entry point                                                    #
 # ---------------------------------------------------------------------- #
 if __name__ == "__main__":
@@ -758,7 +1145,72 @@ if __name__ == "__main__":
         default="logs",
         help="Base directory that contains the <exp_name> subfolder (default: logs).",
     )
+    parser.add_argument(
+        "--hebbian",
+        type=str,
+        default=None,
+        help=(
+            "Path to a WP2 (Hebbian) run directory, e.g. "
+            "logs/runs_hebbian/2026-xx-xx_my_run. Enables Hebbian-controller "
+            "mode (requires --genome). The PPO --exp_name / --ckpt flags are "
+            "ignored in this mode."
+        ),
+    )
+    parser.add_argument(
+        "--genome",
+        type=str,
+        default=None,
+        help="Path to the genome .npy file to evaluate in Hebbian mode.",
+    )
+    parser.add_argument(
+        "--genome-idx",
+        dest="genome_idx",
+        type=int,
+        default=0,
+        help=(
+            "Row index to use when the genome .npy file is 2D (e.g. "
+            "solutions.npy with multiple genomes). Default: 0."
+        ),
+    )
+    parser.add_argument(
+        "--x-upper",
+        dest="x_upper",
+        type=float,
+        default=None,
+        help="Override the eval x_upper (default 600 m). Sets the world end along +X.",
+    )
+    parser.add_argument(
+        "--forest-x-limit",
+        dest="forest_x_limit",
+        type=float,
+        default=None,
+        help="Override the forest x extent (default: same as --x-upper).",
+    )
     args = parser.parse_args()
+
+    # ---------------- Hebbian-controller dispatch --------------------- #
+    # Triggered when --hebbian is set. Calls the dedicated programmatic
+    # entry point and exits before any PPO-path code runs.
+    if args.hebbian is not None:
+        if not args.genome:
+            parser.error("--genome is required when --hebbian is set")
+        evaluation_hebbian(
+            hebbian_run=args.hebbian,
+            genome_path=args.genome,
+            envs=args.envs,
+            vmin=args.vmin,
+            vmax=args.vmax,
+            genome_idx=args.genome_idx,
+            x_upper=args.x_upper,
+            forest_x_limit=args.forest_x_limit,
+            dens_min=args.dens_min,
+            dens_max=args.dens_max,
+            urdf_file=args.urdf_file,
+            drone_key=args.drone,
+            init_vx=args.init_vx,
+            save_plots=True,
+        )
+        sys.exit(0)
 
     # ---------------- Load configs ------------------------------------- #
     log_dir = os.path.join(args.log_dir, args.exp_name)
