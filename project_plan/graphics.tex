@@ -1,0 +1,119 @@
+\usepackage[many]{tcolorbox}    	% for COLORED BOXES (tikz and xcolor included)
+\usepackage{setspace}               % for LINE SPACING
+
+\definecolor{main}{HTML}{999999}    % setting main color to be used
+\definecolor{sub}{HTML}{9CD4E5}     % setting sub color to be used
+
+\tcbset{
+    sharp corners,
+    colback = white,
+    before skip = 0.2cm,    % add extra space before the box
+    after skip = 0.5cm      % add extra space after the box
+}                           % setting global options for tcolorbox
+
+% You can copy any following box you like to your code.
+\newtcolorbox{boxA}{
+    fontupper = \bf,
+    boxrule = 1.5pt,
+    colframe = black % frame color
+}
+
+\newtcolorbox{boxB}{
+    fontupper = \color{black}, % font color
+    boxrule = 1.5pt,
+    colframe = black,
+    rounded corners,
+    arc = 5pt   % corners roundness
+}
+
+\newtcolorbox{boxC}{
+    colback = sub, % background color
+    boxrule = 0pt  % no borders
+}
+
+\newtcolorbox{boxD}{
+    colback = sub, 
+    colframe = main, 
+    boxrule = 0pt, 
+    toprule = 3pt, % top rule weight
+    bottomrule = 3pt % bottom rule weight
+}
+
+\newtcolorbox{boxE}{
+    enhanced, % for a fancier setting,
+    boxrule = 0pt, % clearing the default rule
+    borderline = {0.75pt}{0pt}{main}, % outer line
+    borderline = {0.75pt}{2pt}{sub} % inner line
+}
+
+\newtcolorbox{boxF}{
+    colback = sub,
+    enhanced,
+    boxrule = 1.5pt, 
+    colframe = white, % making the base for dash line
+    borderline = {1.5pt}{0pt}{main, dashed} % add "dashed" for dashed line
+}
+
+\newtcolorbox{boxG}{
+    enhanced,
+    boxrule = 0pt,
+    colback = sub,
+    borderline west = {1pt}{0pt}{main}, 
+    borderline west = {0.75pt}{2pt}{main}, 
+    borderline east = {1pt}{0pt}{main}, 
+    borderline east = {0.75pt}{2pt}{main}
+}
+
+\newtcolorbox{boxH}{
+    colback = sub, 
+    boxrule = 0pt, 
+    colframe = main,
+    leftrule = 6pt % left rule weight
+}
+
+\newtcolorbox{boxI}{
+    colback = sub, 
+    colframe = main, 
+    boxrule = 0pt, 
+    toprule = 6pt % top rule weight
+}
+
+\newtcolorbox{boxJ}{
+    sharpish corners, % better drop shadow
+    colback = sub, 
+    colframe = main, 
+    boxrule = 0pt, 
+    toprule = 4.5pt, % top rule weight
+    enhanced,
+    fuzzy shadow = {0pt}{-2pt}{-0.5pt}{0.5pt}{black!35} % {xshift}{yshift}{offset}{step}{options} 
+}
+
+\newtcolorbox{boxK}{
+    sharpish corners, % better drop shadow
+    boxrule = 0pt,
+    toprule = 4.5pt, % top rule weight
+    enhanced,
+    fuzzy shadow = {0pt}{-2pt}{-0.5pt}{0.5pt}{black!35} % {xshift}{yshift}{offset}{step}{options} 
+}
+
+\newtcolorbox{boxL}{
+    fontupper = \color{main},
+    rounded corners,
+    arc = 6pt,
+    colback = sub, 
+    colframe = main!50, 
+    boxrule = 0pt, 
+    bottomrule = 4.5pt 
+}
+
+\newtcolorbox{boxM}{
+    fontupper = \color{white},
+    rounded corners,
+    arc = 6pt,
+    colback = main!80, 
+    colframe = main, 
+    boxrule = 0pt, 
+    bottomrule = 4.5pt,
+    enhanced,
+    fuzzy shadow = {0pt}{-3pt}{-0.5pt}{0.5pt}{black!35}
+}
