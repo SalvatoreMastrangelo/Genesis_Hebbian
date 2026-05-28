@@ -197,6 +197,34 @@ def _extract_tb_reward_metrics(log_dir: str | Path, ckpt: int) -> Tuple[float, f
     return final_reward, steps90_pct
 
 
+def _scale_wing_lift_slope_envs(
+    env, side: int, scale: float, env_mask: torch.Tensor
+) -> bool:
+    """Per-env variant of ``eval_visual._scale_wing_lift_slope``.
+
+    Multiplies the side-cached ``cl_alpha_2d_wing_{left,right}`` field
+    (shape ``(B,)``) only on environments where ``env_mask`` is True. Used to
+    apply a wing-break malus at the same x-distance threshold for each env
+    independently, so envs that travel faster experience the malus earlier in
+    wall-clock time but at the same distance.
+
+    Returns True iff the field was modified.
+    """
+    solver = getattr(env, "aero_solver", None)
+    if solver is None:
+        return False
+    side_field_name = "cl_alpha_2d_wing_left" if side < 0 else "cl_alpha_2d_wing_right"
+    side_field = getattr(solver, side_field_name, None)
+    if side_field is None:
+        return False
+    arr = side_field.to_torch(device=env.device)
+    if arr.shape[0] != env.num_envs or not bool(env_mask.any()):
+        return False
+    arr[env_mask] *= scale
+    side_field.from_torch(arr)
+    return True
+
+
 class _HebbianPolicyWrapper:
     """Callable wrapper that lazily resets a Hebbian actor's episode state.
 
@@ -222,7 +250,19 @@ class _HebbianPolicyWrapper:
 # 1) Roll-out that returns per-env statistics                            #
 # ---------------------------------------------------------------------- #
 @torch.no_grad()
-def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 250.0):
+def run_eval(
+    env,
+    policy,
+    extra_data: bool = False,
+    minimal_progress: float = 250.0,
+    *,
+    hebbian_actor=None,
+    freeze_distance: float | None = None,
+    break_left_distance: float | None = None,
+    break_right_distance: float | None = None,
+    break_left_loss_pct: float = 50.0,
+    break_right_loss_pct: float = 50.0,
+):
     """
     Lightweight rollout for evaluation.
 
@@ -273,6 +313,24 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
         "v_cmd": env.commands[:, 0].detach().cpu().numpy(),
     }
 
+    # ------- malus latches: per-env wing breaks + global Hebbian freeze ------
+    # NOTE: CLI flags follow VISUAL orientation (pilot's view). The URDF
+    # naming convention is reversed relative to ROS body frame (+y = left), so
+    # --break-left-wing maps to the URDF's "right" side (side=+1, at +y) and
+    # --break-right-wing maps to the URDF's "left" side (side=-1, at -y).
+    triggered_left = torch.zeros(B, dtype=torch.bool, device=dev)
+    triggered_right = torch.zeros(B, dtype=torch.bool, device=dev)
+    left_scale = float(1.0 - max(0.0, min(100.0, break_left_loss_pct)) / 100.0)
+    right_scale = float(1.0 - max(0.0, min(100.0, break_right_loss_pct)) / 100.0)
+    freeze_armed = (
+        freeze_distance is not None
+        and hebbian_actor is not None
+        and hasattr(hebbian_actor, "hebbian")
+    )
+    freeze_triggered = False
+    if freeze_distance is not None and not freeze_armed:
+        print("[run_eval] --freeze ignored: only active in Hebbian mode")
+
     while not done.all():
         actions = policy(obs)
         obs, _, term, _ = env.step(actions)
@@ -289,6 +347,33 @@ def run_eval(env, policy, extra_data: bool = False, minimal_progress: float = 25
             P = env.power
             E_acc[alive] += P[alive] * dt
             reward_acc[alive] += env.rew_buf[alive]
+
+            # ---- malus triggers: each env latches independently at dx ------
+            if break_left_distance is not None:
+                newly_left = alive & (~triggered_left) & (dx_acc >= break_left_distance)
+                if newly_left.any():
+                    ok = _scale_wing_lift_slope_envs(env, side=+1, scale=left_scale, env_mask=newly_left)
+                    triggered_left |= newly_left
+                    if not ok:
+                        print("[run_eval] --break-left-wing: no matching wing surface; disabling")
+                        break_left_distance = None
+            if break_right_distance is not None:
+                newly_right = alive & (~triggered_right) & (dx_acc >= break_right_distance)
+                if newly_right.any():
+                    ok = _scale_wing_lift_slope_envs(env, side=-1, scale=right_scale, env_mask=newly_right)
+                    triggered_right |= newly_right
+                    if not ok:
+                        print("[run_eval] --break-right-wing: no matching wing surface; disabling")
+                        break_right_distance = None
+            # Freeze acts on the shared Hebbian module (no per-env knob), so we
+            # fire once when the first env crosses the threshold.
+            if freeze_armed and not freeze_triggered:
+                if bool((dx_acc >= freeze_distance).any().item()):
+                    hebbian_actor.hebbian.hebbian_update = lambda *a, **kw: None
+                    freeze_triggered = True
+                    print(
+                        f"[run_eval] hebbian updates frozen at first dx>={freeze_distance:.2f} m"
+                    )
 
             # effective energy/distance up to minimal_progress
             still_count = alive & (~reached_min)
@@ -753,6 +838,11 @@ def evaluation_hebbian(
     urdf_file: str | None = None,
     drone_key: str | None = None,
     init_vx: float | None = None,
+    freeze_distance: float | None = None,
+    break_left_distance: float | None = None,
+    break_right_distance: float | None = None,
+    break_left_loss_pct: float = 50.0,
+    break_right_loss_pct: float = 50.0,
 ):
     """Programmatic Hebbian-controller counterpart to :func:`evaluation`.
 
@@ -918,6 +1008,12 @@ def evaluation_hebbian(
         policy,
         extra_data=bool(save_plots),
         minimal_progress=minimal_progress,
+        hebbian_actor=actor,
+        freeze_distance=freeze_distance,
+        break_left_distance=break_left_distance,
+        break_right_distance=break_right_distance,
+        break_left_loss_pct=break_left_loss_pct,
+        break_right_loss_pct=break_right_loss_pct,
     )
     print(
         f"[evaluation/hebbian] rollout done | v_mean={len(v_mean)} v_cmd={len(v_cmd)} "
@@ -1186,6 +1282,69 @@ if __name__ == "__main__":
         default=None,
         help="Override the forest x extent (default: same as --x-upper).",
     )
+    parser.add_argument(
+        "--freeze",
+        dest="freeze_distance",
+        type=float,
+        default=None,
+        metavar="DIST",
+        help=(
+            "Hebbian mode only: freeze the last-layer weights once any env has "
+            "travelled DIST meters along +X. After triggering, no ABCD update "
+            "and no decay-toward-checkpoint is applied for the rest of the "
+            "rollout."
+        ),
+    )
+    parser.add_argument(
+        "--break-left-wing",
+        dest="break_left_distance",
+        type=float,
+        default=None,
+        metavar="DIST",
+        help=(
+            "Reduce the lift produced by the wing on the pilot's LEFT "
+            "(visual orientation) once each env has travelled DIST meters "
+            "along +X. The amount of lift lost is controlled by "
+            "--break-left-loss (default 50%%). Per-env latched, one-shot."
+        ),
+    )
+    parser.add_argument(
+        "--break-left-loss",
+        dest="break_left_loss",
+        type=float,
+        default=50.0,
+        metavar="PCT",
+        help=(
+            "Percentage of left-wing lift to lose when --break-left-wing "
+            "fires (default 50). 0 = no effect, 100 = no lift remaining. "
+            "Clamped to [0, 100]."
+        ),
+    )
+    parser.add_argument(
+        "--break-right-wing",
+        dest="break_right_distance",
+        type=float,
+        default=None,
+        metavar="DIST",
+        help=(
+            "Reduce the lift produced by the wing on the pilot's RIGHT "
+            "(visual orientation) once each env has travelled DIST meters "
+            "along +X. The amount of lift lost is controlled by "
+            "--break-right-loss (default 50%%). Per-env latched, one-shot."
+        ),
+    )
+    parser.add_argument(
+        "--break-right-loss",
+        dest="break_right_loss",
+        type=float,
+        default=50.0,
+        metavar="PCT",
+        help=(
+            "Percentage of right-wing lift to lose when --break-right-wing "
+            "fires (default 50). 0 = no effect, 100 = no lift remaining. "
+            "Clamped to [0, 100]."
+        ),
+    )
     args = parser.parse_args()
 
     # ---------------- Hebbian-controller dispatch --------------------- #
@@ -1209,6 +1368,11 @@ if __name__ == "__main__":
             drone_key=args.drone,
             init_vx=args.init_vx,
             save_plots=True,
+            freeze_distance=args.freeze_distance,
+            break_left_distance=args.break_left_distance,
+            break_right_distance=args.break_right_distance,
+            break_left_loss_pct=args.break_left_loss,
+            break_right_loss_pct=args.break_right_loss,
         )
         sys.exit(0)
 
@@ -1304,6 +1468,11 @@ if __name__ == "__main__":
         policy,
         extra_data=True,
         minimal_progress=250.0,
+        freeze_distance=args.freeze_distance,
+        break_left_distance=args.break_left_distance,
+        break_right_distance=args.break_right_distance,
+        break_left_loss_pct=args.break_left_loss,
+        break_right_loss_pct=args.break_right_loss,
     )
     eval_reward_mean = float(np.nanmean(reward_total)) if reward_total.size else float("nan")
     if not np.isfinite(eval_reward_mean):

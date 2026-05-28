@@ -877,12 +877,12 @@ def create_overlay_video(
     # twin-axis "cumulative drift" / "per-step squared change" curve below it.
     im_heatmap = None
     vmax_hm = 0.0
-    ln_drift = ln_step = None
+    ln_drift = ln_step = ln_step_avg = None
     ax_wstats = ax_wstats_step = None
     ax_pca = None
     ln_pca_path = ln_pca_dot = None
     pc12 = None
-    drift_sq = step_sq = None
+    drift_sq = step_sq = step_sq_avg = None
     if has_heatmap:
         vmax_hm = float(np.abs(weight_delta).max())
         if vmax_hm <= 0.0:
@@ -957,6 +957,22 @@ def create_overlay_video(
             [[0.0], (step_diff ** 2).sum(axis=(1, 2))]
         )
 
+        # Rolling average of per-step squared change over a 1-second window.
+        # Recover dt from the time grid so this works for any caller.
+        if t_all.size >= 2:
+            dt_traj = float(np.diff(t_all).mean())
+        else:
+            dt_traj = 1.0
+        roll_window = max(1, int(round(1.0 / dt_traj))) if dt_traj > 0 else 1
+        if roll_window > 1 and step_sq.size >= roll_window:
+            kernel = np.ones(roll_window, dtype=np.float64) / roll_window
+            step_sq_avg = np.convolve(step_sq, kernel, mode="full")[: step_sq.size]
+            # Normalize the leading ramp-up so the early window isn't biased toward zero.
+            ramp = np.minimum(np.arange(1, step_sq.size + 1), roll_window).astype(np.float64)
+            step_sq_avg = step_sq_avg * roll_window / ramp
+        else:
+            step_sq_avg = step_sq.copy()
+
         # wstats panel: bottom row of `outer` (row 1 in alt mode, row 2 otherwise).
         wstats_subspec = outer[1, 0] if alternative_mode else outer[2, 0]
         if pca_mode:
@@ -985,24 +1001,28 @@ def create_overlay_video(
         ax_wstats.set_ylabel("cumulative", color=color_drift)
         ax_wstats.tick_params(axis="y", labelcolor=color_drift)
         (ln_drift,) = ax_wstats.plot(
-            [], [], lw=1.8, color=color_drift,
+            [], [], lw=2.6, color=color_drift,
             label=r"$\Sigma (W - W_{ckpt})^2$",
         )
 
         ax_wstats_step = ax_wstats.twinx()
-        y_top_step = float(step_sq.max())
+        y_top_step = float(max(step_sq.max(), step_sq_avg.max()))
         if not np.isfinite(y_top_step) or y_top_step <= 0.0:
             y_top_step = 1e-8
         ax_wstats_step.set_ylim(0.0, y_top_step * 1.1)
         ax_wstats_step.set_ylabel("per step", color=color_step)
         ax_wstats_step.tick_params(axis="y", labelcolor=color_step)
         (ln_step,) = ax_wstats_step.plot(
-            [], [], lw=1.4, color=color_step,
+            [], [], lw=1.6, color=color_step, linestyle=":", alpha=0.65,
             label=r"$\Sigma (W_t - W_{t-1})^2$",
+        )
+        (ln_step_avg,) = ax_wstats_step.plot(
+            [], [], lw=2.8, color=color_step,
+            label=r"$\langle \Sigma (W_t - W_{t-1})^2 \rangle_{1\mathrm{s}}$",
         )
 
         freeze_t = traj.get("hebbian_freeze_time", None)
-        legend_handles = [ln_drift, ln_step]
+        legend_handles = [ln_drift, ln_step, ln_step_avg]
         if freeze_t is not None and np.isfinite(float(freeze_t)):
             ln_freeze = ax_wstats.axvline(
                 float(freeze_t),
@@ -1228,6 +1248,7 @@ def create_overlay_video(
                 ws_idx = min(idx, drift_sq.shape[0] - 1)
                 ln_drift.set_data(t_all[: ws_idx + 1], drift_sq[: ws_idx + 1])
                 ln_step.set_data(t_all[: ws_idx + 1], step_sq[: ws_idx + 1])
+                ln_step_avg.set_data(t_all[: ws_idx + 1], step_sq_avg[: ws_idx + 1])
                 ax_wstats.set_xlim(0, max(t_all[ws_idx], 1e-6))
                 ax_wstats_step.set_xlim(0, max(t_all[ws_idx], 1e-6))
 
@@ -1334,6 +1355,227 @@ def create_left_column_video(
                     if not rD:
                         break
                     im_depth.set_data(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
+
+            writer.grab_frame()
+
+    cap_cam.release()
+    cap_td.release()
+    if cap_dp:
+        cap_dp.release()
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Video generation: broken-wing ΔW comparison
+# ---------------------------------------------------------------------------
+
+def create_break_deltaw_compare_video(
+    cam_mp4: str,
+    td_mp4: str,
+    out_mp4: str,
+    traj: Dict[str, np.ndarray],
+    depth_mp4: Optional[str] = None,
+    dpi: int = 240,
+) -> None:
+    """
+    Compose a video specific to broken-wing evaluations:
+      - top: camera + depth + top-down (mirroring create_left_column_video,
+        with the wing-break red bar + lift-loss badge re-drawn on the camera
+        panel; the red half-cone on top-down is already baked into td_mp4).
+      - bottom: two ΔW heatmaps of the last Linear(64→7) layer side by side.
+          left  -> frozen at the first break event (pre-incident snapshot).
+          right -> keeps updating to end-of-clip.
+
+    Requires ``traj`` to contain ``hebbian_weight_delta_history`` AND at
+    least one finite ``break_left_time`` / ``break_right_time``.
+    """
+    import cv2
+    from matplotlib.gridspec import GridSpec
+
+    weight_delta = traj.get("hebbian_weight_delta_history", None)
+    if weight_delta is None or weight_delta.size == 0:
+        raise ValueError(
+            "create_break_deltaw_compare_video requires hebbian_weight_delta_history."
+        )
+
+    break_left_time = traj.get("break_left_time", None)
+    break_right_time = traj.get("break_right_time", None)
+    break_left_loss_pct = traj.get("break_left_loss_pct", None)
+    break_right_loss_pct = traj.get("break_right_loss_pct", None)
+    candidates: List[float] = []
+    if break_left_time is not None and np.isfinite(float(break_left_time)):
+        candidates.append(float(break_left_time))
+    if break_right_time is not None and np.isfinite(float(break_right_time)):
+        candidates.append(float(break_right_time))
+    if not candidates:
+        raise ValueError(
+            "create_break_deltaw_compare_video requires at least one break time."
+        )
+    freeze_at = min(candidates)
+
+    t_all = traj["time_steps"]
+
+    cap_cam = cv2.VideoCapture(cam_mp4)
+    cap_td = cv2.VideoCapture(td_mp4)
+    cap_dp = cv2.VideoCapture(depth_mp4) if depth_mp4 else None
+    fps = cap_cam.get(cv2.CAP_PROP_FPS) or 25.0
+    nF_list = [
+        int(cap_cam.get(cv2.CAP_PROP_FRAME_COUNT) or 1),
+        int(cap_td.get(cv2.CAP_PROP_FRAME_COUNT) or 1),
+    ]
+    if cap_dp:
+        nF_list.append(int(cap_dp.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+    nF = min(nF_list)
+    dt = 1.0 / fps
+
+    fig = plt.figure(figsize=(10.0, 14.0), dpi=dpi)
+    outer = GridSpec(
+        nrows=2, ncols=1, height_ratios=[9.0, 3.6], hspace=0.12,
+    )
+    fig.subplots_adjust(left=0.085, right=0.920, top=0.985, bottom=0.045)
+
+    top_gs = outer[0, 0].subgridspec(
+        nrows=3, ncols=1, height_ratios=[5.9, 0.78, 2.42], hspace=0.012,
+    )
+    ax_cam = fig.add_subplot(top_gs[0, 0]); ax_cam.axis("off")
+    ax_depth = fig.add_subplot(top_gs[1, 0]); ax_depth.axis("off")
+    ax_td = fig.add_subplot(top_gs[2, 0]); ax_td.axis("off")
+
+    bot_gs = outer[1, 0].subgridspec(
+        nrows=1, ncols=3, width_ratios=[1.0, 1.0, 0.030], wspace=0.22,
+    )
+    ax_hm_frzn = fig.add_subplot(bot_gs[0, 0])
+    ax_hm_live = fig.add_subplot(bot_gs[0, 1])
+    ax_cbar = fig.add_subplot(bot_gs[0, 2])
+
+    okC, frm_cam = cap_cam.read()
+    okT, frm_td = cap_td.read()
+    if not (okC and okT):
+        raise RuntimeError("Cannot read first frames from camera/top-down videos.")
+    im_cam = ax_cam.imshow(cv2.cvtColor(frm_cam, cv2.COLOR_BGR2RGB))
+    im_td = ax_td.imshow(cv2.cvtColor(frm_td, cv2.COLOR_BGR2RGB))
+    if cap_dp:
+        okD, frm_dp = cap_dp.read()
+        if not okD:
+            raise RuntimeError("Cannot read first frame from depth video.")
+        im_depth = ax_depth.imshow(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
+    else:
+        blank_depth = np.ones((48, 320, 3), dtype=np.uint8) * 255
+        im_depth = ax_depth.imshow(blank_depth)
+
+    # Wing-break overlays on the camera panel (red bar + lift-loss badge),
+    # mirroring the overlay video. The red half-cone on top-down is already
+    # baked into td_mp4 by create_topdown_video_multi.
+    break_l_bar = break_l_badge = None
+    break_r_bar = break_r_badge = None
+    if break_left_time is not None:
+        break_l_bar = Rectangle(
+            (0.0, 0.0), 0.04, 1.0,
+            transform=ax_cam.transAxes,
+            facecolor="red", edgecolor="red", visible=False, zorder=10,
+        )
+        ax_cam.add_patch(break_l_bar)
+        lbl = "BREAK LEFT"
+        if break_left_loss_pct is not None:
+            lbl = f"BREAK LEFT -{float(break_left_loss_pct):.0f}%"
+        break_l_badge = ax_cam.text(
+            0.05, 0.97, lbl,
+            transform=ax_cam.transAxes,
+            color="white", fontsize=13, fontweight="bold",
+            ha="left", va="top", visible=False, zorder=11,
+            bbox=dict(facecolor="red", edgecolor="none", pad=4),
+        )
+    if break_right_time is not None:
+        break_r_bar = Rectangle(
+            (0.96, 0.0), 0.04, 1.0,
+            transform=ax_cam.transAxes,
+            facecolor="red", edgecolor="red", visible=False, zorder=10,
+        )
+        ax_cam.add_patch(break_r_bar)
+        lbl = "BREAK RIGHT"
+        if break_right_loss_pct is not None:
+            lbl = f"BREAK RIGHT -{float(break_right_loss_pct):.0f}%"
+        break_r_badge = ax_cam.text(
+            0.95, 0.97, lbl,
+            transform=ax_cam.transAxes,
+            color="white", fontsize=13, fontweight="bold",
+            ha="right", va="top", visible=False, zorder=11,
+            bbox=dict(facecolor="red", edgecolor="none", pad=4),
+        )
+
+    # Heatmaps: shared seismic colormap, shared vmax across the whole history
+    # so the two panels are visually comparable.
+    vmax_hm = float(np.abs(weight_delta).max())
+    if vmax_hm <= 0.0:
+        vmax_hm = 1e-8
+    num_actions = weight_delta.shape[1]
+    actuator_names = [
+        "throttle", "sweep_L", "sweep_R",
+        "twist_L", "twist_R", "elevator", "rudder",
+    ]
+
+    im_frzn = ax_hm_frzn.imshow(
+        weight_delta[0],
+        aspect="auto", cmap="seismic",
+        vmin=-vmax_hm, vmax=vmax_hm, interpolation="nearest",
+    )
+    im_live = ax_hm_live.imshow(
+        weight_delta[0],
+        aspect="auto", cmap="seismic",
+        vmin=-vmax_hm, vmax=vmax_hm, interpolation="nearest",
+    )
+    for ax in (ax_hm_frzn, ax_hm_live):
+        ax.set_xlabel("Head neuron")
+        ax.set_ylabel("Actuator")
+        if num_actions == len(actuator_names):
+            ax.set_yticks(range(num_actions))
+            ax.set_yticklabels(actuator_names, fontsize=8)
+    ax_hm_frzn.set_title(
+        f"ΔW @ break (frozen at t = {freeze_at:.2f} s)",
+        fontsize=10,
+    )
+    ax_hm_live.set_title(
+        f"ΔW live   (max |ΔW| = {vmax_hm:.4f})",
+        fontsize=10,
+    )
+    fig.colorbar(im_live, cax=ax_cbar)
+
+    frozen_captured = False
+
+    writer = FFMpegWriter(fps=fps, metadata=dict(artist="winged-drone"))
+    with writer.saving(fig, out_mp4, dpi=dpi):
+        for k in range(nF):
+            if k:
+                rC, frm_cam = cap_cam.read()
+                rT, frm_td = cap_td.read()
+                if cap_dp:
+                    rD, frm_dp = cap_dp.read()
+                    if not (rC and rT and rD):
+                        break
+                    im_depth.set_data(cv2.cvtColor(frm_dp, cv2.COLOR_BGR2RGB))
+                else:
+                    if not (rC and rT):
+                        break
+                im_cam.set_data(cv2.cvtColor(frm_cam, cv2.COLOR_BGR2RGB))
+                im_td.set_data(cv2.cvtColor(frm_td, cv2.COLOR_BGR2RGB))
+
+            t_now = k * dt
+            idx = max(np.searchsorted(t_all, t_now) - 1, 0)
+            hm_idx = min(idx, weight_delta.shape[0] - 1)
+
+            im_live.set_data(weight_delta[hm_idx])
+
+            if not frozen_captured:
+                im_frzn.set_data(weight_delta[hm_idx])
+                if t_now >= freeze_at:
+                    frozen_captured = True
+
+            if break_l_bar is not None and t_now >= float(break_left_time):
+                break_l_bar.set_visible(True)
+                break_l_badge.set_visible(True)
+            if break_r_bar is not None and t_now >= float(break_right_time):
+                break_r_bar.set_visible(True)
+                break_r_badge.set_visible(True)
 
             writer.grab_frame()
 
@@ -2144,6 +2386,29 @@ def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, t
             depth_mp4=depth_video_path,
         )
         print(f"✅ Left-column video saved to: {left_column_mp4}")
+
+        # Broken-wing ΔW comparison video: only when a wing actually broke
+        # and Hebbian ΔW history was logged. Left panel freezes at the first
+        # break event so the user can compare ΔW pre/post-incident.
+        bl = traj.get("break_left_time", None)
+        br = traj.get("break_right_time", None)
+        has_break = (
+            (bl is not None and np.isfinite(float(bl)))
+            or (br is not None and np.isfinite(float(br)))
+        )
+        wd = traj.get("hebbian_weight_delta_history", None)
+        has_dw = wd is not None and wd.size > 0
+        if has_break and has_dw:
+            break_cmp_mp4 = os.path.join(eval_log_dir, "break_deltaw_compare.mp4")
+            print("Rendering break ΔW compare video …")
+            create_break_deltaw_compare_video(
+                cam_mp4=cam_mp4,
+                td_mp4=topdown_mp4,
+                out_mp4=break_cmp_mp4,
+                traj=traj,
+                depth_mp4=depth_video_path,
+            )
+            print(f"✅ Break ΔW compare video saved to: {break_cmp_mp4}")
 
         overlay_mp4 = os.path.join(eval_log_dir, "overlay.mp4")
         if hasattr(env, "commands") and env.commands.shape[1] >= 3:

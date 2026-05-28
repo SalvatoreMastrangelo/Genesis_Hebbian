@@ -23,9 +23,23 @@ class ForestConfig:
         tree_radius: Radius of each cylindrical tree trunk (meters).
         tree_height: Height of each tree (meters).
         dens_min, dens_max: Linear density profile parameters (trees / meter)
-            used when ``growing_forest=True``.  Density increases linearly from
+            used by the ``"growing"`` mode.  Density increases linearly from
             ``dens_min`` at ``x_lower`` to ``dens_max`` at ``x_upper``.
-        num_trees: Number of trees for the uniform sampling mode.
+        num_trees: Number of trees for the ``"uniform"`` mode.
+        forest_mode: Explicit mode selector. One of ``"uniform"``, ``"growing"``,
+            ``"lattice"``.  When ``None`` the legacy boolean ``growing_forest``
+            passed to :class:`ForestGenerator` decides between
+            ``"growing"`` and ``"uniform"``.
+        x_spacing_start, x_spacing_end: Distance between consecutive x-aligned
+            tree lines at the start (low x) and end (high x) of the lattice.
+            Spacings interpolate linearly across the sequence so the grid gets
+            denser with x.
+        forest_length: Total x-extent covered by the lattice (meters). The
+            number of lines is derived from ``(x_spacing_start, x_spacing_end,
+            forest_length)``.
+        y_spacing_max, y_spacing_min: Distance between trees along a single
+            x-line, at the first line (sparse) and last line (dense). Each line
+            is centered on the midpoint of ``[y_lower, y_upper]``.
     """
 
     x_lower: float = 0.0
@@ -39,6 +53,12 @@ class ForestConfig:
     dens_min_min: Optional[float] = None
     dens_min_max: Optional[float] = None
     num_trees: int = 100
+    forest_mode: Optional[str] = None
+    x_spacing_start: float = 3.0
+    x_spacing_end: float = 1.0
+    forest_length: float = 200.0
+    y_spacing_max: float = 5.0
+    y_spacing_min: float = 1.0
 
 
 class ForestGenerator:
@@ -75,6 +95,16 @@ class ForestGenerator:
         self.device = torch.device(device)
 
         self.config = config if config is not None else ForestConfig()
+
+        mode = self.config.forest_mode
+        if mode is None:
+            mode = "growing" if self.growing_forest else "uniform"
+        if mode not in {"uniform", "growing", "lattice"}:
+            raise ValueError(
+                f"ForestConfig.forest_mode must be one of 'uniform', 'growing', "
+                f"'lattice'; got {mode!r}"
+            )
+        self.forest_mode = mode
 
         # Determine how many distinct forests we want to keep in memory.
         if self.evaluation:
@@ -184,6 +214,99 @@ class ForestGenerator:
         cylinders = torch.stack((xs, ys, zs), dim=-1)  # (F, max_trees, 3)
         return cylinders.float()
 
+    def _sample_lattice_forest(self, F: int) -> torch.Tensor:
+        """Sample a "jittered lattice" forest with x- and y-densification.
+
+        Lines are placed at fixed x values whose spacings interpolate linearly
+        from ``x_spacing_start`` to ``x_spacing_end`` across a total span of
+        ``forest_length``; the sequence of spacings is rescaled so it sums
+        exactly to ``forest_length``.  On each line, trees are placed at
+        linearly spaced y positions centered on the y-midpoint, with a per-line
+        spacing that interpolates linearly from ``y_spacing_max`` (first line)
+        to ``y_spacing_min`` (last line).  Independent Gaussian jitter with
+        ``std=tree_radius`` is added to each tree's x and y.
+
+        All ``F`` forests share the same lattice structure; only the jitter
+        differs.
+        """
+        c = self.config
+        device = self.device
+
+        s0 = float(c.x_spacing_start)
+        s1 = float(c.x_spacing_end)
+        L = float(c.forest_length)
+        y_sp_first = float(c.y_spacing_max)
+        y_sp_last = float(c.y_spacing_min)
+
+        if s0 <= 0.0 or s1 <= 0.0:
+            raise ValueError(
+                "ForestConfig.x_spacing_start and x_spacing_end must be positive"
+            )
+        if L <= 0.0:
+            raise ValueError("ForestConfig.forest_length must be positive")
+        if y_sp_first <= 0.0 or y_sp_last <= 0.0:
+            raise ValueError(
+                "ForestConfig.y_spacing_max and y_spacing_min must be positive"
+            )
+
+        y_width = c.y_upper - c.y_lower
+        if y_width <= 0.0:
+            raise ValueError("ForestConfig.y_upper must be greater than y_lower")
+
+        # Number of inter-line gaps so that the linear-spacing average fits L.
+        n_gaps = max(1, int(round(2.0 * L / (s0 + s1))))
+        n_lines = n_gaps + 1
+
+        if n_gaps == 1:
+            gaps = torch.tensor([L], device=device, dtype=torch.float32)
+        else:
+            t = torch.arange(n_gaps, device=device, dtype=torch.float32) / (n_gaps - 1)
+            gaps = s0 + (s1 - s0) * t
+            gaps = gaps * (L / gaps.sum())
+
+        line_offsets = torch.cat(
+            [torch.zeros(1, device=device, dtype=torch.float32),
+             torch.cumsum(gaps, dim=0)]
+        )
+        x_lines = c.x_lower + line_offsets  # (n_lines,)
+
+        if n_lines == 1:
+            y_spacings = torch.tensor([y_sp_first], device=device, dtype=torch.float32)
+        else:
+            t_line = torch.arange(n_lines, device=device, dtype=torch.float32) / (n_lines - 1)
+            y_spacings = y_sp_first + (y_sp_last - y_sp_first) * t_line  # (n_lines,)
+
+        y_center = 0.5 * (c.y_lower + c.y_upper)
+
+        # Build the flat (x, y) layout one line at a time. Number of trees per
+        # line varies, so we accumulate into Python lists then concatenate.
+        xs_chunks = []
+        ys_chunks = []
+        for i in range(n_lines):
+            sp = float(y_spacings[i].item())
+            m_i = max(1, int(y_width // sp) + 1)
+            k = torch.arange(m_i, device=device, dtype=torch.float32)
+            ys_i = y_center + (k - 0.5 * (m_i - 1)) * sp
+            xs_i = torch.full((m_i,), float(x_lines[i].item()),
+                              device=device, dtype=torch.float32)
+            xs_chunks.append(xs_i)
+            ys_chunks.append(ys_i)
+
+        xs_flat = torch.cat(xs_chunks)  # (T,)
+        ys_flat = torch.cat(ys_chunks)  # (T,)
+        T = xs_flat.shape[0]
+
+        xs = xs_flat.unsqueeze(0).expand(F, T).clone()
+        ys = ys_flat.unsqueeze(0).expand(F, T).clone()
+        noise_std = float(c.tree_radius)
+        if noise_std > 0.0:
+            xs = xs + torch.randn((F, T), device=device) * noise_std
+            ys = ys + torch.randn((F, T), device=device) * noise_std
+
+        zs = torch.full((F, T), 0.5 * c.tree_height, device=device, dtype=torch.float32)
+        cylinders = torch.stack((xs, ys, zs), dim=-1)  # (F, T, 3)
+        return cylinders.float()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -197,7 +320,9 @@ class ForestGenerator:
                 ``self.total_forests``).
         """
         F = self.total_forests
-        if self.growing_forest:
+        if self.forest_mode == "lattice":
+            cylinders = self._sample_lattice_forest(F)
+        elif self.forest_mode == "growing":
             cylinders = self._sample_growing_forest(F)
         else:
             cylinders = self._sample_uniform_forest(F)
@@ -270,9 +395,16 @@ def generate_forests(
     dens_min = float(cfg_dict.get("dens_min", 0.0))
     dens_max = float(cfg_dict.get("dens_max", 4.0 if not evaluation else 5.0))
 
+    x_lower = float(cfg_dict.get("x_lower", 0.0))
+    x_upper = float(cfg_dict.get("x_upper", 600.0 if evaluation else 200.0))
+
+    forest_mode = cfg_dict.get("forest_mode", None)
+    if forest_mode is not None:
+        forest_mode = str(forest_mode)
+
     cfg = ForestConfig(
-        x_lower=float(cfg_dict.get("x_lower", 0.0)),
-        x_upper=float(cfg_dict.get("x_upper", 600.0 if evaluation else 200.0)),
+        x_lower=x_lower,
+        x_upper=x_upper,
         y_lower=float(cfg_dict.get("y_lower", -50.0)),
         y_upper=float(cfg_dict.get("y_upper", 50.0)),
         tree_radius=float(cfg_dict.get("tree_radius", 0.75)),
@@ -282,6 +414,12 @@ def generate_forests(
         dens_min_min=float(cfg_dict["dens_min_min"]) if "dens_min_min" in cfg_dict else None,
         dens_min_max=float(cfg_dict["dens_min_max"]) if "dens_min_max" in cfg_dict else None,
         num_trees=int(num_trees) if num_trees is not None else ForestConfig.num_trees,
+        forest_mode=forest_mode,
+        x_spacing_start=float(cfg_dict.get("x_spacing_start", ForestConfig.x_spacing_start)),
+        x_spacing_end=float(cfg_dict.get("x_spacing_end", ForestConfig.x_spacing_end)),
+        forest_length=float(cfg_dict.get("forest_length", x_upper - x_lower)),
+        y_spacing_max=float(cfg_dict.get("y_spacing_max", ForestConfig.y_spacing_max)),
+        y_spacing_min=float(cfg_dict.get("y_spacing_min", ForestConfig.y_spacing_min)),
     )
 
     gen = ForestGenerator(
