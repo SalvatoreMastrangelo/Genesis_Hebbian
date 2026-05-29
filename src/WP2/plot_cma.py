@@ -2,15 +2,17 @@
 WP2 CMA-ES run analysis plots.
 ================================
 
-Four targeted plots for a CMA-ES Hebbian-rules run:
+Targeted plots for a CMA-ES Hebbian-rules run:
 
 1. plot_rules_distribution      — A/B/C/D histograms (bins) for the best individual.
 2. plot_fitness_progress_std    — std of fitness and progress over generations.
 3. plot_rule_weight_correlation — |rule| vs |checkpoint weight| scatter per rule.
 4. plot_cma_state               — CMA-ES state variables (sigma, axis ratio,
                                   condition number) across generations.
+5. plot_uh_noise                — UH-CMA-ES noise statistic + its effect on σ
+                                  (only for runs that used uncertainty handling).
 
-``analyze_run(run_dir)`` generates all four.
+``analyze_run(run_dir)`` generates all of them (UH plot self-skips when absent).
 
 Usage::
 
@@ -360,6 +362,97 @@ def plot_cma_state(run_dir: str | Path) -> None:
 
 
 # ============================================================================
+#  5. UH-CMA-ES uncertainty handling activity
+# ============================================================================
+
+def plot_uh_noise(run_dir: str | Path) -> None:
+    """Plot UH-CMA-ES noise measurement and its effect on the step size.
+
+    Only produced when the run actually used uncertainty handling (i.e. the
+    ``uh_noiseS`` column exists in cma_summary.csv and has finite values on the
+    measurement generations). Two stacked panels share the generation x-axis:
+
+    Top    — Hansen noise statistic ``noiseS`` per measurement gen. The y=0 line
+             is the decision threshold: ``noiseS > 0`` means rank-noise was
+             detected and σ was bumped. Those gens are marked in red.
+    Bottom — the effective step size σ (log scale) with the UH-bumped gens
+             highlighted, so the causal link (noise found → σ rises) is visible.
+    """
+    if not HAS_MPL:
+        return
+    run_dir = Path(run_dir)
+
+    data = _load_summary_csv(run_dir)
+    if data is None or "generation" not in data:
+        print("[plot_cma] No cma_summary.csv — skipping UH plot.")
+        return
+
+    noiseS = data.get("uh_noiseS")
+    factor = data.get("uh_sigma_factor")
+    if not _column_is_present(noiseS):
+        print("[plot_cma] No UH activity in this run — skipping UH plot.")
+        return
+
+    gens = data["generation"]
+    sigma = data.get("sigma")
+
+    # Measurement gens are those with a finite noiseS (UH ran on a cadence).
+    meas = np.isfinite(noiseS)
+    g_meas = gens[meas]
+    n_meas = noiseS[meas]
+    # σ was bumped wherever the factor exceeded 1 (noiseS > 0).
+    if _column_is_present(factor):
+        bumped = meas & np.isfinite(factor) & (factor > 1.0 + 1e-9)
+    else:
+        bumped = meas & (noiseS > 0)
+
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, figsize=(11, 7), sharex=True,
+        gridspec_kw={"height_ratios": [1.0, 1.0]},
+    )
+
+    # --- Top: noiseS ---
+    ax_top.axhline(0.0, color="black", linewidth=1.0, linestyle="--", alpha=0.6,
+                   label="threshold (noiseS=0)")
+    ax_top.plot(g_meas, n_meas, color="#7f7f7f", linewidth=1.2, alpha=0.7, zorder=1)
+    # Colour points by detection sign.
+    pos = n_meas > 0
+    ax_top.scatter(g_meas[pos], n_meas[pos], color="#d62728", s=28, zorder=3,
+                   label="noise detected → σ↑")
+    ax_top.scatter(g_meas[~pos], n_meas[~pos], color="#2ca02c", s=28, zorder=3,
+                   label="no noise → σ unchanged")
+    ax_top.set_ylabel("Hansen noiseS")
+    ax_top.set_title("UH-CMA-ES — rank-noise measurement (re-eval on same forests)")
+    ax_top.grid(True, alpha=0.3, linestyle="--")
+    ax_top.legend(loc="best", fontsize=9)
+
+    # --- Bottom: sigma with bumped gens marked ---
+    if _column_is_present(sigma):
+        ax_bot.plot(gens, sigma, color="#1f77b4", linewidth=2, label="σ (effective)")
+        ax_bot.set_yscale("log")
+        if bumped.any():
+            ax_bot.scatter(gens[bumped], sigma[bumped], color="#d62728", s=30,
+                           zorder=3, label="σ bumped by UH")
+        ax_bot.set_ylabel("σ (step size)")
+        ax_bot.legend(loc="best", fontsize=9)
+    else:
+        ax_bot.text(0.5, 0.5, "σ unavailable", ha="center", va="center",
+                    transform=ax_bot.transAxes)
+    ax_bot.set_xlabel("Generation")
+    ax_bot.grid(True, which="both", alpha=0.3, linestyle="--")
+
+    # Annotate how often UH fired.
+    n_bump = int(bumped.sum())
+    n_total = int(meas.sum())
+    fig.suptitle(
+        f"UH activity: σ bumped on {n_bump}/{n_total} measurement generations",
+        fontsize=12,
+    )
+    fig.tight_layout()
+    _save_fig(fig, run_dir / "plots", "uh_noise")
+
+
+# ============================================================================
 #  Master analysis function
 # ============================================================================
 
@@ -374,6 +467,7 @@ def analyze_run(run_dir: str | Path) -> None:
     plot_fitness_progress_std(run_dir)
     plot_rule_weight_correlation(run_dir)
     plot_cma_state(run_dir)
+    plot_uh_noise(run_dir)
     print(f"[analyze_run] All plots saved to {run_dir / 'plots'}")
 
 

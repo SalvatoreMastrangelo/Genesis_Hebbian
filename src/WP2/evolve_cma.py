@@ -125,6 +125,7 @@ def _init_csvs(pop_path: Path, summary_path: Path) -> None:
             "best_fitness", "mean_fitness", "worst_fitness", "std_fitness",
             "sigma", "axis_ratio", "cond_number",
             "mean_velocity", "mean_progress", "mean_crash_rate", "mean_cot", "mean_v_deviation",
+            "uh_noiseS", "uh_sigma_factor",
         ])
 
 
@@ -187,8 +188,12 @@ def _append_summary_csv(
     sigma: float,
     axis_ratio: float,
     cond_number: float,
+    uh: Optional[Dict[str, float]] = None,
 ) -> None:
     P = len(fitnesses)
+    nan = float("nan")
+    uh_noise = uh["noiseS"] if uh is not None else nan
+    uh_factor = uh["factor"] if uh is not None else nan
     with open(path, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -205,6 +210,8 @@ def _append_summary_csv(
             f"{metrics['crash_flags'].mean():.6g}",
             f"{metrics['cots'].mean():.6g}",
             f"{metrics['v_deviations'].mean():.6g}",
+            f"{uh_noise:.6g}",
+            f"{uh_factor:.6g}",
         ])
 
 
@@ -247,6 +254,7 @@ def _print_generation_table(
     baseline: Optional[Dict[str, float]] = None,
     specialist: Optional[Dict[str, float]] = None,
     total_generations: Optional[int] = None,
+    uh: Optional[Dict[str, float]] = None,
 ) -> None:
     gen_str = f"{gen}/{total_generations}" if total_generations is not None else str(gen)
     timing_parts = [f"CMA-ES Generation {gen_str}", f"Population={len(fitnesses)}"]
@@ -264,6 +272,11 @@ def _print_generation_table(
         timing_parts.append(f"ETA: {h}:{m:02d}:{s:02d}")
 
     timing_parts.append(f"σ={sigma:.4g}")
+
+    if uh is not None:
+        timing_parts.append(
+            f"UH: noiseS={uh['noiseS']:+.3f} ×σ={uh['factor']:.4f}"
+        )
 
     header_str = " | ".join(timing_parts)
     print(f"\n{'═' * 90}")
@@ -636,6 +649,101 @@ class HebbianCMAES:
     #  Reference controller evaluation (zero Hebbian rules)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    #  Uncertainty handling (UH-CMA-ES, σ-only arm)
+    # ------------------------------------------------------------------
+
+    def _uh_reevaluate(self, solutions: List[np.ndarray]) -> np.ndarray:
+        """Re-evaluate the full population on the CURRENT forests (no refresh).
+
+        Reuses the pre-built env (size matches the full population), so the
+        only differences from the just-completed evaluation are the irreducible
+        per-rollout stochastic sources — stochastic actor sampling and per-step
+        aero force noise — which is exactly the rank-noise CRN cannot remove.
+        Forests/DR draws are NOT refreshed here on purpose: refreshing would
+        fold forest-draw variance (which CRN makes common across individuals)
+        back into the measurement.
+        """
+        existing_env = (
+            (self._env, self._env_urdf_path) if self._env is not None else None
+        )
+        if self._use_multi_urdf:
+            fitnesses, _ = evaluate_population_multi_urdf(
+                solutions,
+                self.cfg,
+                self._model_and_layer,
+                self._wp1_cfg,
+                urdf_paths=self._urdf_paths,
+                existing_env=existing_env,
+                verbose=False,
+            )
+        else:
+            fitnesses, _ = evaluate_population_cma_batched(
+                solutions,
+                self.cfg,
+                self._model_and_layer,
+                self._wp1_cfg,
+                catalog=self._catalog,
+                existing_env=existing_env,
+                verbose=False,
+            )
+        return np.asarray(fitnesses, dtype=float)
+
+    def _apply_uncertainty_handling(
+        self,
+        es,
+        solutions: List[np.ndarray],
+        fitnesses: np.ndarray,
+        gen: int,
+    ) -> float:
+        """Measure rank-noise via a full-population re-eval and bump sigma.
+
+        Reuses pycma's exact Hansen statistic (``NoiseHandler.update_measure``)
+        and its step-size treatment (``treat``); only the re-evaluation is
+        driven through our batched evaluator instead of pycma's per-individual
+        ``func``. Returns the applied sigma multiplier.
+        """
+        nh = self._nh
+        try:
+            re_fit = self._uh_reevaluate(solutions)
+        except Exception as exc:
+            print(f"[UH] gen {gen}: re-evaluation failed ({exc}); skipping")
+            return 1.0
+
+        # pycma operates in minimisation space (the optimiser sees -reward).
+        # The measure is purely rank-based (|rankDelta|, symmetric limits) so
+        # the sign does not change noiseS, but negate for faithfulness.
+        fit_min = list((-np.asarray(fitnesses, dtype=float)))
+        refit_min = list((-re_fit))
+        nh.fit = fit_min
+        nh.fitre = refit_min
+        # Full re-eval is already paid for, so default to the whole population
+        # for a robust measure; honour a positive uh_reevals subset if set.
+        if nh.lam_reeval:
+            nh.idx = nh.indices(fit_min)
+        else:
+            nh.idx = np.arange(len(fit_min))
+
+        nh.update_measure()
+        factor = nh.treat()  # in {1.0, alphasigma}; evaluations stays 1 (maxevals=1)
+
+        old_sigma = float(es.sigma)
+        es.sigma *= factor
+        # Stash for this gen's CSV row + table (consumed in _after_generation).
+        self._last_uh = {
+            "noiseS": float(nh.noiseS),
+            "factor": float(factor),
+            "sigma_pre": old_sigma,
+            "sigma_post": float(es.sigma),
+            "n_reeval": int(len(nh.idx)),
+        }
+        print(
+            f"[UH] gen {gen}: noiseS={nh.noiseS:+.4f} factor={factor:.4f} "
+            f"sigma {old_sigma:.4g} → {float(es.sigma):.4g} "
+            f"(reeval {len(nh.idx)}/{len(solutions)} indiv, no forest refresh)"
+        )
+        return factor
+
     def _evaluate_reference_actor(
         self,
         label: str,
@@ -827,11 +935,17 @@ class HebbianCMAES:
         sigma = float(es.sigma)
         axis_ratio, cond_number = _extract_cma_state(es)
 
+        # UH measurement for this gen (set by _apply_uncertainty_handling, None
+        # on non-measurement gens / when UH is disabled). Consume + clear so it
+        # is logged exactly once.
+        uh = getattr(self, "_last_uh", None)
+        self._last_uh = None
+
         # CSV logging
         _append_population_csv(self.pop_csv_path, gen, fitnesses, metrics)
         _append_summary_csv(
             self.summary_csv_path, gen, fitnesses, metrics,
-            sigma, axis_ratio, cond_number,
+            sigma, axis_ratio, cond_number, uh=uh,
         )
         if baseline is not None:
             _append_baseline_csv(self.baseline_csv_path, gen, baseline)
@@ -858,6 +972,7 @@ class HebbianCMAES:
             baseline=baseline,
             specialist=specialist,
             total_generations=self.cfg.evolution.num_generations,
+            uh=uh,
         )
 
     # ------------------------------------------------------------------
@@ -1128,6 +1243,31 @@ class HebbianCMAES:
             last_fitnesses = None
 
         # ------------------------------------------------------------------
+        #  Uncertainty handling (UH-CMA-ES, Hansen et al. 2009; σ-only arm)
+        # ------------------------------------------------------------------
+        # On resume the handler is recreated fresh (noiseS resets to 0); this
+        # only loses a little cumulated history and self-corrects within a few
+        # measurement generations.
+        self._nh = None
+        self._last_uh = None
+        if bool(getattr(self.cfg.cmaes, "uh_enabled", False)):
+            reev = float(getattr(self.cfg.cmaes, "uh_reevals", 0.0) or 0.0)
+            self._nh = cma.NoiseHandler(
+                es.N,
+                maxevals=[1, 1, 1],          # σ-only: never raise per-individual evals
+                reevals=(reev if reev > 0 else None),
+            )
+            self._nh.theta = float(getattr(self.cfg.cmaes, "uh_theta", 0.5))
+            alpha = float(getattr(self.cfg.cmaes, "uh_alphasigma", 0.0) or 0.0)
+            if alpha > 0:
+                self._nh.alphasigma = alpha
+            print(
+                f"[HebbianCMAES] UH-CMA-ES enabled: every={max(1, int(self.cfg.cmaes.uh_every))} gen, "
+                f"reevals={'full-pop' if reev <= 0 else reev}, "
+                f"alphasigma={self._nh.alphasigma:.4g}, theta={self._nh.theta:.4g}"
+            )
+
+        # ------------------------------------------------------------------
         #  Evolution loop
         # ------------------------------------------------------------------
 
@@ -1232,6 +1372,14 @@ class HebbianCMAES:
 
             # CMA-ES minimises — negate fitness to maximise reward
             es.tell(solutions, (-fitnesses).tolist())
+
+            # UH-CMA-ES: measure residual rank-noise and bump sigma if found.
+            # Done AFTER tell (mirrors the canonical pycma loop) and on a
+            # cadence, since each measurement costs ≈ one extra full-pop eval.
+            if self._nh is not None:
+                uh_every = max(1, int(getattr(self.cfg.cmaes, "uh_every", 1)))
+                if gen % uh_every == 0:
+                    self._apply_uncertainty_handling(es, solutions, fitnesses, gen)
 
             # Baseline: evaluate frozen WP1 actor with zero Hebbian rules.
             # Cadence-gated: runs on gen 0 and every `baseline_every` generations.

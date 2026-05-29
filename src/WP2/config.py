@@ -215,6 +215,36 @@ class CMAESConfig:
         morphologies. 1.0 → reset to the initial step size each change; 0.0 →
         disabled (pure carry, sigma keeps shrinking). No effect when URDFs are
         not refreshed.
+    uh_enabled : bool
+        Enable UH-CMA-ES uncertainty handling (Hansen et al. 2009, the σ-only
+        arm). After ``tell()`` the population is re-evaluated on the *same*
+        forests (no refresh) to measure residual per-rollout rank noise — the
+        stochastic-actor + per-step aero noise that CRN cannot remove. When
+        rank-noise is detected (``noiseS > 0``) the step size is bumped by
+        ``alphasigma``, counteracting σ-collapse/stall. The re-evaluation
+        averaging arm is intentionally disabled (per-individual evals stay 1)
+        because the forest count F is pinned by ``num_eval_envs``.
+    uh_every : int
+        Cadence: run the noise measurement every K generations. Each
+        measurement costs ≈ one extra full-population evaluation (the env steps
+        all slots regardless of how many individuals are re-evaluated, so a
+        subset buys no savings on this batched GPU design). 1 → every gen
+        (≈2× eval cost); 5 → +20%. Must be ≥ 1.
+    uh_reevals : float
+        Number of solutions used for the noise *measure*. 0 → use the whole
+        population (robust, and free since the full re-eval is already paid
+        for). >0 → restrict the rank-change mean to Hansen's subset of this
+        size (``indices()`` policy). Does not change re-eval cost.
+    uh_alphasigma : float
+        Override for the per-measurement σ multiplier applied when noise is
+        detected. 0 → pycma's principled default ``1 + 2/(N+10)``, which for a
+        high-dim genome (e.g. N≈896) is tiny (~1.002) and only matters
+        cumulatively. Raise it for a stronger kick — but mind the interaction
+        with ``uh_every`` (fewer measurements → fewer kicks, so a larger value
+        is affordable).
+    uh_theta : float
+        Rank-change tolerance threshold (Hansen's θ, default 0.5). Higher →
+        more rank movement tolerated before noise is flagged.
     """
 
     algorithm: str = "cmaes"   # "cmaes" or "sep-cmaes"
@@ -223,6 +253,13 @@ class CMAESConfig:
     tol_sigma: float = 0.0
     tol_fun: float = 0.0
     sigma_reinflate: float = 1.0
+
+    # --- Uncertainty handling (UH-CMA-ES, Hansen et al. 2009; σ-only arm) ---
+    uh_enabled: bool = False
+    uh_every: int = 1
+    uh_reevals: float = 0.0
+    uh_alphasigma: float = 0.0
+    uh_theta: float = 0.5
 
 
 @dataclass
