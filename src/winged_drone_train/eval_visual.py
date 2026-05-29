@@ -548,6 +548,7 @@ def create_overlay_video(
     dpi: int = 240,
     depth_mp4: Optional[str] = None,
     alternative: bool = False,
+    show_cka: bool = False,
 ) -> None:
     """
     Create a composite video with:
@@ -565,6 +566,9 @@ def create_overlay_video(
         alternative: if True (Hebbian-only), drop the right-side time-series
             column and put a transposed, enlarged weight-delta heatmap in its
             place; double the height of the bottom wstats panel.
+        show_cka: only honored when ``alternative=True`` and the trajectory
+            carries ``hebbian_y_plastic_history`` / ``hebbian_y_frozen_history``.
+            Adds a narrow CKA-vs-time panel to the right of the wstats panel.
 
     Hebbian-only extra: if ``traj`` contains ``hebbian_weight_delta_history``
     (shape (T, num_actions, hidden_dim)), a full-width heatmap and a pair of
@@ -577,6 +581,33 @@ def create_overlay_video(
     weight_delta = traj.get("hebbian_weight_delta_history", None)
     has_heatmap = weight_delta is not None and weight_delta.size > 0
     alternative_mode = bool(alternative) and has_heatmap
+    y_plastic_hist = traj.get("hebbian_y_plastic_history", None)
+    y_frozen_hist = traj.get("hebbian_y_frozen_history", None)
+    has_cka_data = (
+        y_plastic_hist is not None
+        and y_frozen_hist is not None
+        and y_plastic_hist.size > 0
+        and y_frozen_hist.size > 0
+        and y_plastic_hist.shape == y_frozen_hist.shape
+    )
+    cka_mode = alternative_mode and bool(show_cka) and has_cka_data
+
+    # Linear CKA between column-centered (W=25)-step windows.
+    cka_curve: Optional[np.ndarray] = None
+    cka_window = 25
+    if cka_mode:
+        T_hist = y_plastic_hist.shape[0]
+        cka_curve = np.full(T_hist, np.nan, dtype=np.float64)
+        for t in range(cka_window - 1, T_hist):
+            X = y_plastic_hist[t - cka_window + 1 : t + 1].astype(np.float64)
+            Y = y_frozen_hist[t - cka_window + 1 : t + 1].astype(np.float64)
+            X = X - X.mean(axis=0, keepdims=True)
+            Y = Y - Y.mean(axis=0, keepdims=True)
+            num = float(np.linalg.norm(Y.T @ X, ord="fro") ** 2)
+            den_x = float(np.linalg.norm(X.T @ X, ord="fro"))
+            den_y = float(np.linalg.norm(Y.T @ Y, ord="fro"))
+            if den_x > 0.0 and den_y > 0.0:
+                cka_curve[t] = num / (den_x * den_y)
 
     # Video sources
     cap_cam = cv2.VideoCapture(cam_mp4)
@@ -870,6 +901,8 @@ def create_overlay_video(
     vmax_hm = 0.0
     ln_drift = ln_step = ln_step_avg = None
     ax_wstats = ax_wstats_step = None
+    ax_cka = None
+    ln_cka = None
     drift_sq = step_sq = step_sq_avg = None
     if has_heatmap:
         vmax_hm = float(np.abs(weight_delta).max())
@@ -963,10 +996,19 @@ def create_overlay_video(
 
         # wstats panel: bottom row of `outer` (row 1 in alt mode, row 2 otherwise).
         wstats_subspec = outer[1, 0] if alternative_mode else outer[2, 0]
-        gs_ws = GridSpecFromSubplotSpec(
-            1, 2, subplot_spec=wstats_subspec, width_ratios=[1.0, 0.015], wspace=0.02
-        )
-        ax_wstats = fig.add_subplot(gs_ws[0, 0])
+        if cka_mode:
+            # Split into wstats (wide left) + CKA time-series panel (right).
+            gs_ws = GridSpecFromSubplotSpec(
+                1, 2, subplot_spec=wstats_subspec,
+                width_ratios=[2.0, 1.0], wspace=0.18,
+            )
+            ax_wstats = fig.add_subplot(gs_ws[0, 0])
+            ax_cka = fig.add_subplot(gs_ws[0, 1])
+        else:
+            gs_ws = GridSpecFromSubplotSpec(
+                1, 2, subplot_spec=wstats_subspec, width_ratios=[1.0, 0.015], wspace=0.02
+            )
+            ax_wstats = fig.add_subplot(gs_ws[0, 0])
         ax_wstats.grid(True, lw=0.3, alpha=0.4)
         ax_wstats.set_xlabel("t [s]")
 
@@ -1039,6 +1081,35 @@ def create_overlay_video(
             fontsize=9, frameon=False, loc="upper left", ncol=len(legend_handles),
         )
 
+        if ax_cka is not None and cka_curve is not None:
+            ax_cka.set_xlabel("t [s]")
+            ax_cka.set_ylabel("CKA")
+            ax_cka.set_ylim(0.0, 1.05)
+            ax_cka.set_xlim(0.0, max(float(t_all[-1]), 1e-6))
+            ax_cka.grid(True, lw=0.3, alpha=0.4)
+            ax_cka.set_title(
+                "Plastic vs frozen head (linear CKA, 1 s window)",
+                fontsize=9,
+            )
+            (ln_cka,) = ax_cka.plot(
+                [], [], lw=2.2, color="tab:purple",
+            )
+            if freeze_t is not None and np.isfinite(float(freeze_t)):
+                ax_cka.axvline(
+                    float(freeze_t), color="k", linestyle="--",
+                    linewidth=1.0, alpha=0.7, zorder=2,
+                )
+            if break_left_time is not None and np.isfinite(float(break_left_time)):
+                ax_cka.axvline(
+                    float(break_left_time), color="red", linestyle="--",
+                    linewidth=1.0, alpha=0.7, zorder=2,
+                )
+            if break_right_time is not None and np.isfinite(float(break_right_time)):
+                ax_cka.axvline(
+                    float(break_right_time), color="red", linestyle=":",
+                    linewidth=1.2, alpha=0.7, zorder=2,
+                )
+
         if not alternative_mode:
             # The figure's outer subplots_adjust is tight on the sides so the
             # camera+plots top row uses the full width. That leaves no horizontal
@@ -1058,14 +1129,34 @@ def create_overlay_video(
                 [_HM_RIGHT - _HM_CBAR_W, pos_cb.y0, _HM_CBAR_W, pos_cb.height]
             )
 
-        # wstats panel spans the full width with margins so the twin-axis
-        # "per step" label is not clipped on the right.
-        _WS_LEFT, _WS_RIGHT = 0.060, 0.940
-        pos_ws = ax_wstats.get_position()
-        ax_wstats.set_position(
-            [_WS_LEFT, pos_ws.y0, _WS_RIGHT - _WS_LEFT, pos_ws.height]
-        )
-        ax_wstats_step.set_position(ax_wstats.get_position())
+        if cka_mode:
+            # Bottom row: wstats (wide left) + CKA panel (right). Split with
+            # ~2:1 width ratio matching the GridSpec, with explicit margins so
+            # the wstats twin-axis label on its right is not clipped against
+            # the CKA panel.
+            _WS_LEFT = 0.060
+            _CKA_RIGHT = 0.965
+            _GAP = 0.060
+            pos_ws = ax_wstats.get_position()
+            bottom_y = pos_ws.y0
+            bottom_h = pos_ws.height
+            total_w = _CKA_RIGHT - _WS_LEFT - _GAP
+            ws_w = total_w * 2.0 / 3.0
+            cka_w = total_w * 1.0 / 3.0
+            ax_wstats.set_position([_WS_LEFT, bottom_y, ws_w, bottom_h])
+            ax_wstats_step.set_position(ax_wstats.get_position())
+            ax_cka.set_position(
+                [_WS_LEFT + ws_w + _GAP, bottom_y, cka_w, bottom_h]
+            )
+        else:
+            # wstats panel spans the full width with margins so the twin-axis
+            # "per step" label is not clipped on the right.
+            _WS_LEFT, _WS_RIGHT = 0.060, 0.940
+            pos_ws = ax_wstats.get_position()
+            ax_wstats.set_position(
+                [_WS_LEFT, pos_ws.y0, _WS_RIGHT - _WS_LEFT, pos_ws.height]
+            )
+            ax_wstats_step.set_position(ax_wstats.get_position())
 
     # First frames
     okC, frm_cam = cap_cam.read()
@@ -1169,6 +1260,10 @@ def create_overlay_video(
                 ln_step_avg.set_data(t_all[: ws_idx + 1], step_sq_avg[: ws_idx + 1])
                 ax_wstats.set_xlim(0, max(t_all[ws_idx], 1e-6))
                 ax_wstats_step.set_xlim(0, max(t_all[ws_idx], 1e-6))
+
+            if ln_cka is not None and cka_curve is not None:
+                cka_idx = min(idx, cka_curve.shape[0] - 1)
+                ln_cka.set_data(t_all[: cka_idx + 1], cka_curve[: cka_idx + 1])
 
             writer.grab_frame()
 
@@ -1687,11 +1782,20 @@ def run_and_record(env,
         # Hebbian-only: per-step delta of last-layer weights vs frozen checkpoint
         log_hebb_weights = hebbian_actor is not None and hasattr(hebbian_actor, "hebbian")
         weight_delta_b: List[np.ndarray] = []
+        # Hebbian-only: per-step plastic vs frozen last-layer outputs on the
+        # actual hidden-activation stream (used for the rolling-window CKA panel).
+        y_plastic_b: List[np.ndarray] = []
+        y_frozen_b: List[np.ndarray] = []
         if log_hebb_weights:
             W_ckpt_np = hebbian_actor.hebbian.W_checkpoint.detach().cpu().numpy().astype(np.float32)
+            # W_checkpoint may be either per-env (N, out, in) or shared (out, in).
+            if W_ckpt_np.ndim == 3:
+                W_ckpt_np = W_ckpt_np[0]
     else:
         log_hebb_weights = False
         weight_delta_b = []
+        y_plastic_b = []
+        y_frozen_b = []
 
     # Camera video (if available and requested)
     if collect_video and getattr(env, "rec_cam", None) is not None and B == 1:
@@ -1801,6 +1905,15 @@ def run_and_record(env,
         if B == 1 and log_hebb_weights:
             W_now = hebbian_actor.hebbian.W[0].detach().cpu().numpy().astype(np.float32)
             weight_delta_b.append(W_now - W_ckpt_np)
+            h_now = (
+                hebbian_actor._last_hidden_input[0]
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
+            y_plastic_b.append(W_now @ h_now)
+            y_frozen_b.append(W_ckpt_np @ h_now)
         obs, _, term, _ = env.step(act)
         step_idx += 1
 
@@ -2032,6 +2145,12 @@ def run_and_record(env,
             hebbian_weight_delta_history=(
                 np.stack(weight_delta_b, axis=0) if log_hebb_weights and len(weight_delta_b) > 0 else None
             ),
+            hebbian_y_plastic_history=(
+                np.stack(y_plastic_b, axis=0) if log_hebb_weights and len(y_plastic_b) > 0 else None
+            ),
+            hebbian_y_frozen_history=(
+                np.stack(y_frozen_b, axis=0) if log_hebb_weights and len(y_frozen_b) > 0 else None
+            ),
             hebbian_freeze_time=freeze_time,
             break_left_time=break_left_time,
             break_right_time=break_right_time,
@@ -2196,7 +2315,7 @@ def _run_hebbian(args) -> None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False))
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False), show_cka=getattr(args, "cka", False))
     print("\nEvaluation complete.")
 
 
@@ -2268,7 +2387,7 @@ def _build_eval_env(env_cfg, obs_cfg, reward_cfg, command_cfg, urdf_file, args, 
     return env
 
 
-def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool, alternative: bool = False) -> None:
+def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, traj: Dict, cam_saved: bool, alternative: bool = False, show_cka: bool = False) -> None:
     """Render the full set of evaluation videos (top-down, depth, overlay, rewards)."""
     topdown_mp4 = os.path.join(eval_log_dir, "eval_topdown.mp4")
     print("\nRendering top-down video …")
@@ -2337,6 +2456,7 @@ def _render_all_videos(env: "WingedDroneEnv", eval_log_dir: str, cam_mp4: str, t
             v_commanded=v_commanded,
             depth_mp4=depth_video_path,
             alternative=alternative,
+            show_cka=show_cka,
         )
         print(f"✅ Overlay video saved to: {overlay_mp4}")
 
@@ -2488,6 +2608,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--cka",
+        action="store_true",
+        help=(
+            "Only honored together with --alternative. Adds a CKA-vs-time panel "
+            "next to the wstats panel at the bottom of the overlay. CKA is "
+            "computed every step between the plastic last-layer outputs and "
+            "the frozen checkpoint last-layer outputs evaluated on the same "
+            "32-D hidden activations, with a rolling 1-second (25-step) "
+            "column-centered window."
+        ),
+    )
+    parser.add_argument(
         "--ignore-angle-limit",
         dest="ignore_angle_limit",
         action="store_true",
@@ -2636,7 +2768,7 @@ def main() -> None:
         print("No trajectory data recorded (num_envs > 1). Nothing to plot.")
         return
 
-    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False))
+    _render_all_videos(env, eval_log_dir, cam_mp4, traj, cam_saved, alternative=getattr(args, "alternative", False), show_cka=getattr(args, "cka", False))
     print("\nEvaluation complete.")
 
 

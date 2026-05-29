@@ -311,7 +311,9 @@ class IsolatedPopulationActor:
         x = inp
         for layer in self._actor_layers[:-1]:
             x = layer(x)
-        # x: (N, hidden_dim)
+        # x: (N, hidden_dim). Exposed for downstream diagnostics (e.g. CKA
+        # between plastic and frozen-checkpoint last layers on the same h).
+        self._last_hidden_input = x
 
         # --- 3. Per-env last layer using hebbian.W ---
         W = self.hebbian.W  # (N, out, in)
