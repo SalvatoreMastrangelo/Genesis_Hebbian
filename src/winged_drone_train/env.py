@@ -17,6 +17,7 @@ from genesis.utils.geom import quat_to_xyz, transform_by_quat, inv_quat, xyz_to_
 from genesis.assets.urdf.aero_model import DroneAeroModel, SurfaceKind
 
 from morph_evolution.chromosome_drone import Chromosome_Drone
+from winged_drone_train.crn import crn_share_
 from winged_drone_train.aero_profile import (
     configure_runtime_aero_solver,
     resolve_aero_config,
@@ -389,6 +390,7 @@ class WingedDroneEnv:
         mass_shift.zero_()
         if sigma_mass > 0.0:
             mass_shift.normal_()
+            self._crn_share(mass_shift)  # CRN: same forest -> same mass shift
             mass_shift *= sigma_mass
             mass_shift *= self._link_masses.view(1, n_links)
         self.drone.set_mass_shift(mass_shift, envs_idx=env_ids)
@@ -397,9 +399,44 @@ class WingedDroneEnv:
         com_shift.zero_()
         if sigma_com > 0.0:
             com_shift.normal_()
+            self._crn_share(com_shift)   # CRN: same forest -> same COM shift
             com_shift *= sigma_com
         self.drone.set_COM_shift(com_shift, envs_idx=env_ids)
 
+    def _crn_share(self, buf: torch.Tensor) -> None:
+        """Share a per-slot DR draw across env slots with the same forest id.
+
+        No-op unless CRN is enabled (WP2 eval). See ``winged_drone_train.crn``.
+        Safe on partial (mid-episode) resets: ``crn_share_`` skips when ``buf``
+        is not row-aligned with the full ``forest_ids`` vector.
+        """
+        if self._crn_dr:
+            crn_share_(buf, self.forest_ids)
+
+    def set_crn_enabled(self, enabled: bool) -> None:
+        """Enable/disable common-random-numbers DR sharing (WP2 multi-ind eval).
+
+        When enabled, this env's per-slot DR draws are shared across env slots
+        that fly the same forest id, so individuals evaluated on the same
+        scenario differ ONLY in their Hebbian rules (low-variance ranking).
+        Sub-components that draw their own noise (obs builder, actuator, aero
+        solver) are handed a reference to ``forest_ids`` (the assignment is
+        modified in place, never reassigned, so the reference stays valid).
+
+        The per-step Taichi aero *force* noise is generated in-kernel and is the
+        one residual DR source that is not shared by this mechanism.
+        """
+        self._crn_dr = bool(enabled)
+        ids = self.forest_ids if self._crn_dr else None
+        ob = getattr(self, "obs_builder", None)
+        if ob is not None:
+            ob._crn_ids = ids
+        act = getattr(self, "actuator", None)
+        if act is not None:
+            act._crn_ids = ids
+        aero = getattr(self, "aero_solver", None)
+        if aero is not None:
+            aero._crn_ids = ids
 
     def __init__(
         self,
@@ -426,6 +463,15 @@ class WingedDroneEnv:
         self.command_cfg = dict(command_cfg)
         self.command_cfg["num_commands"] = 1  # keep config consistent
         self._eval_speed_grid: Optional[torch.Tensor] = None
+
+        # Common-random-numbers (CRN) for WP2 multi-individual eval. When
+        # enabled via set_crn_enabled(), per-slot domain-randomization draws
+        # (forest assignment, mass/COM shift, joint target episode bias + step
+        # noise, action latency, aero-parameter randomization, and actor obs
+        # noise) are shared across env slots that fly the same forest id, so
+        # individuals evaluated on the same scenario differ ONLY in their
+        # Hebbian rules. Always False during training (independent per-env DR).
+        self._crn_dr: bool = False
 
         # Feature toggles
         self.env_cfg = dict(env_cfg)
@@ -1392,6 +1438,7 @@ class WingedDroneEnv:
             if sigma_step > 0.0:
                 servo_noise = self._rand_servo_scratch
                 servo_noise.normal_()
+                self._crn_share(servo_noise)  # CRN: same forest -> same step noise
                 servo_targets = servo_targets + sigma_step * servo_noise
             servo_targets = torch.max(
                 torch.min(servo_targets, self.joint_limit_max.unsqueeze(0)),
@@ -1584,9 +1631,18 @@ class WingedDroneEnv:
 
         # Resample command (target speed) and forest layout
         self._resample_commands(env_ids)
-        new_ids = self._randint_scratch[: env_ids.numel()]
-        new_ids.random_(0, self.cylinders_array.shape[0])
-        self.forest_ids[env_ids] = new_ids
+        fixed_ids = getattr(self, "_fixed_forest_ids", None)
+        if self._crn_dr and fixed_ids is not None:
+            # CRN eval: preserve the shared per-slot forest assignment so every
+            # individual flies the same forests (fair, low-variance ranking).
+            # Without this branch, reset_idx silently re-randomized forests per
+            # slot, clobbering the assignment set by refresh_forests and
+            # breaking the "same forests across individuals" guarantee.
+            self.forest_ids[env_ids] = fixed_ids[env_ids]
+        else:
+            new_ids = self._randint_scratch[: env_ids.numel()]
+            new_ids.random_(0, self.cylinders_array.shape[0])
+            self.forest_ids[env_ids] = new_ids
         self._update_cylinders_xy(env_ids)
 
         # Log episode statistics for finished episodes
@@ -1659,6 +1715,7 @@ class WingedDroneEnv:
             if sigma_episode > 0.0:
                 rs = self._rand_servo_scratch[:n]
                 rs.normal_()
+                self._crn_share(rs)  # CRN: same forest -> same joint episode bias
                 episode_bias.add_(sigma_episode * rs)
         self._resample_genome_episode_noise(env_ids)
 

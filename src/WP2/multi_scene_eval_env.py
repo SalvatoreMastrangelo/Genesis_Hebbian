@@ -113,6 +113,7 @@ class MultiSceneEvalEnv:
         # target speed (required for fair comparisons).
         self._fixed_forest_ids_buf: Optional[torch.Tensor] = None
         self._eval_speed_grid_buf: Optional[torch.Tensor] = None
+        self._crn_enabled_buf: bool = False
 
     # ------------------------------------------------------------------
     #  Eval override properties — propagate to each sub-env
@@ -137,6 +138,20 @@ class MultiSceneEvalEnv:
         self._eval_speed_grid_buf = value
         for sub in self.drones:
             sub._eval_speed_grid = value
+
+    def set_crn_enabled(self, enabled: bool) -> None:
+        """Enable/disable common-random-numbers DR sharing on every sub-env."""
+        self._crn_enabled_buf = bool(enabled)
+        for sub in self.drones:
+            sub.set_crn_enabled(bool(enabled))
+
+    @property
+    def _crn_enabled(self) -> bool:
+        return self._crn_enabled_buf
+
+    @_crn_enabled.setter
+    def _crn_enabled(self, value: bool) -> None:
+        self.set_crn_enabled(bool(value))
 
     @property
     def cylinders_array(self):

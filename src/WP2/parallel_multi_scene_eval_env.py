@@ -271,6 +271,10 @@ def _worker_main(
                 env._eval_speed_grid = val
                 ack_q.put(("ok",))
 
+            elif cmd == "set_crn_enabled":
+                env.set_crn_enabled(bool(payload))
+                ack_q.put(("ok",))
+
             else:
                 ack_q.put(("error", f"unknown command {cmd!r}"))
 
@@ -490,6 +494,7 @@ class ParallelMultiSceneEvalEnv:
         ]
         self._fixed_forest_ids_buf:  Optional[torch.Tensor] = None
         self._eval_speed_grid_buf:   Optional[torch.Tensor] = None
+        self._crn_enabled_buf:       bool = False
 
         # GPU buffers for rollout consumption.
         self._obs_buf   = torch.zeros(D, E, num_obs,   device=device)
@@ -609,6 +614,18 @@ class ParallelMultiSceneEvalEnv:
     def _eval_speed_grid(self, value: Optional[torch.Tensor]) -> None:
         self._eval_speed_grid_buf = value
         self._send_all("set_speed_grid", value.cpu() if value is not None else None)
+
+    def set_crn_enabled(self, enabled: bool) -> None:
+        self._crn_enabled = bool(enabled)
+
+    @property
+    def _crn_enabled(self) -> bool:
+        return self._crn_enabled_buf
+
+    @_crn_enabled.setter
+    def _crn_enabled(self, value: bool) -> None:
+        self._crn_enabled_buf = bool(value)
+        self._send_all("set_crn_enabled", bool(value))
 
     # ── compatibility shims (single-URDF path only, never called here) ────────
 

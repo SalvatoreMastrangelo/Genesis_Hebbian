@@ -50,6 +50,7 @@ cmaes:
   population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
+  sigma_reinflate: 0.0 # toggle: on URDF/morphology change, re-inflate sigma to this x sigma0 (carry mean+cov, re-explore); 0 = off
 
 catalog:
   path: ""                         # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
@@ -82,6 +83,7 @@ evaluation:
   dens_min_slope: 0.00 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
   dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
+  crn: false            # toggle: common random numbers — share per-slot DR (forest/mass/com/joint/latency/aero-param/obs) across individuals on the same forest
 
   # ------------------------------------------------------------------
   # Per-slot noise toggles (true = drawn independently per env slot, so it

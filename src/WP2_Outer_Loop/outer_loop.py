@@ -219,6 +219,17 @@ class OuterLoop:
                 cfg.inner_num_eval_workers
             )
 
+        # Inner-loop sigma re-inflation override (None = inherit from template).
+        # The outer config wins, so a single outer YAML pins how aggressively the
+        # inner CMA-ES re-explores when the morphology changes.
+        if cfg.inner_sigma_reinflate is not None:
+            if cfg.inner_sigma_reinflate < 0.0:
+                raise ValueError(
+                    f"inner_sigma_reinflate must be ≥ 0 "
+                    f"(got {cfg.inner_sigma_reinflate})"
+                )
+            self.inner_template.cmaes.sigma_reinflate = cfg.inner_sigma_reinflate
+
         # Fail fast on missing WP1 checkpoint/config (common user error).
         ckpt = Path(self.inner_template.checkpoint_path or "")
         ckpt_cfg = Path(self.inner_template.checkpoint_config_path or "")

@@ -867,6 +867,20 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
         self._capture_global_param_nominals()
         self._capture_link_param_nominals()
 
+    def _crn_share_noise(self, noise):
+        """WP2 CRN: share aero-parameter noise across same-forest env slots.
+
+        ``_crn_ids`` (per-slot forest ids) is set by
+        ``WingedDroneEnv.set_crn_enabled`` during WP2 multi-individual eval, and
+        is None otherwise. Returns ``noise`` unchanged unless CRN is active and
+        the noise tensor is row-aligned with the full ids vector (i.e. a
+        full-population reset); partial mid-episode resets are left per-slot.
+        """
+        ids = getattr(self, "_crn_ids", None)
+        if ids is not None and noise.shape[0] == ids.shape[0]:
+            return noise[ids]
+        return noise
+
     def randomize_aero_params(self, envs_idx, sigma=None):
         """
         Randomize aerodynamic parameters for a subset of environments on-device.
@@ -889,6 +903,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             values.copy_(nominal.index_select(0, env_ids))
             if sigma_f > 0.0:
                 noise = torch.randn_like(values)
+                noise = self._crn_share_noise(noise)  # CRN: same forest -> same aero param noise
                 values.mul_(1.0 + sigma_f * noise)
             self._set_taichi_field_rows_1d(fld, env_ids_np, values)
 
@@ -902,6 +917,7 @@ class SimpleDroneAeroSolver(BaseAeroSolver):
             values.copy_(nominal.index_select(0, env_ids))
             if sigma_f > 0.0:
                 noise = torch.randn_like(values)
+                noise = self._crn_share_noise(noise)  # CRN: same forest -> same aero param noise
                 values.mul_(1.0 + sigma_f * noise)
             self._set_taichi_field_rows_2d(fld, env_ids_np, values)
 

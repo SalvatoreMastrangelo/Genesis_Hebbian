@@ -113,6 +113,12 @@ class OuterLoopConfig:
     # any int ≥ 1 replaces the template's ``evaluation.num_eval_workers``.
     inner_num_eval_workers: Optional[int] = None
 
+    # Inner-loop CMA sigma re-inflation override. ``None`` = inherit from the
+    # inner template's ``cmaes.sigma_reinflate``; any float ≥ 0 replaces it.
+    # When the morphology changes, the inner CMA-ES re-inflates its step size to
+    # ``sigma_reinflate × sigma0`` (carry mean+covariance, re-explore); 0 = off.
+    inner_sigma_reinflate: Optional[float] = None
+
     # Sub-configs
     nsga2: NSGA2Config = field(default_factory=NSGA2Config)
     objectives: List[ObjectiveSpec] = field(default_factory=lambda: [

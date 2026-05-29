@@ -13,6 +13,8 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import torch
 
+from winged_drone_train.crn import crn_share_
+
 
 @dataclass
 class ObsScaling:
@@ -135,6 +137,10 @@ class ObservationBuilder:
         self._inv_command_speed_scale = 1.0 / max(1e-6, self.scaling.command_speed_scale)
         self._inv_max_depth = 1.0 / max(1e-6, self.scaling.max_depth)
         self._noise_scratch: Optional[torch.Tensor] = None
+        # Set by WingedDroneEnv.set_crn_enabled for WP2 CRN eval: per-slot
+        # scenario (forest) ids used to share the observation-noise epsilon
+        # across individuals flying the same forest. None ⇒ per-slot noise.
+        self._crn_ids: Optional[torch.Tensor] = None
 
         # Genome configuration ------------------------------------------------
         self.actor_genome_obs = bool(actor_genome_obs)
@@ -338,11 +344,13 @@ class ObservationBuilder:
             std_cfg = self.noise_std
             idx = 0
             noise_buf = self._get_noise_scratch(B, self._base_actor_obs_dim, device)
+            crn_ids = self._crn_ids  # CRN: share noise epsilon across same-forest slots
 
             # z_norm
             if std_cfg.get("z", 0.0) > 0.0:
                 noise = noise_buf[:, :1]
                 noise.normal_()
+                crn_share_(noise, crn_ids)
                 noise *= std_cfg["z"]
                 obs_actor[:, idx : idx + 1] += noise
             idx += 1
@@ -351,6 +359,7 @@ class ObservationBuilder:
             if std_cfg.get("quat", 0.0) > 0.0:
                 noise = noise_buf[:, :4]
                 noise.normal_()
+                crn_share_(noise, crn_ids)
                 noise *= std_cfg["quat"]
                 obs_actor[:, idx : idx + 4] += noise
             idx += 4
@@ -359,6 +368,7 @@ class ObservationBuilder:
             if std_cfg.get("vel", 0.0) > 0.0:
                 noise = noise_buf[:, :3]
                 noise.normal_()
+                crn_share_(noise, crn_ids)
                 noise *= std_cfg["vel"]
                 obs_actor[:, idx : idx + 3] += noise
             idx += 3
@@ -369,6 +379,7 @@ class ObservationBuilder:
                 if std_cfg.get("depth", 0.0) > 0.0:
                     noise = noise_buf[:, :depth_dim]
                     noise.normal_()
+                    crn_share_(noise, crn_ids)  # share epsilon; depth-scaling stays per-slot
                     noise *= (std_cfg["depth"] * depth_actor * self._inv_max_depth)
                     obs_actor[:, idx : idx + depth_dim] += noise
                 idx += depth_dim
@@ -378,6 +389,7 @@ class ObservationBuilder:
                 dim_la = self.num_actions
                 noise = noise_buf[:, :dim_la]
                 noise.normal_()
+                crn_share_(noise, crn_ids)
                 noise *= std_cfg["last_actions"]
                 obs_actor[:, idx : idx + dim_la] += noise
             idx += self.num_actions
@@ -386,6 +398,7 @@ class ObservationBuilder:
             if std_cfg.get("command", 0.0) > 0.0:
                 noise = noise_buf[:, :1]
                 noise.normal_()
+                crn_share_(noise, crn_ids)
                 noise *= std_cfg["command"]
                 obs_actor[:, idx : idx + 1] += noise
             idx += 1

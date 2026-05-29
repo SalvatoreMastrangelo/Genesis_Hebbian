@@ -1146,6 +1146,22 @@ class HebbianCMAES:
                 and gen % refresh_every == 0
             ):
                 self._refresh_urdfs(gen)
+                # Carry the CMA-ES state (mean + covariance) across the
+                # morphology change, but re-inflate the step size so the search
+                # re-explores around the carried state for the new URDFs. The
+                # objective just shifted by more than the typical signal, so a
+                # collapsed sigma would otherwise leave the search stuck near the
+                # previous optimum. Only ever raises sigma, never lowers it.
+                reinflate = float(getattr(self.cfg.cmaes, "sigma_reinflate", 0.0) or 0.0)
+                if reinflate > 0.0:
+                    target = reinflate * float(self.cfg.cmaes.sigma0)
+                    if es.sigma < target:
+                        print(
+                            f"[HebbianCMAES] Morphology changed → re-inflating "
+                            f"sigma {es.sigma:.4g} → {target:.4g} "
+                            f"(carry mean+covariance, re-explore)"
+                        )
+                        es.sigma = target
 
             # Sample new candidate solutions
             solutions = es.ask()   # list of np.ndarray, each shape (n_genes,)

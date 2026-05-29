@@ -160,6 +160,15 @@ class EvaluationConfig:
     dens_min_slope: float = 0.0  # per-generation linear ramp added to dens_min
     dens_max: Optional[float] = None  # override forest density at x=x_upper [trees/m]
     refresh_forests_per_generation: bool = False
+    # Common random numbers: share per-slot domain-randomization draws (forest
+    # assignment, mass/COM, joint episode bias + step noise, action latency,
+    # aero parameters, observation noise) across individuals flying the same
+    # forest, so CMA-ES ranks individuals by their Hebbian rules rather than by
+    # independent DR luck. Full DR is preserved (the F scenarios still span the
+    # distribution and refresh each generation). The per-step Taichi aero force
+    # noise stays per-slot (generated in-kernel). Set False to reproduce the
+    # legacy independent-per-slot behaviour (e.g. for the sigma_rank A/B test).
+    crn: bool = True
     noise: NoiseConfig = field(default_factory=NoiseConfig)
 
 
@@ -198,6 +207,14 @@ class CMAESConfig:
         Convergence threshold on sigma.  0 disables.
     tol_fun : float
         Convergence threshold on fitness spread.  0 disables.
+    sigma_reinflate : float
+        On each morphology change (URDF refresh), re-inflate sigma to
+        ``sigma_reinflate * sigma0`` (only ever raising it, never lowering).
+        The mean and covariance are carried over — only the step size is reset
+        so the search re-explores around the carried state for the new
+        morphologies. 1.0 → reset to the initial step size each change; 0.0 →
+        disabled (pure carry, sigma keeps shrinking). No effect when URDFs are
+        not refreshed.
     """
 
     algorithm: str = "cmaes"   # "cmaes" or "sep-cmaes"
@@ -205,6 +222,7 @@ class CMAESConfig:
     population_size: int = 0
     tol_sigma: float = 0.0
     tol_fun: float = 0.0
+    sigma_reinflate: float = 1.0
 
 
 @dataclass

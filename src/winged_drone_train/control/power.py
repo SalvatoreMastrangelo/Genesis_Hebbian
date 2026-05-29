@@ -216,6 +216,21 @@ class ActuatorDynamics:
         self.throttle_noise_std = float(throttle_noise_std)
         self.servo_noise_std = float(servo_noise_std)
 
+        # CRN: per-slot scenario (forest) ids for WP2 common-random-numbers
+        # eval, set by WingedDroneEnv.set_crn_enabled. Shares the latency draw
+        # and actuator-noise epsilon across same-forest slots. None ⇒ per-slot.
+        self._crn_ids = None
+
+    def _crn_share(self, buf: torch.Tensor) -> None:
+        """Share a per-slot draw across slots with the same forest id (CRN).
+
+        No-op when ``_crn_ids`` is unset (training) or when ``buf`` is not
+        row-aligned with the full ids vector (partial mid-episode reset).
+        """
+        ids = self._crn_ids
+        if ids is not None and buf.shape[0] == ids.shape[0]:
+            buf.copy_(buf[ids])
+
     # ------------------------------------------------------------------
     # Latency control
     # ------------------------------------------------------------------
@@ -235,6 +250,7 @@ class ActuatorDynamics:
             # Fixed latency sampled once per episode
             rand_delays = self._latency_rand_scratch[: env_indices.numel()]
             rand_delays.random_(self.latency_min, self.latency_max + 1)
+            self._crn_share(rand_delays)  # CRN: same forest -> same latency
             self._current_latency[env_indices] = rand_delays
         else:
             # Will be overwritten at the next step if random per step.
@@ -300,6 +316,7 @@ class ActuatorDynamics:
         if self.servo_noise_std > 0.0 and servo_out.numel() > 0:
             servo_noise = self._servo_noise_scratch[:B, : servo_out.shape[1]]
             servo_noise.normal_()
+            self._crn_share(servo_noise)  # CRN: same forest -> same servo noise
             servo_noise *= self.servo_noise_std
             servo_out = servo_out + servo_noise
             servo_out = torch.max(
@@ -310,6 +327,7 @@ class ActuatorDynamics:
         if self.throttle_noise_std > 0.0:
             thr_noise = self._thr_noise_scratch[:B]
             thr_noise.normal_()
+            self._crn_share(thr_noise)  # CRN: same forest -> same throttle noise
             thr_noise *= self.throttle_noise_std
             throttle_out = (throttle_out + thr_noise).clamp(
                 min=self.throttle_min,

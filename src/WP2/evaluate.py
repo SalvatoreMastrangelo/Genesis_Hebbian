@@ -649,12 +649,17 @@ def _build_multi_urdf_env(
     )
     if num_workers > 1:
         from WP2.parallel_multi_scene_eval_env import ParallelMultiSceneEvalEnv
-        return ParallelMultiSceneEvalEnv(
+        env = ParallelMultiSceneEvalEnv(
             **env_cls_kwargs,
             num_workers=num_workers,
             num_gpus=num_gpus,
         )
-    return MultiSceneEvalEnv(**env_cls_kwargs)
+    else:
+        env = MultiSceneEvalEnv(**env_cls_kwargs)
+    # WP2 CRN: share per-slot DR draws across individuals flying the same forest
+    # so CMA-ES ranks by Hebbian rules, not by independent randomization luck.
+    env._crn_enabled = bool(getattr(cfg.evaluation, "crn", True))
+    return env
 
 
 @torch.no_grad()

@@ -51,6 +51,12 @@ checkpoint_config_path: ""
 #   --cfg.inner_num_eval_workers 2
 inner_num_eval_workers: 2
 
+# --- Inner CMA sigma re-inflation override (null = inherit inner template) ---
+# When the morphology changes, the inner CMA-ES re-inflates its step size to
+# sigma_reinflate × sigma0 (carry mean+covariance, re-explore). null = use the
+# inner template's cmaes.sigma_reinflate; a float overrides it (0 = off).
+inner_sigma_reinflate: null
+
 # --- NSGA-II operators (DEAP) ---
 nsga2:
   crossover_prob: 0.9        # SBX application probability
