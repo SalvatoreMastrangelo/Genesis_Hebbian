@@ -1,0 +1,37 @@
+==============================================================================
+  PRUNE-vs-ORIGINAL CONTROLLER EVALUATION
+==============================================================================
+  checkpoint : logs/runs_hebbian/2026-05-18_11-55-12_intermediate_multi_urdf_actual_controller/reproducibility/wp1_actor.pt
+  config     : logs/runs_hebbian/2026-05-18_11-55-12_intermediate_multi_urdf_actual_controller/reproducibility/wp1_config.yaml
+  urdf       : [0.7, 3.5, 0.73, 0.38, 0.38, 0.5, 4, 0.2, 2, 0, 2, 2.5, 3, 4, 16].urdf
+  envs=8192  vmin=10.0  vmax=20.0  seed=0  (same forests for both rollouts)
+
+==============================================================================
+  PRUNE SUMMARY
+==============================================================================
+  output bottleneck (hidden_dim): 32  ->  kept 14  (pruned 18)
+  rule: --prune-rel 0.02 (tol = 0.009107 = 0.02*max)
+  natural cliff: top-14 units, gap ratio x63.4 to the next unit
+  Hebbian genome (4 * 7 * hidden): 896  ->  392
+  output-unit colnorms (sorted): [0.4554, 0.4219, 0.3743, 0.3234, 0.3132, 0.303, 0.2928, 0.2902, 0.2875, 0.2808, 0.2632, 0.2601, 0.2328, 0.2299, 0.0036, 0.0029, 0.0028, 0.0024, 0.0021, 0.0019, 0.0016, 0.0016, 0.0015, 0.0014, 0.0014, 0.0014, 0.0013, 0.0013, 0.0011, 0.0008, 0.0008, 0.0005]
+
+==============================================================================
+  ORIGINAL vs PRUNED   (8192 envs, 8192/8192 valid)
+==============================================================================
+  metric                         ORIGINAL       PRUNED            Δ
+  -----------------------------------------------------------------
+  SUCCESS                             293          321           28  ✓
+  OBSTACLES                          7249         7117         -132  ✓
+  WALLS                               149          144           -5  ✓
+  ANGLES                              501          610          109  ✗
+  crash rate                        0.964        0.961       -0.003  ✓
+  mean velocity [m/s]              14.455       14.510        0.056  ✓
+  mean progress [m]                446.17       437.53        -8.65  ✗
+  mean COT                          0.299        0.303        0.004  ✗
+  eval reward mean                671.987      662.510       -9.476  ✗
+  mean z @250 m [m]                 13.59        13.64         0.05
+  max velocity (smoothed)           17.66        17.88         0.22  ✓
+  COT @best-eff (sm.)                0.24         0.24        -0.00  ✓
+  progress @best (sm.)             463.00       458.85        -4.15  ✗
+==============================================================================
+  (✓ = pruned better/equal-direction, ✗ = worse; relative to the metric's preferred direction)

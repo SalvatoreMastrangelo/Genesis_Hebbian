@@ -3,12 +3,12 @@ Plot per-generation spread for the evaluation metrics.
 
 Usage
 -----
-    python -m WP2.plot_metrics <run_dir> [--percentile]
+    python -m WP2.plot_metrics <run_dir> [--std]
 
 Also callable programmatically::
 
     from WP2.plot_metrics import plot_metrics
-    plot_metrics(run_dir, use_percentile=True)
+    plot_metrics(run_dir, use_percentile=False)
 """
 
 from __future__ import annotations
@@ -34,13 +34,14 @@ _METRICS = [
 ]
 
 
-def plot_metrics(run_dir: Path | str, use_percentile: bool = False) -> None:
+def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
     """Read cma_population.csv and plot per-generation spread for all metrics.
 
-    With ``use_percentile=False`` (default) the band is mean ± 1 std.
-    With ``use_percentile=True`` the band is the IQR (25–75th percentile) and an
-    extra line shows the top decile (90th pct for higher-is-better metrics,
-    10th pct for lower-is-better). The per-generation best is always plotted.
+    With ``use_percentile=True`` (default) the band is the IQR (25–75th
+    percentile) and an extra line shows the top decile (90th pct for
+    higher-is-better metrics, 10th pct for lower-is-better).
+    With ``use_percentile=False`` the band is mean ± 1 std.
+    The per-generation best is always plotted.
     """
     run_dir = Path(run_dir)
     csv_path = run_dir / "results" / "cma_population.csv"
@@ -233,6 +234,6 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     flags = {a for a in sys.argv[1:] if a.startswith("-")}
     if not args:
-        print("Usage: python -m WP2.plot_metrics <run_dir> [--percentile]")
+        print("Usage: python -m WP2.plot_metrics <run_dir> [--std]")
         sys.exit(1)
-    plot_metrics(args[0], use_percentile=("--percentile" in flags))
+    plot_metrics(args[0], use_percentile=("--std" not in flags))
