@@ -5,7 +5,7 @@
 #SBATCH --gpus=1
 #SBATCH --mem=160G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=48:00:00
+#SBATCH --time=60:00:00
 # To use multiple GPUs for ParallelMultiSceneEvalEnv, override --gpus on
 # submission (e.g. `bash run_parallel.sh ... --gpus=2`). The Python code
 # auto-detects via torch.cuda.device_count() when evaluation.num_gpus is 0,

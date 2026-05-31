@@ -118,10 +118,19 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
             if top is not None:
                 top = np.clip(top, 0.0, 1.0)
 
-        # Pull baseline + specialist series aligned to gens
+        # Pull baseline + specialist series aligned to gens. The baseline is
+        # typically only evaluated every Nth generation, so reindexing to every
+        # gen leaves NaN gaps. Linearly interpolate those (in generation-space)
+        # so normalization has a defined denominator everywhere; keep a mask of
+        # the genuinely-evaluated generations so markers only sit on real data.
         bl_vals = None
+        bl_real_mask = None
         if baseline_df is not None and col in baseline_df.columns:
-            bl_vals = baseline_df.set_index("generation")[col].reindex(gens).to_numpy()
+            bl_series = baseline_df.set_index("generation")[col].reindex(gens)
+            bl_real_mask = ~bl_series.isna().to_numpy()
+            bl_vals = bl_series.interpolate(
+                method="index", limit_direction="both"
+            ).to_numpy()
         sp_vals = None
         if specialist_df is not None and col in specialist_df.columns:
             sp_vals = specialist_df.set_index("generation")[col].reindex(gens).to_numpy()
@@ -153,12 +162,20 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
 
         if bl_plot is not None:
             mask = ~np.isnan(bl_plot)
+            # Continuous (interpolated) dashed line ...
             ax.plot(
                 gens[mask], bl_plot[mask],
                 color=baseline_colour, linewidth=1.4,
-                linestyle="--", marker="o", markersize=4,
-                label="baseline",
+                linestyle="--", label="baseline",
             )
+            # ... with markers only on genuinely-evaluated generations.
+            real = mask if bl_real_mask is None else (mask & bl_real_mask)
+            if real.any():
+                ax.plot(
+                    gens[real], bl_plot[real],
+                    color=baseline_colour, linestyle="none",
+                    marker="o", markersize=4,
+                )
 
         if sp_vals is not None:
             mask = ~np.isnan(sp_vals)

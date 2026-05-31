@@ -14,6 +14,7 @@ import copy
 import math
 import pickle
 import argparse
+import random
 import re
 import sys
 from pathlib import Path
@@ -66,6 +67,70 @@ def safe_urdf_stem(urdf_file: str | Path, *, already_clean: bool = False) -> str
     clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", clean)
     clean = re.sub(r"_+", "_", clean).strip("_")
     return clean or "urdf"
+
+
+def _seed_all(seed: int) -> int:
+    """Deterministically seed Python, NumPy, Torch (CPU + all CUDA devices).
+
+    Counterpart to :func:`winged_drone_train.runtime_random.seed_runtime_randomness`,
+    which draws from OS entropy. Passing a fixed ``seed`` here makes the env's
+    forest layout, per-slot forest assignment, and episode-reset
+    domain-randomization draws reproducible — the basis for common random
+    numbers (CRN) across two separate eval rollouts (e.g. baseline vs Hebbian).
+    """
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    print(f"[evaluation] deterministic seed set to {seed}")
+    return seed
+
+
+def _capture_init_conditions(env) -> Dict[str, Any]:
+    """Snapshot an env's initial conditions right after ``env.reset()``.
+
+    Used to verify that two separate rollouts (baseline vs Hebbian) are flying
+    the *same* forests under CRN. Reads only what defines a scenario's initial
+    state: forest assignment + a checksum of the tree layout, commanded speed,
+    the start pose/velocity, and the per-episode DR draws (mass/COM shift,
+    joint-target episode bias) that were applied during the reset.
+    """
+    snap: Dict[str, Any] = {}
+
+    def _np(t):
+        return t.detach().cpu().numpy().copy()
+
+    fid = getattr(env, "forest_ids", None)
+    if fid is not None:
+        snap["forest_ids"] = _np(fid)
+    cyl = getattr(env, "cylinders_xy", None)
+    if cyl is not None:
+        # Sum in float64 so the checksum is order-stable across runs.
+        snap["cylinders_checksum"] = float(cyl.double().sum().item())
+        snap["cylinders_shape"] = tuple(int(s) for s in cyl.shape)
+    cmds = getattr(env, "commands", None)
+    if cmds is not None:
+        snap["commands"] = _np(cmds[:, 0])
+    bp = getattr(env, "base_pos", None)
+    if bp is not None:
+        snap["base_pos"] = _np(bp)
+    blv = getattr(env, "base_lin_vel", None)
+    if blv is not None:
+        snap["base_lin_vel"] = _np(blv)
+    # Episode-level DR draws live in scratch buffers, sliced to num_envs.
+    B = int(getattr(env, "num_envs", 0))
+    ms = getattr(env, "_mass_shift_scratch", None)
+    if ms is not None and B and ms.shape[0] >= B:
+        snap["mass_shift"] = _np(ms[:B])
+    cs = getattr(env, "_com_shift_scratch", None)
+    if cs is not None and B and cs.shape[0] >= B:
+        snap["com_shift"] = _np(cs[:B])
+    jbias = getattr(env, "_joint_target_episode_bias", None)
+    if jbias is not None:
+        snap["joint_target_episode_bias"] = _np(jbias)
+    return snap
 
 
 def _write_placeholder_png(path: Path, reason: str) -> None:
@@ -262,6 +327,7 @@ def run_eval(
     break_right_distance: float | None = None,
     break_left_loss_pct: float = 50.0,
     break_right_loss_pct: float = 50.0,
+    init_capture: Dict[str, Any] | None = None,
 ):
     """
     Lightweight rollout for evaluation.
@@ -305,6 +371,10 @@ def run_eval(
     # reset env and reference x position
     obs, _ = env.reset()
     x0 = env.base_pos[:, 0].clone()
+
+    # Snapshot initial conditions (CRN verification) before any policy action.
+    if init_capture is not None:
+        init_capture.update(_capture_init_conditions(env))
 
     # traces for ALL envs (minimal: distance + joint positions + v_cmd)
     traces_all = {
@@ -486,6 +556,12 @@ def evaluation(
     eval_dir: str | Path | None = None,
     dens_min: float | None = None,
     dens_max: float | None = None,
+    x_upper: float | None = None,
+    forest_x_limit: float | None = None,
+    init_vx: float | None = None,
+    seed: int | None = None,
+    crn: bool = False,
+    capture_initial: bool = False,
 ):
     """
     Programmatic evaluation entry point.
@@ -575,7 +651,10 @@ def evaluation(
         f"[evaluation] exp={exp_name} ckpt={ckpt} urdf={urdf_path.name} "
         f"clean={clean_stem} envs={envs} save_plots={save_plots} eval_dir={eval_dir}"
     )
-    runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
+    if seed is not None:
+        runtime_seed = _seed_all(seed)
+    else:
+        runtime_seed = seed_runtime_randomness(f"eval:{exp_name}:{clean_stem}")
 
     # Command range used in this evaluation
     command_cfg["min_speed"] = float(vmin)
@@ -590,11 +669,20 @@ def evaluation(
 
     # Evaluation-specific environment tweaks
     _apply_eval_env_overrides(env_cfg)
+    if x_upper is not None:
+        env_cfg["x_upper"] = float(x_upper)
+        env_cfg["forest_x_limit"] = float(x_upper)
+    if forest_x_limit is not None:
+        env_cfg["forest_x_limit"] = float(forest_x_limit)
     if dens_min is not None:
         env_cfg["dens_min"] = float(dens_min)
     if dens_max is not None:
         env_cfg["dens_max"] = float(dens_max)
 
+    # Re-seed right before construction so the forest layout is reproducible
+    # regardless of any RNG consumed between the first seeding and here.
+    if seed is not None:
+        _seed_all(seed)
     env = WingedDroneEnv(
         num_envs=envs,
         env_cfg=env_cfg,
@@ -607,6 +695,14 @@ def evaluation(
         device=device,
     )
     configure_solver_noise(env, env_cfg)
+    if crn:
+        # CRN: pin the per-slot forest assignment and share per-slot DR draws
+        # across slots flying the same forest id (see winged_drone_train.crn).
+        env._fixed_forest_ids = env.forest_ids.clone()
+        env.set_crn_enabled(True)
+    if init_vx is not None:
+        env._reset_lin_vel[0] = float(init_vx)
+        print(f"[evaluation] Overriding initial body velocity (x): {float(init_vx):.2f} m/s")
 
     runner_cfg = copy.deepcopy(train_cfg)
     runner_cfg["seed"] = int(runtime_seed)
@@ -617,10 +713,16 @@ def evaluation(
         runner.load(custom_policy_path)
     else:
         runner.load(os.path.join(log_dir, f"model_{ckpt-1}.pt"))
-        
+
     policy = runner.get_inference_policy(device=gs.device)
 
     env.aero_solver._aero_log = False
+
+    # Re-seed right before the rollout so the first env.reset() draws (forest
+    # assignment + episode-reset DR) match across separately-built rollouts.
+    if seed is not None:
+        _seed_all(seed)
+    init_cap: Dict[str, Any] | None = {} if capture_initial else None
 
     # Use traces when saving plots to enable heatmaps.
     v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total, mean_z_at_progress_threshold = run_eval(
@@ -628,6 +730,7 @@ def evaluation(
         policy,
         extra_data=bool(save_plots),
         minimal_progress=minimal_progress,
+        init_capture=init_cap,
     )
     print(
         f"[evaluation] rollout done | v_mean={len(v_mean)} v_cmd={len(v_cmd)} "
@@ -796,6 +899,7 @@ def evaluation(
         "eval_dir": str(eval_dir_path) if eval_dir_path else "",
         "clean_urdf_stem": clean_stem,
         "plot_paths": plot_paths,
+        "initial_conditions": init_cap,
     }
     if return_arrays:
         # Return arrays aligned on v_cmd so pick_triples matches plot logic.
@@ -843,6 +947,9 @@ def evaluation_hebbian(
     break_right_distance: float | None = None,
     break_left_loss_pct: float = 50.0,
     break_right_loss_pct: float = 50.0,
+    seed: int | None = None,
+    crn: bool = False,
+    capture_initial: bool = False,
 ):
     """Programmatic Hebbian-controller counterpart to :func:`evaluation`.
 
@@ -923,9 +1030,12 @@ def evaluation_hebbian(
         f"[evaluation/hebbian] run={hebbian_run.name} genome={genome_path.name} "
         f"urdf={urdf_path.name} envs={envs} save_plots={save_plots}"
     )
-    runtime_seed = seed_runtime_randomness(
-        f"eval_hebbian:{hebbian_run.name}:{genome_path.stem}:{clean_stem}"
-    )
+    if seed is not None:
+        runtime_seed = _seed_all(seed)
+    else:
+        runtime_seed = seed_runtime_randomness(
+            f"eval_hebbian:{hebbian_run.name}:{genome_path.stem}:{clean_stem}"
+        )
 
     command_cfg["min_speed"] = float(vmin)
     command_cfg["max_speed"] = float(vmax)
@@ -942,6 +1052,10 @@ def evaluation_hebbian(
     if dens_max is not None:
         env_cfg["dens_max"] = float(dens_max)
 
+    # Re-seed right before construction so the forest layout is reproducible
+    # regardless of any RNG consumed between the first seeding and here.
+    if seed is not None:
+        _seed_all(seed)
     env = WingedDroneEnv(
         num_envs=envs,
         env_cfg=env_cfg,
@@ -954,6 +1068,11 @@ def evaluation_hebbian(
         device=device,
     )
     configure_solver_noise(env, env_cfg)
+    if crn:
+        # CRN: pin the per-slot forest assignment and share per-slot DR draws
+        # across slots flying the same forest id (see winged_drone_train.crn).
+        env._fixed_forest_ids = env.forest_ids.clone()
+        env.set_crn_enabled(True)
     if init_vx is not None:
         env._reset_lin_vel[0] = float(init_vx)
         print(
@@ -1003,6 +1122,12 @@ def evaluation_hebbian(
 
     policy = _HebbianPolicyWrapper(actor, device=device)
 
+    # Re-seed right before the rollout so the first env.reset() draws (forest
+    # assignment + episode-reset DR) match across separately-built rollouts.
+    if seed is not None:
+        _seed_all(seed)
+    init_cap: Dict[str, Any] | None = {} if capture_initial else None
+
     v_mean, COT, v_cmd, progress, final_reason, traces_all, reward_total, mean_z_at_progress_threshold = run_eval(
         env,
         policy,
@@ -1014,6 +1139,7 @@ def evaluation_hebbian(
         break_right_distance=break_right_distance,
         break_left_loss_pct=break_left_loss_pct,
         break_right_loss_pct=break_right_loss_pct,
+        init_capture=init_cap,
     )
     print(
         f"[evaluation/hebbian] rollout done | v_mean={len(v_mean)} v_cmd={len(v_cmd)} "
@@ -1173,6 +1299,7 @@ def evaluation_hebbian(
         "eval_dir": str(eval_dir_path) if eval_dir_path else "",
         "clean_urdf_stem": clean_stem,
         "plot_paths": plot_paths,
+        "initial_conditions": init_cap,
     }
     if return_arrays:
         extra.update(
