@@ -1,0 +1,123 @@
+# CMA-ES Hebbian rules evolution — multi-URDF
+# ============================================
+# Evolves per-weight ABCD Hebbian rules against the WP1 scalar reward sum.
+# Every generation evaluates each individual across `num_urdfs` morphologies,
+# each URDF held in its own Genesis scene (WingedDroneEnv) — mirrors WP1
+# training's Gen_Env construction so scenes are isolated (no cross-URDF
+# Taichi state contamination).
+#
+# Usage:
+#   PYTHONPATH=src python src/WP2/run.py --cfg src/WP2/configs/cma_es_rules_only.yaml \
+#       --cfg.checkpoint_path logs/runs/<RUN>/tb/model_1999.pt \
+#       --cfg.checkpoint_config_path logs/runs/<RUN>/config.yaml
+#
+# Slot layout with N URDFs, H individuals, F forests per (URDF, individual):
+#   num_eval_envs is TOTAL across all URDFs and individuals.  F is auto-rounded
+#   down so  N * H * F <= num_eval_envs  (every pair gets the same F forests
+#   and the same F commanded speeds, so comparisons are fair).
+#
+# To reuse an existing catalog instead of auto-generating new URDFs:
+#   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
+
+exp_name: 245760_envs_64_urdfs_high_plasticity_random_init # generalist_256_10_urdf_0.005_0.05
+
+checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
+checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
+
+hebbian:
+  enabled: true
+  eta: 0.02                     # global default; overridden per-weight when evolve_eta=true
+  evolve_eta: false
+  decay: 0.05
+  evolve_decay: false
+  use_oja_coefficient: false
+  initialize_rules_to_zero: false
+  w_max: 5000.0
+  A_range: [-1.5, 1.5]
+  B_range: [-1.5, 1.5]
+  C_range: [-1.5, 1.5]
+  D_range: [-1.5, 1.5]
+  decay_range: [0.0, 0.1]
+  eta_range: [0.0, 0.01]
+
+evolution:
+  num_generations: 75
+  population_size: 0   # hint only; actual pop size set in cmaes.population_size
+
+cmaes:
+  algorithm: "cmaes"   # "cmaes" (full covariance) or "sep-cmaes" (diagonal-only, scales linearly with genome dim)
+  sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
+  population_size: 64  # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
+  tol_sigma: 0.0       # 0 = never stop on sigma
+  tol_fun: 0.0         # 0 = never stop on fitness spread
+  sigma_reinflate: 1.0 # toggle: on URDF/morphology change, re-inflate sigma to this x sigma0 (carry mean+cov, re-explore); 0 = off
+
+  # --- UH-CMA-ES uncertainty handling (Hansen et al. 2009, sigma-only arm) ---
+  # After tell(), re-evaluate the population on the SAME forests (no refresh) to
+  # measure residual per-rollout rank-noise (stochastic actor + per-step aero
+  # noise — the noise CRN can't remove). If rank-noise is found (noiseS>0), bump
+  # sigma by alphasigma → counteracts the sigma-stall. The averaging arm is off
+  # (F is pinned by num_eval_envs). Complements `crn` below.
+  uh_enabled: false     # master switch
+  uh_every: 1          # measure every K gens. Each measure ≈ 1 extra full-pop
+                       # eval (env steps all slots regardless), so 1 ≈ 2× eval
+                       # cost, 5 ≈ +20%. Must be >= 1.
+  uh_reevals: 0.0      # solutions used for the MEASURE. 0 = whole population
+                       # (robust, free given the full re-eval). >0 = Hansen subset.
+  uh_alphasigma: 0.0   # per-measure sigma kick. 0 = pycma default 1+2/(N+10)
+                       # (~1.002 for N=896 — weak, cumulative). Raise for a
+                       # stronger kick; mind interaction with uh_every.
+  uh_theta: 0.5        # Hansen rank-change tolerance; higher = more tolerant
+
+catalog:
+  path: ""                         # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
+  num_urdfs: 64                    # N: number of URDFs, each in its own Genesis scene
+  num_episodes: 1                  # rollout episodes per generation
+  force_multi_urdf: false          # route N=1 through the multi-URDF path (for verification)
+  include_standard_mydrone: false  # false ⇒ all N URDFs are randomly sampled (no fixed baseline)
+  refresh_urdfs_every: null        # >0 ⇒ resample N random URDFs every K inner generations
+                                   # (tears down + rebuilds the eval env; multi-URDF path only).
+                                   # 0 or null ⇒ disabled, URDFs stay fixed for the whole run.
+
+evaluation:
+  num_eval_envs: 245760 # TOTAL slots across all URDFs and all individuals
+                        # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
+  num_eval_workers: 8   # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
+                        # N=2 typically saturates one GPU when a single scene uses ~50%
+                        # watch VRAM: each worker holds D/N independent Genesis scenes
+  num_gpus: 0           # 0 / null = auto-detect via torch.cuda.device_count()
+                        # >1 spreads workers round-robin across G GPUs; URDFs are
+                        # round-robin sharded across GPUs too, so each GPU runs
+                        # num_eval_envs/G total env slots. SLURM must allocate G
+                        # GPUs (sbatch --gpus=G). Clamped to min(G, num_workers).
+  vmin: 10.0
+  vmax: 20.0
+  stochastic: true
+  run_baseline: true   # if true, re-evaluates the frozen WP1 actor for comparison
+  baseline_every: 2    # cadence when run_baseline=true: run at gen 0 then every N gens
+  x_upper: 300         # override forest corridor length [m]; null = use WP1 config value
+  dens_min: 0.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
+  dens_min_slope: 0.00 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
+  dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
+  refresh_forests_per_generation: true  # regenerate forest layouts each generation
+  crn: true            # toggle: common random numbers — share per-slot DR (forest/mass/com/joint/latency/aero-param/obs) across individuals on the same forest
+
+  # ------------------------------------------------------------------
+  # Per-slot noise toggles (true = drawn independently per env slot, so it
+  # produces per-individual variance; false = force-disabled in this WP2 eval
+  # so the source contributes no per-individual variance, regardless of the
+  # WP1 checkpoint setting).  Stochastic actor sampling is the dominant
+  # source and is controlled separately by `stochastic` above.
+  # ------------------------------------------------------------------
+  noise:
+    action_latency: true              # ActuatorDynamics latency (per-episode draw per env)
+    mass_shift: true                  # property_randomization.mass_shift_std
+    com_shift: true                   # property_randomization.com_shift_std
+    joint_target_episode_bias: true   # property_randomization.joint_target_episode_bias_std
+    joint_target_step_noise: true     # property_randomization.joint_target_step_noise_std
+    aero_noise: true                  # aero solver param + magnitude/direction noise
+
+seed: 69420
+device: "cuda:0"
+base_dir: "logs/runs_hebbian"
+

@@ -259,6 +259,126 @@ def _fmt_summary(label: str, extra: Dict[str, Any]) -> str:
     )
 
 
+def _aggregate_extras(extras: list, *, win_frac: float = 0.05) -> Dict[str, Any]:
+    """Pool the raw per-env arrays across a multi-URDF batch into one ``extra``.
+
+    Concatenates the (NaN-dropped, mutually aligned) ``raw`` arrays from each
+    per-URDF rollout, then re-derives the smoothed v_cmd-aligned curves and the
+    headline scalars exactly as :func:`evaluation_hebbian` does for a single
+    URDF — so the combined overlay/summary use the same logic as the per-URDF
+    plots, just over the pooled population.
+    """
+    from winged_drone_train.analysis.eval_plotter import EvaluationPlotter
+
+    def _cat(key: str) -> np.ndarray:
+        parts = [np.asarray(e["raw"][key]) for e in extras if e.get("raw")]
+        return np.concatenate(parts) if parts else np.asarray([])
+
+    v_cmd = _cat("v_cmd")
+    v_mean = _cat("v_mean")
+    cot = _cat("cot")
+    progress = _cat("progress")
+    reward = _cat("reward")
+
+    x_s, v_s, _ = EvaluationPlotter.moving_avg(v_cmd, v_mean, win_frac)
+    _, p_s, _ = EvaluationPlotter.moving_avg(v_cmd, progress, win_frac)
+    _, E_s, _ = EvaluationPlotter.moving_avg(v_cmd, cot, win_frac)
+    _, reward_s, _ = EvaluationPlotter.moving_avg(v_cmd, reward, win_frac)
+
+    max_p = float(np.max(p_s)) if len(p_s) else 0.0
+    mean_progress_all = float(np.mean(progress)) if progress.size else 0.0
+    eval_reward_mean = float(np.mean(reward)) if reward.size else float("nan")
+    if not np.isfinite(eval_reward_mean):
+        eval_reward_mean = 0.0
+
+    return {
+        "max_p": max_p,
+        "mean_progress_all": mean_progress_all,
+        "eval_reward_mean": eval_reward_mean,
+        "v_cmd_s": x_s,
+        "p_s": p_s,
+        "v_s": v_s,
+        "E_s": E_s,
+        "eval_reward_s": reward_s,
+    }
+
+
+def _plot_pooled_controller(
+    extras: list,
+    out_dir: Path,
+    *,
+    vmin: float,
+    vmax: float,
+    minimal_progress: float,
+    win_frac: float = 0.05,
+) -> None:
+    """Render a single controller's standard plot set over the POOLED batch.
+
+    Concatenates the per-URDF raw metric arrays and joint-position traces, then
+    produces the same ``total_plot`` / ``total_plot_points`` / joint heatmaps as
+    a single-URDF rollout — but for the whole multi-URDF population at once.
+    """
+    from winged_drone_train.analysis.eval_plotter import EvaluationPlotter
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _cat(key: str) -> np.ndarray:
+        parts = [np.asarray(e["raw"][key]) for e in extras if e.get("raw")]
+        return np.concatenate(parts) if parts else np.asarray([])
+
+    v_mean, cot = _cat("v_mean"), _cat("cot")
+    v_cmd, progress = _cat("v_cmd"), _cat("progress")
+
+    # Pool the per-env joint traces (lists are concatenated; v_cmd stacked).
+    s_all: list = []
+    jpos_all: list = []
+    vcmd_traces: list = []
+    for e in extras:
+        tr = e.get("traces")
+        if not tr:
+            continue
+        s_all.extend(list(tr.get("s", [])))
+        jpos_all.extend(list(tr.get("j_pos", [])))
+        vcmd_traces.append(np.asarray(tr.get("v_cmd", [])))
+    traces = {
+        "s": s_all,
+        "j_pos": jpos_all,
+        "v_cmd": np.concatenate(vcmd_traces) if vcmd_traces else np.asarray([]),
+    }
+
+    csr = (float(vmin), float(vmax))
+    plotter = EvaluationPlotter()
+    jobs = [
+        ("total_plot.png",
+         lambda o: plotter.total_plot(v_mean, cot, v_cmd, progress, win_frac=win_frac,
+                                      minimal_p=minimal_progress, out=o, velocity_range=csr)),
+        ("total_plot_points_instead_of_ma.png",
+         lambda o: plotter.total_plot_points_instead_of_ma(v_mean, cot, v_cmd, progress, win_frac=win_frac,
+                                                           minimal_p=minimal_progress, out=o, velocity_range=csr)),
+        ("joint_heatmap_sweep.png",
+         lambda o: plotter.plot_joint_diff_heatmap(traces, "sweep", out=o, command_speed_range=csr)),
+        ("joint_heatmap_twist.png",
+         lambda o: plotter.plot_joint_diff_heatmap(traces, "twist", out=o, command_speed_range=csr)),
+    ]
+    for name, fn in jobs:
+        try:
+            fn(str(out_dir / name))
+        except Exception as exc:  # keep the rest of the set on a single failure
+            print(f"[validate][warn] pooled plot {name} failed: {exc}")
+    print(f"[validate] Saved pooled plot set -> {out_dir}")
+
+
+def _safe_stem(urdf_file: Optional[str], fallback: str) -> str:
+    """Filesystem-safe short label for a URDF path (or the default drone)."""
+    import re
+
+    if not urdf_file:
+        return fallback
+    stem = Path(urdf_file).stem
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_")
+    return (clean or fallback)[:60]
+
+
 # ===========================================================================
 #  Main
 # ===========================================================================
@@ -303,6 +423,23 @@ def main() -> None:
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="disable CRN sharing of per-slot DR draws (still same seed)")
     p.set_defaults(crn=True)
+    # Multi-URDF robustness sweep.
+    p.add_argument(
+        "--n-urdf", dest="n_urdf", type=int, default=None,
+        help="evaluate over N freshly-sampled random URDFs (excluding the default "
+             "drone). --envs is split evenly so each URDF flies envs/N forests, and "
+             "ALL URDFs fly the SAME set of forests (shared via forest injection).",
+    )
+    p.add_argument(
+        "--include-default-urdf", dest="include_default_urdf", action="store_true",
+        help="replace one of the N sampled URDFs with the default (standard-mydrone) "
+             "drone. Batch size stays N.",
+    )
+    p.add_argument(
+        "--urdf-seed", dest="urdf_seed", type=int, default=None,
+        help="seed for random URDF sampling (default: --seed). Independent of the "
+             "CRN/eval seed.",
+    )
     args = p.parse_args()
 
     run_dir = Path(args.run).expanduser().resolve()
@@ -362,10 +499,10 @@ def main() -> None:
     baseline_genome = out_dir / "baseline_zero_genome.npy"
     np.save(baseline_genome, zero_genome)
 
-    # Knobs shared by both rollouts — identical seed + CRN are what make the
-    # comparison apples-to-apples.
+    # Knobs shared by both controllers — identical seed + CRN are what make the
+    # comparison apples-to-apples. (``envs`` is supplied per-call so the
+    # multi-URDF path can split it across the batch.)
     shared = dict(
-        envs=args.envs,
         vmin=args.vmin,
         vmax=args.vmax,
         x_upper=args.x_upper,
@@ -381,6 +518,18 @@ def main() -> None:
         save_plots=True,
     )
 
+    if args.n_urdf is not None:
+        _run_multi_urdf(
+            run_dir=run_dir,
+            baseline_genome=baseline_genome,
+            genome_path=genome_path,
+            genome_label=genome_label,
+            out_dir=out_dir,
+            shared=shared,
+            args=args,
+        )
+        return
+
     # ---- Baseline: frozen WP1 actor (zero-rule genome, no plasticity) ---- #
     print("\n[validate] === Baseline rollout (WP1 actor, zero rules) ===")
     *_, base_extra = evaluation_hebbian(
@@ -388,6 +537,7 @@ def main() -> None:
         genome_path=str(baseline_genome),
         genome_idx=0,
         eval_dir=str(baseline_dir),
+        envs=args.envs,
         **shared,
     )
 
@@ -398,6 +548,7 @@ def main() -> None:
         genome_path=str(genome_path),
         genome_idx=args.genome_idx,
         eval_dir=str(hebbian_dir),
+        envs=args.envs,
         **shared,
     )
 
@@ -436,6 +587,191 @@ def main() -> None:
             "\n[validate][WARNING] CRN check failed: the two rollouts did NOT "
             "fly identical initial conditions. The comparison is still "
             "informative but not strictly variance-reduced."
+        )
+
+
+# ===========================================================================
+#  Multi-URDF robustness sweep
+# ===========================================================================
+def _run_multi_urdf(
+    *,
+    run_dir: Path,
+    baseline_genome: Path,
+    genome_path: Path,
+    genome_label: str,
+    out_dir: Path,
+    shared: Dict[str, Any],
+    args: Any,
+) -> None:
+    """Evaluate baseline vs Hebbian over a batch of N freshly-sampled URDFs.
+
+    ``--envs`` is split evenly (``envs_per = envs // N``). The forest pool +
+    per-slot assignment is generated once (first rollout) and *injected* into
+    every other rollout, so all N URDFs — and both controllers — fly the exact
+    same set of forests. Per (URDF, controller) the seed + CRN are identical,
+    so baseline and Hebbian see identical noise on every URDF.
+    """
+    from winged_drone_train.eval import evaluation_hebbian
+    from general_policy.catalog import build_catalog
+
+    n = int(args.n_urdf)
+    if n < 1:
+        raise ValueError("--n-urdf must be >= 1")
+    envs_per = args.envs // n
+    if envs_per < 1:
+        raise ValueError(
+            f"--envs {args.envs} too small to split across {n} URDFs "
+            f"(envs_per = {envs_per})"
+        )
+    if args.envs % n:
+        print(
+            f"[validate][warn] --envs {args.envs} not divisible by --n-urdf {n}; "
+            f"using {envs_per} envs/URDF ({envs_per * n} total)."
+        )
+
+    # ---- Sample N URDFs (fresh random morphologies) --------------------- #
+    # include_standard_mydrone=True puts the default drone as the FIRST URDF
+    # and samples the remaining N-1 randomly (so the default replaces one of
+    # the N sampled drones, keeping the batch size at N).
+    urdf_seed = args.urdf_seed if args.urdf_seed is not None else args.seed
+    sampled_dir = out_dir / "sampled_urdfs"
+    print(
+        f"\n[validate] sampling {n} URDF(s) seed={urdf_seed} "
+        f"include_default={args.include_default_urdf} -> {sampled_dir}"
+    )
+    urdf_paths = [
+        str(p) for p in build_catalog(
+            catalog_dir=sampled_dir,
+            n=n,
+            seed=urdf_seed,
+            include_standard_mydrone=bool(args.include_default_urdf),
+        )
+    ]
+    if len(urdf_paths) != n:
+        print(
+            f"[validate][warn] requested {n} URDFs but only {len(urdf_paths)} "
+            f"unique morphologies were generated."
+        )
+    print(f"[validate] envs/URDF = {envs_per}  ({envs_per * len(urdf_paths)} total)")
+
+    # ---- Per-URDF baseline + Hebbian rollouts under a shared forest ----- #
+    shared_forest = None  # captured from the very first rollout, then injected
+    base_extras: list = []
+    hebb_extras: list = []
+    crn_reports: list = []
+    crn_all_ok = True
+
+    for i, urdf in enumerate(urdf_paths):
+        is_default = bool(args.include_default_urdf) and i == 0
+        stem = "default_mydrone" if is_default else _safe_stem(urdf, f"urdf_{i}")
+        tag = f"urdf_{i:02d}_{stem}"
+        base_dir = out_dir / "per_urdf" / tag / "baseline"
+        hebb_dir = out_dir / "per_urdf" / tag / "hebbian"
+        print(f"\n[validate] ===== URDF {i + 1}/{len(urdf_paths)}: {tag} =====")
+
+        need_capture = shared_forest is None
+        print("[validate]   -> baseline rollout")
+        *_, base_extra = evaluation_hebbian(
+            hebbian_run=str(run_dir),
+            genome_path=str(baseline_genome),
+            genome_idx=0,
+            eval_dir=str(base_dir),
+            envs=envs_per,
+            urdf_file=urdf,
+            inject_forest=shared_forest,
+            return_forest=need_capture,
+            return_raw=True,
+            return_traces=True,
+            **shared,
+        )
+        if need_capture:
+            shared_forest = base_extra.get("forest")
+            if shared_forest is None or shared_forest[0] is None:
+                raise RuntimeError("failed to capture the shared forest pool")
+
+        print("[validate]   -> hebbian rollout")
+        *_, hebb_extra = evaluation_hebbian(
+            hebbian_run=str(run_dir),
+            genome_path=str(genome_path),
+            genome_idx=args.genome_idx,
+            eval_dir=str(hebb_dir),
+            envs=envs_per,
+            urdf_file=urdf,
+            inject_forest=shared_forest,
+            return_forest=False,
+            return_raw=True,
+            return_traces=True,
+            **shared,
+        )
+
+        ok, report = _compare_initial_conditions(
+            base_extra.get("initial_conditions"),
+            hebb_extra.get("initial_conditions"),
+        )
+        crn_all_ok = crn_all_ok and ok
+        crn_reports.append(f"[{tag}]\n{report}")
+        base_extras.append(base_extra)
+        hebb_extras.append(hebb_extra)
+
+    # ---- Aggregate across the batch ------------------------------------- #
+    base_agg = _aggregate_extras(base_extras)
+    hebb_agg = _aggregate_extras(hebb_extras)
+
+    # Pooled per-controller plot sets (the same plots as a single-URDF run,
+    # but over the whole batch) -> validation/{baseline,hebbian}/.
+    print("\n[validate] rendering pooled per-controller plot sets")
+    _plot_pooled_controller(
+        base_extras, out_dir / "baseline",
+        vmin=args.vmin, vmax=args.vmax, minimal_progress=args.minimal_progress,
+    )
+    _plot_pooled_controller(
+        hebb_extras, out_dir / "hebbian",
+        vmin=args.vmin, vmax=args.vmax, minimal_progress=args.minimal_progress,
+    )
+
+    # Direct overall comparison -> validation/overlay_*.png.
+    title = (
+        f"{run_dir.name} — baseline (WP1) vs Hebbian [{genome_label}] — "
+        f"{len(urdf_paths)} URDFs (envs/URDF={envs_per})"
+    )
+    _plot_overlay(base_agg, hebb_agg, out_dir, title=title)
+
+    # ---- CRN report ----------------------------------------------------- #
+    report_path = out_dir / "initial_conditions.txt"
+    report_path.write_text(
+        f"run: {run_dir}\ngenome: {genome_path} ({genome_label})\n"
+        f"n_urdf: {len(urdf_paths)}  envs/URDF: {envs_per}  seed: {args.seed}  "
+        f"crn: {args.crn}  urdf_seed: {urdf_seed}\n"
+        f"all_urdf_crn_ok: {crn_all_ok}\n\n" + "\n\n".join(crn_reports) + "\n"
+    )
+    print(f"\n[validate] Saved {report_path}")
+
+    # ---- Summary (per-URDF + pooled) ------------------------------------ #
+    lines: list = []
+    for i, (urdf, be, he) in enumerate(zip(urdf_paths, base_extras, hebb_extras)):
+        is_default = bool(args.include_default_urdf) and i == 0
+        stem = "default_mydrone" if is_default else _safe_stem(urdf, f"urdf_{i}")
+        lines.append(f"-- urdf_{i:02d}_{stem} --")
+        lines.append(_fmt_summary("  baseline", be))
+        lines.append(_fmt_summary(f"  hebbian[{genome_label}]", he))
+    lines.append("== POOLED (all URDFs) ==")
+    lines.append(_fmt_summary("  baseline", base_agg))
+    lines.append(_fmt_summary(f"  hebbian[{genome_label}]", hebb_agg))
+    summary = "\n".join(lines)
+    print("\n[validate] Summary:\n" + summary)
+    (out_dir / "summary.txt").write_text(
+        f"run: {run_dir}\ngenome: {genome_path} ({genome_label})\n"
+        f"n_urdf: {len(urdf_paths)}  envs/URDF: {envs_per}  seed: {args.seed}  "
+        f"crn: {args.crn}  urdf_seed: {urdf_seed}  "
+        f"vmin: {args.vmin}  vmax: {args.vmax}  x_upper: {args.x_upper}  "
+        f"dens_max: {args.dens_max}\n\n{summary}\n"
+    )
+
+    if not crn_all_ok:
+        print(
+            "\n[validate][WARNING] CRN check failed on at least one URDF: the "
+            "baseline and Hebbian rollouts did NOT fly identical initial "
+            "conditions everywhere. See initial_conditions.txt."
         )
 
 

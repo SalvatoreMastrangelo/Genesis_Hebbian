@@ -43,6 +43,8 @@ so (urdf, individual) fitness comparisons remain fair.
 from __future__ import annotations
 
 import copy
+import os
+import time
 from typing import List, Optional, Tuple
 
 import torch
@@ -71,6 +73,10 @@ class MultiSceneEvalEnv:
         self.E = int(num_envs_per_drone)
         self.device = device
 
+        # Tag log lines with the worker id when running under the parallel
+        # wrapper (set in _worker_main via env var); falls back to "?" otherwise.
+        wid = os.environ.get("WP2_WORKER_ID", "?")
+
         self.drones: List[WingedDroneEnv] = []
         for k, urdf_file in enumerate(urdf_paths):
             # Each sub-env takes its own copies so per-scene mutations don't leak.
@@ -78,6 +84,13 @@ class MultiSceneEvalEnv:
             sub_obs_cfg = dict(obs_cfg)
             sub_reward_cfg = dict(reward_cfg)
             sub_command_cfg = dict(command_cfg)
+
+            # Per-scene progress so a stuck/slow build is diagnosable: without
+            # this, the worker prints nothing between "building N sub-envs" and
+            # "ready", so an init timeout can't tell scene 1 from scene N.
+            t0 = time.time()
+            print(f"[worker {wid}] building sub-env {k + 1}/{self.D} "
+                  f"({os.path.basename(str(urdf_file))}) ...", flush=True)
 
             sub = WingedDroneEnv(
                 num_envs=self.E,
@@ -92,6 +105,8 @@ class MultiSceneEvalEnv:
             )
             configure_solver_noise(sub, sub_env_cfg)
             self.drones.append(sub)
+            print(f"[worker {wid}] built sub-env {k + 1}/{self.D} "
+                  f"in {time.time() - t0:.1f}s", flush=True)
 
         # Sanity: all sub-envs must share obs/action dims so we can build one
         # shared actor batch across them.

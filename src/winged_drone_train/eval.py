@@ -950,6 +950,10 @@ def evaluation_hebbian(
     seed: int | None = None,
     crn: bool = False,
     capture_initial: bool = False,
+    inject_forest: Tuple[Any, Any] | None = None,
+    return_forest: bool = False,
+    return_raw: bool = False,
+    return_traces: bool = False,
 ):
     """Programmatic Hebbian-controller counterpart to :func:`evaluation`.
 
@@ -1073,6 +1077,35 @@ def evaluation_hebbian(
         # across slots flying the same forest id (see winged_drone_train.crn).
         env._fixed_forest_ids = env.forest_ids.clone()
         env.set_crn_enabled(True)
+
+    # Forest injection: overwrite the freshly-generated forest pool + per-slot
+    # assignment with an externally-supplied one. Forests are generated with
+    # on-device ``torch.rand`` *after* the URDF entity is added, so the same
+    # seed does NOT guarantee identical forests across different URDFs. Passing
+    # ``inject_forest=(cylinders_array, forest_ids)`` makes a batch of distinct
+    # URDFs fly the *same* set of forests (see WP2.validate --n-urdf).
+    if inject_forest is not None:
+        cyl_inj, fid_inj = inject_forest
+        if cyl_inj is None:
+            raise ValueError("inject_forest: cylinders_array is None")
+        cyl_inj = torch.as_tensor(cyl_inj, device=env.device)
+        fid_inj = torch.as_tensor(fid_inj, device=env.device).long()
+        if fid_inj.shape[0] != env.num_envs:
+            raise ValueError(
+                f"inject_forest: forest_ids has {fid_inj.shape[0]} entries but "
+                f"env has {env.num_envs} slots"
+            )
+        env.cylinders_array = cyl_inj
+        env.total_forests = int(cyl_inj.shape[0])
+        env.forest_ids = fid_inj.clone()
+        env.cylinders_xy = cyl_inj[env.forest_ids, :, :2]
+        env._fixed_forest_ids = env.forest_ids.clone()
+        env.set_crn_enabled(True)
+        print(
+            f"[evaluation/hebbian] injected shared forest "
+            f"(F={env.total_forests}, slots={env.num_envs})"
+        )
+
     if init_vx is not None:
         env._reset_lin_vel[0] = float(init_vx)
         print(
@@ -1150,6 +1183,17 @@ def evaluation_hebbian(
         f"[evaluation/hebbian] average z position at {minimal_progress:.0f} m progress: "
         f"{mean_z_at_progress_threshold:.2f} m"
     )
+
+    # Capture the forest pool + per-slot assignment (on CPU, so it survives
+    # gs.destroy()) for injection into sibling rollouts that must fly the same
+    # forests (see WP2.validate --n-urdf).
+    forest_capture = None
+    if return_forest:
+        _cyl = getattr(env, "cylinders_array", None)
+        forest_capture = (
+            _cyl.detach().cpu().clone() if _cyl is not None else None,
+            env.forest_ids.detach().cpu().clone(),
+        )
 
     gs.destroy()
 
@@ -1300,6 +1344,7 @@ def evaluation_hebbian(
         "clean_urdf_stem": clean_stem,
         "plot_paths": plot_paths,
         "initial_conditions": init_cap,
+        "forest": forest_capture,
     }
     if return_arrays:
         extra.update(
@@ -1311,6 +1356,22 @@ def evaluation_hebbian(
                 "eval_reward_s": reward_s,
             }
         )
+    if return_raw:
+        # Per-env arrays (NaN envs already dropped from v_mean/COT/v_cmd/progress;
+        # reward_total keeps NaN for dropped envs). Used by WP2.validate to pool
+        # raw results across a multi-URDF batch before re-smoothing.
+        extra["raw"] = {
+            "v_cmd": v_cmd,
+            "v_mean": v_mean,
+            "cot": COT,
+            "progress": progress,
+            "reward": reward_m,
+        }
+    if return_traces:
+        # Per-env joint-position time series (all envs, NaN included) keyed to
+        # v_cmd. Used by WP2.validate to pool the joint-behaviour heatmaps
+        # across a multi-URDF batch. Only populated when save_plots=True.
+        extra["traces"] = traces_all
 
     if return_arrays:
         return top_vel, top_eff, top_prog, max_p, extra

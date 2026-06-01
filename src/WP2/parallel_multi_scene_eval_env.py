@@ -39,10 +39,11 @@ import torch.multiprocessing as mp
 
 
 # Default per-worker init timeout (seconds). Cold Taichi-cache builds of many
-# Genesis scenes across many workers can take 10-30 min; the previous 600s
-# default was too short for production-scale runs (e.g. D=40 across 10
-# workers). Override at runtime via env var WP2_WORKER_INIT_TIMEOUT.
-_DEFAULT_INIT_TIMEOUT_S = 1800.0
+# Genesis scenes across many workers can take 30-90 min; earlier defaults (600s,
+# 1800s, 3600s) were too short for production-scale runs (e.g. D=40+ across 4
+# workers building 10 scenes each). Override at runtime via env var
+# WP2_WORKER_INIT_TIMEOUT.
+_DEFAULT_INIT_TIMEOUT_S = 5400.0
 
 # ── drone-state buffer layout ─────────────────────────────────────────────────
 _N_STATE = 14
@@ -175,6 +176,9 @@ def _worker_main(
     # different physical GPUs.
     if gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
+    # Tag MultiSceneEvalEnv's per-scene build logs with this worker's id.
+    os.environ["WP2_WORKER_ID"] = str(worker_id)
 
     # Restore sys.path so project imports work in the spawned process.
     for p in extra_sys_paths:
@@ -438,23 +442,53 @@ class ParallelMultiSceneEvalEnv:
         nominal_masses_all: List[float] = [0.0] * D
         ready_count = 0
         for w in range(N):
-            try:
-                msg = self._ack_qs[w].get(timeout=init_timeout)
-            except _queue_mod.Empty:
+            msg = self._await_ready(w, init_timeout)
+
+            if msg[0] == "died":
+                # One or more workers exited before sending 'ready'. A SIGKILL
+                # (exitcode -9) with no Python traceback is the classic
+                # signature of the Linux OOM killer reclaiming host RAM — the
+                # worker can't put an "error" on the queue when the kernel
+                # kills it, so we detect it via the process exitcode instead.
+                self._force_shutdown()
+                dead = msg[1]
+                details = "; ".join(
+                    f"worker {i} (GPU {worker_gpu[i]}, "
+                    f"{len(worker_urdfs[i])} URDFs) exitcode={ec}"
+                    + (" [SIGKILL — almost certainly the host OOM killer]"
+                       if ec == -9 else "")
+                    for i, ec in dead
+                )
+                raise RuntimeError(
+                    f"Worker process(es) DIED during init before replying "
+                    f"'ready': {details}. This is NOT a timeout — raising "
+                    f"WP2_WORKER_INIT_TIMEOUT will not help. A -9/SIGKILL with "
+                    f"no traceback means the OS killed the process, almost "
+                    f"always the Linux OOM killer running out of host RAM. "
+                    f"This run builds {D} URDF(s) × E={E} across {N} worker(s) "
+                    f"on {G} GPU(s) (~{(D * E) // max(G, 1)} env slots/GPU as "
+                    f"~{-(-D // N)} separate Genesis scenes per worker). "
+                    f"Mitigations: reduce num_eval_workers, num_urdfs, or "
+                    f"num_envs_per_drone; or request more --mem. "
+                    f"Confirm with: dmesg -T | grep -i -E 'oom|killed process'."
+                )
+
+            if msg[0] == "timeout":
                 self._force_shutdown()
                 raise RuntimeError(
                     f"Worker {w} did not reply 'ready' within "
-                    f"{init_timeout:.0f}s. Status: {ready_count}/{N} workers "
-                    f"replied successfully before the timeout fired. This "
-                    f"worker holds {len(worker_urdfs[w])} URDF(s) × E={E} "
-                    f"= {E * len(worker_urdfs[w])} env slots on GPU "
-                    f"{worker_gpu[w]}. Likely causes: cold Taichi cache + "
-                    f"many concurrent Genesis scenes, CPU oversubscription "
-                    f"(check --cpus-per-gpu vs num_eval_workers), or GPU OOM. "
-                    f"Mitigations: raise WP2_WORKER_INIT_TIMEOUT (currently "
-                    f"{init_timeout:.0f}s), reduce num_eval_workers, or "
-                    f"reduce num_urdfs."
+                    f"{init_timeout:.0f}s but is still alive (no crash/kill "
+                    f"detected). Status: {ready_count}/{N} workers replied "
+                    f"successfully before the timeout fired. This worker holds "
+                    f"{len(worker_urdfs[w])} URDF(s) × E={E} = "
+                    f"{E * len(worker_urdfs[w])} env slots on GPU "
+                    f"{worker_gpu[w]}. A live-but-slow worker points at a cold "
+                    f"Taichi cache or CPU oversubscription (check --cpus-per-gpu "
+                    f"vs num_eval_workers). Mitigations: raise "
+                    f"WP2_WORKER_INIT_TIMEOUT (currently {init_timeout:.0f}s), "
+                    f"reduce num_eval_workers, or reduce num_urdfs."
                 ) from None
+
             if msg[0] == "error":
                 self._force_shutdown()
                 raise RuntimeError(f"Worker {w} init failed: {msg[1]}")
@@ -519,6 +553,38 @@ class ParallelMultiSceneEvalEnv:
               f"n_comp={n_comp_full}", flush=True)
 
     # ── internal helpers ──────────────────────────────────────────────────────
+
+    def _await_ready(self, w: int, init_timeout: float):
+        """Wait for worker ``w``'s init ack, polling so a dead worker is caught fast.
+
+        Returns one of:
+        * the worker's ack tuple (``("ready", ...)`` or ``("error", ...)``)
+        * ``("died", [(i, exitcode), ...])`` if any worker process exited
+          before sending its ack — typically the OOM killer (exitcode -9).
+          We watch *every* worker, not just ``w``, so one worker's death
+          isn't hidden behind a healthy-but-slow predecessor in the read order.
+        * ``("timeout", None)`` if ``w`` is still alive but silent past the
+          timeout (a genuinely slow build, not a crash).
+        """
+        poll = 5.0
+        waited = 0.0
+        while True:
+            try:
+                return self._ack_qs[w].get(timeout=poll)
+            except _queue_mod.Empty:
+                pass
+            waited += poll
+            # is_alive() reaps the child and populates exitcode. A non-zero /
+            # signal exitcode with no ack on the queue means a crash or kill.
+            dead = [
+                (i, p.exitcode)
+                for i, p in enumerate(self._procs)
+                if not p.is_alive() and p.exitcode not in (0, None)
+            ]
+            if dead:
+                return ("died", dead)
+            if waited >= init_timeout:
+                return ("timeout", None)
 
     def _send_all(self, cmd: str, payload=None) -> None:
         """Broadcast a command to all workers and collect acks."""
