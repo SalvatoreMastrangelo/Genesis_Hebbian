@@ -91,15 +91,15 @@ evaluation:
                        # round-robin sharded across GPUs too, so each GPU runs
                        # num_eval_envs/G total env slots. SLURM must allocate G
                        # GPUs (sbatch --gpus=G). Clamped to min(G, num_workers).
-  vmin: 7.0
-  vmax: 22.0
+  vmin: 5.0
+  vmax: 25.0
   stochastic: true
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor for comparison
   baseline_every: 1    # cadence when run_baseline=true: run at gen 0 then every N gens
   x_upper: 300         # override forest corridor length [m]; null = use WP1 config value
   dens_min: 2.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
   dens_min_slope: 0.02 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
-  dens_max: 6.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
+  dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
   crn: true            # common random numbers: share per-slot DR draws (forest, mass/COM,
                        # joint bias/step noise, latency, aero params, obs noise) across

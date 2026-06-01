@@ -39,6 +39,12 @@ Usage
     # Override the course / sampling (all default-as-eval, overridable):
     PYTHONPATH=src python -m WP2.validate --run <wp2_run> \
         --envs 8192 --x-upper 600 --dens-max 5 --vmin 5 --vmax 25
+
+    # Inject a wing-break fault for BOTH controllers (same forests under CRN)
+    # to test in-flight adaptation — the pilot's LEFT wing loses half its lift
+    # once each env passes 150 m:
+    PYTHONPATH=src python -m WP2.validate --run <wp2_run> \
+        --break-left-wing 150 --break-left-loss 50
 """
 
 from __future__ import annotations
@@ -379,6 +385,18 @@ def _safe_stem(urdf_file: Optional[str], fallback: str) -> str:
     return (clean or fallback)[:60]
 
 
+def _fault_desc(args: Any) -> str:
+    """One-line description of the active fault-injection knobs (for reports)."""
+    parts: list[str] = []
+    if getattr(args, "freeze_distance", None) is not None:
+        parts.append(f"freeze@{args.freeze_distance:g}m")
+    if getattr(args, "break_left_distance", None) is not None:
+        parts.append(f"break_left@{args.break_left_distance:g}m(-{args.break_left_loss:g}%)")
+    if getattr(args, "break_right_distance", None) is not None:
+        parts.append(f"break_right@{args.break_right_distance:g}m(-{args.break_right_loss:g}%)")
+    return "  ".join(parts) if parts else "none"
+
+
 # ===========================================================================
 #  Main
 # ===========================================================================
@@ -418,11 +436,57 @@ def main() -> None:
                    help="override initial body velocity along +X at reset [m/s]")
     p.add_argument("--minimal-progress", dest="minimal_progress", type=float, default=250.0,
                    help="distance used for the COT / efficiency window [m] (default 250)")
+    # ---- Fault injection (mirrors winged_drone_train/eval.py) ----------- #
+    # Applied identically to BOTH the baseline and the Hebbian rollout (they
+    # share the seed + CRN), so the comparison isolates how each controller
+    # copes with the same wing damage / frozen plasticity.
+    p.add_argument(
+        "--freeze", dest="freeze_distance", type=float, default=None, metavar="DIST",
+        help=(
+            "Freeze the Hebbian last-layer weights once any env has travelled "
+            "DIST metres along +X: no ABCD update and no decay-toward-checkpoint "
+            "for the rest of the rollout. No-op on the zero-rule baseline."
+        ),
+    )
+    p.add_argument(
+        "--break-left-wing", dest="break_left_distance", type=float, default=None, metavar="DIST",
+        help=(
+            "Reduce the lift of the wing on the pilot's LEFT (visual orientation) "
+            "once each env has travelled DIST metres along +X. The lift lost is "
+            "controlled by --break-left-loss (default 50%%). Per-env latched, one-shot."
+        ),
+    )
+    p.add_argument(
+        "--break-left-loss", dest="break_left_loss", type=float, default=50.0, metavar="PCT",
+        help=(
+            "Percentage of left-wing lift to lose when --break-left-wing fires "
+            "(default 50). 0 = no effect, 100 = no lift remaining. Clamped to [0, 100]."
+        ),
+    )
+    p.add_argument(
+        "--break-right-wing", dest="break_right_distance", type=float, default=None, metavar="DIST",
+        help=(
+            "Reduce the lift of the wing on the pilot's RIGHT (visual orientation) "
+            "once each env has travelled DIST metres along +X. The lift lost is "
+            "controlled by --break-right-loss (default 50%%). Per-env latched, one-shot."
+        ),
+    )
+    p.add_argument(
+        "--break-right-loss", dest="break_right_loss", type=float, default=50.0, metavar="PCT",
+        help=(
+            "Percentage of right-wing lift to lose when --break-right-wing fires "
+            "(default 50). 0 = no effect, 100 = no lift remaining. Clamped to [0, 100]."
+        ),
+    )
     p.add_argument("--seed", type=int, default=0,
                    help="RNG seed, identical for both rollouts → CRN (default 0)")
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="disable CRN sharing of per-slot DR draws (still same seed)")
     p.set_defaults(crn=True)
+    p.add_argument("--no-verbose", dest="verbose", action="store_false",
+                   help="disable the per-50-step rollout progress log (printed by "
+                        "default in validate, mirroring WP2 run.py's first-generation log)")
+    p.set_defaults(verbose=True)
     # Multi-URDF robustness sweep.
     p.add_argument(
         "--n-urdf", dest="n_urdf", type=int, default=None,
@@ -461,6 +525,7 @@ def main() -> None:
     print(f"[validate] genome         = {genome_path}  (label '{genome_label}')")
     print(f"[validate] envs={args.envs}  vmin={args.vmin}  vmax={args.vmax}  "
           f"x_upper={args.x_upper}  dens_max={args.dens_max}  seed={args.seed}  crn={args.crn}")
+    print(f"[validate] fault          = {_fault_desc(args)}")
     print(f"[validate] output         = {out_dir}")
 
     # eval.py lives under src/winged_drone_train; ensure src/ is importable.
@@ -511,8 +576,15 @@ def main() -> None:
         dens_max=args.dens_max,
         init_vx=args.init_vx,
         minimal_progress=args.minimal_progress,
+        # Fault injection — applied identically to baseline + Hebbian under CRN.
+        freeze_distance=args.freeze_distance,
+        break_left_distance=args.break_left_distance,
+        break_right_distance=args.break_right_distance,
+        break_left_loss_pct=args.break_left_loss,
+        break_right_loss_pct=args.break_right_loss,
         seed=args.seed,
         crn=args.crn,
+        verbose=args.verbose,
         capture_initial=True,
         return_arrays=True,
         save_plots=True,
@@ -561,7 +633,8 @@ def main() -> None:
     report_path = out_dir / "initial_conditions.txt"
     report_path.write_text(
         f"run: {run_dir}\ngenome: {genome_path} ({genome_label})\n"
-        f"seed: {args.seed}  crn: {args.crn}  envs: {args.envs}\n\n{report}\n"
+        f"seed: {args.seed}  crn: {args.crn}  envs: {args.envs}  "
+        f"fault: {_fault_desc(args)}\n\n{report}\n"
     )
     print(f"[validate] Saved {report_path}")
 
@@ -579,7 +652,7 @@ def main() -> None:
         f"run: {run_dir}\ngenome: {genome_path} ({genome_label})\n"
         f"seed: {args.seed}  crn: {args.crn}  envs: {args.envs}  "
         f"vmin: {args.vmin}  vmax: {args.vmax}  x_upper: {args.x_upper}  "
-        f"dens_max: {args.dens_max}\n\n{summary}\n"
+        f"dens_max: {args.dens_max}  fault: {_fault_desc(args)}\n\n{summary}\n"
     )
 
     if not ok:
@@ -741,7 +814,7 @@ def _run_multi_urdf(
     report_path.write_text(
         f"run: {run_dir}\ngenome: {genome_path} ({genome_label})\n"
         f"n_urdf: {len(urdf_paths)}  envs/URDF: {envs_per}  seed: {args.seed}  "
-        f"crn: {args.crn}  urdf_seed: {urdf_seed}\n"
+        f"crn: {args.crn}  urdf_seed: {urdf_seed}  fault: {_fault_desc(args)}\n"
         f"all_urdf_crn_ok: {crn_all_ok}\n\n" + "\n\n".join(crn_reports) + "\n"
     )
     print(f"\n[validate] Saved {report_path}")
@@ -764,7 +837,7 @@ def _run_multi_urdf(
         f"n_urdf: {len(urdf_paths)}  envs/URDF: {envs_per}  seed: {args.seed}  "
         f"crn: {args.crn}  urdf_seed: {urdf_seed}  "
         f"vmin: {args.vmin}  vmax: {args.vmax}  x_upper: {args.x_upper}  "
-        f"dens_max: {args.dens_max}\n\n{summary}\n"
+        f"dens_max: {args.dens_max}  fault: {_fault_desc(args)}\n\n{summary}\n"
     )
 
     if not crn_all_ok:

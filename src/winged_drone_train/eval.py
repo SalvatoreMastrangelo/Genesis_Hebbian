@@ -328,6 +328,7 @@ def run_eval(
     break_left_loss_pct: float = 50.0,
     break_right_loss_pct: float = 50.0,
     init_capture: Dict[str, Any] | None = None,
+    verbose: bool = False,
 ):
     """
     Lightweight rollout for evaluation.
@@ -401,6 +402,7 @@ def run_eval(
     if freeze_distance is not None and not freeze_armed:
         print("[run_eval] --freeze ignored: only active in Hebbian mode")
 
+    step = 0
     while not done.all():
         actions = policy(obs)
         obs, _, term, _ = env.step(actions)
@@ -483,6 +485,21 @@ def run_eval(
                 final_reason[j] = 4
 
         done |= term | nan_indices
+        step += 1
+
+        # Per-50-step progress log, mirroring WP2 evaluate.py's gen-0 rollout
+        # logging. Off by default; WP2.validate turns it on.
+        if verbose and step % 50 == 0:
+            n_alive = int((~done).sum().item())
+            mean_dx = float(dx_acc.mean().item())
+            max_dx = float(dx_acc.max().item())
+            mean_r = float(reward_acc.mean().item())
+            print(
+                f"  step {step:5d} | alive {n_alive:5d}/{B}"
+                f" | progress mean {mean_dx:7.1f} m  max {max_dx:7.1f} m"
+                f" | reward mean {mean_r:8.2f}",
+                flush=True,
+            )
 
     # ---- global metrics (drop NaN envs for v_mean / E_tot / v_cmd) -------
     nan_indices = env.nan_envs.to(torch.bool)
@@ -562,6 +579,7 @@ def evaluation(
     seed: int | None = None,
     crn: bool = False,
     capture_initial: bool = False,
+    verbose: bool = False,
 ):
     """
     Programmatic evaluation entry point.
@@ -730,6 +748,7 @@ def evaluation(
         policy,
         extra_data=bool(save_plots),
         minimal_progress=minimal_progress,
+        verbose=verbose,
         init_capture=init_cap,
     )
     print(
@@ -950,6 +969,7 @@ def evaluation_hebbian(
     seed: int | None = None,
     crn: bool = False,
     capture_initial: bool = False,
+    verbose: bool = False,
     inject_forest: Tuple[Any, Any] | None = None,
     return_forest: bool = False,
     return_raw: bool = False,
@@ -1172,6 +1192,7 @@ def evaluation_hebbian(
         break_right_distance=break_right_distance,
         break_left_loss_pct=break_left_loss_pct,
         break_right_loss_pct=break_right_loss_pct,
+        verbose=verbose,
         init_capture=init_cap,
     )
     print(
