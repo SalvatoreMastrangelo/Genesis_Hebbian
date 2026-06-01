@@ -19,14 +19,14 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: very_high_density # generalist_256_10_urdf_0.005_0.05
+exp_name: smaller_specialist # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.02                     
+  eta: 0.005                     
   evolve_eta: false
   decay: 0.05                    
   evolve_decay: false
@@ -47,7 +47,7 @@ evolution:
 cmaes:
   algorithm: "cmaes"   # "cmaes" (full covariance) or "sep-cmaes" (diagonal-only, scales linearly with genome dim)
   sigma0: 0.1          # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
-  population_size: 64  # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
+  population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
   sigma_reinflate: 1.0 # on URDF/morphology change: re-inflate sigma to this × sigma0 (carry
@@ -81,7 +81,7 @@ catalog:
                                    # 0 or null ⇒ disabled, URDFs stay fixed for the whole run.
 
 evaluation:
-  num_eval_envs: 6400 # TOTAL slots across all URDFs and all individuals
+  num_eval_envs: 12800 # TOTAL slots across all URDFs and all individuals
                        # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
   num_eval_workers: 1  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
                        # N=2 typically saturates one GPU when a single scene uses ~50%

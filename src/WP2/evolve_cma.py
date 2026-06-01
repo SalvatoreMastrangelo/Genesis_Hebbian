@@ -305,18 +305,18 @@ def _print_generation_table(
     if specialist is not None:
         extra_cols.append(("Specialist", specialist))
 
-    base_headers = ["Metric", "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)", "Std"]
+    base_headers = ["Metric", "Best (Hebb)", "Median (Hebb)", "Worst (Hebb)", "Std"]
     if extra_cols:
         headers = base_headers + [name for name, _ in extra_cols]
     else:
-        headers = ["Metric", "Best", "Mean", "Worst", "Std"]
+        headers = ["Metric", "Best", "Median", "Worst", "Std"]
 
     table_rows = []
     for name, arr, key in rows:
         row = [
             name,
             f"{arr[best_idx]:.4g}",
-            f"{arr.mean():.4g}",
+            f"{np.median(arr):.4g}",
             f"{arr[worst_idx]:.4g}",
             f"{arr.std():.4g}",
         ]
@@ -350,7 +350,7 @@ def _print_generation_table(
             row = [
                 name,
                 f"{col[best_idx]:.4g}",
-                f"{col.mean():.4g}",
+                f"{np.median(col):.4g}",
                 f"{col[worst_idx]:.4g}",
                 f"{col.std():.4g}",
             ]
@@ -361,11 +361,11 @@ def _print_generation_table(
         if extra_cols:
             breakdown_headers = [
                 "Reward Component",
-                "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)", "Std",
+                "Best (Hebb)", "Median (Hebb)", "Worst (Hebb)", "Std",
             ] + [name for name, _ in extra_cols]
         else:
             breakdown_headers = [
-                "Reward Component", "Best (Hebb)", "Mean (Hebb)", "Worst (Hebb)", "Std",
+                "Reward Component", "Best (Hebb)", "Median (Hebb)", "Worst (Hebb)", "Std",
             ]
 
         print("\n  Reward Breakdown (per-component episode sum):")

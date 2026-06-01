@@ -9,7 +9,7 @@
 #   PYTHONPATH=src python -m WP1.train --cfg src/WP1/configs/custom.yaml
 ##############################################################################
 
-exp_name: shards_post_hebbian_rebuild
+exp_name: single_small_network
 
 ##############################################################################
 # Training loop / runner
@@ -48,7 +48,7 @@ ppo:
 # Policy network  (forwarded into train_cfg["policy"])
 ##############################################################################
 policy:
-  actor_hidden_dims: [64, 64]              # actor MLP layer sizes
+  actor_hidden_dims: [32, 16]              # actor MLP layer sizes
   critic_hidden_dims: [64, 64]             # critic MLP layer sizes
   activation: elu                          # "elu" | "relu" | "tanh" | "selu" | ...
   init_noise_std: 0.3                      # initial Gaussian action std
@@ -205,7 +205,7 @@ command:
 # Constraint: training.num_envs >= catalog.n_urdf (each URDF gets ≥ 1 env).
 ##############################################################################
 catalog:
-  n_urdf: 8                                # null → single-URDF; integer → multi-URDF
+  n_urdf: null                             # null → single-URDF; integer → multi-URDF
   catalog_dir: null                        # explicit catalog path (overrides n_urdf)
   urdf_seed: 0                             # seed used by general_policy.catalog.build_catalog
 
@@ -217,7 +217,7 @@ catalog:
 # initialises its own Genesis context.
 ##############################################################################
 lss:
-  enabled: true                            # true → spawn one subprocess per shard
+  enabled: false                           # true → spawn one subprocess per shard
   urdf_shard_size: 2                       # URDFs per shard; required when enabled
   num_workers: 0                           # 0 = auto: n_workers = ceil(n_urdf / urdf_shard_size).
                                            # >0 = force this many workers (rebalances URDFs).
