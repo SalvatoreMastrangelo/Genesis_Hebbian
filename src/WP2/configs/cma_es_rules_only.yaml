@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: smaller_specialist # generalist_256_10_urdf_0.005_0.05
+exp_name: per_output_small_specialist # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -27,11 +27,15 @@ checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 hebbian:
   enabled: true
   eta: 0.005                     
-  evolve_eta: false
+  evolve_eta: true
   decay: 0.05                    
-  evolve_decay: false
+  evolve_decay: true
   use_oja_coefficient: false
   initialize_rules_to_zero: true
+  rules_per_neuron: true         # false = per-weight ABCD (4 × num_actions × hidden_dim genes).
+                                 # true  = per-output-neuron ABCD: one A/B/C/D shared by all
+                                 #         input weights of each output neuron (4 × num_actions
+                                 #         genes). decay/eta, if evolved, stay per-weight.
   w_max: 5000.0
   A_range: [-1.5, 1.5]
   B_range: [-1.5, 1.5]
@@ -46,7 +50,7 @@ evolution:
 
 cmaes:
   algorithm: "cmaes"   # "cmaes" (full covariance) or "sep-cmaes" (diagonal-only, scales linearly with genome dim)
-  sigma0: 0.1          # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
+  sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
   population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
@@ -95,7 +99,7 @@ evaluation:
   vmax: 25.0
   stochastic: true
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor for comparison
-  baseline_every: 1    # cadence when run_baseline=true: run at gen 0 then every N gens
+  baseline_every: 25   # cadence when run_baseline=true: run at gen 0 then every N gens
   x_upper: 300         # override forest corridor length [m]; null = use WP1 config value
   dens_min: 2.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
   dens_min_slope: 0.02 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g

@@ -67,6 +67,10 @@ class HebbianConfig:
     evolve_decay: bool = False
     use_oja_coefficient: bool = True
     initialize_rules_to_zero: bool = False
+    rules_per_neuron: bool = False  # if True, A/B/C/D are shared by all input
+                                    # weights of each output neuron → 4×num_actions
+                                    # genes instead of 4×num_actions×hidden_dim.
+                                    # decay/eta (if evolved) stay per-weight.
     num_actions: int = 7   # last-layer output dim (inferred from checkpoint)
     hidden_dim: int = 64   # last-layer input dim (actor MLP hidden size)
     w_max: float = 3.0
@@ -76,6 +80,23 @@ class HebbianConfig:
     D_range: Tuple[float, float] = (-1.0, 1.0)
     decay_range: Tuple[float, float] = (0.0, 0.1)
     eta_range: Tuple[float, float] = (0.0, 0.1)
+
+    def abcd_block_size(
+        self,
+        out_features: Optional[int] = None,
+        in_features: Optional[int] = None,
+    ) -> int:
+        """Number of genes per A/B/C/D block.
+
+        Per-weight (default): ``out × in``.  Per-neuron
+        (``rules_per_neuron=True``): ``out`` — one shared rule for every input
+        weight of each output neuron.  ``out``/``in`` default to
+        ``num_actions``/``hidden_dim`` but may be overridden when the layer
+        dims are inferred from a checkpoint.
+        """
+        o = self.num_actions if out_features is None else out_features
+        i = self.hidden_dim if in_features is None else in_features
+        return o if self.rules_per_neuron else o * i
 
 
 @dataclass
@@ -363,19 +384,19 @@ class HebbianEvolutionConfig:
     def hebbian_genome_dim(self) -> int:
         """Number of Hebbian genes per individual.
 
-        Base: 4 × n_weights (A, B, C, D).
-        +n_weights if ``evolve_decay=True``.
-        +n_weights if ``evolve_eta=True``.
+        Base: 4 × abcd_block_size (``out×in`` per-weight, or ``out`` per-neuron).
+        +n_weights (per-weight) if ``evolve_decay=True``.
+        +n_weights (per-weight) if ``evolve_eta=True``.
         Returns 0 if Hebbian is disabled.
         """
         if not self.hebbian.enabled:
             return 0
         n_weights = self.hebbian.num_actions * self.hebbian.hidden_dim
-        base = 4 * n_weights
+        base = 4 * self.hebbian.abcd_block_size()   # per-weight or per-neuron
         if self.hebbian.evolve_decay:
-            base += n_weights
+            base += n_weights   # decay stays per-weight
         if self.hebbian.evolve_eta:
-            base += n_weights
+            base += n_weights   # eta stays per-weight
         return base
 
     def total_genome_dim(self) -> int:

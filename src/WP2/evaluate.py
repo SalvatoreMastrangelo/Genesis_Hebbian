@@ -1289,11 +1289,12 @@ if __name__ == "__main__":
 
         na, hd = cfg.hebbian.num_actions, cfg.hebbian.hidden_dim
         n_weights = na * hd
+        abcd_block = cfg.hebbian.abcd_block_size()  # out×in per-weight, or out per-neuron
         baseline_parts = [
-            np.full(n_weights, _gene_for_zero(*cfg.hebbian.A_range)),
-            np.full(n_weights, _gene_for_zero(*cfg.hebbian.B_range)),
-            np.full(n_weights, _gene_for_zero(*cfg.hebbian.C_range)),
-            np.full(n_weights, _gene_for_zero(*cfg.hebbian.D_range)),
+            np.full(abcd_block, _gene_for_zero(*cfg.hebbian.A_range)),
+            np.full(abcd_block, _gene_for_zero(*cfg.hebbian.B_range)),
+            np.full(abcd_block, _gene_for_zero(*cfg.hebbian.C_range)),
+            np.full(abcd_block, _gene_for_zero(*cfg.hebbian.D_range)),
         ]
         if cfg.hebbian.evolve_decay:
             lo, hi = cfg.hebbian.decay_range

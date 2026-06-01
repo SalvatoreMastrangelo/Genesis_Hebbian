@@ -74,11 +74,14 @@ def decode_hebbian_genes(
 
     Layout: ``[A_flat | B_flat | C_flat | D_flat | (lam_flat) | (eta_flat)]``
 
-    - A, B, C, D are always present (4 × n_weights genes).
+    - A, B, C, D are always present (4 × ``abcd_block_size`` genes): ``out×in``
+      per-weight, or ``out`` when ``rules_per_neuron=True`` (each value is then
+      broadcast across that neuron's inputs to an ``(out, in)`` tensor).
     - lam is present only when ``evolve_decay=True``; otherwise the scalar
-      ``hebb_cfg.decay`` is used as a constant tensor.
+      ``hebb_cfg.decay`` is used as a constant tensor.  lam stays per-weight
+      (``out×in``) regardless of ``rules_per_neuron``.
     - eta is present only when ``evolve_eta=True``; otherwise ``hebb_cfg.eta``
-      is used as a global scalar.
+      is used as a global scalar.  eta stays per-weight (``out×in``).
 
     Parameters
     ----------
@@ -97,19 +100,29 @@ def decode_hebbian_genes(
         and optionally ``eta`` if ``evolve_eta=True``.
     """
     n_weights = out_features * in_features
+    abcd_block = hebb_cfg.abcd_block_size(out_features, in_features)
     genes = np.asarray(genome_section, dtype=np.float32)
 
     def _rescale(block: np.ndarray, lo: float, hi: float) -> torch.Tensor:
         return torch.from_numpy(block * (hi - lo) + lo).reshape(out_features, in_features)
 
+    def _rescale_abcd(block: np.ndarray, lo: float, hi: float) -> torch.Tensor:
+        """ABCD block → ``(out, in)``.  Per-neuron rules decode ``out`` values
+        and broadcast them across all inputs, so the returned tensor keeps the
+        ``(out, in)`` shape the update rule expects."""
+        vals = torch.from_numpy(block * (hi - lo) + lo)
+        if hebb_cfg.rules_per_neuron:
+            return vals.reshape(out_features, 1).expand(out_features, in_features).contiguous()
+        return vals.reshape(out_features, in_features)
+
     def _constant(value: float) -> torch.Tensor:
         return torch.full((out_features, in_features), value, dtype=torch.float32)
 
     idx = 0
-    A = _rescale(genes[idx:idx + n_weights], *hebb_cfg.A_range); idx += n_weights
-    B = _rescale(genes[idx:idx + n_weights], *hebb_cfg.B_range); idx += n_weights
-    C = _rescale(genes[idx:idx + n_weights], *hebb_cfg.C_range); idx += n_weights
-    D = _rescale(genes[idx:idx + n_weights], *hebb_cfg.D_range); idx += n_weights
+    A = _rescale_abcd(genes[idx:idx + abcd_block], *hebb_cfg.A_range); idx += abcd_block
+    B = _rescale_abcd(genes[idx:idx + abcd_block], *hebb_cfg.B_range); idx += abcd_block
+    C = _rescale_abcd(genes[idx:idx + abcd_block], *hebb_cfg.C_range); idx += abcd_block
+    D = _rescale_abcd(genes[idx:idx + abcd_block], *hebb_cfg.D_range); idx += abcd_block
 
     result = {"A": A, "B": B, "C": C, "D": D}
 
@@ -135,11 +148,18 @@ def encode_hebbian_genes(
     def _normalise(tensor: torch.Tensor, lo: float, hi: float) -> np.ndarray:
         return ((tensor.cpu().numpy().flatten() - lo) / (hi - lo)).clip(0, 1)
 
+    def _normalise_abcd(tensor: torch.Tensor, lo: float, hi: float) -> np.ndarray:
+        # Per-neuron rules are stored as (out, in) with identical columns;
+        # collapse back to one value per output neuron before normalising.
+        if hebb_cfg.rules_per_neuron and tensor.dim() == 2:
+            tensor = tensor[:, 0]
+        return _normalise(tensor, lo, hi)
+
     parts = [
-        _normalise(rules["A"], *hebb_cfg.A_range),
-        _normalise(rules["B"], *hebb_cfg.B_range),
-        _normalise(rules["C"], *hebb_cfg.C_range),
-        _normalise(rules["D"], *hebb_cfg.D_range),
+        _normalise_abcd(rules["A"], *hebb_cfg.A_range),
+        _normalise_abcd(rules["B"], *hebb_cfg.B_range),
+        _normalise_abcd(rules["C"], *hebb_cfg.C_range),
+        _normalise_abcd(rules["D"], *hebb_cfg.D_range),
     ]
     if hebb_cfg.evolve_decay and "lam" in rules:
         parts.append(_normalise(rules["lam"], *hebb_cfg.decay_range))
@@ -159,12 +179,14 @@ def create_zero_initialized_genome(
     Decay and eta sections (if evolved) are kept as random [0, 1].
     """
     n_weights = cfg.hebbian.num_actions * cfg.hebbian.hidden_dim
+    abcd_block = cfg.hebbian.abcd_block_size()
     genome: List[float] = []
 
     # A, B, C, D: 0.5 → midpoint of range → zero for symmetric [-1, 1]
     for _ in range(4):
-        genome.extend([0.5] * n_weights)
+        genome.extend([0.5] * abcd_block)
 
+    # decay / eta stay per-weight even under per-neuron ABCD rules
     if cfg.hebbian.evolve_decay:
         genome.extend([random.random() for _ in range(n_weights)])
     if cfg.hebbian.evolve_eta:

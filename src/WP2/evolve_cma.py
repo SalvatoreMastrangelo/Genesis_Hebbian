@@ -795,7 +795,9 @@ class HebbianCMAES:
 
         ref_genome = np.full(n_genes_ref, 0.5)
         if ref_cfg.hebbian.evolve_decay:
-            decay_start = 4 * n_weights
+            # ABCD occupy 4 × abcd_block_size genes; the per-weight decay block
+            # starts right after them.
+            decay_start = 4 * ref_cfg.hebbian.abcd_block_size()
             ref_genome[decay_start: decay_start + n_weights] = 0.0
 
         existing_env = (

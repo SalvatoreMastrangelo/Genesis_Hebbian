@@ -161,12 +161,12 @@ def plot_rules_distribution(run_dir: str | Path) -> None:
         print("[plot_cma] No genome data found — skipping rules distribution.")
         return
 
-    n_weights = cfg.hebbian.num_actions * cfg.hebbian.hidden_dim  # 7 × 64 = 448
+    block = cfg.hebbian.abcd_block_size()  # out×in per-weight, or out per-neuron
     rules = {
-        "A": _decode_block(genome, 0, n_weights, *cfg.hebbian.A_range),
-        "B": _decode_block(genome, 1, n_weights, *cfg.hebbian.B_range),
-        "C": _decode_block(genome, 2, n_weights, *cfg.hebbian.C_range),
-        "D": _decode_block(genome, 3, n_weights, *cfg.hebbian.D_range),
+        "A": _decode_block(genome, 0, block, *cfg.hebbian.A_range),
+        "B": _decode_block(genome, 1, block, *cfg.hebbian.B_range),
+        "C": _decode_block(genome, 2, block, *cfg.hebbian.C_range),
+        "D": _decode_block(genome, 3, block, *cfg.hebbian.D_range),
     }
 
     colors = ["#4878cf", "#6acc65", "#d65f5f", "#b47cc7"]
@@ -263,13 +263,18 @@ def plot_rule_weight_correlation(run_dir: str | Path) -> None:
         print("[plot_cma] Could not load checkpoint weights — skipping correlation plot.")
         return
 
-    n_weights = cfg.hebbian.num_actions * cfg.hebbian.hidden_dim
+    block = cfg.hebbian.abcd_block_size()
     rules = {
-        "A": _decode_block(genome, 0, n_weights, *cfg.hebbian.A_range),
-        "B": _decode_block(genome, 1, n_weights, *cfg.hebbian.B_range),
-        "C": _decode_block(genome, 2, n_weights, *cfg.hebbian.C_range),
-        "D": _decode_block(genome, 3, n_weights, *cfg.hebbian.D_range),
+        "A": _decode_block(genome, 0, block, *cfg.hebbian.A_range),
+        "B": _decode_block(genome, 1, block, *cfg.hebbian.B_range),
+        "C": _decode_block(genome, 2, block, *cfg.hebbian.C_range),
+        "D": _decode_block(genome, 3, block, *cfg.hebbian.D_range),
     }
+    if cfg.hebbian.rules_per_neuron:
+        # Broadcast each neuron's shared rule across its inputs so the arrays
+        # align with the flattened per-weight checkpoint matrix.
+        hd = cfg.hebbian.hidden_dim
+        rules = {k: np.repeat(v, hd) for k, v in rules.items()}
 
     w_abs = np.abs(w0)
     w_rel = w_abs / (w_abs.max() + 1e-8)   # relative weight magnitude in [0, 1]
