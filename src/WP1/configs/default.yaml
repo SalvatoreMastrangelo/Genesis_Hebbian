@@ -167,6 +167,7 @@ catalog:
   n_urdf: null     # integer > 0 → build catalog and use general_policy.env_gen.Gen_Env
   catalog_dir: null
   urdf_seed: 0
+  include_standard_mydrone: true   # false → catalog built from random genomes only (no standard mydrone baseline)
 
 ##############################################################################
 # Logical Super-Scene (sharded multi-URDF worker training).

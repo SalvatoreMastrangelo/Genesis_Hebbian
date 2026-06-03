@@ -231,8 +231,9 @@ def main() -> None:
     print(f"\n[run] All done. Results in: {runner.run_dir}")
 
     try:
-        from WP2.plot_metrics import plot_metrics
+        from WP2.plot_metrics import plot_metrics, plot_validation
         plot_metrics(runner.run_dir)
+        plot_validation(runner.run_dir)
     except Exception as exc:  # never crash the run over a plotting failure
         print(f"[run] Warning: metrics plot failed — {exc}")
 

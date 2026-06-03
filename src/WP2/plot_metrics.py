@@ -247,6 +247,80 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
         plt.close(fig_s)
 
 
+def plot_validation(run_dir: Path | str) -> None:
+    """Plot the held-out validation curves: best individual vs zero-rules
+    baseline, generation-by-generation, for each metric.
+
+    Reads ``results/validation_summary.csv`` (written by the inner loop when
+    ``validation.enable`` is set) and saves a 2×3 grid plus per-metric figures
+    under ``plots/validation/``.
+    """
+    run_dir = Path(run_dir)
+    csv_path = run_dir / "results" / "validation_summary.csv"
+    if not csv_path.is_file():
+        return  # validation was not enabled for this run
+
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        print(f"[plot_validation] CSV is empty (header only): {csv_path}")
+        return
+
+    gens = df["generation"].to_numpy()
+    best_colour = "#1f77b4"      # Hebbian: blue
+    baseline_colour = "#2ca02c"  # baseline: green
+
+    out_dir = run_dir / "plots" / "validation"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _rolling(y, window=10):
+        s = pd.Series(y)
+        return s.rolling(window=window, min_periods=1, center=False).mean().to_numpy()
+
+    def _draw(ax, col, label, lower_is_better):
+        best_col = f"best_{col}"
+        base_col = f"baseline_{col}"
+        if best_col not in df.columns or base_col not in df.columns:
+            return
+        best = df[best_col].to_numpy()
+        base = df[base_col].to_numpy()
+        if col == "crash_rate":
+            best = np.clip(best, 0.0, 1.0)
+            base = np.clip(base, 0.0, 1.0)
+        # Raw curves, faded in the background.
+        ax.plot(gens, best, color=best_colour, linewidth=1.0, alpha=0.25)
+        ax.plot(gens, base, color=baseline_colour, linewidth=1.0, alpha=0.25)
+        # 5-generation rolling averages on top.
+        ax.plot(gens, _rolling(best), color=best_colour, linewidth=1.8,
+                label="best (Hebbian)")
+        ax.plot(gens, _rolling(base), color=baseline_colour, linewidth=1.8,
+                label="baseline")
+        title = f"{label}  (↓ better)" if lower_is_better else label
+        ax.set_title(title, fontsize=11)
+        ax.set_xlabel("Generation")
+        ax.set_ylabel(label)
+        ax.legend(fontsize=9)
+        ax.grid(True, linestyle="--", alpha=0.4)
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 7))
+    fig.suptitle("Held-out Validation — best individual vs baseline", fontsize=13)
+    for ax, (col, label, lower_is_better) in zip(axes.flat, _METRICS):
+        _draw(ax, col, label, lower_is_better)
+    fig.tight_layout()
+    out = out_dir / "validation_curves.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    print(f"[plot_validation] Saved {out}")
+    plt.close(fig)
+
+    for col, label, lower_is_better in _METRICS:
+        fig_s, ax_s = plt.subplots(figsize=(6, 4))
+        _draw(ax_s, col, label, lower_is_better)
+        fig_s.tight_layout()
+        out_s = out_dir / f"{col}.png"
+        fig_s.savefig(out_s, dpi=150, bbox_inches="tight")
+        print(f"[plot_validation] Saved {out_s}")
+        plt.close(fig_s)
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     flags = {a for a in sys.argv[1:] if a.startswith("-")}
@@ -254,3 +328,4 @@ if __name__ == "__main__":
         print("Usage: python -m WP2.plot_metrics <run_dir> [--std]")
         sys.exit(1)
     plot_metrics(args[0], use_percentile=("--std" not in flags))
+    plot_validation(args[0])

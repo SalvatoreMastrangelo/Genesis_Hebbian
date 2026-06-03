@@ -1084,7 +1084,18 @@ def create_overlay_video(
         if ax_cka is not None and cka_curve is not None:
             ax_cka.set_xlabel("t [s]")
             ax_cka.set_ylabel("CKA")
-            ax_cka.set_ylim(0.0, 1.05)
+            # Dynamic y-range: CKA values often sit in a narrow band near 1.0,
+            # so a fixed [0, 1.05] axis hides the variation. Fit the limits to
+            # the finite data with a small relative pad (and a tiny floor so a
+            # near-constant curve still gets a visible range).
+            _cka_finite = cka_curve[np.isfinite(cka_curve)]
+            if _cka_finite.size > 0:
+                _cka_lo = float(_cka_finite.min())
+                _cka_hi = float(_cka_finite.max())
+                _cka_pad = max((_cka_hi - _cka_lo) * 0.08, 5e-3)
+                ax_cka.set_ylim(_cka_lo - _cka_pad, _cka_hi + _cka_pad)
+            else:
+                ax_cka.set_ylim(0.0, 1.05)
             ax_cka.set_xlim(0.0, max(float(t_all[-1]), 1e-6))
             ax_cka.grid(True, lw=0.3, alpha=0.4)
             ax_cka.set_title(
@@ -1136,7 +1147,7 @@ def create_overlay_video(
             # the CKA panel.
             _WS_LEFT = 0.060
             _CKA_RIGHT = 0.965
-            _GAP = 0.060
+            _GAP = 0.090
             pos_ws = ax_wstats.get_position()
             bottom_y = pos_ws.y0
             bottom_h = pos_ws.height

@@ -208,6 +208,7 @@ catalog:
   n_urdf: null                             # null → single-URDF; integer → multi-URDF
   catalog_dir: null                        # explicit catalog path (overrides n_urdf)
   urdf_seed: 0                             # seed used by general_policy.catalog.build_catalog
+  include_standard_mydrone: true           # false → catalog from random genomes only (no standard mydrone baseline)
 
 ##############################################################################
 # Logical Super-Scene (sharded multi-URDF worker training).

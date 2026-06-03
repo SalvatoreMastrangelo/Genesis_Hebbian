@@ -194,6 +194,41 @@ class EvaluationConfig:
 
 
 @dataclass
+class ValidationConfig:
+    """Held-out validation evaluation inside the inner CMA-ES loop.
+
+    Independent of the population-eval pool and of the in-distribution
+    ``run_baseline`` curve (which reuses the population's own forests). When
+    ``enable`` is True, a SEPARATE pool of ``n_val_envs`` Genesis environments
+    is reserved up front, split equally across the ``validation_catalog``
+    URDFs. Every ``period`` generations — after the baseline phase — both the
+    generation's best-fitness individual AND the zero-rules baseline are
+    evaluated on those ``n_val_envs`` forests (freshly regenerated each pass),
+    so the two curves can be plotted generation-by-generation to measure
+    generalization to unseen forests.
+
+    Attributes
+    ----------
+    enable : bool
+        Master switch for the held-out validation pass. Default False.
+    n_val_envs : int
+        Total number of reserved validation environments, split equally across
+        the validation URDFs (``n_val_envs // num_validation_urdfs`` per URDF).
+    validation_catalog : str
+        Path to a ``catalog.txt`` listing the validation URDFs. Empty or
+        ``"none"`` falls back to the single standard-mydrone drone.
+    period : int
+        Cadence: run the validation pass on generation 0 and every ``period``
+        generations thereafter.
+    """
+
+    enable: bool = False
+    n_val_envs: int = 1024
+    validation_catalog: str = ""
+    period: int = 1
+
+
+@dataclass
 class CMAESConfig:
     """CMA-ES optimiser hyperparameters.
 
@@ -372,6 +407,7 @@ class HebbianEvolutionConfig:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     cmaes: CMAESConfig = field(default_factory=CMAESConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
 
     seed: int = 42
     device: str = "cuda:0"
@@ -437,6 +473,7 @@ class HebbianEvolutionConfig:
             "evaluation": EvaluationConfig,
             "cmaes": CMAESConfig,
             "catalog": CatalogConfig,
+            "validation": ValidationConfig,
         }
         # Nested dataclass fields inside top-level sections (section -> {field: cls}).
         nested_sub_map = {

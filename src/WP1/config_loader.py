@@ -38,13 +38,17 @@ CFG_SECTIONS = (
 )
 
 # Default catalog (multi-URDF training via general_policy.env_gen.Gen_Env):
-#   n_urdf=None or 0  → single-URDF training (default winged_drone_train path)
-#   n_urdf>0          → build a fresh catalog of N URDFs inside the run folder
-#   catalog_dir set   → reuse an existing catalog
+#   n_urdf=None or 0          → single-URDF training (default winged_drone_train path)
+#   n_urdf>0                  → build a fresh catalog of N URDFs inside the run folder
+#   catalog_dir set           → reuse an existing catalog
+#   include_standard_mydrone  → if True, the standard mydrone baseline morphology
+#                               is inserted as the first catalog URDF; if False,
+#                               the catalog is built purely from random genomes
 DEFAULT_CATALOG: Dict[str, Any] = {
     "n_urdf": None,
     "catalog_dir": None,
     "urdf_seed": 0,
+    "include_standard_mydrone": True,
 }
 
 # Default LSS (Logical Super-Scene = sharded multi-URDF worker training via

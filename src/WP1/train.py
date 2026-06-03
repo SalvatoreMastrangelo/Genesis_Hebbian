@@ -373,15 +373,18 @@ def train(
         n_urdf = catalog_cfg.get("n_urdf")
         if n_urdf is not None and int(n_urdf) > 0:
             from general_policy.catalog import build_catalog
+            include_standard = bool(catalog_cfg.get("include_standard_mydrone", True))
             print(
                 f"[WP1.train] Building catalog: n={n_urdf}, "
                 f"seed={catalog_cfg.get('urdf_seed', 0)}, "
+                f"include_standard_mydrone={include_standard}, "
                 f"dir={catalog_path}"
             )
             build_catalog(
                 catalog_path,
                 n=int(n_urdf),
                 seed=int(catalog_cfg.get("urdf_seed", 0)),
+                include_standard_mydrone=include_standard,
             )
         else:
             print(f"[WP1.train] Using existing catalog at {catalog_path}")

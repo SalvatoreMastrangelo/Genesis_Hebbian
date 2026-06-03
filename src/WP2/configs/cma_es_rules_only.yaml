@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: per_output_small_specialist # generalist_256_10_urdf_0.005_0.05
+exp_name: validation_plotting # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -27,12 +27,12 @@ checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 hebbian:
   enabled: true
   eta: 0.005                     
-  evolve_eta: true
+  evolve_eta: false
   decay: 0.05                    
-  evolve_decay: true
+  evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: true
-  rules_per_neuron: true         # false = per-weight ABCD (4 × num_actions × hidden_dim genes).
+  rules_per_neuron: false        # false = per-weight ABCD (4 × num_actions × hidden_dim genes).
                                  # true  = per-output-neuron ABCD: one A/B/C/D shared by all
                                  #         input weights of each output neuron (4 × num_actions
                                  #         genes). decay/eta, if evolved, stay per-weight.
@@ -45,7 +45,7 @@ hebbian:
   eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 100
+  num_generations: 50
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
@@ -84,6 +84,16 @@ catalog:
                                    # (tears down + rebuilds the eval env; multi-URDF path only).
                                    # 0 or null ⇒ disabled, URDFs stay fixed for the whole run.
 
+validation:
+  enable: true               # held-out validation pass inside the inner loop
+  n_val_envs: 1024           # reserved validation envs, split equally across validation_catalog URDFs
+  validation_catalog: ""     # path to a catalog.txt; empty/"none" ⇒ standard mydrone drone
+  period: 1                  # run on gen 0 then every `period` generations (after the baseline phase)
+                             # Each pass regenerates fresh forests and evaluates BOTH the generation's
+                             # best-fitness individual AND the zero-rules baseline on them, then plots
+                             # both curves generation-by-generation (plots/validation/). CRN follows
+                             # evaluation.crn (shared draws only when true, legacy otherwise).
+
 evaluation:
   num_eval_envs: 12800 # TOTAL slots across all URDFs and all individuals
                        # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
@@ -95,17 +105,17 @@ evaluation:
                        # round-robin sharded across GPUs too, so each GPU runs
                        # num_eval_envs/G total env slots. SLURM must allocate G
                        # GPUs (sbatch --gpus=G). Clamped to min(G, num_workers).
-  vmin: 5.0
-  vmax: 25.0
+  vmin: 10.0
+  vmax: 20.0
   stochastic: true
   run_baseline: true   # if true, re-evaluates the frozen WP1 actor for comparison
-  baseline_every: 25   # cadence when run_baseline=true: run at gen 0 then every N gens
-  x_upper: 300         # override forest corridor length [m]; null = use WP1 config value
-  dens_min: 2.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
-  dens_min_slope: 0.02 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
+  baseline_every: 1    # cadence when run_baseline=true: run at gen 0 then every N gens
+  x_upper: 100         # override forest corridor length [m]; null = use WP1 config value
+  dens_min: 4.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
+  dens_min_slope: 0    # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
   dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
-  crn: true            # common random numbers: share per-slot DR draws (forest, mass/COM,
+  crn: false           # common random numbers: share per-slot DR draws (forest, mass/COM,
                        # joint bias/step noise, latency, aero params, obs noise) across
                        # individuals flying the same forest → CMA ranks by rules, not DR luck.
                        # Full DR preserved (scenarios still span the distribution, refresh each
@@ -126,7 +136,7 @@ evaluation:
     joint_target_step_noise: true     # property_randomization.joint_target_step_noise_std
     aero_noise: true                  # aero solver param + magnitude/direction noise
 
-seed: 69420
+seed: 5535
 device: "cuda:0"
 base_dir: "logs/runs_hebbian"
 

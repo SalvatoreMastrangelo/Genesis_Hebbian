@@ -159,6 +159,41 @@ def _append_baseline_csv(
         ])
 
 
+# Metrics written for both the best individual and the baseline in the
+# held-out validation summary (in column order).
+_VAL_METRIC_KEYS = ("fitness", "velocity", "progress", "crash_rate", "cot", "v_deviation")
+
+
+def _init_validation_csv(path: Path) -> None:
+    """Initialise the held-out validation summary CSV.
+
+    One row per validation pass with the best-fitness individual's metrics and
+    the zero-rules baseline's metrics on the SAME ``n_val_envs`` held-out
+    forests, so a generation-by-generation best-vs-baseline curve can be drawn.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = ["generation", "best_idx"]
+    header += [f"best_{k}" for k in _VAL_METRIC_KEYS]
+    header += [f"baseline_{k}" for k in _VAL_METRIC_KEYS]
+    with open(path, "w", newline="") as f:
+        csv.writer(f).writerow(header)
+
+
+def _append_validation_csv(
+    path: Path,
+    gen: int,
+    best_idx: int,
+    best: Dict[str, float],
+    baseline: Dict[str, float],
+) -> None:
+    """Append one held-out validation row (best individual + baseline)."""
+    row: List = [gen, best_idx]
+    row += [f"{best.get(k, float('nan')):.6g}" for k in _VAL_METRIC_KEYS]
+    row += [f"{baseline.get(k, float('nan')):.6g}" for k in _VAL_METRIC_KEYS]
+    with open(path, "a", newline="") as f:
+        csv.writer(f).writerow(row)
+
+
 def _append_population_csv(
     path: Path,
     gen: int,
@@ -471,15 +506,39 @@ class HebbianCMAES:
         self._env = None
         self._env_urdf_path = None
 
+        # ------------------------------------------------------------------
+        #  Held-out validation env (optional)
+        # ------------------------------------------------------------------
+        # A SEPARATE pool of `n_val_envs` Genesis envs, split equally across the
+        # `validation_catalog` URDFs (default: standard mydrone). Every `period`
+        # generations the best individual and the zero-rules baseline are both
+        # evaluated here on freshly-generated, held-out forests — see
+        # `_build_validation_env_once` / the validation block in `run()`.
+        self._val_env = None
+        self._val_urdf_paths: Optional[List[str]] = None
+        if self.cfg.validation.enable:
+            vc = (self.cfg.validation.validation_catalog or "").strip()
+            if vc and vc.lower() != "none":
+                self._val_urdf_paths = _load_catalog_paths(vc)
+                print(f"[HebbianCMAES] Validation catalog: "
+                      f"{len(self._val_urdf_paths)} URDFs from {vc}")
+            else:
+                from winged_drone_train.defaults import default_mydrone_urdf_path
+                self._val_urdf_paths = [str(default_mydrone_urdf_path())]
+                print("[HebbianCMAES] Validation catalog empty → standard mydrone drone")
+
         # CSV paths
         self.pop_csv_path = self.results_dir / "cma_population.csv"
         self.summary_csv_path = self.results_dir / "cma_summary.csv"
         self.baseline_csv_path = self.results_dir / "baseline_summary.csv"
         self.specialist_csv_path = self.results_dir / "specialist_summary.csv"
+        self.validation_csv_path = self.results_dir / "validation_summary.csv"
         _init_csvs(self.pop_csv_path, self.summary_csv_path)
         _init_baseline_csv(self.baseline_csv_path)
         if self.cfg.evaluation.run_specialist:
             _init_baseline_csv(self.specialist_csv_path)
+        if self.cfg.validation.enable:
+            _init_validation_csv(self.validation_csv_path)
 
         # Timing
         self._run_start_time: Optional[float] = None
@@ -610,6 +669,68 @@ class HebbianCMAES:
         self._env_urdf_path = None
 
     # ------------------------------------------------------------------
+    #  Held-out validation environment
+    # ------------------------------------------------------------------
+
+    def _build_validation_env_once(self) -> None:
+        """Reserve the held-out validation env: ``n_val_envs`` slots split
+        equally across the validation URDFs, each URDF in its own Genesis scene.
+
+        Built the same way as the population eval env (``_build_multi_urdf_env``),
+        so it lives in the same Genesis runtime and inherits the CRN setting
+        (``evaluation.crn``: on only when true, legacy otherwise). Sized for a
+        single genome per pass (P=1), so every slot becomes one forest:
+        ``F = n_val_envs // num_validation_urdfs``.
+        """
+        import genesis as gs
+        from WP2.evaluate import _build_multi_urdf_env
+
+        N = len(self._val_urdf_paths)
+        total = int(self.cfg.validation.n_val_envs)
+        envs_per_drone = max(1, total // N)
+        actual = envs_per_drone * N
+        if actual != total:
+            print(f"[HebbianCMAES] validation: n_val_envs={total} not divisible by "
+                  f"{N} URDFs → using {envs_per_drone} envs/URDF ({actual} total)")
+
+        n_workers = int(getattr(self.cfg.evaluation, "num_eval_workers", 1))
+        print(f"[HebbianCMAES] Building validation env: N={N} URDFs × "
+              f"{envs_per_drone} envs = {actual} held-out forests "
+              f"(period={self.cfg.validation.period})...", flush=True)
+        try:
+            if not gs._initialized and n_workers <= 1:
+                gs.init(logging_level="error", backend=gs.gpu)
+            n_gpus = int(getattr(self.cfg.evaluation, "num_gpus", 0)) or None
+            self._val_env = _build_multi_urdf_env(
+                urdf_paths=self._val_urdf_paths,
+                cfg=self.cfg,
+                wp1_cfg=self._wp1_cfg,
+                device=self.cfg.device,
+                num_envs_per_drone=envs_per_drone,
+                num_workers=n_workers,
+                num_gpus=n_gpus,
+            )
+            print("[HebbianCMAES] Validation env ready", flush=True)
+        except Exception as exc:
+            self._val_env = None
+            print(f"[HebbianCMAES] Failed to build validation env: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            raise
+
+    def _cleanup_validation_env(self) -> None:
+        """Release the validation env. Shuts down parallel workers if any; the
+        sequential scenes are torn down by ``_cleanup_env``'s ``gs.destroy()``."""
+        if self._val_env is None:
+            return
+        shutdown = getattr(self._val_env, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+            except Exception as exc:
+                print(f"[HebbianCMAES] Warning: validation env shutdown failed: {exc}")
+        self._val_env = None
+
+    # ------------------------------------------------------------------
     #  Periodic URDF refresh
     # ------------------------------------------------------------------
 
@@ -641,9 +762,15 @@ class HebbianCMAES:
             self.cfg.seed + gen,
             include_standard_mydrone=self.cfg.catalog.include_standard_mydrone,
         )
+        # The held-out validation env shares the Genesis runtime, so the
+        # `gs.destroy()` inside `_cleanup_env()` tears down its scenes too —
+        # release and rebuild it alongside the population env.
+        self._cleanup_validation_env()
         self._cleanup_env()
         self._urdf_paths = new_paths
         self._build_env_once()
+        if self.cfg.validation.enable:
+            self._build_validation_env_once()
 
     # ------------------------------------------------------------------
     #  Reference controller evaluation (zero Hebbian rules)
@@ -744,19 +871,73 @@ class HebbianCMAES:
         )
         return factor
 
+    @staticmethod
+    def _pack_eval_result(
+        fitnesses: np.ndarray,
+        metrics: Dict[str, np.ndarray],
+    ) -> Dict[str, float]:
+        """Reduce a single-genome eval (P=1) to a flat per-metric dict."""
+        result = {
+            "fitness":     float(fitnesses[0]),
+            "velocity":    float(metrics["velocities"][0]),
+            "progress":    float(metrics["progresses"][0]),
+            "crash_rate":  float(metrics["crash_flags"][0]),
+            "cot":         float(metrics["cots"][0]),
+            "v_deviation": float(metrics["v_deviations"][0]),
+        }
+        comp_arr = metrics.get("reward_components")
+        names = metrics.get("reward_names", []) or []
+        if comp_arr is not None and len(names) and comp_arr.size:
+            result["reward_components"] = {
+                name: float(comp_arr[0, i]) for i, name in enumerate(names)
+            }
+        return result
+
+    def _evaluate_genome_on_validation(
+        self,
+        genome: np.ndarray,
+        verbose: bool = False,
+    ) -> Optional[Dict[str, float]]:
+        """Evaluate ONE genome (with its Hebbian rules) on the held-out
+        validation env. Used for the generation's best-fitness individual.
+
+        Assumes the caller has already refreshed the validation forests for
+        this pass (so the baseline that follows flies the same layouts).
+        """
+        if self._val_env is None:
+            return None
+        try:
+            fitnesses, metrics = evaluate_population_multi_urdf(
+                [np.asarray(genome, dtype=float)],
+                self.cfg,
+                self._model_and_layer,
+                self._wp1_cfg,
+                urdf_paths=self._val_urdf_paths,
+                existing_env=(self._val_env, self._val_urdf_paths),
+                verbose=verbose,
+            )
+            return self._pack_eval_result(fitnesses, metrics)
+        except Exception as exc:
+            print(f"[HebbianCMAES] Validation (best individual) eval failed: {exc}")
+            return None
+
     def _evaluate_reference_actor(
         self,
         label: str,
         ckpt_path: Optional[str],
         ckpt_cfg_path: Optional[str],
         verbose: bool = False,
+        env_override=None,
+        urdf_paths_override: Optional[List[str]] = None,
     ) -> Optional[Dict[str, float]]:
         """Evaluate a frozen reference actor with zero Hebbian rules.
 
-        Shared implementation for the *baseline* and the *specialist* curves.
-        The reference actor runs on the SAME env (same forests, same speed
-        grid, same URDFs) as the population, which is the whole point — every
-        generation's comparison is fair by construction.
+        Shared implementation for the *baseline*, the *specialist*, and the
+        held-out *validation baseline* curves. By default the reference actor
+        runs on the SAME env (same forests, same speed grid, same URDFs) as the
+        population, which is the whole point — every generation's comparison is
+        fair by construction. Passing ``env_override`` / ``urdf_paths_override``
+        instead runs it on that env (used for the held-out validation pass).
 
         ABCD=0 (genome=0.5 for symmetric [-1,1] ranges) means no plasticity
         update.  Decay is also zeroed (config copy) so weights stay exactly
@@ -800,22 +981,32 @@ class HebbianCMAES:
             decay_start = 4 * ref_cfg.hebbian.abcd_block_size()
             ref_genome[decay_start: decay_start + n_weights] = 0.0
 
-        existing_env = (
-            (self._env, self._env_urdf_path)
-            if self._env is not None
-            else None
-        )
+        # Target the override env (held-out validation) when given, else the
+        # population eval env. An override always routes through the multi-URDF
+        # path (the validation env is a MultiSceneEvalEnv even for one URDF).
+        if env_override is not None:
+            existing_env = (env_override, urdf_paths_override)
+            use_multi = True
+            urdf_paths = urdf_paths_override
+        else:
+            existing_env = (
+                (self._env, self._env_urdf_path)
+                if self._env is not None
+                else None
+            )
+            use_multi = self._use_multi_urdf
+            urdf_paths = self._urdf_paths
         try:
             if verbose:
                 print(f"[HebbianCMAES] Evaluating {label.lower()} "
                       f"(zero-Hebbian, zero-decay)...")
-            if self._use_multi_urdf:
+            if use_multi:
                 fitnesses, metrics = evaluate_population_multi_urdf(
                     [ref_genome],
                     ref_cfg,
                     self._model_and_layer,
                     self._wp1_cfg,
-                    urdf_paths=self._urdf_paths,
+                    urdf_paths=urdf_paths,
                     existing_env=existing_env,
                     verbose=verbose,
                 )
@@ -829,20 +1020,7 @@ class HebbianCMAES:
                     existing_env=existing_env,
                     verbose=verbose,
                 )
-            result = {
-                "fitness":     float(fitnesses[0]),
-                "velocity":    float(metrics["velocities"][0]),
-                "progress":    float(metrics["progresses"][0]),
-                "crash_rate":  float(metrics["crash_flags"][0]),
-                "cot":         float(metrics["cots"][0]),
-                "v_deviation": float(metrics["v_deviations"][0]),
-            }
-            comp_arr = metrics.get("reward_components")
-            names = metrics.get("reward_names", []) or []
-            if comp_arr is not None and len(names) and comp_arr.size:
-                result["reward_components"] = {
-                    name: float(comp_arr[0, i]) for i, name in enumerate(names)
-                }
+            result = self._pack_eval_result(fitnesses, metrics)
             if verbose:
                 print(
                     f"[HebbianCMAES] {label}: fitness={result['fitness']:.4g}  "
@@ -877,6 +1055,88 @@ class HebbianCMAES:
             ckpt_cfg_path=self.cfg.specialist_checkpoint_config_path or None,
             verbose=verbose,
         )
+
+    def _run_validation_pass(
+        self,
+        gen: int,
+        solutions: List[np.ndarray],
+        fitnesses: np.ndarray,
+        verbose: bool = False,
+    ) -> None:
+        """Evaluate the generation's best individual AND the zero-rules baseline
+        on the held-out validation env, then log + print the comparison.
+
+        Forests are regenerated once at the start of the pass so they are new
+        each period; the best individual and the baseline then fly the SAME
+        layouts (no refresh between them) for a fair paired comparison.
+        """
+        if self._val_env is None:
+            return
+
+        # Fresh held-out forests for this pass (new trees, distinct from the
+        # population's eval pool). Both controllers below see these same layouts.
+        try:
+            self._val_env.refresh_forests()
+        except Exception as exc:
+            print(f"[HebbianCMAES] Validation forest refresh failed: {exc}")
+            return
+
+        best_idx = int(np.argmax(fitnesses))
+        best_genome = solutions[best_idx]
+
+        val_best = self._evaluate_genome_on_validation(best_genome, verbose=verbose)
+        val_baseline = self._evaluate_reference_actor(
+            "Validation-Baseline",
+            ckpt_path=self.cfg.baseline_checkpoint_path or None,
+            ckpt_cfg_path=self.cfg.baseline_checkpoint_config_path or None,
+            verbose=verbose,
+            env_override=self._val_env,
+            urdf_paths_override=self._val_urdf_paths,
+        )
+
+        if val_best is None or val_baseline is None:
+            print(f"[HebbianCMAES] Validation pass at gen {gen} produced no result.")
+            return
+
+        _append_validation_csv(
+            self.validation_csv_path, gen, best_idx, val_best, val_baseline
+        )
+        self._print_validation(gen, best_idx, val_best, val_baseline)
+
+    def _print_validation(
+        self,
+        gen: int,
+        best_idx: int,
+        best: Dict[str, float],
+        baseline: Dict[str, float],
+    ) -> None:
+        """Print the held-out best-vs-baseline validation comparison table."""
+        n_val = len(self._val_urdf_paths) if self._val_urdf_paths else 0
+        rows = [
+            ("Fitness (reward)", "fitness"),
+            ("Velocity [m/s]",   "velocity"),
+            ("Vel. Dev. [m/s]",  "v_deviation"),
+            ("Progress [m]",     "progress"),
+            ("COT",              "cot"),
+            ("Crash Rate",       "crash_rate"),
+        ]
+        table_rows = []
+        for name, key in rows:
+            b = best.get(key, float("nan"))
+            r = baseline.get(key, float("nan"))
+            delta = (b - r) / abs(r) * 100.0 if abs(r) > 1e-12 else float("nan")
+            table_rows.append([name, f"{b:.4g}", f"{r:.4g}", f"{delta:+.1f}%"])
+
+        print(f"\n  Held-out Validation (gen {gen}, best individual #{best_idx}, "
+              f"{n_val} URDF(s) × fresh forests):")
+        print(tabulate(
+            table_rows,
+            headers=["Metric", "Best (Hebb)", "Baseline", "Δ vs baseline"],
+            tablefmt="grid",
+            numalign="center",
+            stralign="left",
+        ))
+        print()
 
     # ------------------------------------------------------------------
     #  Reproducibility
@@ -1185,6 +1445,8 @@ class HebbianCMAES:
 
         self._save_reproducibility()
         self._build_env_once()  # Pre-build environment for rules-only evolution
+        if self.cfg.validation.enable:
+            self._build_validation_env_once()  # Reserve the held-out validation pool
         self._run_start_time = time.perf_counter()
 
         # ------------------------------------------------------------------
@@ -1407,6 +1669,16 @@ class HebbianCMAES:
             )
             self._update_best_trackers(gen, solutions, fitnesses, metrics)
 
+            # Held-out validation: evaluate this generation's best individual and
+            # the zero-rules baseline on a separate pool of fresh forests.
+            # Cadence-gated: runs on gen 0 and every `validation.period` gens.
+            if self.cfg.validation.enable and self._val_env is not None:
+                val_period = max(1, int(self.cfg.validation.period))
+                if gen % val_period == 0:
+                    self._run_validation_pass(
+                        gen, solutions, fitnesses, verbose=verbose
+                    )
+
             last_solutions = solutions
             last_fitnesses = fitnesses
             gen += 1
@@ -1420,7 +1692,10 @@ class HebbianCMAES:
         #  Finalise
         # ------------------------------------------------------------------
 
-        # Cleanup environment if it was pre-built
+        # Cleanup environments if they were pre-built. Release the validation
+        # env first (shuts down its workers if parallel); the shared Genesis
+        # runtime is then destroyed by _cleanup_env().
+        self._cleanup_validation_env()
         self._cleanup_env()
 
         fitness_entry = self._best_trackers["fitness"]
