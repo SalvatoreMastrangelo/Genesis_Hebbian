@@ -19,23 +19,19 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: validation_plotting_no_bix_15_lstm # generalist_256_10_urdf_0.005_0.05
+exp_name: new_random_period_4_no_bix # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.005                     
+  eta: 0.005                     # global default; overridden per-weight when evolve_eta=true
   evolve_eta: false
-  decay: 0.05                    
+  decay: 0.05
   evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: true
-  rules_per_neuron: false        # false = per-weight ABCD (4 × num_actions × hidden_dim genes).
-                                 # true  = per-output-neuron ABCD: one A/B/C/D shared by all
-                                 #         input weights of each output neuron (4 × num_actions
-                                 #         genes). decay/eta, if evolved, stay per-weight.
   w_max: 5000.0
   A_range: [-1.5, 1.5]
   B_range: [-1.5, 1.5]
@@ -45,48 +41,30 @@ hebbian:
   eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 150
+  num_generations: 50
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
   algorithm: "cmaes"   # "cmaes" (full covariance) or "sep-cmaes" (diagonal-only, scales linearly with genome dim)
   sigma0: 0.075        # initial step size (genome in [0,1], so 0.075 = 7.5% of domain)
-  population_size: 128 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
+  population_size: 64 # 0 = auto (≈ 4 + 3·ln(n_genes)); override for more diversity
   tol_sigma: 0.0       # 0 = never stop on sigma
   tol_fun: 0.0         # 0 = never stop on fitness spread
-  sigma_reinflate: 1.0 # on URDF/morphology change: re-inflate sigma to this × sigma0 (carry
-                       # mean+covariance, re-explore the shifted objective). 0 = off (pure carry)
-
-  # --- UH-CMA-ES uncertainty handling (Hansen et al. 2009, sigma-only arm) ---
-  # After tell(), re-evaluate the population on the SAME forests (no refresh) to
-  # measure residual per-rollout rank-noise (stochastic actor + per-step aero
-  # noise — the noise CRN can't remove). If rank-noise is found (noiseS>0), bump
-  # sigma by alphasigma → counteracts the sigma-stall. The averaging arm is off
-  # (F is pinned by num_eval_envs). Complements `crn` below.
-  uh_enabled: false     # master switch
-  uh_every: 1          # measure every K gens. Each measure ≈ 1 extra full-pop
-                       # eval (env steps all slots regardless), so 1 ≈ 2× eval
-                       # cost, 5 ≈ +20%. Must be >= 1.
-  uh_reevals: 0.0      # solutions used for the MEASURE. 0 = whole population
-                       # (robust, free given the full re-eval). >0 = Hansen subset.
-  uh_alphasigma: 0.0   # per-measure sigma kick. 0 = pycma default 1+2/(N+10)
-                       # (~1.002 for N=896 — weak, cumulative). Raise for a
-                       # stronger kick; mind interaction with uh_every.
-  uh_theta: 0.5        # Hansen rank-change tolerance; higher = more tolerant
+  sigma_reinflate: 0.0 # toggle: on URDF/morphology change, re-inflate sigma to this x sigma0 (carry mean+cov, re-explore); 0 = off
 
 catalog:
   path: ""                         # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
-  num_urdfs: 1                     # N: number of URDFs, each in its own Genesis scene
+  num_urdfs: 64                    # N: number of URDFs, each in its own Genesis scene
   num_episodes: 1                  # rollout episodes per generation
   force_multi_urdf: false          # route N=1 through the multi-URDF path (for verification)
-  include_standard_mydrone: true   # false ⇒ all N URDFs are randomly sampled (no fixed baseline)
-  refresh_urdfs_every: 0           # >0 ⇒ resample N random URDFs every K inner generations
+  include_standard_mydrone: false  # false ⇒ all N URDFs are randomly sampled (no fixed baseline)
+  refresh_urdfs_every: 4           # >0 ⇒ resample N random URDFs every K inner generations
                                    # (tears down + rebuilds the eval env; multi-URDF path only).
                                    # 0 or null ⇒ disabled, URDFs stay fixed for the whole run.
 
 validation:
-  enable: true               # held-out validation pass inside the inner loop
-  n_val_envs: 2048           # reserved validation envs, split equally across validation_catalog URDFs
+  enable: false              # held-out validation pass inside the inner loop
+  n_val_envs: 4096           # reserved validation envs, split equally across validation_catalog URDFs
   validation_catalog: ""     # path to a catalog.txt; empty/"none" ⇒ standard mydrone drone
   period: 1                  # run on gen 0 then every `period` generations (after the baseline phase)
                              # Each pass regenerates fresh forests and evaluates BOTH the generation's
@@ -95,9 +73,9 @@ validation:
                              # evaluation.crn (shared draws only when true, legacy otherwise).
 
 evaluation:
-  num_eval_envs: 12800 # TOTAL slots across all URDFs and all individuals
+  num_eval_envs: 245760 # TOTAL slots across all URDFs and all individuals
                        # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
-  num_eval_workers: 1  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
+  num_eval_workers: 4  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
                        # N=2 typically saturates one GPU when a single scene uses ~50%
                        # watch VRAM: each worker holds D/N independent Genesis scenes
   num_gpus: 0          # 0 / null = auto-detect via torch.cuda.device_count()
@@ -112,14 +90,10 @@ evaluation:
   baseline_every: 1    # cadence when run_baseline=true: run at gen 0 then every N gens
   x_upper: 100         # override forest corridor length [m]; null = use WP1 config value
   dens_min: 4.0        # override forest density at x=0 [trees/m]; null = use WP1 config value
-  dens_min_slope: 0    # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
+  dens_min_slope: 0.00 # per-generation slope added to dens_min: dens_min(g) = dens_min + slope * g
   dens_max: 5.0        # override forest density at x=x_upper [trees/m]; null = use WP1 config value
   refresh_forests_per_generation: true  # regenerate forest layouts each generation
-  crn: false           # common random numbers: share per-slot DR draws (forest, mass/COM,
-                       # joint bias/step noise, latency, aero params, obs noise) across
-                       # individuals flying the same forest → CMA ranks by rules, not DR luck.
-                       # Full DR preserved (scenarios still span the distribution, refresh each
-                       # gen). Per-step Taichi aero force noise stays per-slot. False = legacy.
+  crn: false            # toggle: common random numbers — share per-slot DR (forest/mass/com/joint/latency/aero-param/obs) across individuals on the same forest
 
   # ------------------------------------------------------------------
   # Per-slot noise toggles (true = drawn independently per env slot, so it
@@ -136,7 +110,7 @@ evaluation:
     joint_target_step_noise: true     # property_randomization.joint_target_step_noise_std
     aero_noise: true                  # aero solver param + magnitude/direction noise
 
-seed: 5535
+seed: 67
 device: "cuda:0"
 base_dir: "logs/runs_hebbian"
 

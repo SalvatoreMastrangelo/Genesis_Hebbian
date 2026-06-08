@@ -162,20 +162,12 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
 
         if bl_plot is not None:
             mask = ~np.isnan(bl_plot)
-            # Continuous (interpolated) dashed line ...
+            # Continuous (interpolated) solid line.
             ax.plot(
                 gens[mask], bl_plot[mask],
                 color=baseline_colour, linewidth=1.4,
-                linestyle="--", label="baseline",
+                linestyle="-", label="baseline",
             )
-            # ... with markers only on genuinely-evaluated generations.
-            real = mask if bl_real_mask is None else (mask & bl_real_mask)
-            if real.any():
-                ax.plot(
-                    gens[real], bl_plot[real],
-                    color=baseline_colour, linestyle="none",
-                    marker="o", markersize=4,
-                )
 
         if sp_vals is not None:
             mask = ~np.isnan(sp_vals)
