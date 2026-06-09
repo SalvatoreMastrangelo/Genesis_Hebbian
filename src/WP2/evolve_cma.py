@@ -197,17 +197,21 @@ def _append_baseline_csv(
 _VAL_METRIC_KEYS = ("fitness", "velocity", "progress", "crash_rate", "cot", "v_deviation")
 
 
-def _init_validation_csv(path: Path) -> None:
+def _init_validation_csv(path: Path, include_specialist: bool = False) -> None:
     """Initialise the held-out validation summary CSV.
 
     One row per validation pass with the best-fitness individual's metrics and
     the zero-rules baseline's metrics on the SAME ``n_val_envs`` held-out
     forests, so a generation-by-generation best-vs-baseline curve can be drawn.
+    When ``include_specialist`` is set, a third ``specialist_*`` block is added
+    (same forests under CRN, so all three controllers are directly comparable).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     header = ["generation", "best_idx"]
     header += [f"best_{k}" for k in _VAL_METRIC_KEYS]
     header += [f"baseline_{k}" for k in _VAL_METRIC_KEYS]
+    if include_specialist:
+        header += [f"specialist_{k}" for k in _VAL_METRIC_KEYS]
     with open(path, "w", newline="") as f:
         csv.writer(f).writerow(header)
 
@@ -218,11 +222,19 @@ def _append_validation_csv(
     best_idx: int,
     best: Dict[str, float],
     baseline: Dict[str, float],
+    specialist: Optional[Dict[str, float]] = None,
 ) -> None:
-    """Append one held-out validation row (best individual + baseline)."""
+    """Append one held-out validation row (best individual + baseline [+ specialist]).
+
+    Pass ``specialist`` (possibly an empty dict on eval failure) only when the
+    CSV was initialised with ``include_specialist=True``, so the column count
+    stays consistent with the header.
+    """
     row: List = [gen, best_idx]
     row += [f"{best.get(k, float('nan')):.6g}" for k in _VAL_METRIC_KEYS]
     row += [f"{baseline.get(k, float('nan')):.6g}" for k in _VAL_METRIC_KEYS]
+    if specialist is not None:
+        row += [f"{specialist.get(k, float('nan')):.6g}" for k in _VAL_METRIC_KEYS]
     with open(path, "a", newline="") as f:
         csv.writer(f).writerow(row)
 
@@ -592,7 +604,10 @@ class HebbianCMAES:
         if self.cfg.evaluation.run_specialist:
             _init_baseline_csv(self.specialist_csv_path)
         if self.cfg.validation.enable:
-            _init_validation_csv(self.validation_csv_path)
+            _init_validation_csv(
+                self.validation_csv_path,
+                include_specialist=self.cfg.evaluation.run_specialist,
+            )
 
         # Timing
         self._run_start_time: Optional[float] = None
@@ -1193,11 +1208,12 @@ class HebbianCMAES:
         verbose: bool = False,
     ) -> None:
         """Evaluate the generation's best individual AND the zero-rules baseline
-        on the held-out validation env, then log + print the comparison.
+        (AND the specialist, when ``evaluation.run_specialist`` is set) on the
+        held-out validation env, then log + print the comparison.
 
         Forests are regenerated once at the start of the pass so they are new
-        each period; the best individual and the baseline then fly the SAME
-        layouts (no refresh between them) for a fair paired comparison.
+        each period; all controllers then fly the SAME layouts (no refresh
+        between them) for a fair paired comparison under CRN.
         """
         if self._val_env is None:
             return
@@ -1213,6 +1229,8 @@ class HebbianCMAES:
         best_idx = int(np.argmax(fitnesses))
         best_genome = solutions[best_idx]
 
+        # All controllers fly the SAME freshly-refreshed forests (no refresh
+        # between them) so the comparison is paired under CRN.
         val_best = self._evaluate_genome_on_validation(best_genome, verbose=verbose)
         val_baseline = self._evaluate_reference_actor(
             "Validation-Baseline",
@@ -1223,14 +1241,36 @@ class HebbianCMAES:
             urdf_paths_override=self._val_urdf_paths,
         )
 
+        # Optional third controller: the specialist actor, evaluated on the very
+        # same held-out forests as best + baseline.
+        val_specialist = None
+        if self.cfg.evaluation.run_specialist:
+            val_specialist = self._evaluate_reference_actor(
+                "Validation-Specialist",
+                ckpt_path=self.cfg.specialist_checkpoint_path or None,
+                ckpt_cfg_path=self.cfg.specialist_checkpoint_config_path or None,
+                verbose=verbose,
+                env_override=self._val_env,
+                urdf_paths_override=self._val_urdf_paths,
+            )
+
         if val_best is None or val_baseline is None:
             print(f"[HebbianCMAES] Validation pass at gen {gen} produced no result.")
             return
 
+        # When the specialist is enabled, always write its block (NaN-filled on
+        # eval failure) so the CSV column count matches the header.
+        spec_for_csv = None
+        if self.cfg.evaluation.run_specialist:
+            spec_for_csv = val_specialist if val_specialist is not None else {}
+
         _append_validation_csv(
-            self.validation_csv_path, gen, best_idx, val_best, val_baseline
+            self.validation_csv_path, gen, best_idx, val_best, val_baseline,
+            specialist=spec_for_csv,
         )
-        self._print_validation(gen, best_idx, val_best, val_baseline)
+        self._print_validation(
+            gen, best_idx, val_best, val_baseline, specialist=val_specialist
+        )
 
     def _print_validation(
         self,
@@ -1238,8 +1278,9 @@ class HebbianCMAES:
         best_idx: int,
         best: Dict[str, float],
         baseline: Dict[str, float],
+        specialist: Optional[Dict[str, float]] = None,
     ) -> None:
-        """Print the held-out best-vs-baseline validation comparison table."""
+        """Print the held-out best-vs-baseline[-vs-specialist] comparison table."""
         n_val = len(self._val_urdf_paths) if self._val_urdf_paths else 0
         rows = [
             ("Fitness (reward)", "fitness"),
@@ -1249,18 +1290,34 @@ class HebbianCMAES:
             ("COT",              "cot"),
             ("Crash Rate",       "crash_rate"),
         ]
+
+        def _pct(num: float, den: float) -> str:
+            return (f"{(num - den) / abs(den) * 100.0:+.1f}%"
+                    if abs(den) > 1e-12 else "n/a")
+
         table_rows = []
         for name, key in rows:
             b = best.get(key, float("nan"))
             r = baseline.get(key, float("nan"))
-            delta = (b - r) / abs(r) * 100.0 if abs(r) > 1e-12 else float("nan")
-            table_rows.append([name, f"{b:.4g}", f"{r:.4g}", f"{delta:+.1f}%"])
+            row = [name, f"{b:.4g}", f"{r:.4g}"]
+            if specialist is not None:
+                s = specialist.get(key, float("nan"))
+                row += [f"{s:.4g}", _pct(b, r), _pct(b, s)]
+            else:
+                row.append(_pct(b, r))
+            table_rows.append(row)
+
+        if specialist is not None:
+            headers = ["Metric", "Best (Hebb)", "Baseline", "Specialist",
+                       "Δ vs base", "Δ vs spec"]
+        else:
+            headers = ["Metric", "Best (Hebb)", "Baseline", "Δ vs baseline"]
 
         print(f"\n  Held-out Validation (gen {gen}, best individual #{best_idx}, "
               f"{n_val} URDF(s) × fresh forests):")
         print(tabulate(
             table_rows,
-            headers=["Metric", "Best (Hebb)", "Baseline", "Δ vs baseline"],
+            headers=headers,
             tablefmt="grid",
             numalign="center",
             stralign="left",
@@ -1703,7 +1760,14 @@ class HebbianCMAES:
             # Only applied when dens_min is explicitly set in the eval config so the
             # WP1-config default is preserved when the override is null.
             slope = float(getattr(self.cfg.evaluation, "dens_min_slope", 0.0))
-            base_dens_min = self.cfg.evaluation.dens_min
+            # forest.dens_min (if set) wins over evaluation.dens_min, matching
+            # the precedence in evaluate._apply_forest_overrides.
+            _forest = getattr(self.cfg, "forest", None)
+            base_dens_min = (
+                _forest.dens_min
+                if _forest is not None and _forest.dens_min is not None
+                else self.cfg.evaluation.dens_min
+            )
             if (
                 slope != 0.0
                 and base_dens_min is not None

@@ -23,6 +23,7 @@ Hierarchy
     ├── hebbian               HebbianConfig      ABCD plasticity rule ranges & eta
     ├── evolution             EvolutionConfig    number of generations / pop size hint
     ├── evaluation            EvaluationConfig   rollout episodes, envs, speed commands
+    ├── forest                ForestConfig       forest algorithm + parameters (null = WP1)
     ├── cmaes                 CMAESConfig        CMA-ES step size, population, tolerances
     ├── catalog               CatalogConfig      optional multi-URDF catalog path
     ├── seed                  int                global random seed
@@ -191,6 +192,91 @@ class EvaluationConfig:
     # legacy independent-per-slot behaviour (e.g. for the sigma_rank A/B test).
     crn: bool = True
     noise: NoiseConfig = field(default_factory=NoiseConfig)
+
+
+@dataclass
+class ForestConfig:
+    """Forest-generation overrides for the WP2 evaluation environment.
+
+    Every field defaults to ``None``, meaning "inherit the value baked into the
+    WP1 checkpoint config" (the ``env:`` block of ``checkpoint_config_path``).
+    Set ``mode`` to pick the sampling algorithm and any other field to override
+    that specific parameter; unset (``None``) fields keep the WP1 value, so an
+    all-null ``forest`` section reproduces the WP1 forest exactly.
+
+    ``mode`` selects the obstacle-sampling algorithm
+    (``winged_drone_train.perception.forest``):
+
+    - ``None`` / ``"wp1"`` — inherit the WP1 config's ``forest_mode`` (or its
+      legacy ``growing_forest`` flag). Nothing about the mode is overridden.
+    - ``"growing"`` — density ramps linearly from ``dens_min`` (at ``x_lower``)
+      to ``dens_max`` (at ``x_upper``). Uses ``dens_min`` / ``dens_max`` (and
+      optionally ``dens_min_min`` / ``dens_min_max`` to randomize the ramp
+      start per forest).
+    - ``"uniform"`` — constant density with exactly ``num_trees`` trees
+      (``num_trees_eval`` is used in eval mode).
+    - ``"lattice"`` — regular grid (fixed points + small jitter) that
+      densifies with x. Uses ``x_spacing_start`` / ``x_spacing_end`` /
+      ``forest_length`` / ``y_spacing_max`` / ``y_spacing_min``.
+    - ``"latin"`` — stratified grid: same cell structure as ``lattice`` but
+      one tree placed at a uniformly RANDOM position inside each cell (no fixed
+      points). Uses the same ``x_spacing_*`` / ``forest_length`` /
+      ``y_spacing_*`` keys.
+
+    Geometry (``x_lower`` … ``tree_height``) applies to every mode.
+
+    NOTE: ``x_upper`` / ``dens_min`` / ``dens_max`` can ALSO be set under
+    ``evaluation`` (legacy location, where ``dens_min`` additionally drives the
+    per-generation ``dens_min_slope`` ramp). When a value is set in BOTH
+    places, the ``forest`` section wins. Prefer setting them here unless you
+    need the ramp.
+    """
+
+    mode: Optional[str] = None  # None/"wp1" | "growing" | "uniform" | "lattice"
+
+    # --- Corridor geometry (all modes) ---
+    x_lower: Optional[float] = None
+    x_upper: Optional[float] = None
+    y_lower: Optional[float] = None
+    y_upper: Optional[float] = None
+    tree_radius: Optional[float] = None
+    tree_height: Optional[float] = None
+
+    # --- "growing" mode: linear density ramp dens_min -> dens_max ---
+    dens_min: Optional[float] = None
+    dens_max: Optional[float] = None
+    dens_min_min: Optional[float] = None  # randomize ramp-start density per forest (low)
+    dens_min_max: Optional[float] = None  # randomize ramp-start density per forest (high)
+
+    # --- "uniform" mode: fixed tree count (num_trees_eval used in eval) ---
+    num_trees: Optional[int] = None
+    num_trees_eval: Optional[int] = None
+
+    # --- "lattice" mode: grid spacings (densify with x) ---
+    x_spacing_start: Optional[float] = None
+    x_spacing_end: Optional[float] = None
+    forest_length: Optional[float] = None
+    y_spacing_max: Optional[float] = None
+    y_spacing_min: Optional[float] = None
+
+    def resolved_mode(self) -> Optional[str]:
+        """Return the ``forest_mode`` to write into ``env_cfg``.
+
+        ``None`` means "do not override — inherit the WP1 config". A non-null
+        value is validated against the three supported algorithms.
+        """
+        if self.mode is None:
+            return None
+        m = str(self.mode).strip().lower()
+        if m in ("", "wp1", "none", "null", "inherit", "default"):
+            return None
+        valid = ("uniform", "growing", "lattice", "latin")
+        if m not in valid:
+            raise ValueError(
+                f"forest.mode must be one of {valid} (or null/'wp1' to inherit "
+                f"the WP1 config); got {self.mode!r}"
+            )
+        return m
 
 
 @dataclass
@@ -422,6 +508,7 @@ class HebbianEvolutionConfig:
     hebbian: HebbianConfig = field(default_factory=HebbianConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    forest: ForestConfig = field(default_factory=ForestConfig)
     cmaes: CMAESConfig = field(default_factory=CMAESConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
@@ -488,6 +575,7 @@ class HebbianEvolutionConfig:
             "hebbian": HebbianConfig,
             "evolution": EvolutionConfig,
             "evaluation": EvaluationConfig,
+            "forest": ForestConfig,
             "cmaes": CMAESConfig,
             "catalog": CatalogConfig,
             "validation": ValidationConfig,

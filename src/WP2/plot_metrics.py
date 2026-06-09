@@ -260,6 +260,7 @@ def plot_validation(run_dir: Path | str) -> None:
     gens = df["generation"].to_numpy()
     best_colour = "#1f77b4"      # Hebbian: blue
     baseline_colour = "#2ca02c"  # baseline: green
+    specialist_colour = "#9467bd"  # specialist: purple (matches plot_metrics)
 
     out_dir = run_dir / "plots" / "validation"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -286,6 +287,15 @@ def plot_validation(run_dir: Path | str) -> None:
                 label="best (Hebbian)")
         ax.plot(gens, _rolling(base), color=baseline_colour, linewidth=1.8,
                 label="baseline")
+        # Optional specialist curve (present only when --specialist was used).
+        spec_col = f"specialist_{col}"
+        if spec_col in df.columns:
+            spec = df[spec_col].to_numpy()
+            if col == "crash_rate":
+                spec = np.clip(spec, 0.0, 1.0)
+            ax.plot(gens, spec, color=specialist_colour, linewidth=1.0, alpha=0.25)
+            ax.plot(gens, _rolling(spec), color=specialist_colour, linewidth=1.8,
+                    label="specialist")
         title = f"{label}  (↓ better)" if lower_is_better else label
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("Generation")

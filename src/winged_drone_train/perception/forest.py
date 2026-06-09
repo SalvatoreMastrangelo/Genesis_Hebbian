@@ -27,8 +27,8 @@ class ForestConfig:
             ``dens_min`` at ``x_lower`` to ``dens_max`` at ``x_upper``.
         num_trees: Number of trees for the ``"uniform"`` mode.
         forest_mode: Explicit mode selector. One of ``"uniform"``, ``"growing"``,
-            ``"lattice"``.  When ``None`` the legacy boolean ``growing_forest``
-            passed to :class:`ForestGenerator` decides between
+            ``"lattice"``, ``"latin"``.  When ``None`` the legacy boolean
+            ``growing_forest`` passed to :class:`ForestGenerator` decides between
             ``"growing"`` and ``"uniform"``.
         x_spacing_start, x_spacing_end: Distance between consecutive x-aligned
             tree lines at the start (low x) and end (high x) of the lattice.
@@ -99,10 +99,10 @@ class ForestGenerator:
         mode = self.config.forest_mode
         if mode is None:
             mode = "growing" if self.growing_forest else "uniform"
-        if mode not in {"uniform", "growing", "lattice"}:
+        if mode not in {"uniform", "growing", "lattice", "latin"}:
             raise ValueError(
                 f"ForestConfig.forest_mode must be one of 'uniform', 'growing', "
-                f"'lattice'; got {mode!r}"
+                f"'lattice', 'latin'; got {mode!r}"
             )
         self.forest_mode = mode
 
@@ -307,6 +307,104 @@ class ForestGenerator:
         cylinders = torch.stack((xs, ys, zs), dim=-1)  # (F, T, 3)
         return cylinders.float()
 
+    def _sample_latin_forest(self, F: int) -> torch.Tensor:
+        """Sample a "Latin" (stratified) forest: one random tree per grid cell.
+
+        The forest rectangle ``[x_lower, x_lower + forest_length] x [y_lower,
+        y_upper]`` is tiled into cells:
+
+          * Columns: widths interpolate linearly from ``x_spacing_start`` (low
+            x) to ``x_spacing_end`` (high x) and are rescaled to tile
+            ``forest_length`` exactly — so columns get narrower (denser)
+            downrange. The number of columns is derived from the average
+            spacing.
+          * Rows: each column independently splits the FULL width into equal
+            rows, the per-column row count coming from a target y-spacing that
+            interpolates ``y_spacing_max`` (first column) -> ``y_spacing_min``
+            (last column). Equal max/min ⇒ constant row height.
+
+        Cells therefore tile the whole rectangle with no gaps/overflow, and
+        exactly one tree is placed at a uniformly random position INSIDE each
+        cell. Unlike ``lattice`` (fixed grid points + Gaussian jitter), the
+        cell structure (and hence the tree count ``T``) is identical across all
+        ``F`` forests, but the within-cell positions are drawn independently
+        per forest — a stratified-random layout.
+
+        Mirrors ``tests/perception/preview_latin_forest.build_latin_forest``.
+        """
+        c = self.config
+        device = self.device
+
+        s0 = float(c.x_spacing_start)
+        s1 = float(c.x_spacing_end)
+        L = float(c.forest_length)
+        y_sp_first = float(c.y_spacing_max)
+        y_sp_last = float(c.y_spacing_min)
+
+        if s0 <= 0.0 or s1 <= 0.0:
+            raise ValueError(
+                "ForestConfig.x_spacing_start and x_spacing_end must be positive"
+            )
+        if L <= 0.0:
+            raise ValueError("ForestConfig.forest_length must be positive")
+        if y_sp_first <= 0.0 or y_sp_last <= 0.0:
+            raise ValueError(
+                "ForestConfig.y_spacing_max and y_spacing_min must be positive"
+            )
+
+        y_width = c.y_upper - c.y_lower
+        if y_width <= 0.0:
+            raise ValueError("ForestConfig.y_upper must be greater than y_lower")
+
+        # Columns: widths interpolate s0 -> s1, rescaled to tile L exactly.
+        n_cols = max(1, int(round(2.0 * L / (s0 + s1))))
+        if n_cols == 1:
+            widths = torch.tensor([L], device=device, dtype=torch.float32)
+        else:
+            widths = torch.linspace(s0, s1, n_cols, device=device, dtype=torch.float32)
+            widths = widths * (L / widths.sum())
+
+        x_edges = c.x_lower + torch.cat(
+            [torch.zeros(1, device=device, dtype=torch.float32),
+             torch.cumsum(widths, dim=0)]
+        )
+        x_edges[-1] = c.x_lower + L  # kill float drift
+
+        # Per-column target y-spacing -> equal rows tiling the full width.
+        if n_cols == 1:
+            col_sp = torch.tensor([y_sp_first], device=device, dtype=torch.float32)
+        else:
+            col_sp = torch.linspace(y_sp_first, y_sp_last, n_cols,
+                                    device=device, dtype=torch.float32)
+
+        # Build flat per-cell bounds, one cell at a time (rows/column varies).
+        xl_chunks, xr_chunks, yb_chunks, yt_chunks = [], [], [], []
+        for i in range(n_cols):
+            xl = float(x_edges[i].item())
+            xr = float(x_edges[i + 1].item())
+            n_rows = max(1, int(round(y_width / float(col_sp[i].item()))))
+            y_e = torch.linspace(c.y_lower, c.y_upper, n_rows + 1,
+                                 device=device, dtype=torch.float32)
+            yb_chunks.append(y_e[:-1])
+            yt_chunks.append(y_e[1:])
+            xl_chunks.append(torch.full((n_rows,), xl, device=device, dtype=torch.float32))
+            xr_chunks.append(torch.full((n_rows,), xr, device=device, dtype=torch.float32))
+
+        xl_flat = torch.cat(xl_chunks)  # (T,)
+        xr_flat = torch.cat(xr_chunks)
+        yb_flat = torch.cat(yb_chunks)
+        yt_flat = torch.cat(yt_chunks)
+        T = xl_flat.shape[0]
+
+        # One uniform-random tree per cell, drawn independently for each forest.
+        xs = xl_flat.unsqueeze(0) + torch.rand((F, T), device=device) * (
+            xr_flat - xl_flat).unsqueeze(0)
+        ys = yb_flat.unsqueeze(0) + torch.rand((F, T), device=device) * (
+            yt_flat - yb_flat).unsqueeze(0)
+        zs = torch.full((F, T), 0.5 * c.tree_height, device=device, dtype=torch.float32)
+        cylinders = torch.stack((xs, ys, zs), dim=-1)  # (F, T, 3)
+        return cylinders.float()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -322,6 +420,8 @@ class ForestGenerator:
         F = self.total_forests
         if self.forest_mode == "lattice":
             cylinders = self._sample_lattice_forest(F)
+        elif self.forest_mode == "latin":
+            cylinders = self._sample_latin_forest(F)
         elif self.forest_mode == "growing":
             cylinders = self._sample_growing_forest(F)
         else:

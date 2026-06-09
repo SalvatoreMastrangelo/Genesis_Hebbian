@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: validation_plotting_no_bix_15_lstm # generalist_256_10_urdf_0.005_0.05
+exp_name: validation_wspecialist_no_bix_15_lstm_ # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -45,7 +45,7 @@ hebbian:
   eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 150
+  num_generations: 200
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
@@ -145,6 +145,46 @@ evaluation:
     joint_target_episode_bias: true   # property_randomization.joint_target_episode_bias_std
     joint_target_step_noise: true     # property_randomization.joint_target_step_noise_std
     aero_noise: true                  # aero solver param + magnitude/direction noise
+
+forest:
+  # Forest-generation algorithm + parameters for the eval environment.
+  # EVERY field below is null by default = "inherit the WP1 checkpoint config".
+  # An all-null block reproduces the WP1 forest exactly. Any field you set
+  # overrides ONLY that parameter; the rest still come from WP1.
+  #
+  # Precedence (low → high):  WP1 config  <  evaluation.x_upper/dens_min/dens_max
+  # (legacy, above — dens_min there also drives the dens_min_slope ramp)  <  this
+  # `forest` section. So values here win when set in both places.
+  mode: null            # forest sampling algorithm:
+                        #   null / "wp1" ⇒ inherit WP1 (its forest_mode or growing_forest flag)
+                        #   "growing"    ⇒ density ramps dens_min→dens_max along x  (uses dens_min/dens_max)
+                        #   "uniform"    ⇒ constant density, exactly num_trees_eval trees
+                        #   "lattice"    ⇒ regular grid that densifies with x (uses the x_/y_spacing keys)
+
+  # --- corridor geometry (all modes) ---
+  x_lower: 0            # forest start along forward axis [m]
+  x_upper: 100          # forest end / corridor length [m]  (also sets forest_x_limit)
+  y_lower: null         # lateral lower bound [m]
+  y_upper: null         # lateral upper bound [m]
+  tree_radius: null     # cylinder trunk radius [m]
+  tree_height: null     # cylinder height [m]
+
+  # --- "growing" mode: linear density ramp ---
+  dens_min: 4.0         # density at x_lower [trees/m]
+  dens_max: 5.0         # density at x_upper [trees/m]
+  dens_min_min: 4.0     # optional: randomize the ramp-start density per forest (low bound)
+  dens_min_max: 4.0     # optional: randomize the ramp-start density per forest (high bound)
+
+  # --- "uniform" mode: fixed tree count ---
+  num_trees: null       # tree count during training rollouts
+  num_trees_eval: null  # tree count during eval (this is what WP2 rollouts use)
+
+  # --- "lattice" and "latin" mode: grid spacings (densify with x) ---
+  x_spacing_start: 15.0 # gap between x-lines at low x [m]
+  x_spacing_end: 5.0    # gap between x-lines at high x [m]  (smaller ⇒ denser downrange)
+  forest_length: null   # total x-extent covered by the lattice [m]  (default: x_upper - x_lower)
+  y_spacing_max: null   # tree spacing along the first (sparse) x-line [m]
+  y_spacing_min: null   # tree spacing along the last (dense) x-line [m]
 
 seed: 5535
 device: "cuda:0"

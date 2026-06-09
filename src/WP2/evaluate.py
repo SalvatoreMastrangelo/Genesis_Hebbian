@@ -71,6 +71,63 @@ def _apply_noise_toggles(env_cfg: dict, cfg: HebbianEvolutionConfig) -> None:
         env_cfg["property_randomization"] = prop
 
 
+def _apply_forest_overrides(env_cfg: dict, cfg: HebbianEvolutionConfig) -> None:
+    """Apply forest-generation overrides onto ``env_cfg`` in place.
+
+    Precedence (low → high):
+      1. WP1 checkpoint config — already present in ``env_cfg``.
+      2. ``cfg.evaluation`` legacy fields (``x_upper`` / ``dens_min`` /
+         ``dens_max``), kept because ``dens_min`` also anchors the
+         per-generation ``dens_min_slope`` ramp.
+      3. ``cfg.forest`` — the full forest section (algorithm + every
+         parameter).
+
+    A field left at its default (``None``) never overrides the layer below it,
+    so an all-null ``forest`` section + null ``evaluation`` overrides reproduce
+    the WP1 forest exactly.
+    """
+    ev = cfg.evaluation
+
+    # --- (2) legacy evaluation.* overrides — preserve historical behaviour ---
+    if ev.x_upper is not None:
+        env_cfg["x_upper"] = float(ev.x_upper)
+        env_cfg["forest_x_limit"] = float(ev.x_upper)
+    if ev.dens_min is not None:
+        env_cfg["dens_min"] = float(ev.dens_min)
+    if ev.dens_max is not None:
+        env_cfg["dens_max"] = float(ev.dens_max)
+
+    # --- (3) forest section — wins over both layers above when set ---
+    fr = getattr(cfg, "forest", None)
+    if fr is None:
+        return
+
+    mode = fr.resolved_mode()   # validates; None ⇒ inherit WP1
+    if mode is not None:
+        env_cfg["forest_mode"] = mode
+
+    float_keys = (
+        "x_lower", "x_upper", "y_lower", "y_upper",
+        "tree_radius", "tree_height",
+        "dens_min", "dens_max", "dens_min_min", "dens_min_max",
+        "x_spacing_start", "x_spacing_end", "forest_length",
+        "y_spacing_max", "y_spacing_min",
+    )
+    for k in float_keys:
+        v = getattr(fr, k)
+        if v is not None:
+            env_cfg[k] = float(v)
+
+    for k in ("num_trees", "num_trees_eval"):
+        v = getattr(fr, k)
+        if v is not None:
+            env_cfg[k] = int(v)
+
+    # x_upper also drives forest_x_limit used elsewhere in the env
+    if fr.x_upper is not None:
+        env_cfg["forest_x_limit"] = float(fr.x_upper)
+
+
 def _build_env(
     cfg: HebbianEvolutionConfig,
     wp1_cfg,
@@ -101,13 +158,7 @@ def _build_env(
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
-    if cfg.evaluation.x_upper is not None:
-        env_cfg["x_upper"] = cfg.evaluation.x_upper
-        env_cfg["forest_x_limit"] = cfg.evaluation.x_upper
-    if cfg.evaluation.dens_min is not None:
-        env_cfg["dens_min"] = float(cfg.evaluation.dens_min)
-    if cfg.evaluation.dens_max is not None:
-        env_cfg["dens_max"] = float(cfg.evaluation.dens_max)
+    _apply_forest_overrides(env_cfg, cfg)
     if base_init_pos is not None:
         env_cfg["base_init_pos"] = list(base_init_pos)
 
@@ -319,13 +370,7 @@ def _build_env_from_urdf(
     ))
     command_cfg["min_speed"] = cfg.evaluation.vmin
     command_cfg["max_speed"] = cfg.evaluation.vmax
-    if cfg.evaluation.x_upper is not None:
-        env_cfg["x_upper"] = cfg.evaluation.x_upper
-        env_cfg["forest_x_limit"] = cfg.evaluation.x_upper
-    if cfg.evaluation.dens_min is not None:
-        env_cfg["dens_min"] = float(cfg.evaluation.dens_min)
-    if cfg.evaluation.dens_max is not None:
-        env_cfg["dens_max"] = float(cfg.evaluation.dens_max)
+    _apply_forest_overrides(env_cfg, cfg)
     obs_cfg["add_genome_obs_actor"] = False
     obs_cfg["add_genome_obs_critic"] = False
 
@@ -620,13 +665,7 @@ def _build_multi_urdf_env(
 
     env_cfg = dict(env_cfg)
     env_cfg["episode_length_s"] = 60.0  # 1500 steps at 25 Hz
-    if cfg.evaluation.x_upper is not None:
-        env_cfg["x_upper"] = float(cfg.evaluation.x_upper)
-        env_cfg["forest_x_limit"] = float(cfg.evaluation.x_upper)
-    if cfg.evaluation.dens_min is not None:
-        env_cfg["dens_min"] = float(cfg.evaluation.dens_min)
-    if cfg.evaluation.dens_max is not None:
-        env_cfg["dens_max"] = float(cfg.evaluation.dens_max)
+    _apply_forest_overrides(env_cfg, cfg)
 
     obs_cfg = dict(obs_cfg)
     obs_cfg["add_genome_obs_actor"] = False
