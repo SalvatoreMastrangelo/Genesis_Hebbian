@@ -155,11 +155,12 @@ forest:
   # Precedence (low → high):  WP1 config  <  evaluation.x_upper/dens_min/dens_max
   # (legacy, above — dens_min there also drives the dens_min_slope ramp)  <  this
   # `forest` section. So values here win when set in both places.
-  mode: null            # forest sampling algorithm:
+  mode: "growing"       # forest sampling algorithm:
                         #   null / "wp1" ⇒ inherit WP1 (its forest_mode or growing_forest flag)
                         #   "growing"    ⇒ density ramps dens_min→dens_max along x  (uses dens_min/dens_max)
                         #   "uniform"    ⇒ constant density, exactly num_trees_eval trees
-                        #   "lattice"    ⇒ regular grid that densifies with x (uses the x_/y_spacing keys)
+                        #   "lattice"    ⇒ regular grid (fixed points + jitter) that densifies with x (uses the x_/y_spacing keys)
+                        #   "latin"      ⇒ stratified grid: 1 RANDOM tree per cell, densifies with x (uses the x_/y_spacing keys)
 
   # --- corridor geometry (all modes) ---
   x_lower: 0            # forest start along forward axis [m]
@@ -180,11 +181,11 @@ forest:
   num_trees_eval: null  # tree count during eval (this is what WP2 rollouts use)
 
   # --- "lattice" and "latin" mode: grid spacings (densify with x) ---
-  x_spacing_start: 15.0 # gap between x-lines at low x [m]
-  x_spacing_end: 5.0    # gap between x-lines at high x [m]  (smaller ⇒ denser downrange)
-  forest_length: null   # total x-extent covered by the lattice [m]  (default: x_upper - x_lower)
-  y_spacing_max: null   # tree spacing along the first (sparse) x-line [m]
-  y_spacing_min: null   # tree spacing along the last (dense) x-line [m]
+  x_spacing_start: 8.333 # gap between x-lines at low x [m]
+  x_spacing_end: 6.667   # gap between x-lines at high x [m]  (smaller ⇒ denser downrange)
+  forest_length: null    # total x-extent covered by the lattice [m]  (default: x_upper - x_lower)
+  y_spacing_max: 3.0     # tree spacing along the first (sparse) x-line [m]
+  y_spacing_min: 3.0     # tree spacing along the last (dense) x-line [m]
 
 seed: 5535
 device: "cuda:0"
