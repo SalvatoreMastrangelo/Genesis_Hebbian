@@ -80,9 +80,19 @@ catalog:
   num_episodes: 1                  # rollout episodes per generation
   force_multi_urdf: false          # route N=1 through the multi-URDF path (for verification)
   include_standard_mydrone: true   # false ⇒ all N URDFs are randomly sampled (no fixed baseline)
-  refresh_urdfs_every: 0           # >0 ⇒ resample N random URDFs every K inner generations
+  refresh_urdfs_every: 0           # >0 ⇒ refresh the URDF pool every K inner generations
                                    # (tears down + rebuilds the eval env; multi-URDF path only).
                                    # 0 or null ⇒ disabled, URDFs stay fixed for the whole run.
+  mutate: false                    # how a refresh produces the new pool:
+                                   #   false ⇒ resample N brand-new RANDOM URDFs (default).
+                                   #   true  ⇒ MUTATE the current catalog instead: add Gaussian
+                                   #           noise (std mutation_std) to every gene of every
+                                   #           URDF's normalized genome, clamp to [0,1], rebuild.
+                                   #           Drift is cumulative across refreshes; the
+                                   #           standard-mydrone baseline is mutated too. Needs
+                                   #           genomes.txt (always present for auto-gen catalogs).
+  mutation_std: 0.1                # std of per-gene Gaussian noise when mutate=true (genome in
+                                   # [0,1], so 0.1 = 10% of domain). Ignored when mutate=false.
 
 validation:
   enable: true               # held-out validation pass inside the inner loop

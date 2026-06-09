@@ -362,6 +362,21 @@ class CatalogConfig:
         ``0`` (default) disables the refresh — behaviour identical to before.
         Only effective in the multi-URDF path; ignored when running through
         the legacy single-URDF path.
+    mutate : bool
+        Changes what a refresh does. When False (default) each refresh
+        resamples a brand-new *random* URDF population (the behaviour above).
+        When True, each refresh instead *mutates the current catalog*: every
+        URDF's normalized genome is perturbed by Gaussian noise (std 0.1) per
+        gene and clamped to ``[0, 1]``, then the URDFs are rebuilt from the
+        mutated genomes. Mutation is cumulative across refreshes (gen 2K
+        mutates the gen-K catalog) and every URDF is perturbed, including the
+        standard-mydrone baseline when ``include_standard_mydrone`` is set.
+        Requires a ``genomes.txt`` in the starting catalog dir (always present
+        for auto-generated catalogs). Only effective in the multi-URDF path.
+    mutation_std : float
+        Std of the per-gene Gaussian noise applied to normalized genomes when
+        ``mutate=True``. The genome lives in ``[0, 1]^D``, so ``0.1`` (default)
+        is 10% of the domain. Ignored when ``mutate=False``.
     """
 
     path: str = ""
@@ -370,6 +385,8 @@ class CatalogConfig:
     force_multi_urdf: bool = False
     include_standard_mydrone: bool = True
     refresh_urdfs_every: int = 0
+    mutate: bool = False
+    mutation_std: float = 0.1
 
 
 # ============================================================================

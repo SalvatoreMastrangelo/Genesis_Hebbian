@@ -103,6 +103,39 @@ def _generate_random_urdfs(
     return [str(p) for p in paths]
 
 
+def _read_norm_genomes_from_catalog(catalog_dir: Path) -> Optional[List[List[float]]]:
+    """Read ``genomes.txt`` from a catalog dir and return normalized genomes.
+
+    ``genomes.txt`` stores the *physical* genome of each URDF, one per row as
+    ``<urdf_filename>: g0, g1, ..., g14`` (row order matches ``catalog.txt``).
+    Each is mapped back into normalized ``[0, 1]^D`` space via
+    ``Chromosome_Drone.from_physical`` so it can be perturbed and re-emitted.
+    Returns ``None`` if the file is missing or any row is unparsable / has the
+    wrong arity (e.g. an ``<unknown>`` placeholder).
+    """
+    from morph_evolution.chromosome_drone import Chromosome_Drone
+
+    genomes_file = Path(catalog_dir) / "genomes.txt"
+    if not genomes_file.exists():
+        return None
+
+    norm: List[List[float]] = []
+    for line in genomes_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        _, _, rhs = line.partition(":")
+        parts = [p.strip() for p in rhs.split(",") if p.strip()]
+        try:
+            phys = [float(p) for p in parts]
+        except ValueError:
+            return None
+        if len(phys) != Chromosome_Drone.num_genes():
+            return None
+        norm.append([float(x) for x in Chromosome_Drone.from_physical(phys)])
+    return norm or None
+
+
 # ============================================================================
 #  CSV initialisation / append
 # ============================================================================
@@ -502,6 +535,27 @@ class HebbianCMAES:
                 default_mydrone_urdf_path(),
             )
 
+        # When ``catalog.mutate`` drives the periodic refresh, the current
+        # catalog's normalized genomes are the source of truth for the next
+        # mutation (perturb → rebuild → repeat). Capture them once up front
+        # from the starting catalog's ``genomes.txt`` so subsequent mutations
+        # accumulate from in-memory state (preserving sub-bin drift on the
+        # discrete genes). Fail fast if they can't be read.
+        self._urdf_norm_genomes: Optional[List[List[float]]] = None
+        if (
+            self._use_multi_urdf
+            and getattr(cfg.catalog, "mutate", False)
+            and int(getattr(cfg.catalog, "refresh_urdfs_every", 0) or 0) > 0
+        ):
+            cat_dir = Path(self._urdf_paths[0]).parent
+            self._urdf_norm_genomes = _read_norm_genomes_from_catalog(cat_dir)
+            if self._urdf_norm_genomes is None:
+                raise ValueError(
+                    "catalog.mutate=true requires a parsable genomes.txt in the "
+                    f"starting catalog dir, but none was found at {cat_dir}. "
+                    "Auto-generated catalogs always include one."
+                )
+
         # For rules-only evolution: pre-build environment once (will be reused)
         self._env = None
         self._env_urdf_path = None
@@ -735,15 +789,20 @@ class HebbianCMAES:
     # ------------------------------------------------------------------
 
     def _refresh_urdfs(self, gen: int) -> None:
-        """Resample ``num_urdfs`` random URDFs and rebuild the eval env.
+        """Refresh the morphology pool and rebuild the eval env.
 
         Triggered every ``catalog.refresh_urdfs_every`` inner generations
-        (multi-URDF path only). New URDFs are written under
-        ``urdfs_gen_XXX/`` for reproducibility; ``include_standard_mydrone``
-        is respected. Seed = ``cfg.seed + gen`` so each refresh is
-        deterministic given the run seed.
+        (multi-URDF path only). With ``catalog.mutate=False`` (default) this
+        resamples a brand-new *random* URDF population; with ``mutate=True`` it
+        instead perturbs the current catalog's genomes (see ``_mutate_urdfs``).
+        New URDFs are written under ``urdfs_gen_XXX/`` for reproducibility.
+        Seed = ``cfg.seed + gen`` so each refresh is deterministic given the
+        run seed.
         """
         if not self._use_multi_urdf:
+            return
+        if getattr(self.cfg.catalog, "mutate", False):
+            self._mutate_urdfs(gen)
             return
         n = max(1, self.cfg.catalog.num_urdfs)
         new_dir = self.run_dir / f"urdfs_gen_{gen:03d}"
@@ -768,6 +827,76 @@ class HebbianCMAES:
         self._cleanup_validation_env()
         self._cleanup_env()
         self._urdf_paths = new_paths
+        self._build_env_once()
+        if self.cfg.validation.enable:
+            self._build_validation_env_once()
+
+    def _mutate_urdfs(self, gen: int) -> None:
+        """Mutate the current catalog's genomes and rebuild the eval env.
+
+        Used when ``catalog.mutate=True``. Each URDF's normalized genome (held
+        in ``self._urdf_norm_genomes``) is perturbed by per-gene Gaussian noise
+        of std ``catalog.mutation_std`` and clamped back to ``[0, 1]``; the noisy
+        genomes become the new in-memory state, so successive refreshes drift
+        cumulatively from where the last one left off. Every URDF is perturbed,
+        including the standard-mydrone baseline. The mutated genomes are
+        materialised into ``urdfs_gen_XXX/`` (discrete NACA genes snapped at
+        emit time) and a ``catalog.txt`` + ``genomes.txt`` are written there.
+        Seed = ``cfg.seed + gen`` so each mutation is deterministic.
+        """
+        from WP2_Outer_Loop.urdf_population import materialize_urdfs, write_catalog_txt
+        from general_policy.catalog import _write_genomes_txt
+        from morph_evolution.chromosome_drone import Chromosome_Drone
+
+        current = self._urdf_norm_genomes
+        if current is None:
+            # Lazy fallback (should have been captured in __init__): recover
+            # from the current catalog dir's genomes.txt.
+            current = _read_norm_genomes_from_catalog(
+                Path(self._urdf_paths[0]).parent
+            )
+            if current is None:
+                raise ValueError(
+                    "catalog.mutate=true could not recover the current catalog's "
+                    "normalized genomes (no parsable genomes.txt found)."
+                )
+
+        std = float(self.cfg.catalog.mutation_std)
+        new_dir = self.run_dir / f"urdfs_gen_{gen:03d}"
+        print(
+            f"\n[HebbianCMAES] === Mutating URDFs at gen {gen} → {new_dir} ==="
+        )
+        print(
+            f"[HebbianCMAES] Perturbing {len(current)} current genomes "
+            f"(Gaussian std={std}, clamp [0,1], seed={self.cfg.seed + gen})"
+        )
+
+        rng = np.random.default_rng(self.cfg.seed + gen)
+        mutated: List[List[float]] = []
+        for g in current:
+            g_arr = np.asarray(g, dtype=float)
+            noisy = g_arr + rng.normal(0.0, std, size=g_arr.shape)
+            mutated.append(np.clip(noisy, 0.0, 1.0).tolist())
+
+        # Build URDFs first (UrdfMaker needs the live Genesis runtime, which
+        # _cleanup_env() tears down), mirroring the random-refresh ordering.
+        new_paths = materialize_urdfs(mutated, new_dir)
+        write_catalog_txt(new_paths, new_dir)
+        # Persist the physical (snapped) genomes for inspection / reproducibility,
+        # matching what every other catalog dir carries.
+        phys = [
+            Chromosome_Drone.to_physical(Chromosome_Drone.snap_genome_norm(g))
+            for g in mutated
+        ]
+        _write_genomes_txt(new_dir, [Path(p) for p in new_paths], phys)
+
+        # The held-out validation env shares the Genesis runtime, so the
+        # `gs.destroy()` inside `_cleanup_env()` tears down its scenes too —
+        # release and rebuild it alongside the population env.
+        self._cleanup_validation_env()
+        self._cleanup_env()
+        self._urdf_paths = new_paths
+        self._urdf_norm_genomes = mutated
         self._build_env_once()
         if self.cfg.validation.enable:
             self._build_validation_env_once()
