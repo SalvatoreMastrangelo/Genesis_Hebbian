@@ -179,7 +179,6 @@ class EvaluationConfig:
     specialist_every: int = 1  # when run_specialist=True, evaluate every N generations (gen 0 always)
     x_upper: Optional[float] = None  # override WP1 forest corridor length [m]
     dens_min: Optional[float] = None  # override forest density at x=0 [trees/m]
-    dens_min_slope: float = 0.0  # per-generation linear ramp added to dens_min
     dens_max: Optional[float] = None  # override forest density at x=x_upper [trees/m]
     refresh_forests_per_generation: bool = False
     # Common random numbers: share per-slot domain-randomization draws (forest
@@ -212,7 +211,8 @@ class ForestConfig:
     - ``"growing"`` — density ramps linearly from ``dens_min`` (at ``x_lower``)
       to ``dens_max`` (at ``x_upper``). Uses ``dens_min`` / ``dens_max`` (and
       optionally ``dens_min_min`` / ``dens_min_max`` to randomize the ramp
-      start per forest).
+      start per forest, and ``dens_min_slope`` to harden ``dens_min`` per
+      generation).
     - ``"uniform"`` — constant density with exactly ``num_trees`` trees
       (``num_trees_eval`` is used in eval mode).
     - ``"lattice"`` — regular grid (fixed points + small jitter) that
@@ -226,10 +226,8 @@ class ForestConfig:
     Geometry (``x_lower`` … ``tree_height``) applies to every mode.
 
     NOTE: ``x_upper`` / ``dens_min`` / ``dens_max`` can ALSO be set under
-    ``evaluation`` (legacy location, where ``dens_min`` additionally drives the
-    per-generation ``dens_min_slope`` ramp). When a value is set in BOTH
-    places, the ``forest`` section wins. Prefer setting them here unless you
-    need the ramp.
+    ``evaluation`` (legacy location). When a value is set in BOTH places, the
+    ``forest`` section wins. Prefer setting them here.
     """
 
     mode: Optional[str] = None  # None/"wp1" | "growing" | "uniform" | "lattice"
@@ -247,6 +245,7 @@ class ForestConfig:
     dens_max: Optional[float] = None
     dens_min_min: Optional[float] = None  # randomize ramp-start density per forest (low)
     dens_min_max: Optional[float] = None  # randomize ramp-start density per forest (high)
+    dens_min_slope: float = 0.0  # per-generation ramp: dens_min(g) = dens_min + slope * g
 
     # --- "uniform" mode: fixed tree count (num_trees_eval used in eval) ---
     num_trees: Optional[int] = None
@@ -349,14 +348,28 @@ class CMAESConfig:
         Convergence threshold on sigma.  0 disables.
     tol_fun : float
         Convergence threshold on fitness spread.  0 disables.
+    fitness_aggregator : str or None
+        How the per-(urdf, forest) reward sums are reduced to one scalar
+        fitness per individual in the inner loop. ``None`` or ``"mean"`` →
+        arithmetic mean (default, legacy behaviour); ``"median"`` → median,
+        robust to a single catastrophic forest (e.g. one early crash)
+        dominating the ranking. Affects only the fitness ("reward_sums");
+        the diagnostic metrics (progress, crash rate, COT, …) stay means.
+    normalize_fitness : bool
+        Min-max normalize the population's fitness to [0, 1] each generation
+        before handing it to ``tell()`` (best individual → 1.0, worst → 0.0).
+        Rank-preserving, so selection and the covariance/mean updates are
+        unchanged; only scale-sensitive internals see the rescaled values
+        (notably ``tol_fun``, which then operates on the normalized spread).
+        Logging (CSV, plots, validation, baseline) always records raw fitness.
     sigma_reinflate : float
-        On each morphology change (URDF refresh), re-inflate sigma to
-        ``sigma_reinflate * sigma0`` (only ever raising it, never lowering).
-        The mean and covariance are carried over — only the step size is reset
-        so the search re-explores around the carried state for the new
-        morphologies. 1.0 → reset to the initial step size each change; 0.0 →
-        disabled (pure carry, sigma keeps shrinking). No effect when URDFs are
-        not refreshed.
+        On each morphology change (URDF refresh), multiply the CURRENT sigma
+        by this factor (only ever raising it, never lowering). The mean and
+        covariance are carried over — only the step size is kicked so the
+        search re-explores around the carried state for the new morphologies.
+        E.g. 1.5 → sigma grows 50% each change; values <= 1.0 (including 0)
+        → disabled (pure carry, sigma keeps shrinking). No effect when URDFs
+        are not refreshed.
     uh_enabled : bool
         Enable UH-CMA-ES uncertainty handling (Hansen et al. 2009, the σ-only
         arm). After ``tell()`` the population is re-evaluated on the *same*
@@ -395,6 +408,8 @@ class CMAESConfig:
     tol_sigma: float = 0.0
     tol_fun: float = 0.0
     sigma_reinflate: float = 1.0
+    fitness_aggregator: Optional[str] = None  # null/"mean" or "median"
+    normalize_fitness: bool = False
 
     # --- Uncertainty handling (UH-CMA-ES, Hansen et al. 2009; σ-only arm) ---
     uh_enabled: bool = False

@@ -77,8 +77,7 @@ def _apply_forest_overrides(env_cfg: dict, cfg: HebbianEvolutionConfig) -> None:
     Precedence (low → high):
       1. WP1 checkpoint config — already present in ``env_cfg``.
       2. ``cfg.evaluation`` legacy fields (``x_upper`` / ``dens_min`` /
-         ``dens_max``), kept because ``dens_min`` also anchors the
-         per-generation ``dens_min_slope`` ramp.
+         ``dens_max``), kept for old configs.
       3. ``cfg.forest`` — the full forest section (algorithm + every
          parameter).
 
@@ -389,6 +388,25 @@ def _build_env_from_urdf(
     return env
 
 
+def _resolve_fitness_aggregator(cfg: HebbianEvolutionConfig) -> str:
+    """Resolve ``cmaes.fitness_aggregator`` to ``"mean"`` or ``"median"``.
+
+    ``None`` (or a missing field on older configs) and ``"mean"`` map to the
+    legacy mean-over-forests fitness; ``"median"`` selects the median. Any
+    other value is a config error.
+    """
+    agg = getattr(getattr(cfg, "cmaes", None), "fitness_aggregator", None)
+    if agg is None:
+        return "mean"
+    agg = str(agg).lower()
+    if agg not in ("mean", "median"):
+        raise ValueError(
+            f"cmaes.fitness_aggregator must be null, 'mean' or 'median' "
+            f"(got {agg!r})"
+        )
+    return agg
+
+
 def evaluate_population_cma_batched(
     solutions: List[np.ndarray],
     cfg: HebbianEvolutionConfig,
@@ -420,7 +438,9 @@ def evaluate_population_cma_batched(
     Returns
     -------
     fitnesses : np.ndarray, shape (P,)
-        Mean WP1 reward sum per individual, averaged over URDFs and episodes.
+        WP1 reward sum per individual, aggregated over the S forest slots
+        with ``cmaes.fitness_aggregator`` (mean or median) and averaged over
+        URDFs and episodes.
     metrics : dict
         Additional per-individual metrics (progresses, velocities, crash_flags).
     """
@@ -430,6 +450,7 @@ def evaluate_population_cma_batched(
     total_envs = cfg.evaluation.num_eval_envs
     S = total_envs // P
     actual_envs = S * P
+    fitness_aggregator = _resolve_fitness_aggregator(cfg)
 
     if S == 0:
         raise ValueError(
@@ -559,8 +580,13 @@ def evaluate_population_cma_batched(
                 for key in ("reward_sum", "progresses", "velocities",
                             "crash_flags", "cots", "v_deviations"):
                     flat_arr = ep_metrics[key]
-                    per_ind = flat_arr.reshape(P, S).mean(axis=1)
+                    per_slot = flat_arr.reshape(P, S)
+                    per_ind = per_slot.mean(axis=1)
                     if key == "reward_sum":
+                        # The fitness honours cmaes.fitness_aggregator; the
+                        # diagnostic metrics below always stay means.
+                        if fitness_aggregator == "median":
+                            per_ind = np.median(per_slot, axis=1)
                         urdf_reward += per_ind
                     elif key == "progresses":
                         urdf_progress += per_ind
@@ -709,6 +735,7 @@ def _rollout_episode_multi_urdf(
     P: int,
     F: int,
     verbose: bool = False,
+    fitness_aggregator: str = "mean",
 ) -> Dict[str, np.ndarray]:
     """One rollout across a ``MultiSceneEvalEnv`` holding D URDFs in D scenes.
 
@@ -850,7 +877,15 @@ def _rollout_episode_multi_urdf(
     def _per_ind(metric: torch.Tensor) -> torch.Tensor:
         return metric.view(D, P, F).float().mean(dim=(0, 2))
 
-    reward_per_ind = _per_ind(reward_sum)
+    if fitness_aggregator == "median":
+        # Median over the D*F per-(urdf, forest) rollout samples of each
+        # individual. torch.quantile interpolates the two middle values for
+        # even sample counts, matching np.median. Fitness only — the
+        # diagnostic metrics below always stay means.
+        samples = reward_sum.view(D, P, F).permute(1, 0, 2).reshape(P, D * F)
+        reward_per_ind = torch.quantile(samples.float(), 0.5, dim=1)
+    else:
+        reward_per_ind = _per_ind(reward_sum)
     t_per_ind = _per_ind(t_acc)
     dx_per_ind = _per_ind(dx_acc)
     energy_per_ind = _per_ind(energy_acc)
@@ -932,11 +967,16 @@ def evaluate_population_multi_urdf(
         The N URDF files held simultaneously in the Genesis scene.
     existing_env : tuple (env, urdf_paths) or None
         Pre-built MultiSceneEvalEnv to reuse (built once by the caller).
+
+    The returned fitness ("reward_sums") aggregates the N*F per-(urdf, forest)
+    rollout samples of each individual with ``cmaes.fitness_aggregator``
+    (mean by default, median when set); all other metrics are means.
     """
     import genesis as gs
 
     P = len(solutions)
     N = len(urdf_paths)
+    fitness_aggregator = _resolve_fitness_aggregator(cfg)
     if P == 0 or N == 0:
         raise ValueError(
             f"evaluate_population_multi_urdf: need P≥1 and N≥1 "
@@ -1055,6 +1095,7 @@ def evaluate_population_multi_urdf(
         for _ep in range(n_episodes):
             ep_metrics = _rollout_episode_multi_urdf(
                 env, actor, cfg.device, P=P, F=F, verbose=verbose,
+                fitness_aggregator=fitness_aggregator,
             )
             acc["reward_sums"]  += ep_metrics["reward_sum"]
             acc["progresses"]   += ep_metrics["progresses"]

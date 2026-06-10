@@ -53,6 +53,20 @@ from WP2.utils import (
 #  Helpers
 # ============================================================================
 
+def minmax_normalize_fitness(fitnesses: np.ndarray) -> np.ndarray:
+    """Min-max normalize a generation's fitness vector to [0, 1].
+
+    The best individual maps to 1.0 and the worst to 0.0. A constant vector
+    (max == min, e.g. the all-zero fallback after an eval failure) is returned
+    unchanged — there is no rank information to rescale.
+    """
+    fitnesses = np.asarray(fitnesses, dtype=float)
+    span = fitnesses.max() - fitnesses.min()
+    if span == 0.0:
+        return fitnesses
+    return (fitnesses - fitnesses.min()) / span
+
+
 def _format_time(seconds: float) -> Tuple[int, int, int]:
     total = int(seconds)
     h = total // 3600
@@ -1741,28 +1755,29 @@ class HebbianCMAES:
                 # re-explores around the carried state for the new URDFs. The
                 # objective just shifted by more than the typical signal, so a
                 # collapsed sigma would otherwise leave the search stuck near the
-                # previous optimum. Only ever raises sigma, never lowers it.
+                # previous optimum. The factor multiplies the CURRENT sigma, so
+                # the kick scales with how far the search has converged; values
+                # <= 1.0 are a no-op (sigma is only ever raised, never lowered).
                 reinflate = float(getattr(self.cfg.cmaes, "sigma_reinflate", 0.0) or 0.0)
-                if reinflate > 0.0:
-                    target = reinflate * float(self.cfg.cmaes.sigma0)
-                    if es.sigma < target:
-                        print(
-                            f"[HebbianCMAES] Morphology changed → re-inflating "
-                            f"sigma {es.sigma:.4g} → {target:.4g} "
-                            f"(carry mean+covariance, re-explore)"
-                        )
-                        es.sigma = target
+                if reinflate > 1.0:
+                    target = reinflate * es.sigma
+                    print(
+                        f"[HebbianCMAES] Morphology changed → re-inflating "
+                        f"sigma {es.sigma:.4g} → {target:.4g} "
+                        f"(×{reinflate:g} current sigma; carry mean+covariance, re-explore)"
+                    )
+                    es.sigma = target
 
             # Sample new candidate solutions
             solutions = es.ask()   # list of np.ndarray, each shape (n_genes,)
 
             # Per-generation linear ramp on dens_min: dens_min(g) = base + slope * g.
-            # Only applied when dens_min is explicitly set in the eval config so the
-            # WP1-config default is preserved when the override is null.
-            slope = float(getattr(self.cfg.evaluation, "dens_min_slope", 0.0))
+            # Only applied when dens_min is explicitly set so the WP1-config
+            # default is preserved when the override is null.
+            _forest = getattr(self.cfg, "forest", None)
+            slope = float(getattr(_forest, "dens_min_slope", 0.0) or 0.0)
             # forest.dens_min (if set) wins over evaluation.dens_min, matching
             # the precedence in evaluate._apply_forest_overrides.
-            _forest = getattr(self.cfg, "forest", None)
             base_dens_min = (
                 _forest.dens_min
                 if _forest is not None and _forest.dens_min is not None
@@ -1827,8 +1842,14 @@ class HebbianCMAES:
                     "v_deviations": fitnesses,
                 }
 
-            # CMA-ES minimises — negate fitness to maximise reward
-            es.tell(solutions, (-fitnesses).tolist())
+            # CMA-ES minimises — negate fitness to maximise reward.
+            # Optional min-max normalization rescales what CMA-ES sees to
+            # [0, 1] (best → 1, worst → 0); logging/validation keep raw values.
+            if getattr(self.cfg.cmaes, "normalize_fitness", False):
+                tell_fitnesses = minmax_normalize_fitness(fitnesses)
+            else:
+                tell_fitnesses = fitnesses
+            es.tell(solutions, (-tell_fitnesses).tolist())
 
             # UH-CMA-ES: measure residual rank-noise and bump sigma if found.
             # Done AFTER tell (mirrors the canonical pycma loop) and on a
