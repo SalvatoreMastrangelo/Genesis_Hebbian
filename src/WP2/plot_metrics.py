@@ -21,6 +21,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 
 
 # (csv_column, display_label, lower_is_better)
@@ -32,6 +33,31 @@ _METRICS = [
     ("cot",         "Cost of Transport",     True),
     ("v_deviation", "Vel. Deviation [m/s]",  True),
 ]
+
+
+def _urdf_refresh_every(run_dir: Path) -> int:
+    """Read ``catalog.refresh_urdfs_every`` from the run's saved config (0 if
+    absent/disabled)."""
+    cfg_path = run_dir / "reproducibility" / "config.yaml"
+    if not cfg_path.is_file():
+        return 0
+    try:
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        return int((cfg.get("catalog") or {}).get("refresh_urdfs_every") or 0)
+    except Exception:
+        return 0
+
+
+def _draw_refresh_lines(ax, gens, refresh_every: int) -> None:
+    """Mark every morphology (URDF) refresh with a thin dotted orange vline."""
+    if refresh_every <= 0 or len(gens) == 0:
+        return
+    label = "URDF refresh"
+    for g in range(refresh_every, int(np.max(gens)) + 1, refresh_every):
+        ax.axvline(g, color="#ff7f0e", linestyle=":", linewidth=0.8,
+                   alpha=0.7, label=label)
+        label = None  # only one legend entry
 
 
 def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
@@ -87,6 +113,8 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
     specialist_csv = run_dir / "results" / "specialist_summary.csv"
     baseline_df    = pd.read_csv(baseline_csv)   if baseline_csv.is_file()   else None
     specialist_df  = pd.read_csv(specialist_csv) if specialist_csv.is_file() else None
+
+    refresh_every = _urdf_refresh_every(run_dir)
 
     def _draw_metric(ax, col, label, lower_is_better, normalize=False):
         # "Best" = the fitness-winner individual of each generation, evaluated on
@@ -166,7 +194,7 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
             ax.plot(
                 gens[mask], bl_plot[mask],
                 color=baseline_colour, linewidth=1.4,
-                linestyle="-", label="baseline",
+                linestyle="-", label="generalist",
             )
 
         if sp_vals is not None:
@@ -174,14 +202,15 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
             ax.plot(
                 gens[mask], sp_vals[mask],
                 color=specialist_colour, linewidth=1.4,
-                linestyle="-.", marker="s", markersize=4,
-                label="specialist",
+                linestyle="-", label="specialist",
             )
+
+        _draw_refresh_lines(ax, gens, refresh_every)
 
         title = f"{label}  (↓ better)" if lower_is_better else label
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("Generation")
-        ax.set_ylabel(f"{label} / baseline" if normalize else label)
+        ax.set_ylabel(f"{label} / generalist" if normalize else label)
         ax.legend(fontsize=9)
         ax.grid(True, linestyle="--", alpha=0.4)
 
@@ -218,7 +247,7 @@ def plot_metrics(run_dir: Path | str, use_percentile: bool = True) -> None:
         return
 
     norm_dir.mkdir(parents=True, exist_ok=True)
-    norm_suptitle = suptitle + "  (normalized to baseline)"
+    norm_suptitle = suptitle + "  (normalized to generalist)"
     fig_n, axes_n = plt.subplots(2, 3, figsize=(15, 7))
     fig_n.suptitle(norm_suptitle, fontsize=13)
     for ax, (col, label, lower_is_better) in zip(axes_n.flat, _METRICS):
@@ -265,6 +294,8 @@ def plot_validation(run_dir: Path | str) -> None:
     out_dir = run_dir / "plots" / "validation"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    refresh_every = _urdf_refresh_every(run_dir)
+
     def _rolling(y, window=10):
         s = pd.Series(y)
         return s.rolling(window=window, min_periods=1, center=False).mean().to_numpy()
@@ -286,7 +317,7 @@ def plot_validation(run_dir: Path | str) -> None:
         ax.plot(gens, _rolling(best), color=best_colour, linewidth=1.8,
                 label="best (Hebbian)")
         ax.plot(gens, _rolling(base), color=baseline_colour, linewidth=1.8,
-                label="baseline")
+                label="generalist")
         # Optional specialist curve (present only when --specialist was used).
         spec_col = f"specialist_{col}"
         if spec_col in df.columns:
@@ -296,6 +327,7 @@ def plot_validation(run_dir: Path | str) -> None:
             ax.plot(gens, spec, color=specialist_colour, linewidth=1.0, alpha=0.25)
             ax.plot(gens, _rolling(spec), color=specialist_colour, linewidth=1.8,
                     label="specialist")
+        _draw_refresh_lines(ax, gens, refresh_every)
         title = f"{label}  (↓ better)" if lower_is_better else label
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("Generation")
@@ -304,7 +336,7 @@ def plot_validation(run_dir: Path | str) -> None:
         ax.grid(True, linestyle="--", alpha=0.4)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 7))
-    fig.suptitle("Held-out Validation — best individual vs baseline", fontsize=13)
+    fig.suptitle("Held-out Validation — best individual vs generalist", fontsize=13)
     for ax, (col, label, lower_is_better) in zip(axes.flat, _METRICS):
         _draw(ax, col, label, lower_is_better)
     fig.tight_layout()
