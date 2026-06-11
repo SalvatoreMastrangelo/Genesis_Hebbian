@@ -49,11 +49,13 @@ def _build_scene_inputs(cfg, urdf_paths_str):
         eta=cfg.hebbian.eta,
         w_max=cfg.hebbian.w_max,
     )
+    from WP2.frozen_actor import last_actor_linear_key
     ckpt = torch.load(cfg.checkpoint.model_path, map_location="cpu", weights_only=False)
     sd = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
-    if "actor.4.weight" in sd:
-        hebb_cfg.num_actions = sd["actor.4.weight"].shape[0]
-        hebb_cfg.hidden_dim = sd["actor.4.weight"].shape[1]
+    last_key = last_actor_linear_key(sd)
+    if last_key is not None:
+        hebb_cfg.num_actions = sd[last_key].shape[0]
+        hebb_cfg.hidden_dim = sd[last_key].shape[1]
     del ckpt, sd
 
     hebb_cfg_dict = {

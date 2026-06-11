@@ -23,6 +23,7 @@ from WP2.config import HebbianEvolutionConfig
 from WP2.frozen_actor import (
     IsolatedPopulationActor,
     build_isolated_population_actor,
+    last_actor_linear_key,
     load_frozen_actor,
 )
 from WP2.utils import decode_hebbian_genes
@@ -1283,9 +1284,10 @@ if __name__ == "__main__":
     import torch
     _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
     _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
-    if "actor.4.weight" in _sd:
-        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
-        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    _last_key = last_actor_linear_key(_sd)
+    if _last_key is not None:
+        cfg.hebbian.num_actions = _sd[_last_key].shape[0]
+        cfg.hebbian.hidden_dim = _sd[_last_key].shape[1]
     del _ckpt, _sd
 
     # --- load WP1 config and optionally override forest length ---

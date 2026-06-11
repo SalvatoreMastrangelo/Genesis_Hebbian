@@ -1122,11 +1122,13 @@ class HebbianCMAES:
             # Re-infer last-layer dims from this checkpoint so the genome
             # length matches a (possibly different) architecture.
             import torch as _torch
+            from WP2.frozen_actor import last_actor_linear_key
             _ckpt = _torch.load(ckpt_path, map_location="cpu", weights_only=False)
             _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
-            if "actor.4.weight" in _sd:
-                ref_cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
-                ref_cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+            _last_key = last_actor_linear_key(_sd)
+            if _last_key is not None:
+                ref_cfg.hebbian.num_actions = _sd[_last_key].shape[0]
+                ref_cfg.hebbian.hidden_dim = _sd[_last_key].shape[1]
             del _ckpt, _sd
 
         n_weights = ref_cfg.hebbian.num_actions * ref_cfg.hebbian.hidden_dim

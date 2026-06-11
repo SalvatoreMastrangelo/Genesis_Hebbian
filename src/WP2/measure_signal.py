@@ -59,11 +59,13 @@ def main() -> None:
     cfg.hebbian.evolve_eta = False
     cfg.hebbian.evolve_decay = False
 
+    from WP2.frozen_actor import last_actor_linear_key
     ck = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
     sd = ck.get("model_state_dict", ck) if isinstance(ck, dict) else ck
-    if "actor.4.weight" in sd:
-        cfg.hebbian.num_actions = sd["actor.4.weight"].shape[0]
-        cfg.hebbian.hidden_dim = sd["actor.4.weight"].shape[1]
+    last_key = last_actor_linear_key(sd)
+    if last_key is not None:
+        cfg.hebbian.num_actions = sd[last_key].shape[0]
+        cfg.hebbian.hidden_dim = sd[last_key].shape[1]
     del ck, sd
     seed_everything(cfg.seed)
 

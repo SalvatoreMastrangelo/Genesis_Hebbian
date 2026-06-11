@@ -547,11 +547,13 @@ def main() -> None:
     from WP2.utils import create_zero_initialized_genome
 
     _cfg = HebbianEvolutionConfig.from_yaml(repro / "config.yaml")
+    from WP2.frozen_actor import last_actor_linear_key
     _ck = torch.load(str(wp1_ckpt), map_location="cpu", weights_only=False)
     _sd = _ck.get("model_state_dict", _ck) if isinstance(_ck, dict) else _ck
-    if "actor.4.weight" in _sd:
-        _cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
-        _cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    _last_key = last_actor_linear_key(_sd)
+    if _last_key is not None:
+        _cfg.hebbian.num_actions = _sd[_last_key].shape[0]
+        _cfg.hebbian.hidden_dim = _sd[_last_key].shape[1]
     del _ck, _sd
     zero_genome = np.asarray(create_zero_initialized_genome(_cfg), dtype=np.float64)
 

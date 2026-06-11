@@ -71,7 +71,7 @@ from winged_drone_train.train import (
 )
 from winged_drone_train.env import WingedDroneEnv
 from winged_drone_train.noise_config import configure_solver_noise
-from winged_drone_train.rl.A2C_modified import ActorCriticTanh
+from winged_drone_train.rl.A2C_modified import ActorCriticTanh, ActorCriticTanhFF
 from winged_drone_train.rl.logging import RLTrainingLogger
 from winged_drone_train.runtime_random import seed_runtime_randomness
 from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
@@ -84,6 +84,7 @@ from WP1.run_manager import RunManager
 # RSL-RL resolves policy classes by name; expose ours on builtins so the
 # runner can find it after pickle round-trips.
 builtins.ActorCriticTanh = ActorCriticTanh
+builtins.ActorCriticTanhFF = ActorCriticTanhFF
 
 
 # --------------------------------------------------------------------------- #

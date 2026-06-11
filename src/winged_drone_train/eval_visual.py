@@ -2239,11 +2239,13 @@ def _run_hebbian(args) -> None:
     cfg.checkpoint_config_path = str(wp1_cfg_path)
 
     # Infer last-layer dims from checkpoint (robust to config drift)
+    from WP2.frozen_actor import last_actor_linear_key
     _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
     _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
-    if "actor.4.weight" in _sd:
-        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
-        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    _last_key = last_actor_linear_key(_sd)
+    if _last_key is not None:
+        cfg.hebbian.num_actions = _sd[_last_key].shape[0]
+        cfg.hebbian.hidden_dim = _sd[_last_key].shape[1]
     del _ckpt, _sd
 
     # Build env from the WP1 config embedded with the run

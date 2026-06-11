@@ -52,3 +52,32 @@ class ActorCriticTanh(ActorCriticRecurrent):
         z  = 0.5 * (torch.log1p(a) - torch.log1p(-a))
         logp_corr = 2 * (self._LOG2 - z - F.softplus(-2*z))
         return (self.distribution.log_prob(z) + logp_corr).sum(-1)
+
+
+class ActorCriticTanhFF(ActorCritic):
+    """Feed-forward twin of ActorCriticTanh (no LSTM), for no-LSTM ablations.
+    Selected in WP1 YAML via `policy.class_name: ActorCriticTanhFF`."""
+    def __init__(self, *args, max_servo=0.34906585, max_throttle=1.0, **kw):
+        for k in ("rnn_type", "rnn_hidden_size", "rnn_num_layers", "critic_rnn_hidden_size"):
+            kw.pop(k, None)
+        super().__init__(*args, **kw)
+        self.max_servo    = max_servo
+        self.max_throttle = max_throttle
+        self._LOG2        = math.log(2.)
+        self.recurrency   = False
+
+    _scale               = ActorCriticTanh._scale
+    _inverse_scale       = ActorCriticTanh._inverse_scale
+    get_actions_log_prob = ActorCriticTanh.get_actions_log_prob
+
+    def act(self, obs, deterministic=False, masks=None, hidden_states=None):
+        self.update_distribution(obs)
+        z = self.distribution.mean if deterministic else self.distribution.rsample()
+        a = torch.tanh(z)                         # (-1,1)
+        act = self._scale(a)
+
+        # log-prob stabile
+        logp_corr = 2 * (self._LOG2 - z - F.softplus(-2*z))
+        self._last_logp = (self.distribution.log_prob(z) + logp_corr).sum(-1, keepdim=True)
+
+        return act

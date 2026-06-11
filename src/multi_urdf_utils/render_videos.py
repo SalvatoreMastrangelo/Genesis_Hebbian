@@ -75,9 +75,11 @@ def _load_hebbian_config(checkpoint_path: str, benchmark_cfg: BenchmarkConfig) -
         w_max=benchmark_cfg.hebbian.w_max,
     )
 
-    if "actor.4.weight" in sd:
-        hebb_cfg.num_actions = sd["actor.4.weight"].shape[0]
-        hebb_cfg.hidden_dim = sd["actor.4.weight"].shape[1]
+    from WP2.frozen_actor import last_actor_linear_key
+    last_key = last_actor_linear_key(sd)
+    if last_key is not None:
+        hebb_cfg.num_actions = sd[last_key].shape[0]
+        hebb_cfg.hidden_dim = sd[last_key].shape[1]
 
     del ckpt, sd
     return hebb_cfg

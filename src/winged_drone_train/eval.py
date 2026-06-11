@@ -26,13 +26,14 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from winged_drone_train.rl.A2C_modified import ActorCriticTanh
+from winged_drone_train.rl.A2C_modified import ActorCriticTanh, ActorCriticTanhFF
 from winged_drone_train.urdf_resolver import resolve_or_generate_urdf
 from winged_drone_train.noise_config import configure_solver_noise
 from winged_drone_train.runtime_random import seed_runtime_randomness
 import builtins
 
 builtins.ActorCriticTanh = ActorCriticTanh  # for model loading
+builtins.ActorCriticTanhFF = ActorCriticTanhFF  # for model loading
 
 import genesis as gs
 from winged_drone_train.env import WingedDroneEnv, _apply_drone_profile_defaults
@@ -1028,11 +1029,13 @@ def evaluation_hebbian(
     cfg.checkpoint_config_path = str(wp1_cfg_path)
 
     # Infer last-layer dims from the checkpoint (robust to config drift).
+    from WP2.frozen_actor import last_actor_linear_key
     _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
     _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
-    if "actor.4.weight" in _sd:
-        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
-        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    _last_key = last_actor_linear_key(_sd)
+    if _last_key is not None:
+        cfg.hebbian.num_actions = _sd[_last_key].shape[0]
+        cfg.hebbian.hidden_dim = _sd[_last_key].shape[1]
     del _ckpt, _sd
 
     wp1_cfg = RunConfig.from_yaml(cfg.checkpoint_config_path)

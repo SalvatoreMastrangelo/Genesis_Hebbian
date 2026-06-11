@@ -97,11 +97,13 @@ def main() -> None:
     cfg.apply_cli_overrides(remaining)
 
     # Infer last-layer dims from the checkpoint so the genome length is correct.
+    from WP2.frozen_actor import last_actor_linear_key
     _ckpt = torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
     _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
-    if "actor.4.weight" in _sd:
-        cfg.hebbian.num_actions = _sd["actor.4.weight"].shape[0]
-        cfg.hebbian.hidden_dim = _sd["actor.4.weight"].shape[1]
+    _last_key = last_actor_linear_key(_sd)
+    if _last_key is not None:
+        cfg.hebbian.num_actions = _sd[_last_key].shape[0]
+        cfg.hebbian.hidden_dim = _sd[_last_key].shape[1]
     del _ckpt, _sd
 
     seed_everything(cfg.seed)

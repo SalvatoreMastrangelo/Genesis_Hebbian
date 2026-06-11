@@ -36,7 +36,7 @@ import torch
 
 from rsl_rl.runners import OnPolicyRunner
 from winged_drone_train.analysis.eval_plotter import EvaluationPlotter
-from winged_drone_train.rl.A2C_modified import ActorCriticTanh
+from winged_drone_train.rl.A2C_modified import ActorCriticTanh, ActorCriticTanhFF
 from winged_drone_train.rl.logging import RLTrainingLogger
 from winged_drone_train.env import (
     LISPARROW_SERVO_JOINT_NAMES,
@@ -50,6 +50,7 @@ import builtins
 
 # RSL-RL resolves policy classes by name; expose our implementation on builtins
 builtins.ActorCriticTanh = ActorCriticTanh
+builtins.ActorCriticTanhFF = ActorCriticTanhFF
 
 # ---------------------------------------------------------------------------
 #  Cache handling (Taichi / Genesis)

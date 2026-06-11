@@ -5,8 +5,10 @@ Frozen actor loading + IsolatedPopulationActor for WP2 evaluation.
 We load the pretrained WP1 actor once, freeze it, and wrap it in an
 ``IsolatedPopulationActor`` that maintains:
 
-1. ONE shared frozen backbone (LSTM + MLP layers 1..N-1 + last-layer bias).
-2. ``K*S`` independent LSTM hidden states, one per environment slot.
+1. ONE shared frozen backbone (LSTM + MLP layers 1..N-1 + last-layer bias,
+   or a pure MLP for feed-forward checkpoints).
+2. ``K*S`` independent LSTM hidden states, one per environment slot
+   (recurrent backbones only).
 3. ``K*S`` independent last-layer weight matrices (managed by
    ``HebbianLastLayer``), with ABCD rules replicated from K individuals.
 
@@ -18,6 +20,7 @@ own genome.
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -35,17 +38,46 @@ from WP2.hebbian import HebbianLastLayer
 #  Actor loading
 # ============================================================================
 
-def _build_actor_critic(wp1_cfg_path: str | Path, device: str = "cpu", state_dict=None):
-    """Instantiate an ActorCriticTanh with the same architecture as WP1.
+def is_recurrent_state_dict(state_dict) -> bool:
+    """True iff the checkpoint state_dict belongs to a recurrent (LSTM) actor.
 
-    Reads the WP1 config to get hidden dims, RNN params, etc.
-    Returns an uninitialised model (weights will be loaded from checkpoint).
+    Recurrent WP1 checkpoints store the actor memory under ``memory_a.*``;
+    feed-forward checkpoints have no such keys.
+    """
+    return any(k.startswith("memory_a.") for k in state_dict)
+
+
+def last_actor_linear_key(state_dict) -> str | None:
+    """Return the ``actor.<i>.weight`` key with the highest layer index.
+
+    Replaces hardcoded ``"actor.4.weight"`` sniffing — feed-forward actors
+    have a different number of layers. Returns ``None`` if no key matches.
+    """
+    best_key: str | None = None
+    best_idx = -1
+    for k in state_dict:
+        m = re.match(r"^actor\.(\d+)\.weight$", k)
+        if m and int(m.group(1)) > best_idx:
+            best_idx = int(m.group(1))
+            best_key = k
+    return best_key
+
+
+def _build_actor_critic(wp1_cfg_path: str | Path, device: str = "cpu", state_dict=None):
+    """Instantiate an ActorCriticTanh / ActorCriticTanhFF matching WP1.
+
+    Reads the WP1 config to get hidden dims, RNN params, etc. The
+    recurrent-vs-feed-forward decision comes from the checkpoint state_dict
+    when available (``memory_a.*`` keys), else from the config's policy
+    ``class_name``. Returns an uninitialised model (weights will be loaded
+    from checkpoint).
     """
     from WP1.config import RunConfig
     import builtins
-    from winged_drone_train.rl.A2C_modified import ActorCriticTanh
+    from winged_drone_train.rl.A2C_modified import ActorCriticTanh, ActorCriticTanhFF
 
     builtins.ActorCriticTanh = ActorCriticTanh
+    builtins.ActorCriticTanhFF = ActorCriticTanhFF
 
     wp1_cfg = RunConfig.from_yaml(wp1_cfg_path)
 
@@ -60,8 +92,14 @@ def _build_actor_critic(wp1_cfg_path: str | Path, device: str = "cpu", state_dic
     critic_rnn_hidden = policy_cfg.get("critic_rnn_hidden_size", None)
 
     if state_dict is not None:
-        if "actor.4.weight" in state_dict:
-            num_actions = state_dict["actor.4.weight"].shape[0]
+        recurrent = is_recurrent_state_dict(state_dict)
+    else:
+        recurrent = policy_cfg.get("class_name", "ActorCriticTanh") != "ActorCriticTanhFF"
+
+    if state_dict is not None:
+        last_key = last_actor_linear_key(state_dict)
+        if last_key is not None:
+            num_actions = state_dict[last_key].shape[0]
         if "memory_a.rnn.weight_ih_l0" in state_dict:
             actor_rnn_hidden = state_dict["memory_a.rnn.weight_ih_l0"].shape[0] // 4
         if "memory_c.rnn.weight_ih_l0" in state_dict:
@@ -70,21 +108,40 @@ def _build_actor_critic(wp1_cfg_path: str | Path, device: str = "cpu", state_dic
 
     import contextlib, io
     with contextlib.redirect_stdout(io.StringIO()):
-        model = ActorCriticTanh(
-            num_actor_obs=num_obs,
-            num_critic_obs=num_critic_obs,
-            num_actions=num_actions,
-            actor_hidden_dims=policy_cfg["actor_hidden_dims"],
-            critic_hidden_dims=policy_cfg["critic_hidden_dims"],
-            activation=policy_cfg["activation"],
-            rnn_type=policy_cfg.get("rnn_type", "lstm"),
-            rnn_hidden_size=actor_rnn_hidden,
-            critic_rnn_hidden_size=critic_rnn_hidden,
-            rnn_num_layers=policy_cfg.get("rnn_num_layers", 1),
-            init_noise_std=policy_cfg.get("init_noise_std", 0.3),
-            max_servo=policy_cfg.get("max_servo", 1.0),
-            max_throttle=policy_cfg.get("max_throttle", 1.0),
-        )
+        if recurrent:
+            model = ActorCriticTanh(
+                num_actor_obs=num_obs,
+                num_critic_obs=num_critic_obs,
+                num_actions=num_actions,
+                actor_hidden_dims=policy_cfg["actor_hidden_dims"],
+                critic_hidden_dims=policy_cfg["critic_hidden_dims"],
+                activation=policy_cfg["activation"],
+                rnn_type=policy_cfg.get("rnn_type", "lstm"),
+                rnn_hidden_size=actor_rnn_hidden,
+                critic_rnn_hidden_size=critic_rnn_hidden,
+                rnn_num_layers=policy_cfg.get("rnn_num_layers", 1),
+                init_noise_std=policy_cfg.get("init_noise_std", 0.3),
+                max_servo=policy_cfg.get("max_servo", 1.0),
+                max_throttle=policy_cfg.get("max_throttle", 1.0),
+            )
+        else:
+            # Feed-forward critic obs: no memory_c to sniff — use critic.0's
+            # input width from the checkpoint when available.
+            if state_dict is not None and "critic.0.weight" in state_dict:
+                num_critic_obs = state_dict["critic.0.weight"].shape[1]
+            else:
+                num_critic_obs = num_obs
+            model = ActorCriticTanhFF(
+                num_actor_obs=num_obs,
+                num_critic_obs=num_critic_obs,
+                num_actions=num_actions,
+                actor_hidden_dims=policy_cfg["actor_hidden_dims"],
+                critic_hidden_dims=policy_cfg["critic_hidden_dims"],
+                activation=policy_cfg["activation"],
+                init_noise_std=policy_cfg.get("init_noise_std", 0.3),
+                max_servo=policy_cfg.get("max_servo", 1.0),
+                max_throttle=policy_cfg.get("max_throttle", 1.0),
+            )
     return model, wp1_cfg
 
 
@@ -193,16 +250,17 @@ def attach_hebbian(
 class IsolatedPopulationActor:
     """K individuals × S envs with fully-isolated per-env state.
 
-    The frozen backbone (LSTM + MLP layers 1..N-1 + last-layer bias) is
-    shared across all ``K*S`` environment slots because it is never
-    mutated.  Each slot owns its own LSTM hidden/cell state and its own
+    The frozen backbone (LSTM + MLP layers 1..N-1 + last-layer bias, or a
+    pure MLP for feed-forward checkpoints) is shared across all ``K*S``
+    environment slots because it is never mutated.  Each slot owns its own
+    LSTM hidden/cell state (recurrent backbones only) and its own
     last-layer weight matrix; nothing crosses the boundary between slots.
 
     Parameters
     ----------
     model : nn.Module
-        Frozen ActorCriticTanh (must be a deep copy — not shared with any
-        other actor).
+        Frozen ActorCriticTanh / ActorCriticTanhFF (must be a deep copy —
+        not shared with any other actor).
     hebbian : HebbianLastLayer
         Per-env Hebbian controller with ``num_envs == K * S``.
     K : int
@@ -226,8 +284,9 @@ class IsolatedPopulationActor:
             raise ValueError(
                 f"hebbian.num_envs ({hebbian.num_envs}) must equal K*S ({K * S})"
             )
-        if not hasattr(model, "memory_a") or not getattr(model, "recurrency", False):
-            raise ValueError("IsolatedPopulationActor requires a recurrent model")
+        self.recurrent = hasattr(model, "memory_a") and bool(
+            getattr(model, "recurrency", False)
+        )
 
         self.model = model
         self.hebbian = hebbian
@@ -238,13 +297,16 @@ class IsolatedPopulationActor:
         # If the checkpoint was trained without normalization this is nn.Identity.
         self.obs_normalizer: nn.Module = obs_normalizer if obs_normalizer is not None else nn.Identity()
 
-        rnn = model.memory_a.rnn if hasattr(model.memory_a, "rnn") else model.memory_a
-        if not isinstance(rnn, nn.LSTM):
-            raise ValueError("IsolatedPopulationActor only supports LSTM backbones")
-        self._rnn = rnn
+        if self.recurrent:
+            rnn = model.memory_a.rnn if hasattr(model.memory_a, "rnn") else model.memory_a
+            if not isinstance(rnn, nn.LSTM):
+                raise ValueError("IsolatedPopulationActor only supports LSTM backbones")
+            self._rnn = rnn
 
-        self._hidden_size = rnn.hidden_size
-        self._num_layers = rnn.num_layers
+            self._hidden_size = rnn.hidden_size
+            self._num_layers = rnn.num_layers
+        else:
+            self._rnn = None
 
         # Cache references to actor layers.
         # NOTE: `model.actor.children()` deduplicates by module identity, which
@@ -255,29 +317,36 @@ class IsolatedPopulationActor:
         self._last_layer_bias = self._actor_layers[-1].bias
 
         # Owned LSTM states: (num_layers, K*S, hidden) — NOT shared with model.memory_a
+        # (stay None for feed-forward backbones)
         self._h: Tensor | None = None
         self._c: Tensor | None = None
+        # For feed-forward backbones _h stays None forever, so act() uses
+        # this flag instead to detect a missing reset_episode() call.
+        self._episode_started = False
 
     def reset_episode(self, device: str | torch.device = "cpu") -> None:
         """Zero the LSTM states for ALL slots and reset per-env weights to checkpoint."""
-        dev = torch.device(device)
-        N = self.K * self.S
-        self._h = torch.zeros(
-            self._num_layers, N, self._hidden_size, device=dev, dtype=torch.float32
-        )
-        self._c = torch.zeros(
-            self._num_layers, N, self._hidden_size, device=dev, dtype=torch.float32
-        )
+        if self.recurrent:
+            dev = torch.device(device)
+            N = self.K * self.S
+            self._h = torch.zeros(
+                self._num_layers, N, self._hidden_size, device=dev, dtype=torch.float32
+            )
+            self._c = torch.zeros(
+                self._num_layers, N, self._hidden_size, device=dev, dtype=torch.float32
+            )
+            self._rnn.flatten_parameters()
         self.hebbian.reset_weights()
-        self._rnn.flatten_parameters()
+        self._episode_started = True
 
     def reset_individual(self, k: int, device: str | torch.device = "cpu") -> None:
         """Zero the LSTM states for individual ``k``'s S slots and reset their weights."""
-        if self._h is None or self._c is None:
+        if not self._episode_started:
             raise RuntimeError("reset_individual called before reset_episode")
-        start, end = k * self.S, (k + 1) * self.S
-        self._h[:, start:end, :].zero_()
-        self._c[:, start:end, :].zero_()
+        if self.recurrent:
+            start, end = k * self.S, (k + 1) * self.S
+            self._h[:, start:end, :].zero_()
+            self._c[:, start:end, :].zero_()
         self.hebbian.reset_weights_individual(k, self.S)
 
     @torch.no_grad()
@@ -294,18 +363,22 @@ class IsolatedPopulationActor:
         actions : Tensor
             Scaled actions ``(K*S, num_actions)``.
         """
-        if self._h is None or self._c is None:
+        if not self._episode_started:
             raise RuntimeError("act called before reset_episode")
 
         # --- 0. Normalize observations (matches WP1 inference pipeline) ---
         obs = self.obs_normalizer(obs)
 
-        # --- 1. LSTM with our owned hidden states (bypass memory_a.hidden_states) ---
-        # obs: (N, obs_dim) → (1, N, obs_dim) for (seq_len, batch, input) layout
-        rnn_in = obs.unsqueeze(0)
-        rnn_out, (h_new, c_new) = self._rnn(rnn_in, (self._h, self._c))
-        self._h, self._c = h_new, c_new
-        inp = rnn_out.squeeze(0)  # (N, lstm_out)
+        # --- 1. LSTM with our owned hidden states (bypass memory_a.hidden_states);
+        #        feed-forward backbones feed the normalized obs straight in ---
+        if self.recurrent:
+            # obs: (N, obs_dim) → (1, N, obs_dim) for (seq_len, batch, input) layout
+            rnn_in = obs.unsqueeze(0)
+            rnn_out, (h_new, c_new) = self._rnn(rnn_in, (self._h, self._c))
+            self._h, self._c = h_new, c_new
+            inp = rnn_out.squeeze(0)  # (N, lstm_out)
+        else:
+            inp = obs
 
         # --- 2. Shared frozen MLP backbone (all layers except last Linear) ---
         x = inp
@@ -376,7 +449,13 @@ def build_isolated_population_actor(
     )
 
     # Load observation normalizer (matches WP1 get_inference_policy).
-    num_obs = model.memory_a.rnn.input_size
+    if hasattr(model, "memory_a"):
+        num_obs = model.memory_a.rnn.input_size
+    else:
+        # Feed-forward: obs dim is the in_features of the first actor Linear.
+        num_obs = next(
+            m.in_features for m in model.actor.modules() if isinstance(m, nn.Linear)
+        )
     obs_normalizer = _load_obs_normalizer(ckpt_dict, num_obs, device)
 
     # Deep-copy to fully isolate this actor from the cached/template model
