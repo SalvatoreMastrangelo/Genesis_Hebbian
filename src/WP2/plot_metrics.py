@@ -354,6 +354,39 @@ def plot_validation(run_dir: Path | str) -> None:
         print(f"[plot_validation] Saved {out_s}")
         plt.close(fig_s)
 
+    # Recovered performance: fraction of the specialist-vs-generalist fitness
+    # gap that the Hebbian controller closes, per validation generation:
+    #   (best - baseline) / (specialist - baseline)
+    needed = {"best_fitness", "baseline_fitness", "specialist_fitness"}
+    if needed <= set(df.columns):
+        best = df["best_fitness"].to_numpy(dtype=float)
+        base = df["baseline_fitness"].to_numpy(dtype=float)
+        spec = df["specialist_fitness"].to_numpy(dtype=float)
+        gap = spec - base
+        # NaN out generations where the gap is ~0 (ratio undefined / explosive).
+        recovered = np.where(np.abs(gap) > 1e-9, (best - base) / gap, np.nan) * 100.0
+
+        fig_r, ax_r = plt.subplots(figsize=(6, 4))
+        ax_r.plot(gens, recovered, color=best_colour, linewidth=1.0, alpha=0.25)
+        ax_r.plot(gens, _rolling(recovered), color=best_colour, linewidth=1.8,
+                  label="best (Hebbian)")
+        ax_r.axhline(0.0, color=baseline_colour, linestyle="--", linewidth=1.2,
+                     label="generalist (0%)")
+        ax_r.axhline(100.0, color=specialist_colour, linestyle="--", linewidth=1.2,
+                     label="specialist (100%)")
+        _draw_refresh_lines(ax_r, gens, refresh_every)
+        ax_r.set_title("Recovered performance — share of specialist–generalist "
+                       "gap closed", fontsize=11)
+        ax_r.set_xlabel("Generation")
+        ax_r.set_ylabel("Recovered gap [%]")
+        ax_r.legend(fontsize=9)
+        ax_r.grid(True, linestyle="--", alpha=0.4)
+        fig_r.tight_layout()
+        out_r = out_dir / "recovered_performance.png"
+        fig_r.savefig(out_r, dpi=150, bbox_inches="tight")
+        print(f"[plot_validation] Saved {out_r}")
+        plt.close(fig_r)
+
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("-")]

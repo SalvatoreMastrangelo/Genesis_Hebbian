@@ -370,6 +370,17 @@ class CMAESConfig:
         E.g. 1.5 → sigma grows 50% each change; values <= 1.0 (including 0)
         → disabled (pure carry, sigma keeps shrinking). No effect when URDFs
         are not refreshed.
+    uniform_weighting : bool or None
+        Recombination weights over the selected top half (mu = lambda/2).
+        ``None``/``False`` (default) → pycma's legacy log-decreasing weights
+        (rank 1 weighs several times rank mu; active CMA puts negative
+        weights on the bottom half). ``True`` → uniform weights 1/mu on the
+        top half and 0 on the bottom half: only top-half *membership*
+        matters, not the (noise-sensitive) ordering within it. Raises
+        mu_eff from ~lambda/4 to lambda/2 (halves the eval-noise variance
+        of the mean update) and, as a side effect, disables active CMA's
+        negative covariance update. Useful when per-individual eval noise
+        is comparable to the genome signal (sigma_rank floor).
     uh_enabled : bool
         Enable UH-CMA-ES uncertainty handling (Hansen et al. 2009, the σ-only
         arm). After ``tell()`` the population is re-evaluated on the *same*
@@ -410,6 +421,7 @@ class CMAESConfig:
     sigma_reinflate: float = 1.0
     fitness_aggregator: Optional[str] = None  # null/"mean" or "median"
     normalize_fitness: bool = False
+    uniform_weighting: Optional[bool] = None  # null/false = legacy log weights; true = uniform top-half
 
     # --- Uncertainty handling (UH-CMA-ES, Hansen et al. 2009; σ-only arm) ---
     uh_enabled: bool = False

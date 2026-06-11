@@ -1679,6 +1679,22 @@ class HebbianCMAES:
         if self.cfg.cmaes.population_size > 0:
             opts["popsize"] = self.cfg.cmaes.population_size
 
+        if bool(getattr(self.cfg.cmaes, "uniform_weighting", None) or False):
+            # Uniform weights 1/mu on the top half, 0 on the bottom half:
+            # only top-half membership matters, not the noise-sensitive
+            # ordering within it (and active CMA's negative weights are
+            # dropped). The weights list fixes popsize to its length, so it
+            # must match the configured/auto lambda.
+            lam = (
+                self.cfg.cmaes.population_size
+                if self.cfg.cmaes.population_size > 0
+                else int(4 + 3 * np.log(self.n_genes))
+            )
+            mu = lam // 2
+            opts["CMA_recombination_weights"] = [1.0 / mu] * mu + [0.0] * (lam - mu)
+            print(f"[HebbianCMAES] Uniform recombination weights: "
+                  f"1/{mu} on top {mu} of {lam} (mu_eff={mu}, active-CMA off)")
+
         if resume_from_gen is not None:
             # Restore CMA-ES from checkpoint
             es = self._restore_cmaes(resume_from_gen)

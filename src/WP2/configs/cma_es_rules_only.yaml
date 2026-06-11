@@ -63,6 +63,11 @@ cmaes:
                                # diagnostic metrics (progress, crash, COT, …) stay means.
   normalize_fitness: false     # min-max normalize fitness to [0,1] per generation before tell()
                                # (best individual → 1, worst → 0). Rank-preserving; logging stays raw.
+  uniform_weighting: false     # null/false = legacy log-decreasing recombination weights (rank 1 in the
+                               # top half weighs several × rank mu; active CMA on). true = uniform 1/mu
+                               # weights on the top half, 0 on the bottom: only top-half MEMBERSHIP
+                               # matters, not the noise-sensitive ordering within it (mu_eff λ/4 → λ/2,
+                               # halves eval-noise variance of the mean update; disables active CMA).
 
   # --- UH-CMA-ES uncertainty handling (Hansen et al. 2009, sigma-only arm) ---
   # After tell(), re-evaluate the population on the SAME forests (no refresh) to
