@@ -19,7 +19,7 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: median_validation_wspecialist_no_bix_15_lstm # generalist_256_10_urdf_0.005_0.05
+exp_name: uniform_validation_wspecialist_no_bix_15_lstm # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -45,7 +45,7 @@ hebbian:
   eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 125
+  num_generations: 200
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
@@ -57,13 +57,13 @@ cmaes:
   sigma_reinflate: 1.0         # on URDF/morphology change: multiply the CURRENT sigma by this factor
                                # (carry mean+covariance, re-explore the shifted objective).
                                # <= 1.0 (incl. 0) = off (pure carry, sigma keeps shrinking)
-  fitness_aggregator: "median" # how per-(urdf,forest) reward sums reduce to one fitness per
+  fitness_aggregator: "mean"   # how per-(urdf,forest) reward sums reduce to one fitness per
                                # individual: null or "mean" = mean (legacy), "median" = median
                                # (robust to a single catastrophic forest). Fitness only —
                                # diagnostic metrics (progress, crash, COT, …) stay means.
   normalize_fitness: false     # min-max normalize fitness to [0,1] per generation before tell()
                                # (best individual → 1, worst → 0). Rank-preserving; logging stays raw.
-  uniform_weighting: false     # null/false = legacy log-decreasing recombination weights (rank 1 in the
+  uniform_weighting: true      # null/false = legacy log-decreasing recombination weights (rank 1 in the
                                # top half weighs several × rank mu; active CMA on). true = uniform 1/mu
                                # weights on the top half, 0 on the bottom: only top-half MEMBERSHIP
                                # matters, not the noise-sensitive ordering within it (mu_eff λ/4 → λ/2,
