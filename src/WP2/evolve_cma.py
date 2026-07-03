@@ -1384,6 +1384,20 @@ class HebbianCMAES:
         # RNG state
         save_rng_state(gen_path / "rng_state.pkl")
 
+        # Keep ONLY the latest generation's CMA-ES state on disk. The pickled
+        # `es` object is ~55 MB and is read solely to resume an interrupted run
+        # (always from the most recent generation) -- plotting/analysis never
+        # touch it. Without this, a long evolution accumulates tens of GB of
+        # redundant snapshots. We prune AFTER the current write succeeds, so a
+        # valid resume anchor always exists. solutions/fitnesses/rng_state for
+        # every generation and the final cmaes_final_state.pkl are preserved.
+        for stale in self.gen_dir.glob("gen_*/cmaes_state.pkl"):
+            if stale.parent != gen_path:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+
     def _after_generation(
         self,
         gen: int,
