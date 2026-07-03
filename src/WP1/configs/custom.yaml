@@ -48,6 +48,7 @@ ppo:
 # Policy network  (forwarded into train_cfg["policy"])
 ##############################################################################
 policy:
+  class_name: ActorCriticTanh              # "ActorCriticTanh" (LSTM) | "ActorCriticTanhFF" (pure MLP; rnn_* ignored)
   actor_hidden_dims: [32, 16]              # actor MLP layer sizes
   critic_hidden_dims: [64, 64]             # critic MLP layer sizes
   activation: elu                          # "elu" | "relu" | "tanh" | "selu" | ...
