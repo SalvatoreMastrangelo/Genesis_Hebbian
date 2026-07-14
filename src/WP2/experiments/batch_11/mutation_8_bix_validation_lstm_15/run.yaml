@@ -19,16 +19,16 @@
 # To reuse an existing catalog instead of auto-generating new URDFs:
 #   --cfg.catalog.path logs/runs/<morph_run>/catalog/catalog.txt
 
-exp_name: validation_wspecialis_15_no_bix_15_lstm # generalist_256_10_urdf_0.005_0.05
+exp_name: mutation_8_bix_validation_lstm_15 # generalist_256_10_urdf_0.005_0.05
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
 
 hebbian:
   enabled: true
-  eta: 0.005                     
+  eta: 0.005
   evolve_eta: false
-  decay: 0.05                    
+  decay: 0.05
   evolve_decay: false
   use_oja_coefficient: false
   initialize_rules_to_zero: true
@@ -45,7 +45,7 @@ hebbian:
   eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 100
+  num_generations: 50
   population_size: 0   # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
@@ -63,11 +63,6 @@ cmaes:
                                # diagnostic metrics (progress, crash, COT, …) stay means.
   normalize_fitness: false     # min-max normalize fitness to [0,1] per generation before tell()
                                # (best individual → 1, worst → 0). Rank-preserving; logging stays raw.
-  uniform_weighting: false     # null/false = legacy log-decreasing recombination weights (rank 1 in the
-                               # top half weighs several × rank mu; active CMA on). true = uniform 1/mu
-                               # weights on the top half, 0 on the bottom: only top-half MEMBERSHIP
-                               # matters, not the noise-sensitive ordering within it (mu_eff λ/4 → λ/2,
-                               # halves eval-noise variance of the mean update; disables active CMA).
 
   # --- UH-CMA-ES uncertainty handling (Hansen et al. 2009, sigma-only arm) ---
   # After tell(), re-evaluate the population on the SAME forests (no refresh) to
@@ -88,14 +83,14 @@ cmaes:
 
 catalog:
   path: ""                         # empty + num_urdfs>1 ⇒ auto-generate random URDFs at run start
-  num_urdfs: 1                     # N: number of URDFs, each in its own Genesis scene
+  num_urdfs: 64                    # N: number of URDFs, each in its own Genesis scene
   num_episodes: 1                  # rollout episodes per generation
   force_multi_urdf: false          # route N=1 through the multi-URDF path (for verification)
-  include_standard_mydrone: true   # false ⇒ all N URDFs are randomly sampled (no fixed baseline)
-  refresh_urdfs_every: 0           # >0 ⇒ refresh the URDF pool every K inner generations
+  include_standard_mydrone: false  # false ⇒ all N URDFs are randomly sampled (no fixed baseline)
+  refresh_urdfs_every: 8           # >0 ⇒ refresh the URDF pool every K inner generations
                                    # (tears down + rebuilds the eval env; multi-URDF path only).
                                    # 0 or null ⇒ disabled, URDFs stay fixed for the whole run.
-  mutate: false                    # how a refresh produces the new pool:
+  mutate: true                     # how a refresh produces the new pool:
                                    #   false ⇒ resample N brand-new RANDOM URDFs (default).
                                    #   true  ⇒ MUTATE the current catalog instead: add Gaussian
                                    #           noise (std mutation_std) to every gene of every
@@ -108,7 +103,7 @@ catalog:
 
 validation:
   enable: true               # held-out validation pass inside the inner loop
-  n_val_envs: 2048           # reserved validation envs, split equally across validation_catalog URDFs
+  n_val_envs: 4096           # reserved validation envs, split equally across validation_catalog URDFs
   validation_catalog: ""     # path to a catalog.txt; empty/"none" ⇒ standard mydrone drone
   period: 1                  # run on gen 0 then every `period` generations (after the baseline phase)
                              # Each pass regenerates fresh forests and evaluates BOTH the generation's
@@ -117,9 +112,9 @@ validation:
                              # evaluation.crn (shared draws only when true, legacy otherwise).
 
 evaluation:
-  num_eval_envs: 12800 # TOTAL slots across all URDFs and all individuals
+  num_eval_envs: 245760 # TOTAL slots across all URDFs and all individuals
                        # with N=16, H=128 ⇒ F = 16384/(16·128) = 8 forests/pair
-  num_eval_workers: 1  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
+  num_eval_workers: 4  # >1 enables ParallelMultiSceneEvalEnv (N worker processes)
                        # N=2 typically saturates one GPU when a single scene uses ~50%
                        # watch VRAM: each worker holds D/N independent Genesis scenes
   num_gpus: 0          # 0 / null = auto-detect via torch.cuda.device_count()
@@ -196,7 +191,6 @@ forest:
   y_spacing_max: 3.0     # tree spacing along the first (sparse) x-line [m]
   y_spacing_min: 3.0     # tree spacing along the last (dense) x-line [m]
 
-seed: 5535
+seed: 67
 device: "cuda:0"
 base_dir: "logs/runs_hebbian"
-
