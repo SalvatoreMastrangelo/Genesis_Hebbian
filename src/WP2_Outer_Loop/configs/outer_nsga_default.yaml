@@ -19,7 +19,7 @@
 # Env budget rule: evaluation.num_eval_envs ≥ catalog.num_urdfs × cmaes.population_size
 # (each (URDF, individual) pair needs ≥ 1 forest; F = envs // (N·H)).
 
-exp_name: outer_nsga
+exp_name: full_run_4_64_64
 
 checkpoint_path: ""        # SET THIS: path to frozen WP1 actor (.pt)
 checkpoint_config_path: "" # SET THIS: path to WP1 run config.yaml
@@ -35,7 +35,7 @@ outer:
   pm_eta: 20.0               # polynomial mutation distribution index
   # Supported names: fitness, cost_of_transport, progress_m, velocity, crash_rate
   objectives:
-    - name: fitness
+    - name: progress_m
       direction: maximize
     - name: cost_of_transport
       direction: minimize
@@ -67,7 +67,7 @@ cmaes:
   population_size: 16          # H; 0 = auto (≈ 4 + 3·ln(n_genes))
   tol_sigma: 0.0
   tol_fun: 0.0
-  sigma_reinflate: 1.5         # on morphology change: multiply CURRENT sigma by this
+  sigma_reinflate: 1.0         # on morphology change: multiply CURRENT sigma by this
                                # factor (carry mean+covariance, re-explore); <= 1.0 = off
   fitness_aggregator: "mean"
   normalize_fitness: false
@@ -84,11 +84,11 @@ catalog:
   num_episodes: 1
   force_multi_urdf: false
   include_standard_mydrone: false  # true ⇒ slot 0 = standard mydrone; rest random
-  refresh_urdfs_every: 5           # CMA generations per outer phase (NSGA-II cadence)
+  refresh_urdfs_every: 4           # CMA generations per outer phase (NSGA-II cadence)
   mutate: false                    # must stay false: NSGA-II replaces blind mutation
 
 validation:
-  enable: false              # held-out validation is expensive inside the outer loop
+  enable: true                     # held-out validation is expensive inside the outer loop
   n_val_envs: 2048
   validation_catalog: ""
   period: 1
@@ -101,7 +101,7 @@ evaluation:
   vmax: 20.0
   stochastic: true
   run_baseline: true
-  baseline_every: 8
+  baseline_every: 2
   refresh_forests_per_generation: true
   crn: false
   noise:
@@ -133,6 +133,6 @@ forest:
   y_spacing_max: 3.0
   y_spacing_min: 3.0
 
-seed: 0
+seed: 67
 device: "cuda:0"
 base_dir: "logs/runs_outer"
