@@ -1,24 +1,39 @@
 """
-WP2 outer-loop entry point — NSGA-II URDF co-evolution.
-========================================================
+WP2 outer-loop entry point — persistent CMA-ES + NSGA-II URDF co-evolution.
+===========================================================================
+
+Runs ``NSGA2MorphCMAES`` (see ``nsga_cma.py``): one continuous inner CMA-ES
+over Hebbian rules whose URDF population is evolved by NSGA-II every
+``catalog.refresh_urdfs_every`` CMA generations, using per-URDF objectives
+(fitness, cost of transport, …) harvested from the rollouts the CMA-ES
+already runs.
+
+The config is a SINGLE file: a plain WP2 ``HebbianEvolutionConfig`` YAML
+(same layout as ``src/WP2/configs/cma_es_rules_only.yaml``) plus one
+``outer:`` section with the NSGA-II knobs. The run behaves exactly like an
+inner-loop multi-URDF run with periodic URDF refresh, except the refresh is
+an NSGA-II update instead of random resampling:
+
+* ``catalog.num_urdfs``            → NSGA-II population size N
+* ``catalog.refresh_urdfs_every``  → CMA generations per phase
+* ``evolution.num_generations``    → total CMA generations
+* ``evaluation.num_eval_envs``     → total env slots (N × H × F)
+
+The legacy nested implementation (fresh inner run per outer generation) is
+preserved in ``legacy_run.py`` / ``outer_loop.py`` but deprecated.
 
 Usage
 -----
 .. code-block:: bash
 
-    # From a YAML config, picking WP1 controller + inner-loop template on the CLI
-    python -m WP2_Outer_Loop.run \\
-        --cfg src/WP2_Outer_Loop/configs/outer_loop_default.yaml \\
-        --cfg.checkpoint_path        logs/runs/<RUN>/tb/model_1999.pt \\
-        --cfg.checkpoint_config_path logs/runs/<RUN>/config.yaml \\
-        --cfg.inner_cfg_template     src/WP2/configs/cma_es_rules_only.yaml
+    PYTHONPATH=src python -m WP2_Outer_Loop.run \\
+        --cfg src/WP2_Outer_Loop/configs/outer_nsga_default.yaml \\
+        --cfg.checkpoint_path        <WP1 actor .pt> \\
+        --cfg.checkpoint_config_path <WP1 config.yaml>
 
-    # With loop-sizing overrides
-    python -m WP2_Outer_Loop.run --cfg ... \\
-        --cfg.outer_generations 30 \\
-        --cfg.population_size 32 \\
-        --cfg.num_eval_envs 512 \\
-        --cfg.nsga2.sbx_eta 20
+    # ONE override namespace — inner and outer fields alike:
+    #   --cfg.cmaes.population_size 16  --cfg.catalog.num_urdfs 4
+    #   --cfg.outer.n_elites 3          --cfg.outer.score_top_frac 0.25
 """
 
 from __future__ import annotations
@@ -51,40 +66,103 @@ def _configure_cache_root() -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="WP2 Outer Loop — NSGA-II URDF co-evolution + inner CMA-ES"
+        description="WP2 Outer Loop — persistent CMA-ES + NSGA-II URDF co-evolution"
     )
     parser.add_argument(
         "--cfg", type=str, default=None,
-        help="Path to an OuterLoopConfig YAML file.",
+        help="Path to a single OuterNSGA2Config YAML (inner-loop config + outer: section).",
     )
-    args, remaining = parser.parse_known_args()
+    args, _ = parser.parse_known_args()
 
-    from WP2_Outer_Loop.config import OuterLoopConfig
+    from WP2_Outer_Loop.config import OuterNSGA2Config
 
     if args.cfg:
-        cfg = OuterLoopConfig.from_yaml(args.cfg)
+        cfg = OuterNSGA2Config.from_yaml(args.cfg)
     else:
-        cfg = OuterLoopConfig()
-    cfg.apply_cli_overrides(remaining)
-    cfg.validate()
+        cfg = OuterNSGA2Config()
+    cfg.apply_cli_overrides()
 
-    # Validate inner template exists before building the env, which is slow.
-    template_path = Path(cfg.inner_cfg_template)
-    if not template_path.is_file():
-        print(f"[ERROR] inner_cfg_template not found: {template_path}")
+    # --- Checkpoint sanity + Hebbian-dim inference (mirror WP2/run.py) ---
+    if not cfg.checkpoint_path or not Path(cfg.checkpoint_path).is_file():
+        print(f"[ERROR] checkpoint_path not set or not found: {cfg.checkpoint_path!r}")
+        print("  Set it in the YAML or via --cfg.checkpoint_path.")
+        sys.exit(1)
+    if (not cfg.checkpoint_config_path
+            or not Path(cfg.checkpoint_config_path).is_file()):
+        print(f"[ERROR] checkpoint_config_path not set or not found: "
+              f"{cfg.checkpoint_config_path!r}")
+        sys.exit(1)
+
+    import torch as _torch
+    from WP2.frozen_actor import last_actor_linear_key
+    _ckpt = _torch.load(cfg.checkpoint_path, map_location="cpu", weights_only=False)
+    _sd = _ckpt.get("model_state_dict", _ckpt) if isinstance(_ckpt, dict) else _ckpt
+    _last_key = last_actor_linear_key(_sd)
+    if _last_key is not None:
+        cfg.hebbian.num_actions = _sd[_last_key].shape[0]
+        cfg.hebbian.hidden_dim = _sd[_last_key].shape[1]
+    del _ckpt, _sd
+
+    # Validate AFTER dim inference (the env-budget check needs the effective
+    # CMA population size, which can depend on the genome dimension).
+    try:
+        cfg.validate()
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
         sys.exit(1)
 
     _configure_cache_root()
 
-    print(f"[WP2_Outer_Loop] Loaded config from {args.cfg or '<defaults>'}")
-    print(f"[WP2_Outer_Loop] exp_name={cfg.exp_name}  base_dir={cfg.base_dir}")
-    print(f"[WP2_Outer_Loop] outer_gens={cfg.outer_generations} "
-          f"inner_gens={cfg.inner_generations}  pop={cfg.population_size}  "
-          f"envs={cfg.num_eval_envs}  seed={cfg.seed}")
+    from WP2.utils import seed_everything
+    seed_everything(cfg.seed)
 
-    from WP2_Outer_Loop.outer_loop import OuterLoop
-    loop = OuterLoop(cfg)
-    loop.run()
+    N = int(cfg.catalog.num_urdfs)
+    H = cfg.cma_population_size()
+    F = (int(cfg.evaluation.num_eval_envs) // N) // H
+    phase_len = int(cfg.catalog.refresh_urdfs_every)
+    n_phases = max(1, int(cfg.evolution.num_generations) // phase_len)
+
+    print("\n" + "=" * 70)
+    print("  WP2 Outer Loop — persistent CMA-ES + NSGA-II URDF co-evolution")
+    print("=" * 70)
+    print(f"  Experiment:    {cfg.exp_name}")
+    print(f"  Checkpoint:    {cfg.checkpoint_path}")
+    print(f"  Genome dim:    {cfg.hebbian_genome_dim()} "
+          f"(last layer {cfg.hebbian.num_actions}×{cfg.hebbian.hidden_dim})")
+    print(f"  URDF pop (N):  {N}   elites: {cfg.outer.n_elites}")
+    print(f"  Generations:   {cfg.evolution.num_generations} CMA gens "
+          f"= {n_phases} phases × {phase_len}")
+    print(f"  CMA popsize:   {H}   sigma0: {cfg.cmaes.sigma0}   "
+          f"sigma_reinflate: {cfg.cmaes.sigma_reinflate}")
+    print(f"  Env slots:     {cfg.evaluation.num_eval_envs} total → F={F} "
+          f"forests/(URDF, individual)")
+    print(f"  Objectives:    "
+          f"{[(o.name, o.direction) for o in cfg.outer.objectives]}")
+    print("=" * 70 + "\n")
+
+    from WP2_Outer_Loop.nsga_cma import NSGA2MorphCMAES
+    runner = NSGA2MorphCMAES(cfg)
+    runner.run()
+    print(f"\n[run] All done. Results in: {runner.run_dir}")
+
+    # Inner-loop-style plots (population/summary CSVs are the same format).
+    try:
+        from WP2.plot_metrics import plot_metrics
+        plot_metrics(runner.run_dir)
+    except Exception as exc:
+        print(f"[run] Warning: metrics plot failed — {exc}")
+    try:
+        from WP2.plot_cma import analyze_run
+        analyze_run(runner.run_dir)
+    except Exception as exc:
+        print(f"[run] Warning: CMA plots failed — {exc}")
+
+    # Outer-loop plots: Pareto front evolution + per-URDF metric curves.
+    try:
+        from WP2_Outer_Loop.pareto_plots import plot_outer_run
+        plot_outer_run(runner.run_dir)
+    except Exception as exc:
+        print(f"[run] Warning: outer-loop plots failed — {exc}")
 
 
 if __name__ == "__main__":

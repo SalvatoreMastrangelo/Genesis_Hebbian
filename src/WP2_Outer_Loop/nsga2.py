@@ -31,8 +31,6 @@ from typing import List, Sequence, Tuple
 import numpy as np
 from deap import base, creator, tools
 
-from .config import OuterLoopConfig
-
 
 # ============================================================================
 #  DEAP creator (re-created per-run to allow different objective counts)
@@ -65,12 +63,17 @@ def _ensure_creator(weights: Sequence[float]) -> None:
 #  Toolbox construction
 # ============================================================================
 
-def make_toolbox(cfg: OuterLoopConfig, genome_dim: int = 15) -> base.Toolbox:
+def make_toolbox(cfg, genome_dim: int = 15) -> base.Toolbox:
     """Build a DEAP toolbox for NSGA-II over [0,1]^genome_dim.
+
+    ``cfg`` is either the current ``OuterConfig`` section (flat operator
+    fields) or the legacy ``OuterLoopConfig`` (operators nested under
+    ``.nsga2``); both expose ``objective_weights()``.
 
     The caller is responsible for seeding ``random`` before variation.
     """
     _ensure_creator(cfg.objective_weights())
+    ops = getattr(cfg, "nsga2", cfg)
 
     tb = base.Toolbox()
 
@@ -80,14 +83,14 @@ def make_toolbox(cfg: OuterLoopConfig, genome_dim: int = 15) -> base.Toolbox:
     tb.register(
         "mate",
         tools.cxSimulatedBinaryBounded,
-        low=low, up=up, eta=float(cfg.nsga2.sbx_eta),
+        low=low, up=up, eta=float(ops.sbx_eta),
     )
     tb.register(
         "mutate",
         tools.mutPolynomialBounded,
         low=low, up=up,
-        eta=float(cfg.nsga2.pm_eta),
-        indpb=float(cfg.nsga2.mutation_prob),
+        eta=float(ops.pm_eta),
+        indpb=float(ops.mutation_prob),
     )
     tb.register("select", tools.selNSGA2)
     # Binary tournament on crowding distance (needs prior assignCrowdingDist).

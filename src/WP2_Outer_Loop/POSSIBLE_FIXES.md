@@ -1,5 +1,16 @@
 # WP2 Outer Loop — Verification Findings & Possible Fixes
 
+> **RESOLUTION (2026-07-14):** the nested implementation analysed below was
+> superseded by a rewrite — `NSGA2MorphCMAES` (`nsga_cma.py`), a persistent
+> CMA-ES whose URDF-refresh hook performs the NSGA-II update, with per-URDF
+> objectives harvested from the existing rollouts (see `README.md`). The
+> legacy modules (`outer_loop.py`, `evaluation.py`, `legacy_run.py`) are kept
+> for reference but deprecated; the blockers below were *not* fixed in them.
+> The rewrite addresses the findings by construction: no `selTournamentDCD`
+> (Blocker 1), checkpoint dim inference in `run.py` (Blocker 2), env-budget
+> validation in `run.py` (High), refresh/mutate forced off + `sigma_reinflate`
+> now live (M1/M3), validation forced off by default (M2).
+
 **Date:** 2026-07-07
 **Branch:** `outer_loop`
 **Scope:** Verify the outer loop (`src/WP2_Outer_Loop/`) still works logically after the

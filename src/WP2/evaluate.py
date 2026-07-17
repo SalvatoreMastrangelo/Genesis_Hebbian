@@ -878,6 +878,12 @@ def _rollout_episode_multi_urdf(
     def _per_ind(metric: torch.Tensor) -> torch.Tensor:
         return metric.view(D, P, F).float().mean(dim=(0, 2))
 
+    # (D, E=P*F) → (D, P, F) → mean over F only → (D, P). Keeps the per-URDF
+    # axis so callers (e.g. the NSGA-II outer loop) can read morphology-level
+    # objectives from the same rollouts.
+    def _per_urdf(metric: torch.Tensor) -> torch.Tensor:
+        return metric.view(D, P, F).float().mean(dim=2)
+
     if fitness_aggregator == "median":
         # Median over the D*F per-(urdf, forest) rollout samples of each
         # individual. torch.quantile interpolates the two middle values for
@@ -910,6 +916,14 @@ def _rollout_episode_multi_urdf(
     v_arr = np.where(t_arr > 1e-6, dx_arr / t_arr, 0.0)
     v_dev_arr = np.where(t_arr > 1e-6, v_dev_arr / t_arr, 0.0)
 
+    # Per-(URDF, individual) matrices, shape (D, P).
+    pu_reward = _per_urdf(reward_sum).cpu().numpy()
+    pu_t = _per_urdf(t_acc).cpu().numpy()
+    pu_dx_t = _per_urdf(dx_acc)  # torch, reused for the CoT ratio below
+    pu_dx = pu_dx_t.cpu().numpy()
+    pu_crash = _per_urdf(crashed).cpu().numpy()
+    pu_velocity = np.where(pu_t > 1e-6, pu_dx / pu_t, 0.0)
+
     # COT averaged across drones (per drone different nominal mass). Compute per-slot
     # then reduce to per-individual to get the right weighting.
     mg_per_drone = torch.tensor(
@@ -922,6 +936,15 @@ def _rollout_episode_multi_urdf(
         torch.zeros_like(dx_acc),
     )
     cot_arr = _per_ind(cot_slot).cpu().numpy()
+    # Per-URDF CoT as ratio-of-sums (total energy / total weight·distance)
+    # instead of mean-of-ratios: slots that crash immediately have dx≈0 and
+    # would otherwise contribute cot=0 — spuriously *good* for a minimize
+    # objective. With the ratio, near-zero distance ⇒ large CoT (correctly
+    # penalised).
+    pu_energy = _per_urdf(energy_acc)  # (D, P)
+    pu_cot = (
+        pu_energy / (mg_per_drone * pu_dx_t.clamp(min=1e-2))
+    ).cpu().numpy()
 
     if comp_per_ind is not None:
         comp_arr = comp_per_ind.cpu().numpy()
@@ -937,6 +960,11 @@ def _rollout_episode_multi_urdf(
         "crash_flags": crash_arr,
         "cots": cot_arr,
         "v_deviations": v_dev_arr,
+        "per_urdf_reward": pu_reward,
+        "per_urdf_progress": pu_dx,
+        "per_urdf_velocity": pu_velocity,
+        "per_urdf_crash": pu_crash,
+        "per_urdf_cot": pu_cot,
     }
 
 
@@ -1088,6 +1116,12 @@ def evaluate_population_multi_urdf(
         "crash_flags":  np.zeros(P),
         "cots":         np.zeros(P),
         "v_deviations": np.zeros(P),
+        # Per-(URDF, individual) matrices — same rollouts, morphology axis kept.
+        "per_urdf_reward":   np.zeros((N, P)),
+        "per_urdf_progress": np.zeros((N, P)),
+        "per_urdf_velocity": np.zeros((N, P)),
+        "per_urdf_crash":    np.zeros((N, P)),
+        "per_urdf_cot":      np.zeros((N, P)),
     }
     acc_components: Optional[np.ndarray] = None
     reward_names: List[str] = []
@@ -1104,6 +1138,9 @@ def evaluate_population_multi_urdf(
             acc["crash_flags"]  += ep_metrics["crash_flags"]
             acc["cots"]         += ep_metrics["cots"]
             acc["v_deviations"] += ep_metrics["v_deviations"]
+            for _pu in ("per_urdf_reward", "per_urdf_progress",
+                        "per_urdf_velocity", "per_urdf_crash", "per_urdf_cot"):
+                acc[_pu] += ep_metrics[_pu]
 
             ep_comp = ep_metrics.get("reward_components")
             if ep_comp is not None and ep_comp.size:
