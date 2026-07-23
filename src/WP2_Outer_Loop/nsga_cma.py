@@ -16,10 +16,17 @@ NSGA-II morphology update:
   mutated: NSGA-II environmental selection keeps ``n_elites`` survivors,
   binary tournament + SBX + polynomial mutation produce the rest.
 * Per-URDF objectives (fitness = WP1 reward sum, cost of transport, …)
-  are harvested for free from the ``per_urdf_*`` matrices that
-  ``evaluate_population_multi_urdf`` already returns — no extra rollouts,
-  no extra scene builds. Cost per outer generation = exactly one env
-  rebuild, the same as the existing mutation runs.
+  come from a phase-end "exam" rollout (``outer.rescore``, default on):
+  the top ``rescore_top_frac`` of the last generation's CMA individuals
+  re-fly the URDF population on fresh forests, reusing the live env. With
+  k controllers sharing the E slots per URDF each flies E/k forests
+  (64 pop, F=60, k=8 → 480), so morphology scores rest on a much wider
+  forest sample than any single generation. Cost: one extra rollout per
+  phase. With ``rescore: false`` the objectives instead fall back to the
+  per-generation harvest of the ``per_urdf_*`` matrices that
+  ``evaluate_population_multi_urdf`` already returns (top
+  ``score_top_frac`` of each generation, phase-averaged) — no extra
+  rollouts; that harvest is always recorded as diagnostics either way.
 
 Fairness note: URDFs are only ever compared *within* a phase — all N see
 the same CMA individuals, the same forests, and the same speed grid, so the
@@ -29,9 +36,10 @@ phases. Elites are re-scored every phase, so no stale objective survives.
 Outputs (on top of everything ``HebbianCMAES`` already writes):
 
 * ``results/outer_per_urdf_per_gen.csv`` — per inner gen × URDF diagnostics.
-* ``results/outer_population.csv``       — per outer gen × URDF phase-mean
-  objectives + normalized genome (the NSGA-II selection input; also the
-  Pareto archive used by ``pareto_plots``).
+* ``results/outer_population.csv``       — per outer gen × URDF objectives
+  (exam or phase-mean, see ``obj_source`` column) + phase-mean diagnostics
+  + normalized genome (the NSGA-II selection input; also the Pareto archive
+  used by ``pareto_plots``).
 * ``outer/gen_XXX/{genomes,objectives}.npy`` — per-phase snapshots.
 """
 
@@ -70,6 +78,61 @@ _PER_URDF_ALIASES: Dict[str, str] = {
 _DIAG_KEYS: Tuple[str, ...] = (
     "fitness", "cost_of_transport", "progress_m", "velocity", "crash_rate",
 )
+
+
+# ============================================================================
+#  Phase-end exam: dedicated scoring rollout for NSGA-II objectives
+# ============================================================================
+
+def exam_top_k(pop_size: int, envs_per_drone: int, frac: float) -> int:
+    """Number of controllers for the phase-end exam rollout.
+
+    ``round(pop_size * frac)`` clamped to ``[1, pop_size]``, then lowered to
+    the nearest divisor of ``envs_per_drone`` so the exam reuses the existing
+    env exactly (``evaluate_population_multi_urdf`` requires ``k | E``).
+    k=1 always divides, so this terminates.
+    """
+    k = max(1, min(int(pop_size), int(round(pop_size * frac))))
+    while envs_per_drone % k != 0:
+        k -= 1
+    return k
+
+
+def reduce_exam_metrics(
+    metrics: Dict[str, np.ndarray],
+    objectives: Sequence,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """Reduce exam ``per_urdf_*`` matrices ``(N, k)`` → per-URDF scores ``(N,)``.
+
+    Returns ``(objs (N, n_obj), diag dict over _DIAG_KEYS)``: the mean over
+    the k exam controllers, with objective columns in config order. Missing
+    diagnostic matrices become NaN columns; a missing *objective* matrix
+    raises (the exam is then unusable).
+    """
+    n_urdfs = None
+    for name in _DIAG_KEYS:
+        mat = metrics.get(_PER_URDF_ALIASES[name])
+        if mat is not None:
+            n_urdfs = np.asarray(mat).shape[0]
+            break
+    if n_urdfs is None:
+        raise ValueError("reduce_exam_metrics: no per_urdf_* matrices in metrics")
+
+    diag: Dict[str, np.ndarray] = {}
+    for name in _DIAG_KEYS:
+        mat = metrics.get(_PER_URDF_ALIASES[name])
+        diag[name] = (
+            np.asarray(mat, dtype=np.float64).mean(axis=1)
+            if mat is not None
+            else np.full(n_urdfs, np.nan)
+        )
+    objs = np.stack(
+        [diag[NSGA2MorphCMAES._canonical_objective(o.name)] for o in objectives],
+        axis=1,
+    )
+    if np.isnan(objs).any():
+        raise ValueError("reduce_exam_metrics: an objective matrix is missing")
+    return objs, diag
 
 
 # ============================================================================
@@ -170,6 +233,10 @@ class NSGA2MorphCMAES(HebbianCMAES):
         self._outer_gen = 0
         self._phase_samples: List[Dict[str, np.ndarray]] = []
         self._archive_rows: List[dict] = []
+        # Last successfully-evaluated generation, cached for the phase-end
+        # exam (its top rescore_top_frac controllers re-fly the URDFs).
+        self._last_solutions: Optional[List[np.ndarray]] = None
+        self._last_fitnesses: Optional[np.ndarray] = None
 
         # Output locations
         self.outer_dir = self.run_dir / "outer"
@@ -199,7 +266,7 @@ class NSGA2MorphCMAES(HebbianCMAES):
         gene_cols = [f"g{i}" for i in range(n_genes)]
         with open(self.outer_pop_csv, "w", newline="") as f:
             csv.writer(f).writerow(
-                ["outer_gen", "urdf_idx", "urdf_file", "n_score_gens"]
+                ["outer_gen", "urdf_idx", "urdf_file", "n_score_gens", "obj_source"]
                 + obj_cols + list(_DIAG_KEYS) + gene_cols
             )
 
@@ -238,6 +305,9 @@ class NSGA2MorphCMAES(HebbianCMAES):
             print(f"[NSGA2MorphCMAES] gen {gen}: no per-URDF metrics "
                   f"(eval failed?) — skipping URDF scoring for this gen")
             return
+
+        self._last_solutions = [np.asarray(s, dtype=np.float64) for s in solutions]
+        self._last_fitnesses = np.asarray(fitnesses, dtype=np.float64)
 
         # Score URDFs with the top fraction of this generation's CMA
         # individuals (by overall fitness): "what does this morphology achieve
@@ -293,11 +363,101 @@ class NSGA2MorphCMAES(HebbianCMAES):
             f"{sorted(_PER_URDF_ALIASES)}"
         )
 
+    # ------------------------------------------------------------------
+    #  Phase-end exam rollout
+    # ------------------------------------------------------------------
+
+    def _run_exam(self) -> Optional[Tuple[np.ndarray, Dict[str, np.ndarray], int]]:
+        """One dedicated scoring rollout on the live eval env.
+
+        The top ``rescore_top_frac`` of the last generation's controllers
+        (ranked by overall fitness) re-fly the current URDF population on
+        freshly generated forests. With k controllers sharing the E slots
+        per URDF each flies E/k forests — a far wider forest sample than the
+        per-generation harvest. Returns ``(objs (N, n_obj), diag, k)`` or
+        ``None`` when the exam cannot run (disabled, env gone, no cached
+        generation, eval failure) — callers then fall back to phase means.
+        """
+        if not getattr(self.outer, "rescore", False):
+            return None
+        if self._env is None or self._last_solutions is None:
+            return None
+
+        from WP2.evaluate import evaluate_population_multi_urdf
+
+        E = int(self._env.E)
+        k = exam_top_k(
+            len(self._last_solutions), E, float(self.outer.rescore_top_frac)
+        )
+        top = np.argsort(self._last_fitnesses)[::-1][:k]
+        sols = [self._last_solutions[i] for i in top]
+
+        exam_forest = getattr(self.outer, "exam_forest", None)
+        overrides = exam_forest.overrides() if exam_forest is not None else {}
+        prev_forest: Optional[Dict] = None
+        try:
+            if overrides:
+                prev_forest = self._env.apply_forest_overrides(overrides)
+                print(f"[NSGA2MorphCMAES] Exam forest overrides: {overrides}")
+            # Fresh layouts so the exam's E/k forests are new, not the ones
+            # that ranked these controllers (avoids selection bias).
+            self._env.refresh_forests()
+            _fit, metrics = evaluate_population_multi_urdf(
+                sols,
+                self.cfg,
+                self._model_and_layer,
+                self._wp1_cfg,
+                urdf_paths=self._urdf_paths,
+                existing_env=(self._env, self._env_urdf_path),
+                verbose=False,
+            )
+            objs, diag = reduce_exam_metrics(metrics, self.outer.objectives)
+        except Exception as exc:
+            print(f"[NSGA2MorphCMAES] Exam rollout failed ({exc}) — "
+                  f"falling back to phase-mean scores")
+            return None
+        finally:
+            if prev_forest:
+                # Put the env back on nominal forests: it usually gets torn
+                # down right after the exam, but on the no-refresh fallback
+                # path it survives into the next generation. Regeneration is
+                # pure tensor work — milliseconds.
+                try:
+                    self._env.apply_forest_overrides(prev_forest)
+                    self._env.refresh_forests()
+                except Exception as exc:
+                    print(f"[NSGA2MorphCMAES] Exam forest restore failed: {exc}")
+        print(f"[NSGA2MorphCMAES] Exam: top {k} controllers × {E // k} fresh "
+              f"forests per URDF")
+        return objs, diag, k
+
+    def _score_phase(
+        self,
+    ) -> Optional[Tuple[np.ndarray, Dict[str, np.ndarray], int, str]]:
+        """Final per-URDF scores for the ending phase.
+
+        Objectives come from the exam rollout when it runs, else from the
+        phase-mean harvest; diagnostics stay phase means whenever available.
+        Returns ``(objs, diag, n_score_gens, obj_source)`` or ``None``.
+        """
+        reduced = self._reduce_phase()
+        exam = self._run_exam()
+        if exam is not None:
+            objs, exam_diag, _k = exam
+            agg = reduced[1] if reduced is not None else exam_diag
+            n_gens = reduced[2] if reduced is not None else 0
+            return objs, agg, n_gens, "exam"
+        if reduced is not None:
+            objs, agg, n_gens = reduced
+            return objs, agg, n_gens, "phase_mean"
+        return None
+
     def _record_outer_generation(
         self,
         objs: np.ndarray,
         agg: Dict[str, np.ndarray],
         n_gens: int,
+        obj_source: str = "phase_mean",
     ) -> None:
         """Snapshot the ending phase: CSV rows + per-phase .npy dumps."""
         N = len(self._urdf_paths)
@@ -305,7 +465,8 @@ class NSGA2MorphCMAES(HebbianCMAES):
             w = csv.writer(f)
             for i in range(N):
                 w.writerow(
-                    [self._outer_gen, i, Path(self._urdf_paths[i]).name, n_gens]
+                    [self._outer_gen, i, Path(self._urdf_paths[i]).name,
+                     n_gens, obj_source]
                     + [f"{v:.6g}" for v in objs[i]]
                     + [f"{agg[k][i]:.6g}" for k in _DIAG_KEYS]
                     + [f"{g:.6f}" for g in self._morph_genomes[i]]
@@ -316,6 +477,7 @@ class NSGA2MorphCMAES(HebbianCMAES):
                 "urdf_idx": i,
                 "urdf_file": Path(self._urdf_paths[i]).name,
                 "objectives": objs[i].tolist(),
+                "obj_source": obj_source,
                 **{k: float(agg[k][i]) for k in _DIAG_KEYS},
                 "genome": self._morph_genomes[i].tolist(),
             })
@@ -340,13 +502,13 @@ class NSGA2MorphCMAES(HebbianCMAES):
         if not self._use_multi_urdf:
             return
 
-        reduced = self._reduce_phase()
-        if reduced is None:
+        scored = self._score_phase()
+        if scored is None:
             print(f"[NSGA2MorphCMAES] gen {gen}: phase produced no scores — "
                   f"keeping current URDF population (no refresh)")
             return
-        objs, agg, n_gens = reduced
-        self._record_outer_generation(objs, agg, n_gens)
+        objs, agg, n_gens, obj_source = scored
+        self._record_outer_generation(objs, agg, n_gens, obj_source=obj_source)
 
         outer = self.outer
         N = len(self._morph_genomes)
@@ -371,7 +533,7 @@ class NSGA2MorphCMAES(HebbianCMAES):
         print(
             f"\n[NSGA2MorphCMAES] === Outer gen {self._outer_gen} → "
             f"{self._outer_gen + 1} (inner gen {gen}) ===\n"
-            f"[NSGA2MorphCMAES] Phase scores over {n_gens} gens:\n"
+            f"[NSGA2MorphCMAES] Phase scores ({obj_source}, {n_gens} gens):\n"
             + "\n".join(
                 f"    urdf {i}: "
                 + "  ".join(
@@ -425,11 +587,12 @@ class NSGA2MorphCMAES(HebbianCMAES):
         result = super().run(resume_from_gen=None, x0_override=x0_override)
 
         # The last phase ends without a refresh — record it so the archive
-        # holds outer_generations complete entries.
-        reduced = self._reduce_phase()
-        if reduced is not None:
-            objs, agg, n_gens = reduced
-            self._record_outer_generation(objs, agg, n_gens)
+        # holds outer_generations complete entries. The env is already torn
+        # down here, so _score_phase falls back to phase-mean objectives.
+        scored = self._score_phase()
+        if scored is not None:
+            objs, agg, n_gens, obj_source = scored
+            self._record_outer_generation(objs, agg, n_gens, obj_source=obj_source)
 
         import pickle
         with open(self.outer_dir / "pareto_archive.pkl", "wb") as f:

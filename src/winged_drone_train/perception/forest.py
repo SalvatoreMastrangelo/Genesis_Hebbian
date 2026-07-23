@@ -452,6 +452,47 @@ class ForestGenerator:
         )
 
 
+# Runtime overrides ---------------------------------------------------------
+
+# Generation knobs that may be changed on a live generator: every one is
+# re-read by ``generate()`` on the next call. ``forest_mode`` lives on the
+# generator itself, the rest on its ``ForestConfig``. Perception-coupled
+# fields (``tree_radius``, the y corridor bounds) are deliberately NOT
+# overridable — the env's DepthSolver bakes them in at build time, so a
+# runtime change would desync what the policy sees from what it collides with.
+GENERATOR_OVERRIDE_KEYS = (
+    "dens_min", "dens_max", "num_trees", "forest_mode", "x_upper",
+    "forest_length", "x_spacing_start", "x_spacing_end",
+    "y_spacing_min", "y_spacing_max",
+)
+
+
+def apply_generator_overrides(gen: "ForestGenerator", overrides: dict) -> dict:
+    """Apply runtime generation overrides to ``gen``; returns previous values.
+
+    Takes effect on the next ``generate()`` call. The returned dict uses the
+    same key space, so restoring is re-applying it. Raises ``KeyError`` for
+    keys outside :data:`GENERATOR_OVERRIDE_KEYS`.
+    """
+    prev: dict = {}
+    for key, val in overrides.items():
+        if key not in GENERATOR_OVERRIDE_KEYS:
+            raise KeyError(
+                f"apply_generator_overrides: unsupported key {key!r} "
+                f"(supported: {GENERATOR_OVERRIDE_KEYS})"
+            )
+        if key == "forest_mode":
+            prev[key] = gen.forest_mode
+            gen.forest_mode = str(val)
+        elif key == "num_trees":
+            prev[key] = gen.config.num_trees
+            gen.config.num_trees = int(val)
+        else:
+            prev[key] = getattr(gen.config, key)
+            setattr(gen.config, key, float(val))
+    return prev
+
+
 # Convenience wrapper -------------------------------------------------------
 def generate_forests(
     num_envs: int,

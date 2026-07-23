@@ -5,7 +5,11 @@
 # (mean+covariance carried across morphology changes, sigma re-inflated on
 # change); every `catalog.refresh_urdfs_every` CMA generations the
 # `catalog.num_urdfs`-strong URDF population is evolved by NSGA-II on
-# per-URDF objectives harvested from the same rollouts (no extra evals).
+# per-URDF objectives from a phase-end "exam" rollout (`outer.rescore`):
+# the top `rescore_top_frac` of the last generation's CMA individuals
+# re-fly the URDFs once on fresh forests, each covering E/k forests
+# (64 pop, F=60, k=8 → 480). With `rescore: false` objectives fall back
+# to the per-generation harvest (top `score_top_frac`, phase-averaged).
 #
 # Usage:
 #   PYTHONPATH=src python -m WP2_Outer_Loop.run \
@@ -29,6 +33,23 @@ outer:
   n_elites: 2                # survivors kept (and re-scored) per update
   score_top_frac: 0.5        # top fraction of CMA individuals used to score URDFs
   score_window: 0            # 0 = all gens of the phase; k>0 = last k gens only
+  rescore: true              # phase-end exam rollout sources the NSGA-II objectives
+                             # (fresh forests, live env reused; phase harvest = fallback)
+  rescore_top_frac: 0.125    # top fraction of last gen's CMA individuals in the exam;
+                             # k rounded down to a divisor of E → each flies E/k forests
+  # Exam-only forest overrides — applied right before the exam rollout and
+  # restored right after (inner-loop generations are untouched). Inert unless
+  # override_forest is true. tree_radius and the y corridor are NOT
+  # overridable (DepthSolver bakes them at env build; changing them would
+  # desync perception from collision).
+  exam_forest:
+    override_forest: false   # master switch: true = exam flies THESE forests
+    dens_min: 2.0            # denser floor (growing mode, trees/100 m²)
+    dens_max: 8.0            # denser ceiling
+    forest_mode: growing     # uniform | growing | lattice | latin
+    x_upper: 900.0           # longer forest; also moves the eval success line
+                             # (60 s episodes still cap distance at ~vmax*60 m)
+    # num_trees: 800         # uniform mode only
   crossover_prob: 0.9        # SBX application probability
   mutation_prob: 0.0667      # per-gene polynomial mutation (≈1/15)
   sbx_eta: 15.0              # SBX distribution index

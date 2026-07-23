@@ -25,7 +25,7 @@ Two config families live here:
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -255,6 +255,48 @@ class OuterLoopConfig:
 # ============================================================================
 
 @dataclass
+class ExamForestConfig:
+    """Optional forest overrides for the phase-end exam rollout.
+
+    When ``override_forest`` is true, the non-null fields are applied to the
+    live eval env's forest generator right before the exam and restored right
+    after (``nsga_cma._run_exam``), so the exam can fly denser / longer /
+    differently-structured forests than the inner loop without an env rebuild
+    — trees are pure tensor obstacles, no Genesis geometry. With
+    ``override_forest: false`` (default) the values are inert and the exam
+    flies the inner loop's forest distribution. ``x_upper`` additionally moves the eval success line
+    (``check_success``); note the 60 s episode length still caps reachable
+    distance at ~vmax·60 m. Perception-coupled knobs (``tree_radius``, the y
+    corridor) are intentionally unsupported: the DepthSolver bakes them in at
+    env build, so overriding them would desync what the policy sees from what
+    it collides with.
+    """
+
+    override_forest: bool = False            # master switch for this section
+    dens_min: Optional[float] = None
+    dens_max: Optional[float] = None
+    num_trees: Optional[int] = None          # uniform mode only
+    forest_mode: Optional[str] = None        # uniform | growing | lattice | latin
+    x_upper: Optional[float] = None          # forest end + eval success line
+    forest_length: Optional[float] = None    # lattice/latin modes
+    x_spacing_start: Optional[float] = None  # lattice/latin modes
+    x_spacing_end: Optional[float] = None    # lattice/latin modes
+    y_spacing_min: Optional[float] = None    # lattice/latin modes
+    y_spacing_max: Optional[float] = None    # lattice/latin modes
+
+    def overrides(self) -> Dict[str, Any]:
+        """Dict of the fields to apply — the payload for
+        ``env.apply_forest_overrides``. Empty (feature off) unless
+        ``override_forest`` is true; the flag itself is never included."""
+        if not self.override_forest:
+            return {}
+        return {
+            k: v for k, v in asdict(self).items()
+            if v is not None and k != "override_forest"
+        }
+
+
+@dataclass
 class OuterConfig:
     """The ``outer:`` section — NSGA-II knobs on top of a plain inner config.
 
@@ -271,6 +313,25 @@ class OuterConfig:
     score_window : int
         Number of trailing inner generations of the phase used for URDF
         scoring. 0 = all generations of the phase.
+    rescore : bool
+        Run a dedicated scoring rollout ("exam") at the end of each phase:
+        the top ``rescore_top_frac`` of the last generation's CMA individuals
+        re-fly the current URDF population on freshly generated forests,
+        reusing the existing eval env. With k controllers sharing the
+        ``E = H * F`` slots per URDF, each flies ``E / k`` forests (e.g.
+        H=64, F=60, k=8 → 480 forests) — the NSGA-II objectives come from
+        this single wide measurement instead of the phase-mean harvest
+        (which stays as diagnostics). Falls back to the phase mean when the
+        exam cannot run (env gone at the final flush, eval failure).
+    rescore_top_frac : float
+        Fraction of the CMA population used for the exam, ranked by the
+        last generation's fitness. Rounded down to the nearest divisor of
+        the per-URDF slot count. 0.125 = top 8 of 64.
+    exam_forest : ExamForestConfig
+        Optional forest overrides (density, tree count, mode, length) that
+        apply ONLY to the exam rollout — see ``ExamForestConfig``. All-null
+        (the default) means the exam flies the same forest distribution as
+        the inner loop.
     crossover_prob : float
         Probability of applying SBX crossover to a parent pair.
     mutation_prob : float
@@ -290,6 +351,9 @@ class OuterConfig:
     n_elites: int = 2
     score_top_frac: float = 0.5
     score_window: int = 0
+    rescore: bool = True
+    rescore_top_frac: float = 0.125
+    exam_forest: ExamForestConfig = field(default_factory=ExamForestConfig)
     crossover_prob: float = 0.9
     mutation_prob: float = 1.0 / 15.0
     sbx_eta: float = 15.0
@@ -317,6 +381,15 @@ class OuterConfig:
                         ))
                 if specs:
                     sec.objectives = specs
+            elif key == "exam_forest" and isinstance(val, dict):
+                known = {f.name for f in dataclass_fields(ExamForestConfig)}
+                unknown = sorted(set(val) - known)
+                if unknown:
+                    raise ValueError(
+                        f"outer.exam_forest: unknown keys {unknown} "
+                        f"(supported: {sorted(known)})"
+                    )
+                sec.exam_forest = ExamForestConfig(**val)
             elif hasattr(sec, key):
                 setattr(sec, key, val)
         return sec
@@ -393,6 +466,40 @@ class OuterNSGA2Config(HebbianEvolutionConfig):
             )
         if outer.score_window < 0:
             raise ValueError("outer.score_window must be ≥ 0 (0 = whole phase)")
+        if not (0.0 < outer.rescore_top_frac <= 1.0):
+            raise ValueError(
+                f"outer.rescore_top_frac must be in (0, 1] "
+                f"(got {outer.rescore_top_frac})"
+            )
+        ef = outer.exam_forest
+        _modes = ("uniform", "growing", "lattice", "latin")
+        if ef.forest_mode is not None and ef.forest_mode not in _modes:
+            raise ValueError(
+                f"outer.exam_forest.forest_mode must be one of {_modes} "
+                f"(got {ef.forest_mode!r})"
+            )
+        if ef.num_trees is not None and int(ef.num_trees) < 1:
+            raise ValueError(
+                f"outer.exam_forest.num_trees must be ≥ 1 (got {ef.num_trees})"
+            )
+        if ef.x_upper is not None and float(ef.x_upper) <= 0.0:
+            raise ValueError(
+                f"outer.exam_forest.x_upper must be > 0 (got {ef.x_upper})"
+            )
+        for _nm in ("dens_min", "dens_max"):
+            _v = getattr(ef, _nm)
+            if _v is not None and float(_v) < 0.0:
+                raise ValueError(
+                    f"outer.exam_forest.{_nm} must be ≥ 0 (got {_v})"
+                )
+        if (
+            ef.dens_min is not None and ef.dens_max is not None
+            and float(ef.dens_max) < float(ef.dens_min)
+        ):
+            raise ValueError(
+                f"outer.exam_forest: dens_max ({ef.dens_max}) < "
+                f"dens_min ({ef.dens_min})"
+            )
         if not outer.objectives:
             raise ValueError("outer.objectives list is empty")
         for obj in outer.objectives:

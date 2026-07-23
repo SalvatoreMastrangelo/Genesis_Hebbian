@@ -45,7 +45,7 @@ from __future__ import annotations
 import copy
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
@@ -189,6 +189,20 @@ class MultiSceneEvalEnv:
         """Propagate a new ``dens_min`` to every sub-env's forest generator."""
         for sub in self.drones:
             sub.set_dens_min(value)
+
+    def apply_forest_overrides(self, overrides: Dict) -> Dict:
+        """Propagate runtime forest-generation overrides to every sub-env.
+
+        Returns the head sub-env's previous values (all sub-envs share the
+        same forest setup); restore by re-applying them. Effective at the
+        next ``refresh_forests()``.
+        """
+        prev: Dict = {}
+        for i, sub in enumerate(self.drones):
+            p = sub.apply_forest_overrides(overrides)
+            if i == 0:
+                prev = p
+        return prev
 
     def refresh_forests(self) -> None:
         """Regenerate the forest pool and synchronise it across all sub-envs.

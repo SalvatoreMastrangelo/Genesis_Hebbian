@@ -31,7 +31,7 @@ import os
 import queue as _queue_mod
 import random
 import sys
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -267,6 +267,10 @@ def _worker_main(
             elif cmd == "set_dens_min":
                 env.set_dens_min(float(payload))
                 ack_q.put(("ok",))
+
+            elif cmd == "apply_forest_overrides":
+                prev = env.apply_forest_overrides(dict(payload))
+                ack_q.put(("ok", prev))
 
             elif cmd == "set_speed_grid":
                 val = payload
@@ -660,6 +664,22 @@ class ParallelMultiSceneEvalEnv:
 
     def set_dens_min(self, value: float) -> None:
         self._send_all("set_dens_min", float(value))
+
+    def apply_forest_overrides(self, overrides: Dict) -> Dict:
+        """Broadcast runtime forest overrides to all workers; returns worker
+        0's previous values (identical everywhere) for restore-by-reapply."""
+        for q in self._cmd_qs:
+            q.put(("apply_forest_overrides", dict(overrides)))
+        prev: Dict = {}
+        for w, q in enumerate(self._ack_qs):
+            msg = q.get()
+            if msg[0] == "error":
+                raise RuntimeError(
+                    f"Worker {w} error on 'apply_forest_overrides': {msg[1]}"
+                )
+            if w == 0 and len(msg) > 1:
+                prev = msg[1]
+        return prev
 
     # ── forest / speed properties ─────────────────────────────────────────────
 

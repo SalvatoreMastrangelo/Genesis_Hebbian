@@ -16,13 +16,18 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from WP2_Outer_Loop.config import OuterNSGA2Config
+from WP2_Outer_Loop.config import ObjectiveSpec, OuterNSGA2Config
 from WP2_Outer_Loop.nsga2 import (
     arrays_to_individuals,
     individuals_to_array,
     make_toolbox,
 )
-from WP2_Outer_Loop.nsga_cma import NSGA2MorphCMAES, make_offspring_tournament
+from WP2_Outer_Loop.nsga_cma import (
+    NSGA2MorphCMAES,
+    exam_top_k,
+    make_offspring_tournament,
+    reduce_exam_metrics,
+)
 from WP2_Outer_Loop.pareto_plots import _hypervolume_2d, _nondominated_mask
 
 
@@ -205,6 +210,97 @@ def test_nondominated_mask():
     pts = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 0.5]])  # maximization
     mask = _nondominated_mask(pts)
     assert mask.tolist() == [False, True, True]
+
+
+# ---------------------------------------------------------------- exam pass
+
+def test_exam_top_k_batch0_geometry():
+    # H=64 controllers, E=3840 slots/drone, top 12.5% → 8 controllers,
+    # each flying E/8 = 480 forests.
+    assert exam_top_k(64, 3840, 0.125) == 8
+
+
+def test_exam_top_k_rounds_down_to_divisor_of_env_slots():
+    # round(10 * 0.5) = 5 but 5 does not divide 64 → largest divisor ≤ 5 is 4.
+    assert exam_top_k(10, 64, 0.5) == 4
+
+
+def test_exam_top_k_bounds():
+    assert exam_top_k(64, 3840, 0.0001) == 1   # floor at one controller
+    assert exam_top_k(4, 64, 1.0) == 4         # whole population allowed
+    assert exam_top_k(64, 61, 0.5) == 1        # prime slot count → only 1 divides
+
+
+def test_reduce_exam_metrics_means_and_objective_order():
+    N, k = 3, 4
+    rng = np.random.default_rng(0)
+    metrics = {
+        key: rng.random((N, k))
+        for key in ("per_urdf_reward", "per_urdf_progress", "per_urdf_velocity",
+                    "per_urdf_crash", "per_urdf_cot")
+    }
+    objectives = [
+        ObjectiveSpec(name="progress_m", direction="maximize"),
+        ObjectiveSpec(name="cost_of_transport", direction="minimize"),
+    ]
+    objs, diag = reduce_exam_metrics(metrics, objectives)
+    assert objs.shape == (N, 2)
+    np.testing.assert_allclose(objs[:, 0], metrics["per_urdf_progress"].mean(axis=1))
+    np.testing.assert_allclose(objs[:, 1], metrics["per_urdf_cot"].mean(axis=1))
+    for key in ("fitness", "cost_of_transport", "progress_m", "velocity", "crash_rate"):
+        assert diag[key].shape == (N,)
+    np.testing.assert_allclose(diag["fitness"], metrics["per_urdf_reward"].mean(axis=1))
+
+
+def test_reduce_exam_metrics_missing_matrix_gives_nan_diag():
+    # A missing diagnostic matrix must not crash the reduction; its diag
+    # column is NaN-filled while requested objectives still compute.
+    N, k = 2, 3
+    metrics = {
+        "per_urdf_reward": np.ones((N, k)),
+        "per_urdf_progress": np.ones((N, k)),
+        "per_urdf_cot": np.ones((N, k)),
+    }
+    objs, diag = reduce_exam_metrics(
+        metrics, [ObjectiveSpec(name="fitness", direction="maximize")]
+    )
+    assert objs.shape == (N, 1)
+    assert np.isnan(diag["velocity"]).all()
+
+
+def test_score_phase_falls_back_when_env_gone():
+    # Final-flush path: the eval env is already torn down, so the exam is
+    # impossible and _score_phase must return phase-mean objectives.
+    loop = object.__new__(NSGA2MorphCMAES)
+    loop.outer = _cfg().outer  # default objectives: fitness, cost_of_transport
+    loop._env = None
+    loop._last_solutions = None
+    loop._last_fitnesses = None
+    N = 4
+    loop._urdf_paths = [f"u{i}.urdf" for i in range(N)]
+    rng = np.random.default_rng(1)
+    sample = {
+        k: rng.random(N)
+        for k in ("fitness", "cost_of_transport", "progress_m", "velocity", "crash_rate")
+    }
+    loop._phase_samples = [sample]
+    scored = loop._score_phase()
+    assert scored is not None
+    objs, agg, n_gens, source = scored
+    assert source == "phase_mean"
+    assert n_gens == 1
+    np.testing.assert_allclose(objs[:, 0], sample["fitness"])
+    np.testing.assert_allclose(objs[:, 1], sample["cost_of_transport"])
+
+
+def test_config_rescore_defaults_and_validation():
+    cfg = _cfg()
+    assert cfg.outer.rescore is True
+    assert cfg.outer.rescore_top_frac == pytest.approx(0.125)
+    with pytest.raises(ValueError, match="rescore_top_frac"):
+        _cfg(rescore_top_frac=0.0)
+    with pytest.raises(ValueError, match="rescore_top_frac"):
+        _cfg(rescore_top_frac=1.5)
 
 
 # ------------------------------------------------- per-URDF reductions

@@ -1212,6 +1212,33 @@ class WingedDroneEnv:
         self.cylinders_xy = self.cylinders_array[self.forest_ids, :, :2]
         self._update_cylinders_xy(all_ids)
 
+    def apply_forest_overrides(self, overrides: Dict) -> Dict:
+        """Runtime forest-generation overrides, effective at the next
+        ``refresh_forests()``. Returns the previous values (same key space),
+        so restoring is re-applying the returned dict.
+
+        ``x_upper`` additionally moves the eval success line so
+        ``check_success`` keeps firing at the forest end. On restore the
+        line re-syncs to the generator's ``x_upper`` (the coherent state,
+        even if the two build-time defaults disagreed).
+        """
+        if self._forest_generator is None:
+            return {}
+        prev = forest_utils.apply_generator_overrides(
+            self._forest_generator, overrides
+        )
+        if "x_upper" in overrides:
+            self._success_x_limit_eval = float(overrides["x_upper"])
+        return prev
+
+    def set_dens_min(self, value: float) -> None:
+        """Override the forest generator's ``dens_min`` for the next refresh."""
+        if self._forest_generator is None:
+            return
+        forest_utils.apply_generator_overrides(
+            self._forest_generator, {"dens_min": float(value)}
+        )
+
     def _nonfinite_row_mask(self, tensor: torch.Tensor) -> torch.Tensor:
         """
         Return a per-environment mask where at least one element is non-finite.
