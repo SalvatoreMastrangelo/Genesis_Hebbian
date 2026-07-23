@@ -21,7 +21,7 @@
 #           src/WP2_Outer_Loop/experiments/batch_0/
 # (the slurm script injects checkpoint_path / checkpoint_config_path)
 
-exp_name: full_run_6_64_64
+exp_name: morphology_only
 repeat: 4
 
 checkpoint_path: ""        # injected by the slurm script (checkpoint.pt)
@@ -45,7 +45,7 @@ outer:
 
 hebbian:
   enabled: true
-  eta: 0.005
+  eta: 0.0
   evolve_eta: false
   decay: 0.05
   evolve_decay: false
@@ -61,13 +61,13 @@ hebbian:
   eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 250   # total CMA generations = 12 NSGA-II updates × 4 gens (+2)
+  num_generations: 50    # total CMA generations = 12 NSGA-II updates × 4 gens (+2)
   population_size: 0     # hint only; actual pop size set in cmaes.population_size
 
 cmaes:
   algorithm: "cmaes"
   sigma0: 0.075
-  population_size: 64          # H
+  population_size: 2           # H
   tol_sigma: 0.0
   tol_fun: 0.0
   sigma_reinflate: 1.0         # off (pure carry across morphology changes) — same as
@@ -87,7 +87,7 @@ catalog:
   num_episodes: 1
   force_multi_urdf: false
   include_standard_mydrone: false  # all-random start (same as the batch_8 reference)
-  refresh_urdfs_every: 6           # CMA generations per outer phase (NSGA-II cadence)
+  refresh_urdfs_every: 1           # CMA generations per outer phase (NSGA-II cadence)
   mutate: false                    # must stay false: NSGA-II replaces blind mutation
 
 validation:

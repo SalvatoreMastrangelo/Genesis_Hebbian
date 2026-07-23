@@ -61,7 +61,7 @@ hebbian:
   eta_range: [0.0, 0.01]
 
 evolution:
-  num_generations: 150   # total CMA generations = 12 NSGA-II updates × 4 gens (+2)
+  num_generations: 250   # total CMA generations = 12 NSGA-II updates × 4 gens (+2)
   population_size: 0     # hint only; actual pop size set in cmaes.population_size
 
 cmaes:

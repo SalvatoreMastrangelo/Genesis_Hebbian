@@ -47,12 +47,24 @@ _DIAG_METRICS = [
 # ----------------------------------------------------------------------------
 
 def _load_objective_specs(run_dir: Path) -> List[Tuple[str, str]]:
-    """Return [(name, direction), ...] from the saved outer config."""
-    cfg_path = run_dir / "reproducibility" / "outer_config.yaml"
-    if cfg_path.is_file():
+    """Return [(name, direction), ...] from the saved outer config.
+
+    Single-file runs save ``reproducibility/config.yaml`` with the objectives
+    under ``outer:``; legacy runs save ``reproducibility/outer_config.yaml``
+    with them at top level.
+    """
+    candidates = [
+        (run_dir / "reproducibility" / "config.yaml", "outer"),
+        (run_dir / "reproducibility" / "outer_config.yaml", None),
+    ]
+    for cfg_path, section in candidates:
+        if not cfg_path.is_file():
+            continue
         try:
             with open(cfg_path) as f:
                 cfg = yaml.safe_load(f) or {}
+            if section is not None:
+                cfg = cfg.get(section) or {}
             objs = cfg.get("objectives") or []
             specs = [(str(o["name"]), str(o["direction"])) for o in objs]
             if specs:
@@ -60,6 +72,59 @@ def _load_objective_specs(run_dir: Path) -> List[Tuple[str, str]]:
         except Exception:
             pass
     return [("fitness", "maximize"), ("cost_of_transport", "minimize")]
+
+
+# Objective name → column in results/validation_summary.csv (baseline side).
+_VALIDATION_BASELINE_COLS = {
+    "fitness":            "baseline_fitness",
+    "velocity":           "baseline_velocity",
+    "progress_m":         "baseline_progress",
+    "crash_rate":         "baseline_crash_rate",
+    "cost_of_transport":  "baseline_cot",
+    "velocity_deviation": "baseline_v_deviation",
+    "v_deviation":        "baseline_v_deviation",
+}
+
+
+def _load_standard_drone_baseline(
+    run_dir: Path, name_x: str, name_y: str,
+) -> Optional[Tuple[float, float]]:
+    """Mean (obj_x, obj_y) of the zero-rules baseline on the standard mydrone,
+    from the held-out validation CSV.
+
+    Returns ``None`` unless validation was enabled AND ran on the standard
+    drone (``validation.validation_catalog`` empty/none), so the star only
+    appears when the point actually is the standard mydrone.
+    """
+    cfg_path = run_dir / "reproducibility" / "config.yaml"
+    if not cfg_path.is_file():
+        return None
+    try:
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        val = cfg.get("validation") or {}
+        if not val.get("enable"):
+            return None
+        vc = str(val.get("validation_catalog") or "").strip()
+        if vc and vc.lower() != "none":
+            return None  # custom validation catalog → not the standard drone
+    except Exception:
+        return None
+
+    csv_path = run_dir / "results" / "validation_summary.csv"
+    if not csv_path.is_file():
+        return None
+    col_x = _VALIDATION_BASELINE_COLS.get(name_x)
+    col_y = _VALIDATION_BASELINE_COLS.get(name_y)
+    if col_x is None or col_y is None:
+        return None
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return None
+    if df.empty or col_x not in df.columns or col_y not in df.columns:
+        return None
+    return float(df[col_x].mean()), float(df[col_y].mean())
 
 
 def _nondominated_mask(points_max: np.ndarray) -> np.ndarray:
@@ -174,6 +239,14 @@ def plot_pareto_front(run_dir: Path | str) -> None:
             linewidth=2.2, marker="o", markersize=6, zorder=4,
             label="cumulative front")
 
+    # Standard mydrone reference: zero-rules baseline from held-out validation
+    # (only available when validation ran on the standard drone).
+    star = _load_standard_drone_baseline(run_dir, name_x, name_y)
+    if star is not None:
+        ax.scatter([star[0]], [star[1]], marker="*", s=340, color="gold",
+                   edgecolors="black", linewidths=0.9, zorder=5,
+                   label="standard mydrone (zero rules)")
+
     def _axis_label(name: str, direction: str) -> str:
         return f"{name}  ({'higher' if direction == 'maximize' else 'lower'} better)"
 
@@ -231,13 +304,22 @@ def plot_outer_metrics(run_dir: Path | str) -> None:
         print(f"[pareto_plots] CSV is empty: {csv_path}")
         return
 
+    # Phase length: single-file runs store it as catalog.refresh_urdfs_every;
+    # legacy runs as top-level inner_generations in outer_config.yaml.
     refresh_every = 0
-    cfg_path = run_dir / "reproducibility" / "outer_config.yaml"
-    if cfg_path.is_file():
+    for cfg_path, getter in [
+        (run_dir / "reproducibility" / "config.yaml",
+         lambda c: (c.get("catalog") or {}).get("refresh_urdfs_every")),
+        (run_dir / "reproducibility" / "outer_config.yaml",
+         lambda c: c.get("inner_generations")),
+    ]:
+        if not cfg_path.is_file():
+            continue
         try:
             with open(cfg_path) as f:
-                refresh_every = int((yaml.safe_load(f) or {}).get(
-                    "inner_generations") or 0)
+                refresh_every = int(getter(yaml.safe_load(f) or {}) or 0)
+            if refresh_every:
+                break
         except Exception:
             pass
 

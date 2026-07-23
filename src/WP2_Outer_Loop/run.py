@@ -152,6 +152,11 @@ def main() -> None:
     except Exception as exc:
         print(f"[run] Warning: metrics plot failed — {exc}")
     try:
+        from WP2.plot_metrics import plot_validation
+        plot_validation(runner.run_dir)
+    except Exception as exc:
+        print(f"[run] Warning: validation plot failed — {exc}")
+    try:
         from WP2.plot_cma import analyze_run
         analyze_run(runner.run_dir)
     except Exception as exc:
