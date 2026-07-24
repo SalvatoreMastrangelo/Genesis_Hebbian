@@ -187,6 +187,52 @@ def make_offspring_tournament(
     return offspring[:n_offspring]
 
 
+def gated_select(
+    toolbox,
+    inds: Sequence,
+    gate_progress: np.ndarray,
+    min_progress: float,
+    n_elites: int,
+) -> Tuple[List, List]:
+    """Hard minimum-progress admission filter around NSGA-II selection.
+
+    Returns ``(elites, parent_pool)``:
+
+    * gate off (``min_progress <= 0``) → plain ``selNSGA2`` over all
+      individuals, pool = everyone (legacy behavior);
+    * elites: ``selNSGA2`` over feasible individuals only, keeping
+      ``min(n_elites, n_feasible)`` — an elite deficit becomes extra
+      offspring slots, never infeasible survivors;
+    * parent pool: the feasible individuals, topped up with the
+      highest-progress infeasible ones to reach 2 when fewer than 2 are
+      feasible (SBX needs a pair);
+    * zero feasible → loud warning, refresh runs ungated;
+    * NaN progress counts as feasible — missing gate data must never
+      exclude a morphology.
+    """
+    inds = list(inds)
+    if min_progress is None or float(min_progress) <= 0.0:
+        return toolbox.select(inds, n_elites), inds
+
+    gate = np.asarray(gate_progress, dtype=float)
+    infeasible = gate < float(min_progress)  # NaN compares False → feasible
+    feasible_idx = np.flatnonzero(~infeasible)
+    if len(feasible_idx) == 0:
+        print(f"[NSGA2MorphCMAES] WARNING: no morphology reached "
+              f"min_progress_m={float(min_progress):g} — refresh runs UNGATED")
+        return toolbox.select(inds, n_elites), inds
+
+    feasible = [inds[i] for i in feasible_idx]
+    elites = toolbox.select(feasible, min(n_elites, len(feasible)))
+    pool = list(feasible)
+    if len(pool) < 2:
+        for i in sorted(np.flatnonzero(infeasible), key=lambda i: -gate[i]):
+            if len(pool) >= 2:
+                break
+            pool.append(inds[i])
+    return elites, pool
+
+
 # ============================================================================
 #  Main class
 # ============================================================================
@@ -433,12 +479,15 @@ class NSGA2MorphCMAES(HebbianCMAES):
 
     def _score_phase(
         self,
-    ) -> Optional[Tuple[np.ndarray, Dict[str, np.ndarray], int, str]]:
+    ) -> Optional[Tuple[np.ndarray, Dict[str, np.ndarray], int, str, np.ndarray]]:
         """Final per-URDF scores for the ending phase.
 
         Objectives come from the exam rollout when it runs, else from the
         phase-mean harvest; diagnostics stay phase means whenever available.
-        Returns ``(objs, diag, n_score_gens, obj_source)`` or ``None``.
+        ``gate_progress`` is the per-URDF progress from the SAME source as
+        the objectives — it feeds the ``outer.min_progress_m`` admission
+        filter. Returns ``(objs, diag, n_score_gens, obj_source,
+        gate_progress)`` or ``None``.
         """
         reduced = self._reduce_phase()
         exam = self._run_exam()
@@ -446,10 +495,12 @@ class NSGA2MorphCMAES(HebbianCMAES):
             objs, exam_diag, _k = exam
             agg = reduced[1] if reduced is not None else exam_diag
             n_gens = reduced[2] if reduced is not None else 0
-            return objs, agg, n_gens, "exam"
+            gate = np.asarray(exam_diag["progress_m"], dtype=np.float64)
+            return objs, agg, n_gens, "exam", gate
         if reduced is not None:
             objs, agg, n_gens = reduced
-            return objs, agg, n_gens, "phase_mean"
+            gate = np.asarray(agg["progress_m"], dtype=np.float64)
+            return objs, agg, n_gens, "phase_mean", gate
         return None
 
     def _record_outer_generation(
@@ -507,18 +558,21 @@ class NSGA2MorphCMAES(HebbianCMAES):
             print(f"[NSGA2MorphCMAES] gen {gen}: phase produced no scores — "
                   f"keeping current URDF population (no refresh)")
             return
-        objs, agg, n_gens, obj_source = scored
+        objs, agg, n_gens, obj_source, gate_progress = scored
         self._record_outer_generation(objs, agg, n_gens, obj_source=obj_source)
 
         outer = self.outer
         N = len(self._morph_genomes)
         n_elites = min(outer.n_elites, N - 1)
+        min_progress = float(getattr(outer, "min_progress_m", 0.0))
 
         inds = arrays_to_individuals(self._morph_genomes, objs)
-        elites = self.toolbox.select(inds, n_elites)  # selNSGA2 (rank+crowding)
+        elites, parent_pool = gated_select(
+            self.toolbox, inds, gate_progress, min_progress, n_elites,
+        )
         offspring = make_offspring_tournament(
-            self.toolbox, inds,
-            n_offspring=N - n_elites,
+            self.toolbox, parent_pool,
+            n_offspring=N - len(elites),
             crossover_prob=outer.crossover_prob,
         )
         new_genomes = np.clip(
@@ -530,20 +584,26 @@ class NSGA2MorphCMAES(HebbianCMAES):
         )
 
         elite_src = [inds.index(e) for e in elites]
+        gate = np.asarray(gate_progress, dtype=float)
+        infeasible = (gate < min_progress) if min_progress > 0.0 else np.zeros(N, bool)
         print(
             f"\n[NSGA2MorphCMAES] === Outer gen {self._outer_gen} → "
             f"{self._outer_gen + 1} (inner gen {gen}) ===\n"
-            f"[NSGA2MorphCMAES] Phase scores ({obj_source}, {n_gens} gens):\n"
+            f"[NSGA2MorphCMAES] Phase scores ({obj_source}, {n_gens} gens"
+            + (f", min_progress_m={min_progress:g}" if min_progress > 0.0 else "")
+            + "):\n"
             + "\n".join(
                 f"    urdf {i}: "
                 + "  ".join(
                     f"{o.name}={objs[i, j]:.4g}"
                     for j, o in enumerate(outer.objectives)
                 )
+                + (f"  [INFEASIBLE: progress {gate[i]:.4g} < {min_progress:g}]"
+                   if infeasible[i] else "")
                 for i in range(N)
             )
             + f"\n[NSGA2MorphCMAES] Elites kept (indices): {elite_src}; "
-              f"{N - n_elites} offspring via tournament+SBX+PM"
+              f"{N - len(elites)} offspring via tournament+SBX+PM"
         )
 
         # Materialize new URDFs while the Genesis runtime is still alive,
@@ -591,7 +651,9 @@ class NSGA2MorphCMAES(HebbianCMAES):
         # down here, so _score_phase falls back to phase-mean objectives.
         scored = self._score_phase()
         if scored is not None:
-            objs, agg, n_gens, obj_source = scored
+            # Gate progress unused here: the final flush only records — no
+            # selection happens on it.
+            objs, agg, n_gens, obj_source, _gate = scored
             self._record_outer_generation(objs, agg, n_gens, obj_source=obj_source)
 
         import pickle

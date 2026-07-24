@@ -25,10 +25,18 @@ from WP2_Outer_Loop.nsga2 import (
 from WP2_Outer_Loop.nsga_cma import (
     NSGA2MorphCMAES,
     exam_top_k,
+    gated_select,
     make_offspring_tournament,
     reduce_exam_metrics,
 )
-from WP2_Outer_Loop.pareto_plots import _hypervolume_2d, _nondominated_mask
+from WP2_Outer_Loop.pareto_plots import (
+    _admission_mask,
+    _hv_reference,
+    _hypervolume_2d,
+    _load_min_progress,
+    _nondominated_mask,
+    plot_pareto_front,
+)
 
 
 def _cfg(num_urdfs=4, **outer_kw):
@@ -212,6 +220,37 @@ def test_nondominated_mask():
     assert mask.tolist() == [False, True, True]
 
 
+# ------------------------------------------- fixed hypervolume reference
+
+def test_hv_reference_fixed_for_progress_cot():
+    # (progress_m max, cost_of_transport min) both have absolute worst
+    # bounds — 0 m progress, CoT 1 — so the reference is fixed at (0, -1)
+    # in maximization space and hypervolumes compare across runs.
+    pts = np.array([[50.0, -0.2], [80.0, -0.3]])
+    ref, fixed = _hv_reference(
+        [("progress_m", "maximize"), ("cost_of_transport", "minimize")], pts)
+    assert fixed is True
+    np.testing.assert_allclose(ref, [0.0, -1.0])
+
+
+def test_hv_reference_fixed_accepts_aliases():
+    pts = np.array([[50.0, -0.2]])
+    ref, fixed = _hv_reference(
+        [("progress", "maximize"), ("cot", "minimize")], pts)
+    assert fixed is True
+    np.testing.assert_allclose(ref, [0.0, -1.0])
+
+
+def test_hv_reference_falls_back_for_unbounded_objective():
+    # fitness is reward-shaped (no absolute scale) → run-relative reference:
+    # worst observed − 5% of span per objective.
+    pts = np.array([[10.0, -0.2], [20.0, -0.4]])
+    ref, fixed = _hv_reference(
+        [("fitness", "maximize"), ("cost_of_transport", "minimize")], pts)
+    assert fixed is False
+    np.testing.assert_allclose(ref, [10.0 - 0.05 * 10.0, -0.4 - 0.05 * 0.2])
+
+
 # ---------------------------------------------------------------- exam pass
 
 def test_exam_top_k_batch0_geometry():
@@ -270,7 +309,8 @@ def test_reduce_exam_metrics_missing_matrix_gives_nan_diag():
 
 def test_score_phase_falls_back_when_env_gone():
     # Final-flush path: the eval env is already torn down, so the exam is
-    # impossible and _score_phase must return phase-mean objectives.
+    # impossible and _score_phase must return phase-mean objectives — and a
+    # gate-progress vector taken from the same (phase-mean) source.
     loop = object.__new__(NSGA2MorphCMAES)
     loop.outer = _cfg().outer  # default objectives: fitness, cost_of_transport
     loop._env = None
@@ -286,11 +326,37 @@ def test_score_phase_falls_back_when_env_gone():
     loop._phase_samples = [sample]
     scored = loop._score_phase()
     assert scored is not None
-    objs, agg, n_gens, source = scored
+    objs, agg, n_gens, source, gate_progress = scored
     assert source == "phase_mean"
     assert n_gens == 1
     np.testing.assert_allclose(objs[:, 0], sample["fitness"])
     np.testing.assert_allclose(objs[:, 1], sample["cost_of_transport"])
+    np.testing.assert_allclose(gate_progress, sample["progress_m"])
+
+
+def test_score_phase_gate_progress_follows_exam_source():
+    # When the exam scores the phase, feasibility must be judged on the
+    # exam's progress (same source as the objectives), while the recorded
+    # diagnostics stay phase means.
+    loop = object.__new__(NSGA2MorphCMAES)
+    loop.outer = _cfg().outer
+    N = 3
+    loop._urdf_paths = [f"u{i}.urdf" for i in range(N)]
+    keys = ("fitness", "cost_of_transport", "progress_m", "velocity", "crash_rate")
+    phase_sample = {k: np.full(N, 1.0) for k in keys}
+    phase_sample["progress_m"] = np.array([10.0, 20.0, 30.0])
+    loop._phase_samples = [phase_sample]
+    exam_objs = np.arange(N * 2, dtype=float).reshape(N, 2)
+    exam_diag = {k: np.full(N, 2.0) for k in keys}
+    exam_diag["progress_m"] = np.array([50.0, 60.0, 70.0])
+    loop._run_exam = lambda: (exam_objs, exam_diag, 4)
+    scored = loop._score_phase()
+    assert scored is not None
+    objs, agg, n_gens, source, gate_progress = scored
+    assert source == "exam"
+    np.testing.assert_allclose(objs, exam_objs)
+    np.testing.assert_allclose(gate_progress, exam_diag["progress_m"])
+    np.testing.assert_allclose(agg["progress_m"], phase_sample["progress_m"])
 
 
 def test_config_rescore_defaults_and_validation():
@@ -301,6 +367,212 @@ def test_config_rescore_defaults_and_validation():
         _cfg(rescore_top_frac=0.0)
     with pytest.raises(ValueError, match="rescore_top_frac"):
         _cfg(rescore_top_frac=1.5)
+
+
+# ------------------------------------------------- minimum-progress gate
+
+def test_config_min_progress_default_off():
+    assert _cfg().outer.min_progress_m == 0.0
+
+
+def test_config_min_progress_validation():
+    _cfg(min_progress_m=40.0)
+    with pytest.raises(ValueError, match="min_progress_m"):
+        _cfg(min_progress_m=-1.0)
+
+
+def test_config_min_progress_yaml_roundtrip(tmp_path):
+    src = tmp_path / "outer.yaml"
+    src.write_text(
+        "catalog:\n  num_urdfs: 4\n  refresh_urdfs_every: 8\n"
+        "outer:\n  min_progress_m: 35.5\n"
+    )
+    cfg = OuterNSGA2Config.from_yaml(src)
+    assert cfg.outer.min_progress_m == 35.5
+    dumped = tmp_path / "dumped.yaml"
+    cfg.to_yaml(dumped)
+    assert OuterNSGA2Config.from_yaml(dumped).outer.min_progress_m == 35.5
+
+
+def _gate_fixture(progress, cot=None):
+    """Individuals over (progress_m max, cost_of_transport min) where every
+    point is nondominated ungated: progress ascending, cot ascending (the
+    low-progress/low-cot rows are exactly the degenerate front arm)."""
+    random.seed(0)
+    cfg = _cfg(num_urdfs=max(2, len(progress)), n_elites=1)
+    tb = make_toolbox(cfg.outer, genome_dim=15)
+    progress = np.asarray(progress, dtype=float)
+    N = len(progress)
+    if cot is None:
+        cot = np.linspace(0.05, 0.3, N)
+    genomes = np.random.rand(N, 15)
+    inds = arrays_to_individuals(genomes, np.column_stack([progress, cot]))
+    return tb, inds, progress
+
+
+def test_gated_select_off_matches_plain_nsga2():
+    tb, inds, progress = _gate_fixture([5.0, 40.0, 80.0, 120.0])
+    elites, pool = gated_select(tb, inds, progress, 0.0, n_elites=2)
+    expected = tb.select(list(inds), 2)
+    assert {id(e) for e in elites} == {id(e) for e in expected}
+    assert pool == list(inds)
+
+
+def test_gated_select_excludes_infeasible_from_elites_and_pool():
+    # Ungated, the 5 m morph is nondominated (best cot) and would be kept.
+    tb, inds, progress = _gate_fixture([5.0, 40.0, 80.0, 120.0])
+    elites, pool = gated_select(tb, inds, progress, 30.0, n_elites=2)
+    assert len(elites) == 2
+    assert inds[0] not in elites
+    assert inds[0] not in pool
+    assert all(ind in inds[1:] for ind in elites)
+    assert pool == inds[1:]
+
+
+def test_gated_select_elite_deficit_not_filled_by_infeasible():
+    tb, inds, progress = _gate_fixture([5.0, 10.0, 80.0, 120.0])
+    elites, pool = gated_select(tb, inds, progress, 30.0, n_elites=3)
+    assert len(elites) == 2                    # only 2 feasible
+    assert all(ind in inds[2:] for ind in elites)
+    assert pool == inds[2:]
+
+
+def test_gated_select_single_feasible_tops_up_parent_pool():
+    tb, inds, progress = _gate_fixture([5.0, 25.0, 10.0, 120.0])
+    elites, pool = gated_select(tb, inds, progress, 30.0, n_elites=2)
+    assert elites == [inds[3]]
+    # Pool topped up to 2 with the highest-progress infeasible morph (25 m).
+    assert pool == [inds[3], inds[1]]
+
+
+def test_gated_select_zero_feasible_falls_back_ungated(capsys):
+    tb, inds, progress = _gate_fixture([5.0, 10.0, 15.0, 20.0])
+    elites, pool = gated_select(tb, inds, progress, 30.0, n_elites=2)
+    assert len(elites) == 2
+    assert pool == list(inds)
+    assert "UNGATED" in capsys.readouterr().out
+
+
+def test_gated_select_nan_progress_counts_feasible():
+    # Missing gate data must never exclude a morphology.
+    tb, inds, progress = _gate_fixture([np.nan, 40.0, 80.0, 120.0])
+    elites, pool = gated_select(tb, inds, progress, 30.0, n_elites=2)
+    assert pool == list(inds)
+
+
+# ------------------------------------------------- plot admission gate
+
+def test_load_min_progress_reads_saved_config(tmp_path):
+    (tmp_path / "reproducibility").mkdir(parents=True)
+    (tmp_path / "reproducibility" / "config.yaml").write_text(
+        "outer:\n  min_progress_m: 30.0\n"
+    )
+    assert _load_min_progress(tmp_path) == 30.0
+
+
+def test_load_min_progress_absent_means_off(tmp_path):
+    # Old runs (pre-gate config) and missing config both → 0.0.
+    assert _load_min_progress(tmp_path) == 0.0
+    (tmp_path / "reproducibility").mkdir(parents=True)
+    (tmp_path / "reproducibility" / "config.yaml").write_text("outer:\n  n_elites: 2\n")
+    assert _load_min_progress(tmp_path) == 0.0
+
+
+def test_admission_mask_from_objective_column():
+    import pandas as pd
+    df = pd.DataFrame({
+        "obj_progress_m": [5.0, 40.0, np.nan, 120.0],
+        "obj_cost_of_transport": [0.05, 0.1, 0.2, 0.3],
+    })
+    specs = [("progress_m", "maximize"), ("cost_of_transport", "minimize")]
+    mask = _admission_mask(df, specs, 30.0)
+    assert mask.tolist() == [False, True, True, True]  # NaN admitted
+
+
+def test_admission_mask_from_diag_column_when_progress_not_objective():
+    import pandas as pd
+    df = pd.DataFrame({
+        "obj_fitness": [1.0, 2.0, 3.0],
+        "obj_cost_of_transport": [0.05, 0.1, 0.2],
+        "progress_m": [5.0, 40.0, 120.0],
+    })
+    specs = [("fitness", "maximize"), ("cost_of_transport", "minimize")]
+    mask = _admission_mask(df, specs, 30.0)
+    assert mask.tolist() == [False, True, True]
+
+
+def test_admission_mask_gate_off_or_no_progress_column():
+    import pandas as pd
+    df = pd.DataFrame({"obj_fitness": [1.0, 2.0]})
+    specs = [("fitness", "maximize"), ("cost_of_transport", "minimize")]
+    assert _admission_mask(df, specs, 0.0).all()
+    assert _admission_mask(df, specs, 30.0).all()  # no progress info → no gate
+
+
+def _synthetic_run_dir(tmp_path, min_progress_yaml=None):
+    """Minimal run dir: outer_population.csv + saved single-file config."""
+    (tmp_path / "results").mkdir(parents=True)
+    (tmp_path / "reproducibility").mkdir(parents=True)
+    rows = [
+        # gen 0: degenerate low-progress/low-cot morph + two real flyers
+        (0, 0, "a.urdf", 8, "exam", 5.0, 0.05),
+        (0, 1, "b.urdf", 8, "exam", 80.0, 0.20),
+        (0, 2, "c.urdf", 8, "exam", 100.0, 0.30),
+        # gen 1: entirely infeasible generation (robustness edge)
+        (1, 0, "d.urdf", 8, "exam", 4.0, 0.04),
+        (1, 1, "e.urdf", 8, "exam", 6.0, 0.06),
+        (1, 2, "f.urdf", 8, "exam", 8.0, 0.08),
+    ]
+    lines = ["outer_gen,urdf_idx,urdf_file,n_score_gens,obj_source,"
+             "obj_progress_m,obj_cost_of_transport"]
+    lines += [",".join(map(str, r)) for r in rows]
+    (tmp_path / "results" / "outer_population.csv").write_text("\n".join(lines) + "\n")
+    cfg = (
+        "outer:\n"
+        "  objectives:\n"
+        "    - {name: progress_m, direction: maximize}\n"
+        "    - {name: cost_of_transport, direction: minimize}\n"
+    )
+    if min_progress_yaml is not None:
+        cfg += f"  min_progress_m: {min_progress_yaml}\n"
+    (tmp_path / "reproducibility" / "config.yaml").write_text(cfg)
+    return tmp_path
+
+
+def test_plot_pareto_front_gated_smoke(tmp_path):
+    run_dir = _synthetic_run_dir(tmp_path, min_progress_yaml=30.0)
+    plot_pareto_front(run_dir)  # threshold read from the saved config
+    assert (run_dir / "plots" / "pareto_front_evolution.png").is_file()
+    assert (run_dir / "plots" / "pareto_hypervolume.png").is_file()
+
+
+def test_plot_pareto_front_explicit_override_smoke(tmp_path):
+    # Old runs without the knob: gate passed explicitly (CLI --min-progress).
+    run_dir = _synthetic_run_dir(tmp_path, min_progress_yaml=None)
+    plot_pareto_front(run_dir, min_progress=30.0)
+    assert (run_dir / "plots" / "pareto_front_evolution.png").is_file()
+
+
+def test_plot_pareto_front_returns_fixed_ref_hypervolume(tmp_path):
+    # progress/cot run, gate off → every point admitted; the cumulative
+    # front is all 6 points (progress and cot both ascending) and the HV
+    # is anchored at (progress 0, CoT 1):
+    # 100*0.70 + 80*0.10 + 8*0.12 + 6*0.02 + 5*0.01 + 4*0.01 = 79.17
+    run_dir = _synthetic_run_dir(tmp_path, min_progress_yaml=None)
+    res = plot_pareto_front(run_dir)
+    assert res["ref_fixed"] is True
+    np.testing.assert_allclose(res["ref"], [0.0, 1.0])  # raw objective space
+    assert res["hypervolume"] == pytest.approx(79.17)
+
+
+def test_plot_pareto_front_fixed_ref_hv_respects_gate(tmp_path):
+    # min_progress 30 admits only (80, 0.20) and (100, 0.30):
+    # 100*(1-0.30) + 80*(0.30-0.20) = 78.0 — same anchor, so gated and
+    # ungated runs stay comparable.
+    run_dir = _synthetic_run_dir(tmp_path, min_progress_yaml=30.0)
+    res = plot_pareto_front(run_dir)
+    assert res["ref_fixed"] is True
+    assert res["hypervolume"] == pytest.approx(78.0)
 
 
 # ------------------------------------------------- per-URDF reductions

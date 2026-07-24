@@ -332,6 +332,14 @@ class OuterConfig:
         apply ONLY to the exam rollout — see ``ExamForestConfig``. All-null
         (the default) means the exam flies the same forest distribution as
         the inner loop.
+    min_progress_m : float
+        Minimum per-URDF progress (meters) required for a morphology to be
+        admitted to NSGA-II selection (elites + tournament parents). Hard
+        filter: sub-threshold morphs never become elites or parents while
+        feasible ones exist; with zero feasible morphs the refresh runs
+        ungated (with a warning). Judged on the progress from the same
+        source as the objectives (exam when it ran, else phase mean).
+        0 = gate off.
     crossover_prob : float
         Probability of applying SBX crossover to a parent pair.
     mutation_prob : float
@@ -354,6 +362,7 @@ class OuterConfig:
     rescore: bool = True
     rescore_top_frac: float = 0.125
     exam_forest: ExamForestConfig = field(default_factory=ExamForestConfig)
+    min_progress_m: float = 0.0
     crossover_prob: float = 0.9
     mutation_prob: float = 1.0 / 15.0
     sbx_eta: float = 15.0
@@ -470,6 +479,10 @@ class OuterNSGA2Config(HebbianEvolutionConfig):
             raise ValueError(
                 f"outer.rescore_top_frac must be in (0, 1] "
                 f"(got {outer.rescore_top_frac})"
+            )
+        if float(outer.min_progress_m) < 0.0:
+            raise ValueError(
+                f"outer.min_progress_m must be ≥ 0 (got {outer.min_progress_m})"
             )
         ef = outer.exam_forest
         _modes = ("uniform", "growing", "lattice", "latin")

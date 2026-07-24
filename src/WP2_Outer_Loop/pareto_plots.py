@@ -74,6 +74,53 @@ def _load_objective_specs(run_dir: Path) -> List[Tuple[str, str]]:
     return [("fitness", "maximize"), ("cost_of_transport", "minimize")]
 
 
+def _load_min_progress(run_dir: Path) -> float:
+    """``outer.min_progress_m`` from the saved config; 0.0 (gate off) when
+    the config or the knob is absent (pre-gate runs)."""
+    cfg_path = Path(run_dir) / "reproducibility" / "config.yaml"
+    if not cfg_path.is_file():
+        return 0.0
+    try:
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        return float((cfg.get("outer") or {}).get("min_progress_m") or 0.0)
+    except Exception:
+        return 0.0
+
+
+_PROGRESS_NAMES = ("progress_m", "progress")
+
+
+def _admission_mask(
+    df: pd.DataFrame,
+    specs: List[Tuple[str, str]],
+    min_progress: Optional[float],
+) -> np.ndarray:
+    """Rows admitted to front / hypervolume computation under the
+    minimum-progress gate (scatter always shows everything).
+
+    Gate column: the ``obj_`` column when progress is a plotted objective
+    (consistent with what selection saw), else the ``progress_m``
+    diagnostic column. NaN progress is admitted; gate off or no progress
+    column → everything admitted."""
+    n = len(df)
+    if min_progress is None or float(min_progress) <= 0.0:
+        return np.ones(n, dtype=bool)
+    col = None
+    for name, _direction in specs:
+        if name in _PROGRESS_NAMES and f"obj_{name}" in df.columns:
+            col = f"obj_{name}"
+            break
+    if col is None and "progress_m" in df.columns:
+        col = "progress_m"
+    if col is None:
+        print(f"[pareto_plots] min_progress={float(min_progress):g} requested "
+              f"but no progress column in the CSV — gate disabled")
+        return np.ones(n, dtype=bool)
+    vals = df[col].to_numpy(dtype=float)
+    return ~(vals < float(min_progress))  # NaN compares False → admitted
+
+
 # Objective name → column in results/validation_summary.csv (baseline side).
 _VALIDATION_BASELINE_COLS = {
     "fitness":            "baseline_fitness",
@@ -145,6 +192,38 @@ def _nondominated_mask(points_max: np.ndarray) -> np.ndarray:
     return keep
 
 
+# Absolute worst-case value (raw objective space) for objectives with a
+# physically fixed scale: zero progress / velocity, CoT 1, every drone
+# crashed. Reward-shaped objectives (fitness) have no absolute scale.
+_ABS_WORST_RAW = {
+    "progress_m": 0.0,
+    "progress": 0.0,
+    "cost_of_transport": 1.0,
+    "cot": 1.0,
+}
+
+
+def _hv_reference(
+    specs: List[Tuple[str, str]], pts_max: np.ndarray,
+) -> Tuple[np.ndarray, bool]:
+    """Hypervolume reference point in maximization space.
+
+    When both objectives have an absolute worst bound (``_ABS_WORST_RAW``)
+    the reference is fixed there — (0 m, CoT 1) for the standard
+    progress/cot pair — so hypervolumes are comparable across runs.
+    Otherwise it is run-relative (worst observed − 5 % of span per
+    objective) and only the within-run curve is meaningful. Returns
+    ``(ref, fixed)``.
+    """
+    names = [name for name, _ in specs[:2]]
+    if all(n in _ABS_WORST_RAW for n in names):
+        sign = np.array([1.0 if d == "maximize" else -1.0
+                         for _, d in specs[:2]])
+        return np.array([_ABS_WORST_RAW[n] for n in names]) * sign, True
+    span = pts_max.max(axis=0) - pts_max.min(axis=0)
+    return pts_max.min(axis=0) - 0.05 * np.where(span > 0, span, 1.0), False
+
+
 def _hypervolume_2d(front_max: np.ndarray, ref: np.ndarray) -> float:
     """2-D hypervolume (maximization space) of a nondominated front w.r.t.
     reference point ``ref`` (worse than every front point)."""
@@ -165,9 +244,21 @@ def _hypervolume_2d(front_max: np.ndarray, ref: np.ndarray) -> float:
 #  Pareto front evolution
 # ----------------------------------------------------------------------------
 
-def plot_pareto_front(run_dir: Path | str) -> None:
+def plot_pareto_front(
+    run_dir: Path | str, min_progress: Optional[float] = None,
+) -> Optional[dict]:
     """Objective-space scatter per outer generation + per-gen fronts +
-    cumulative front, and a hypervolume-vs-generation curve."""
+    cumulative front, and a hypervolume-vs-generation curve.
+
+    ``min_progress`` gates admission to the fronts and hypervolumes (the
+    scatter always shows every point): ``None`` reads
+    ``outer.min_progress_m`` from the run's saved config (absent/0 = no
+    gate); pass a value explicitly to regenerate old runs with a gate.
+
+    Returns ``{"hypervolume", "ref", "ref_fixed"}`` — the final cumulative
+    hypervolume and its raw-space reference point (see ``_hv_reference``;
+    cross-run comparable only when ``ref_fixed``) — or ``None`` when the
+    run has no plottable data."""
     run_dir = Path(run_dir)
     csv_path = run_dir / "results" / "outer_population.csv"
     if not csv_path.is_file():
@@ -188,6 +279,16 @@ def plot_pareto_front(run_dir: Path | str) -> None:
         print(f"[pareto_plots] Objective columns missing: {col_x}, {col_y}")
         return
 
+    if min_progress is None:
+        min_progress = _load_min_progress(run_dir)
+    min_progress = float(min_progress)
+    admit = _admission_mask(df, specs, min_progress)
+    if not admit.any():
+        print(f"[pareto_plots] min_progress={min_progress:g} excludes every "
+              f"point — plotting ungated")
+        admit = np.ones(len(df), dtype=bool)
+        min_progress = 0.0
+
     sign = np.array([
         1.0 if dir_x == "maximize" else -1.0,
         1.0 if dir_y == "maximize" else -1.0,
@@ -197,9 +298,8 @@ def plot_pareto_front(run_dir: Path | str) -> None:
     gens = df["outer_gen"].to_numpy(dtype=int)
     uniq_gens = np.unique(gens)
 
-    # Reference point for hypervolume: worst observed per objective − margin.
-    span = pts_max.max(axis=0) - pts_max.min(axis=0)
-    ref = pts_max.min(axis=0) - 0.05 * np.where(span > 0, span, 1.0)
+    ref, ref_fixed = _hv_reference(specs, pts_max[admit])
+    ref_raw = (ref * sign).tolist()
 
     cmap = plt.get_cmap("viridis")
     colors = {g: cmap(i / max(1, len(uniq_gens) - 1))
@@ -215,29 +315,40 @@ def plot_pareto_front(run_dir: Path | str) -> None:
 
     for g in uniq_gens:
         sel = gens == g
-        p_raw, p_max = raw[sel], pts_max[sel]
+        p_raw, p_max, p_adm = raw[sel], pts_max[sel], admit[sel]
         ax.scatter(p_raw[:, 0], p_raw[:, 1], color=colors[g], s=38,
                    alpha=0.85, edgecolors="none", zorder=3)
-        # This generation's own front
-        mask = _nondominated_mask(p_max)
-        front = p_raw[mask]
+        # This generation's own front (admitted points only)
+        mask = _nondominated_mask(p_max[p_adm])
+        front = p_raw[p_adm][mask]
         order = np.argsort(front[:, 0])
         ax.plot(front[order, 0], front[order, 1], color=colors[g],
                 linewidth=1.4, alpha=0.9, zorder=2,
                 label=(f"gen {g}" if few_gens else None))
-        hv_per_gen.append(_hypervolume_2d(p_max[mask], ref))
-        # Cumulative front over everything seen so far
-        seen_max = np.vstack([seen_max, p_max])
+        hv_per_gen.append(_hypervolume_2d(p_max[p_adm][mask], ref))
+        # Cumulative front over everything admitted so far
+        seen_max = np.vstack([seen_max, p_max[p_adm]])
         cum_mask = _nondominated_mask(seen_max)
         hv_cumulative.append(_hypervolume_2d(seen_max[cum_mask], ref))
 
     # Final cumulative front in red on top
-    cum_mask = _nondominated_mask(pts_max)
-    cum_front = raw[cum_mask]
+    cum_mask = _nondominated_mask(pts_max[admit])
+    cum_front = raw[admit][cum_mask]
     order = np.argsort(cum_front[:, 0])
     ax.plot(cum_front[order, 0], cum_front[order, 1], color="#d62728",
             linewidth=2.2, marker="o", markersize=6, zorder=4,
             label="cumulative front")
+
+    # Admission threshold marker when progress is one of the plotted axes.
+    if min_progress > 0.0:
+        if name_x in _PROGRESS_NAMES:
+            ax.axvline(min_progress, color="gray", linestyle=":",
+                       linewidth=1.4, zorder=1,
+                       label=f"min progress {min_progress:g} m")
+        elif name_y in _PROGRESS_NAMES:
+            ax.axhline(min_progress, color="gray", linestyle=":",
+                       linewidth=1.4, zorder=1,
+                       label=f"min progress {min_progress:g} m")
 
     # Standard mydrone reference: zero-rules baseline from held-out validation
     # (only available when validation ran on the standard drone).
@@ -277,7 +388,9 @@ def plot_pareto_front(run_dir: Path | str) -> None:
             marker="s", markersize=4, label="per-generation front")
     ax.set_xlabel("Outer generation")
     ax.set_ylabel("Hypervolume (↑ better)")
-    ax.set_title(f"Pareto hypervolume — {name_x} vs {name_y}")
+    ref_note = (f"ref: {name_x}={ref_raw[0]:g}, {name_y}={ref_raw[1]:g}"
+                if ref_fixed else "run-relative ref")
+    ax.set_title(f"Pareto hypervolume — {name_x} vs {name_y}  ({ref_note})")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(fontsize=9)
     fig.tight_layout()
@@ -285,6 +398,13 @@ def plot_pareto_front(run_dir: Path | str) -> None:
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[pareto_plots] Saved {out}")
+    print(f"[pareto_plots] cumulative hypervolume: {hv_cumulative[-1]:.4f} "
+          f"({ref_note})")
+    return {
+        "hypervolume": float(hv_cumulative[-1]),
+        "ref": ref_raw,
+        "ref_fixed": ref_fixed,
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -389,14 +509,27 @@ def plot_outer_metrics(run_dir: Path | str) -> None:
     print(f"[pareto_plots] Saved {out}")
 
 
-def plot_outer_run(run_dir: Path | str) -> None:
+def plot_outer_run(
+    run_dir: Path | str, min_progress: Optional[float] = None,
+) -> None:
     """All outer-loop plots for a run directory."""
-    plot_pareto_front(run_dir)
+    plot_pareto_front(run_dir, min_progress=min_progress)
     plot_outer_metrics(run_dir)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python -m WP2_Outer_Loop.pareto_plots <run_dir>")
+    argv = sys.argv[1:]
+    _min_progress: Optional[float] = None
+    if "--min-progress" in argv:
+        i = argv.index("--min-progress")
+        try:
+            _min_progress = float(argv[i + 1])
+        except (IndexError, ValueError):
+            print("--min-progress requires a numeric value (meters)")
+            sys.exit(1)
+        del argv[i:i + 2]
+    if len(argv) < 1:
+        print("Usage: python -m WP2_Outer_Loop.pareto_plots <run_dir> "
+              "[--min-progress X]")
         sys.exit(1)
-    plot_outer_run(sys.argv[1])
+    plot_outer_run(argv[0], min_progress=_min_progress)
