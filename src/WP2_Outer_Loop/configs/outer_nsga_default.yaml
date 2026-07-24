@@ -50,6 +50,9 @@ outer:
     x_upper: 900.0           # longer forest; also moves the eval success line
                              # (60 s episodes still cap distance at ~vmax*60 m)
     # num_trees: 800         # uniform mode only
+  min_progress_m: 0.0        # admission gate (meters): morphs below this progress
+                             # (exam if it ran, else phase mean) are barred from
+                             # elites/parents; 0 = gate off
   crossover_prob: 0.9        # SBX application probability
   mutation_prob: 0.0667      # per-gene polynomial mutation (≈1/15)
   sbx_eta: 15.0              # SBX distribution index
