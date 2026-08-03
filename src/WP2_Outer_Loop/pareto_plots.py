@@ -91,6 +91,45 @@ def _load_min_progress(run_dir: Path) -> float:
 _PROGRESS_NAMES = ("progress_m", "progress")
 
 
+def _filter_exam_rows(df: pd.DataFrame) -> Tuple[pd.DataFrame, bool]:
+    """Keep only exam-scored rows when the run has any; ``(df, exam_only)``.
+
+    Exam runs (``outer.rescore``) score phases on the exam forest
+    distribution (``obj_source == "exam"``); rows tagged ``phase_mean`` are
+    fallbacks scored on the (easier) inner-loop forests — e.g. the trailing
+    partial phase, flushed after env teardown — so their objectives are not
+    comparable and would corrupt fronts/hypervolumes. Runs with no exam rows
+    (legacy or rescore off) pass through unchanged."""
+    if "obj_source" not in df.columns:
+        return df, False
+    exam = df["obj_source"].astype(str) == "exam"
+    if not exam.any():
+        return df, False
+    n_drop = int((~exam).sum())
+    if n_drop:
+        gens = sorted(df.loc[~exam, "outer_gen"].unique().tolist())
+        print(f"[pareto_plots] Dropping {n_drop} non-exam rows "
+              f"(outer gens {gens}): obj_source != 'exam' is scored on a "
+              f"different forest distribution")
+    return df[exam].reset_index(drop=True), True
+
+
+def _read_results_csv(csv_path: Path) -> Optional[pd.DataFrame]:
+    """DataFrame from ``csv_path``, or ``None`` (with a message) when the
+    file is missing, zero-byte (interrupted sync), or has no rows."""
+    if not csv_path.is_file():
+        print(f"[pareto_plots] CSV not found: {csv_path}")
+        return None
+    try:
+        df = pd.read_csv(csv_path)
+    except pd.errors.EmptyDataError:
+        df = pd.DataFrame()
+    if df.empty:
+        print(f"[pareto_plots] CSV is empty: {csv_path}")
+        return None
+    return df
+
+
 def _admission_mask(
     df: pd.DataFrame,
     specs: List[Tuple[str, str]],
@@ -133,37 +172,35 @@ _VALIDATION_BASELINE_COLS = {
 }
 
 
-def _load_standard_drone_baseline(
-    run_dir: Path, name_x: str, name_y: str,
-) -> Optional[Tuple[float, float]]:
-    """Mean (obj_x, obj_y) of the zero-rules baseline on the standard mydrone,
-    from the held-out validation CSV.
+def _validation_ran_on_standard_drone(run_dir: Path) -> bool:
+    """True when the run's held-out validation env held the standard mydrone.
 
-    Returns ``None`` unless validation was enabled AND ran on the standard
-    drone (``validation.validation_catalog`` empty/none), so the star only
-    appears when the point actually is the standard mydrone.
+    Validation must have been enabled AND left on the default catalog
+    (``validation.validation_catalog`` empty/none, which builds the URDF from
+    ``STANDARD_MYDRONE_GENOME``). Gates both reference points below, so a
+    star is only ever drawn when the point really is the standard drone.
     """
     cfg_path = run_dir / "reproducibility" / "config.yaml"
     if not cfg_path.is_file():
-        return None
+        return False
     try:
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f) or {}
         val = cfg.get("validation") or {}
         if not val.get("enable"):
-            return None
+            return False
         vc = str(val.get("validation_catalog") or "").strip()
-        if vc and vc.lower() != "none":
-            return None  # custom validation catalog → not the standard drone
+        return not vc or vc.lower() == "none"
     except Exception:
-        return None
+        return False
 
-    csv_path = run_dir / "results" / "validation_summary.csv"
-    if not csv_path.is_file():
-        return None
-    col_x = _VALIDATION_BASELINE_COLS.get(name_x)
-    col_y = _VALIDATION_BASELINE_COLS.get(name_y)
-    if col_x is None or col_y is None:
+
+def _mean_columns(
+    csv_path: Path, col_x: Optional[str], col_y: Optional[str],
+) -> Optional[Tuple[float, float]]:
+    """Mean of two named columns of ``csv_path``, or ``None`` when the file
+    or either column is missing / unmapped / empty."""
+    if col_x is None or col_y is None or not csv_path.is_file():
         return None
     try:
         df = pd.read_csv(csv_path)
@@ -171,7 +208,49 @@ def _load_standard_drone_baseline(
         return None
     if df.empty or col_x not in df.columns or col_y not in df.columns:
         return None
-    return float(df[col_x].mean()), float(df[col_y].mean())
+    x, y = df[col_x].mean(), df[col_y].mean()
+    if pd.isna(x) or pd.isna(y):
+        return None
+    return float(x), float(y)
+
+
+def _load_standard_drone_baseline(
+    run_dir: Path, name_x: str, name_y: str,
+) -> Optional[Tuple[float, float]]:
+    """Mean (obj_x, obj_y) of the zero-rules baseline on the standard mydrone,
+    from the held-out validation CSV — i.e. measured on the NOMINAL forests.
+
+    Only valid for non-exam runs; exam runs use ``_load_exam_baseline``.
+    """
+    if not _validation_ran_on_standard_drone(run_dir):
+        return None
+    return _mean_columns(
+        run_dir / "results" / "validation_summary.csv",
+        _VALIDATION_BASELINE_COLS.get(name_x),
+        _VALIDATION_BASELINE_COLS.get(name_y),
+    )
+
+
+def _load_exam_baseline(
+    run_dir: Path, name_x: str, name_y: str,
+) -> Optional[Tuple[float, float]]:
+    """Mean (obj_x, obj_y) of the zero-rules generalist on the standard
+    mydrone flown over the EXAM forests (``outer.exam_baseline``).
+
+    This is the star for exam-scored runs: the same forest distribution the
+    exam objectives were measured on, so the reference point is comparable.
+    Averaged over every phase — the drone and the controller are fixed, so
+    the per-phase spread is forest noise. ``None`` for runs predating the
+    flag (no CSV) or whose validation env was not the standard drone.
+    """
+    if not _validation_ran_on_standard_drone(run_dir):
+        return None
+    # The CSV already uses canonical objective names as its metric columns.
+    return _mean_columns(
+        run_dir / "results" / "outer_exam_baseline.csv",
+        "v_deviation" if name_x == "velocity_deviation" else name_x,
+        "v_deviation" if name_y == "velocity_deviation" else name_y,
+    )
 
 
 def _nondominated_mask(points_max: np.ndarray) -> np.ndarray:
@@ -261,13 +340,10 @@ def plot_pareto_front(
     run has no plottable data."""
     run_dir = Path(run_dir)
     csv_path = run_dir / "results" / "outer_population.csv"
-    if not csv_path.is_file():
-        print(f"[pareto_plots] CSV not found: {csv_path}")
+    df = _read_results_csv(csv_path)
+    if df is None:
         return
-    df = pd.read_csv(csv_path)
-    if df.empty:
-        print(f"[pareto_plots] CSV is empty: {csv_path}")
-        return
+    df, exam_only = _filter_exam_rows(df)
 
     specs = _load_objective_specs(run_dir)
     if len(specs) < 2:
@@ -350,13 +426,20 @@ def plot_pareto_front(
                        linewidth=1.4, zorder=1,
                        label=f"min progress {min_progress:g} m")
 
-    # Standard mydrone reference: zero-rules baseline from held-out validation
-    # (only available when validation ran on the standard drone).
-    star = _load_standard_drone_baseline(run_dir, name_x, name_y)
+    # Standard mydrone reference (zero-rules generalist), always measured on
+    # the same forests as the plotted objectives: the exam-baseline rollout
+    # for exam-scored runs, the held-out validation pass otherwise. Both need
+    # validation to have run on the standard drone.
+    if exam_only:
+        star = _load_exam_baseline(run_dir, name_x, name_y)
+        star_label = "standard mydrone (zero rules, exam forests)"
+    else:
+        star = _load_standard_drone_baseline(run_dir, name_x, name_y)
+        star_label = "standard mydrone (zero rules)"
     if star is not None:
         ax.scatter([star[0]], [star[1]], marker="*", s=340, color="gold",
                    edgecolors="black", linewidths=0.9, zorder=5,
-                   label="standard mydrone (zero rules)")
+                   label=star_label)
 
     def _axis_label(name: str, direction: str) -> str:
         return f"{name}  ({'higher' if direction == 'maximize' else 'lower'} better)"
@@ -377,8 +460,25 @@ def plot_pareto_front(
     fig.tight_layout()
     out = plots_dir / "pareto_front_evolution.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
-    plt.close(fig)
     print(f"[pareto_plots] Saved {out}")
+
+    # Zoomed variant: same figure cropped to the cumulative front's bounding
+    # box (plus a small margin), so the front's extreme individuals sit at
+    # the plot corners without their markers being clipped.
+    if len(cum_front) >= 2:
+        (x_lo, y_lo) = cum_front.min(axis=0)
+        (x_hi, y_hi) = cum_front.max(axis=0)
+        if x_hi > x_lo:
+            pad = 0.03 * (x_hi - x_lo)
+            ax.set_xlim(x_lo - pad, x_hi + pad)
+        if y_hi > y_lo:
+            pad = 0.03 * (y_hi - y_lo)
+            ax.set_ylim(y_lo - pad, y_hi + pad)
+        ax.set_title("Outer-loop Pareto front evolution (zoomed to front)")
+        out = plots_dir / "pareto_front_evolution_zoomed.png"
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        print(f"[pareto_plots] Saved {out}")
+    plt.close(fig)
 
     # Hypervolume curve
     fig, ax = plt.subplots(figsize=(6, 4))
@@ -404,6 +504,7 @@ def plot_pareto_front(
         "hypervolume": float(hv_cumulative[-1]),
         "ref": ref_raw,
         "ref_fixed": ref_fixed,
+        "star": star,
     }
 
 
@@ -416,12 +517,8 @@ def plot_outer_metrics(run_dir: Path | str) -> None:
     population mean bold, URDF-refresh vlines — mirrors WP2.plot_metrics."""
     run_dir = Path(run_dir)
     csv_path = run_dir / "results" / "outer_per_urdf_per_gen.csv"
-    if not csv_path.is_file():
-        print(f"[pareto_plots] CSV not found: {csv_path}")
-        return
-    df = pd.read_csv(csv_path)
-    if df.empty:
-        print(f"[pareto_plots] CSV is empty: {csv_path}")
+    df = _read_results_csv(csv_path)
+    if df is None:
         return
 
     # Phase length: single-file runs store it as catalog.refresh_urdfs_every;
@@ -482,11 +579,14 @@ def plot_outer_metrics(run_dir: Path | str) -> None:
     # objectives live on very different scales).
     ax = axes.flat[len(_DIAG_METRICS)]
     pop_csv = run_dir / "results" / "outer_population.csv"
-    if pop_csv.is_file():
-        pop = pd.read_csv(pop_csv)
+    pop = _read_results_csv(pop_csv) if pop_csv.is_file() else None
+    if pop is not None:
+        pop, _ = _filter_exam_rows(pop)
         if not pop.empty:
-            obj_cols = [c for c in pop.columns if c.startswith("obj_")]
             g_means = pop.groupby("outer_gen").mean(numeric_only=True)
+            # From g_means, not pop: numeric-only mean drops non-numeric
+            # obj_ columns (obj_source is a string tag, not an objective).
+            obj_cols = [c for c in g_means.columns if c.startswith("obj_")]
             x = g_means.index.to_numpy()
             axes_pair = [ax, ax.twinx()] if len(obj_cols) >= 2 else [ax]
             palette = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]

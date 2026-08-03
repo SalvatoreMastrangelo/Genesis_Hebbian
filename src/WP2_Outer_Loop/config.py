@@ -332,6 +332,22 @@ class OuterConfig:
         apply ONLY to the exam rollout — see ``ExamForestConfig``. All-null
         (the default) means the exam flies the same forest distribution as
         the inner loop.
+    exam_baseline : bool
+        Also fly the standard-mydrone reference on the exam forests at the
+        end of each phase, reusing the held-out validation env (no scene
+        rebuild — it is already alive at exam time). The zero-rules
+        generalist flies the same forest distribution as the exam, giving
+        ``pareto_plots`` a reference point that is comparable to the exam
+        objectives (the "standard mydrone" star). Inert when
+        ``validation.enable`` is false or the validation env failed to
+        build; never affects the NSGA-II objectives.
+
+        Caveat: the validation env is rebuilt at every URDF refresh, so with
+        ``validation.period > catalog.refresh_urdfs_every`` a phase can end
+        before it has flown at all — the reference rollout is then its first,
+        with cold Taichi aero state (the known ``_thr_flt`` cold-start bias),
+        making the star pessimistic. Keep ``validation.period`` at or below
+        ``catalog.refresh_urdfs_every``.
     min_progress_m : float
         Minimum per-URDF progress (meters) required for a morphology to be
         admitted to NSGA-II selection (elites + tournament parents). Hard
@@ -362,6 +378,7 @@ class OuterConfig:
     rescore: bool = True
     rescore_top_frac: float = 0.125
     exam_forest: ExamForestConfig = field(default_factory=ExamForestConfig)
+    exam_baseline: bool = True
     min_progress_m: float = 0.0
     crossover_prob: float = 0.9
     mutation_prob: float = 1.0 / 15.0

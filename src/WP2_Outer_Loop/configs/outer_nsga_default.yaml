@@ -50,6 +50,13 @@ outer:
     x_upper: 900.0           # longer forest; also moves the eval success line
                              # (60 s episodes still cap distance at ~vmax*60 m)
     # num_trees: 800         # uniform mode only
+  exam_baseline: true        # after each exam, re-fly the standard mydrone with the
+                             # zero-rules generalist on the SAME exam forests, reusing
+                             # the held-out validation env (no scene rebuild) →
+                             # results/outer_exam_baseline.csv, the Pareto plot's star.
+                             # Needs validation.enable; keep validation.period <=
+                             # catalog.refresh_urdfs_every or the reference rollout is
+                             # the val env's first flight (cold aero → pessimistic star)
   min_progress_m: 0.0        # admission gate (meters): morphs below this progress
                              # (exam if it ran, else phase mean) are barred from
                              # elites/parents; 0 = gate off

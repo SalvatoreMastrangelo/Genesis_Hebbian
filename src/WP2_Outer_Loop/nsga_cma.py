@@ -40,6 +40,11 @@ Outputs (on top of everything ``HebbianCMAES`` already writes):
   (exam or phase-mean, see ``obj_source`` column) + phase-mean diagnostics
   + normalized genome (the NSGA-II selection input; also the Pareto archive
   used by ``pareto_plots``).
+* ``results/outer_exam_baseline.csv``    — per outer gen, the standard
+  mydrone flown by the zero-rules generalist on THAT phase's exam forests
+  (``outer.exam_baseline``, reusing the held-out validation env). It is the
+  reference point ``pareto_plots`` draws as the gold star: the only
+  measurement of the unevolved morphology on the exam distribution.
 * ``outer/gen_XXX/{genomes,objectives}.npy`` — per-phase snapshots.
 """
 
@@ -77,6 +82,18 @@ _PER_URDF_ALIASES: Dict[str, str] = {
 # sensible objective pair).
 _DIAG_KEYS: Tuple[str, ...] = (
     "fitness", "cost_of_transport", "progress_m", "velocity", "crash_rate",
+)
+
+# results/outer_exam_baseline.csv metric columns → the keys HebbianCMAES's
+# _pack_eval_result uses. Canonical objective names on the CSV side so
+# pareto_plots can look up a plotted objective directly by name.
+_EXAM_BASELINE_COLS: Tuple[Tuple[str, str], ...] = (
+    ("fitness", "fitness"),
+    ("velocity", "velocity"),
+    ("progress_m", "progress"),
+    ("crash_rate", "crash_rate"),
+    ("cost_of_transport", "cot"),
+    ("v_deviation", "v_deviation"),
 )
 
 
@@ -283,12 +300,14 @@ class NSGA2MorphCMAES(HebbianCMAES):
         # exam (its top rescore_top_frac controllers re-fly the URDFs).
         self._last_solutions: Optional[List[np.ndarray]] = None
         self._last_fitnesses: Optional[np.ndarray] = None
+        self._last_gen: int = -1
 
         # Output locations
         self.outer_dir = self.run_dir / "outer"
         self.outer_dir.mkdir(parents=True, exist_ok=True)
         self.outer_per_gen_csv = self.results_dir / "outer_per_urdf_per_gen.csv"
         self.outer_pop_csv = self.results_dir / "outer_population.csv"
+        self.exam_baseline_csv = self.results_dir / "outer_exam_baseline.csv"
         self._init_outer_csvs()
 
         phase_len = int(cfg.catalog.refresh_urdfs_every)
@@ -315,6 +334,12 @@ class NSGA2MorphCMAES(HebbianCMAES):
                 ["outer_gen", "urdf_idx", "urdf_file", "n_score_gens", "obj_source"]
                 + obj_cols + list(_DIAG_KEYS) + gene_cols
             )
+        if self.outer.exam_baseline:
+            with open(self.exam_baseline_csv, "w", newline="") as f:
+                csv.writer(f).writerow(
+                    ["outer_gen", "inner_gen", "n_forests"]
+                    + [col for col, _key in _EXAM_BASELINE_COLS]
+                )
 
     def _append_per_gen_csv(self, gen: int, diag: Dict[str, np.ndarray]) -> None:
         N = len(self._urdf_paths)
@@ -344,6 +369,7 @@ class NSGA2MorphCMAES(HebbianCMAES):
             gen, solutions, fitnesses, metrics, es,
             baseline=baseline, specialist=specialist,
         )
+        self._last_gen = gen
 
         pu_reward = metrics.get("per_urdf_reward")
         if pu_reward is None:
@@ -475,7 +501,81 @@ class NSGA2MorphCMAES(HebbianCMAES):
                     print(f"[NSGA2MorphCMAES] Exam forest restore failed: {exc}")
         print(f"[NSGA2MorphCMAES] Exam: top {k} controllers × {E // k} fresh "
               f"forests per URDF")
+        self._run_exam_baseline(overrides)
         return objs, diag, k
+
+    def _run_exam_baseline(self, overrides: Dict) -> None:
+        """Fly the standard mydrone on the exam forests (the Pareto star).
+
+        The held-out validation env already holds the unevolved reference
+        morphology (``validation.validation_catalog`` empty → the standard
+        mydrone) and is still alive here — ``_refresh_urdfs`` only tears it
+        down after ``_score_phase`` returns. So the zero-rules generalist can
+        re-fly it under the SAME forest overrides the exam just used, giving
+        ``pareto_plots`` a reference point measured on the exam distribution
+        rather than the (easier) nominal one. No scene is rebuilt.
+
+        Self-contained: applies the overrides, evaluates, restores, and
+        swallows every failure — the caller's exam objectives must never
+        depend on the reference point.
+
+        Cold-start caveat: the validation env is rebuilt at every URDF
+        refresh, so with ``validation.period > catalog.refresh_urdfs_every``
+        this can be its first flight of the phase — cold Taichi aero state
+        (``_thr_flt`` starts at 0), which biases the star pessimistic. Keep
+        ``validation.period <= catalog.refresh_urdfs_every``.
+        """
+        if not getattr(self.outer, "exam_baseline", False):
+            return
+        val_env = getattr(self, "_val_env", None)
+        if val_env is None:
+            return
+
+        prev_forest: Optional[Dict] = None
+        try:
+            if overrides:
+                prev_forest = val_env.apply_forest_overrides(overrides)
+            val_env.refresh_forests()
+            result = self._evaluate_reference_actor(
+                "Exam-Baseline",
+                ckpt_path=self.cfg.baseline_checkpoint_path or None,
+                ckpt_cfg_path=self.cfg.baseline_checkpoint_config_path or None,
+                env_override=val_env,
+                urdf_paths_override=self._val_urdf_paths,
+            )
+            if result is None:
+                print("[NSGA2MorphCMAES] Exam baseline produced no result — "
+                      "no reference point for this phase")
+                return
+            self._append_exam_baseline_csv(result, val_env)
+        except Exception as exc:
+            print(f"[NSGA2MorphCMAES] Exam baseline failed ({exc}) — no "
+                  f"reference point for this phase (objectives unaffected)")
+        finally:
+            if prev_forest:
+                try:
+                    val_env.apply_forest_overrides(prev_forest)
+                    val_env.refresh_forests()
+                except Exception as exc:
+                    print(f"[NSGA2MorphCMAES] Exam baseline forest restore "
+                          f"failed: {exc}")
+
+    def _append_exam_baseline_csv(self, result: Dict[str, float], val_env) -> None:
+        """One row of the standard-mydrone reference for the ending phase."""
+        n_forests = int(getattr(val_env, "E", 0) or 0)
+        vals = [float(result.get(key, float("nan")))
+                for _col, key in _EXAM_BASELINE_COLS]
+        with open(self.exam_baseline_csv, "a", newline="") as f:
+            csv.writer(f).writerow(
+                [self._outer_gen, self._last_gen, n_forests]
+                + [f"{v:.6g}" for v in vals]
+            )
+        print(
+            f"[NSGA2MorphCMAES] Exam baseline (standard mydrone, zero rules, "
+            f"{n_forests} exam forests): "
+            + "  ".join(f"{col}={v:.4g}"
+                        for (col, _key), v in zip(_EXAM_BASELINE_COLS, vals))
+        )
 
     def _score_phase(
         self,

@@ -5,7 +5,9 @@ Covers: the ExamForestConfig section (defaults, YAML round-trip, validation),
 runtime overrides on a real ForestGenerator (density / length / mode take
 effect on the next generate() and restore by re-applying the returned
 previous values), the WingedDroneEnv method incl. the eval success-line sync
-for x_upper, and the _run_exam apply→refresh→eval→restore wiring. No Genesis
+for x_upper, the _run_exam apply→refresh→eval→restore wiring, and the
+exam-baseline rollout (`outer.exam_baseline`) that re-flies the standard
+mydrone on the same exam forests to give the Pareto plot its star. No Genesis
 scene is ever built.
 """
 
@@ -25,7 +27,7 @@ from winged_drone_train.perception.forest import (
 )
 
 from WP2_Outer_Loop.config import ExamForestConfig, OuterNSGA2Config
-from WP2_Outer_Loop.nsga_cma import NSGA2MorphCMAES
+from WP2_Outer_Loop.nsga_cma import _EXAM_BASELINE_COLS, NSGA2MorphCMAES
 
 
 def _cfg(**outer_kw):
@@ -206,10 +208,11 @@ class _FakeExamEnv:
         self.events.append(("refresh", None))
 
 
-def _bare_loop(fake_env, exam_forest):
+def _bare_loop(fake_env, exam_forest, val_env=None, **outer_kw):
     loop = object.__new__(NSGA2MorphCMAES)
-    loop.outer = _cfg(exam_forest=exam_forest).outer
-    loop.cfg = None
+    cfg = _cfg(exam_forest=exam_forest, **outer_kw)
+    loop.outer = cfg.outer
+    loop.cfg = cfg
     loop._env = fake_env
     loop._env_urdf_path = None
     loop._model_and_layer = None
@@ -217,6 +220,11 @@ def _bare_loop(fake_env, exam_forest):
     loop._urdf_paths = ["a.urdf", "b.urdf"]
     loop._last_solutions = [np.zeros(4) for _ in range(4)]
     loop._last_fitnesses = np.arange(4.0)
+    # Exam-baseline state (see the _run_exam_baseline block below).
+    loop._val_env = val_env
+    loop._val_urdf_paths = ["standard.urdf"]
+    loop._outer_gen = 3
+    loop._last_gen = 31
     return loop
 
 
@@ -279,3 +287,124 @@ def test_run_exam_no_overrides_skips_forest_calls(monkeypatch):
     assert loop._run_exam() is not None
     kinds = [e[0] for e in fake.events]
     assert kinds == ["refresh", "eval"]   # no apply/restore, single refresh
+
+
+# ------------------------------------------- exam baseline (Pareto star)
+
+class _FakeValEnv(_FakeExamEnv):
+    """Held-out validation env stand-in (standard mydrone, 4096 slots)."""
+
+    E = 4096
+
+
+_REF_RESULT = {
+    "fitness": 12.5, "velocity": 14.0, "progress": 71.0,
+    "crash_rate": 0.25, "cot": 0.8, "v_deviation": 1.5,
+}
+
+
+def _exam_loop(tmp_path, val_env, **outer_kw):
+    """A bare loop wired for _run_exam + _run_exam_baseline, with the
+    reference-actor rollout stubbed out (no Genesis)."""
+    loop = _bare_loop(
+        _FakeExamEnv(),
+        ExamForestConfig(override_forest=True, dens_max=10.0),
+        val_env=val_env,
+        **outer_kw,
+    )
+    loop.exam_baseline_csv = tmp_path / "outer_exam_baseline.csv"
+    return loop
+
+
+def _stub_population_exam(monkeypatch, fake_env):
+    def fake_eval(sols, *a, **kw):
+        fake_env.events.append(("eval", len(sols)))
+        N, k = 2, len(sols)
+        mats = ("per_urdf_reward", "per_urdf_progress", "per_urdf_velocity",
+                "per_urdf_crash", "per_urdf_cot")
+        return np.zeros(k), {m: np.ones((N, k)) for m in mats}
+
+    import WP2.evaluate
+    monkeypatch.setattr(WP2.evaluate, "evaluate_population_multi_urdf", fake_eval)
+
+
+def test_exam_baseline_flies_val_env_on_exam_forests(tmp_path, monkeypatch):
+    val = _FakeValEnv()
+    loop = _exam_loop(tmp_path, val)
+    _stub_population_exam(monkeypatch, loop._env)
+
+    seen = {}
+
+    def fake_ref(label, **kw):
+        val.events.append(("eval", label))
+        seen.update(kw)
+        return dict(_REF_RESULT)
+
+    loop._evaluate_reference_actor = fake_ref
+
+    assert loop._run_exam() is not None
+
+    # The validation env flew the SAME overrides as the exam, then restored.
+    assert [e[0] for e in val.events] == [
+        "apply", "refresh", "eval", "apply", "refresh"]
+    assert val.events[0][1] == {"dens_max": 10.0}
+    assert val.events[3][1] == {"dens_max": "PREV"}
+    # ...on the validation env, not the population env.
+    assert seen["env_override"] is val
+    assert seen["urdf_paths_override"] == ["standard.urdf"]
+
+    import csv as _csv
+    rows = list(_csv.reader(open(loop.exam_baseline_csv)))
+    assert len(rows) == 1
+    assert rows[0][:3] == ["3", "31", "4096"]          # outer_gen, inner_gen, E
+    assert [float(v) for v in rows[0][3:]] == [
+        _REF_RESULT[key] for _col, key in _EXAM_BASELINE_COLS]
+
+
+def test_exam_baseline_columns_are_canonical_objective_names():
+    # pareto_plots looks these up by plotted-objective name, so the CSV must
+    # spell them progress_m / cost_of_transport, not progress / cot.
+    cols = [col for col, _key in _EXAM_BASELINE_COLS]
+    assert "progress_m" in cols and "cost_of_transport" in cols
+    assert "progress" not in cols and "cot" not in cols
+
+
+def test_exam_baseline_failure_leaves_exam_objectives(tmp_path, monkeypatch):
+    val = _FakeValEnv()
+    loop = _exam_loop(tmp_path, val)
+    _stub_population_exam(monkeypatch, loop._env)
+
+    def boom(label, **kw):
+        val.events.append(("eval", label))
+        raise RuntimeError("reference rollout died")
+
+    loop._evaluate_reference_actor = boom
+
+    # The star is optional; the objectives are not.
+    assert loop._run_exam() is not None
+    assert [e[0] for e in val.events] == [
+        "apply", "refresh", "eval", "apply", "refresh"]
+    assert not loop.exam_baseline_csv.exists()
+
+
+def test_exam_baseline_disabled_never_touches_val_env(tmp_path, monkeypatch):
+    val = _FakeValEnv()
+    loop = _exam_loop(tmp_path, val, exam_baseline=False)
+    _stub_population_exam(monkeypatch, loop._env)
+    loop._evaluate_reference_actor = lambda *a, **kw: pytest.fail(
+        "reference actor flown with outer.exam_baseline=False")
+
+    assert loop._run_exam() is not None
+    assert val.events == []
+    assert not loop.exam_baseline_csv.exists()
+
+
+def test_exam_baseline_without_validation_env_is_a_noop(tmp_path, monkeypatch):
+    # validation.enable=false → no val env → no star, exam unaffected.
+    loop = _exam_loop(tmp_path, None)
+    _stub_population_exam(monkeypatch, loop._env)
+    loop._evaluate_reference_actor = lambda *a, **kw: pytest.fail(
+        "reference actor flown without a validation env")
+
+    assert loop._run_exam() is not None
+    assert not loop.exam_baseline_csv.exists()

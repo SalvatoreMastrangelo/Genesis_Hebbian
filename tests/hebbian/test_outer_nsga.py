@@ -33,6 +33,7 @@ from WP2_Outer_Loop.pareto_plots import (
     _admission_mask,
     _hv_reference,
     _hypervolume_2d,
+    _load_exam_baseline,
     _load_min_progress,
     _nondominated_mask,
     plot_pareto_front,
@@ -573,6 +574,82 @@ def test_plot_pareto_front_fixed_ref_hv_respects_gate(tmp_path):
     res = plot_pareto_front(run_dir)
     assert res["ref_fixed"] is True
     assert res["hypervolume"] == pytest.approx(78.0)
+
+
+# ------------------------------------- exam-baseline star (pareto_plots)
+
+def _exam_baseline_run_dir(
+    tmp_path, rows=((0, 20.0, 0.4), (1, 30.0, 0.6)),
+    enable=True, validation_catalog="", write_csv=True,
+):
+    """Run dir carrying results/outer_exam_baseline.csv + a validation config."""
+    run_dir = _synthetic_run_dir(tmp_path)
+    if write_csv:
+        lines = ["outer_gen,inner_gen,n_forests,fitness,velocity,progress_m,"
+                 "crash_rate,cost_of_transport,v_deviation"]
+        lines += [f"{g},{(g + 1) * 8},4096,1.0,12.0,{prog},0.1,{cot},1.0"
+                  for g, prog, cot in rows]
+        (run_dir / "results" / "outer_exam_baseline.csv").write_text(
+            "\n".join(lines) + "\n")
+    cfg = (run_dir / "reproducibility" / "config.yaml").read_text()
+    cfg += (f"validation:\n"
+            f"  enable: {'true' if enable else 'false'}\n"
+            f"  validation_catalog: '{validation_catalog}'\n")
+    (run_dir / "reproducibility" / "config.yaml").write_text(cfg)
+    return run_dir
+
+
+def test_load_exam_baseline_means_over_phases(tmp_path):
+    # The standard drone + frozen generalist is a fixed system: per-phase
+    # spread is forest noise, so the star is the mean.
+    run_dir = _exam_baseline_run_dir(tmp_path)
+    star = _load_exam_baseline(run_dir, "progress_m", "cost_of_transport")
+    assert star == pytest.approx((25.0, 0.5))
+
+
+def test_load_exam_baseline_maps_velocity_deviation_alias(tmp_path):
+    run_dir = _exam_baseline_run_dir(tmp_path)
+    star = _load_exam_baseline(run_dir, "progress_m", "velocity_deviation")
+    assert star == pytest.approx((25.0, 1.0))
+
+
+def test_load_exam_baseline_none_for_custom_validation_catalog(tmp_path):
+    # A custom validation catalog means the reference drone is NOT the
+    # standard mydrone — no star rather than a mislabelled one.
+    run_dir = _exam_baseline_run_dir(tmp_path, validation_catalog="my_cat.txt")
+    assert _load_exam_baseline(run_dir, "progress_m", "cost_of_transport") is None
+
+
+def test_load_exam_baseline_none_when_validation_disabled(tmp_path):
+    run_dir = _exam_baseline_run_dir(tmp_path, enable=False)
+    assert _load_exam_baseline(run_dir, "progress_m", "cost_of_transport") is None
+
+
+def test_load_exam_baseline_none_for_runs_predating_the_flag(tmp_path):
+    run_dir = _exam_baseline_run_dir(tmp_path, write_csv=False)
+    assert _load_exam_baseline(run_dir, "progress_m", "cost_of_transport") is None
+
+
+def test_load_exam_baseline_none_for_unplotted_objective(tmp_path):
+    run_dir = _exam_baseline_run_dir(tmp_path)
+    assert _load_exam_baseline(run_dir, "progress_m", "nonsense") is None
+
+
+def test_plot_pareto_front_draws_exam_star(tmp_path):
+    # End to end: exam-only rows + the baseline CSV → the star is back.
+    run_dir = _exam_baseline_run_dir(tmp_path)
+    res = plot_pareto_front(run_dir)
+    assert res["star"] == pytest.approx((25.0, 0.5))
+    assert (run_dir / "plots" / "pareto_front_evolution.png").is_file()
+
+
+def test_plot_pareto_front_exam_run_without_baseline_csv_has_no_star(tmp_path):
+    # Runs predating outer.exam_baseline: no star rather than the validation
+    # baseline, which flew the (easier) nominal forests.
+    run_dir = _exam_baseline_run_dir(tmp_path, write_csv=False)
+    (run_dir / "results" / "validation_summary.csv").write_text(
+        "generation,baseline_progress,baseline_cot\n0,150.0,0.05\n")
+    assert plot_pareto_front(run_dir)["star"] is None
 
 
 # ------------------------------------------------- per-URDF reductions
