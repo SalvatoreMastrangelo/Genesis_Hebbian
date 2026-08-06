@@ -45,6 +45,12 @@ Outputs (on top of everything ``HebbianCMAES`` already writes):
   (``outer.exam_baseline``, reusing the held-out validation env). It is the
   reference point ``pareto_plots`` draws as the gold star: the only
   measurement of the unevolved morphology on the exam distribution.
+* ``results/pareto_front.csv``           — per outer gen, the Pareto-front
+  members of ``outer_population.csv`` (exam-filtered, min-progress-gated),
+  with front size, hypervolume and the normalized genome so any front
+  morphology can be rebuilt with ``urdf_population.materialize_urdfs``.
+  Rewritten at every phase end; backfillable for old runs via
+  ``python -m WP2_Outer_Loop.pareto_fronts <run_dir>``.
 * ``outer/gen_XXX/{genomes,objectives}.npy`` — per-phase snapshots.
 """
 
@@ -62,6 +68,7 @@ from WP2.evolve_cma import HebbianCMAES, _read_norm_genomes_from_catalog
 
 from .config import OuterNSGA2Config
 from .nsga2 import arrays_to_individuals, individuals_to_array, make_toolbox
+from .pareto_fronts import build_pareto_front_csv_safe
 from .urdf_population import materialize_urdfs, write_catalog_txt
 
 
@@ -610,7 +617,7 @@ class NSGA2MorphCMAES(HebbianCMAES):
         n_gens: int,
         obj_source: str = "phase_mean",
     ) -> None:
-        """Snapshot the ending phase: CSV rows + per-phase .npy dumps."""
+        """Snapshot the ending phase: CSV rows, .npy dumps, front CSV."""
         N = len(self._urdf_paths)
         with open(self.outer_pop_csv, "a", newline="") as f:
             w = csv.writer(f)
@@ -637,6 +644,18 @@ class NSGA2MorphCMAES(HebbianCMAES):
         snap_dir.mkdir(parents=True, exist_ok=True)
         np.save(snap_dir / "genomes.npy", self._morph_genomes)
         np.save(snap_dir / "objectives.npy", objs)
+
+        # Refresh results/pareto_front.csv from the file we just appended to.
+        # A full rebuild (ms on a few-thousand-row CSV, against an hours-long
+        # phase) keeps the live file byte-identical to a backfilled one and
+        # self-heals a resumed or hand-recovered run. Objectives and the gate
+        # come from the in-memory config, so this never depends on
+        # reproducibility/config.yaml being parseable.
+        build_pareto_front_csv_safe(
+            self.run_dir,
+            specs=[(o.name, o.direction) for o in self.outer.objectives],
+            min_progress=float(getattr(self.outer, "min_progress_m", 0.0) or 0.0),
+        )
 
     # ------------------------------------------------------------------
     #  URDF refresh = NSGA-II morphology update

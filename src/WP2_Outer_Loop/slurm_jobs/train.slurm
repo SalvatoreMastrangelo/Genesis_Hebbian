@@ -21,7 +21,15 @@ set -euo pipefail
 # ------------------------------------------------------------
 # Paths (adjust to your cluster layout)
 # ------------------------------------------------------------
-IMG="/scratch/izar/$USER/sif/mygenesis.sif"
+# The container image is searched in order; override with GENESIS_SIF=/path.
+# NOTE: /scratch is purged by SCITAS on an untouched-file policy — an image
+# left there goes away during any quiet spell between batches (it did on
+# 2026-08-04, taking down the whole 2026-08-05 submission). Keep a copy
+# somewhere durable and the fallback below will find it.
+SIF_CANDIDATES=(
+  "/scratch/izar/$USER/sif/mygenesis.sif"
+  "$HOME/sif/mygenesis.sif"
+)
 SRC="$HOME/Genesis-dev"
 
 # ------------------------------------------------------------
@@ -48,10 +56,36 @@ CACHE_DIR="${RUN_DIR}/.cache"
 mkdir -p "$RUN_DIR" "$CACHE_DIR"
 
 # Safety checks
-if [ ! -f "$IMG" ]; then
-  echo "[ERROR] SIF not found: $IMG"
+IMG="${GENESIS_SIF:-}"
+if [ -n "$IMG" ]; then
+  if [ ! -f "$IMG" ]; then
+    echo "[ERROR] GENESIS_SIF is set but no image is there: $IMG"
+    exit 1
+  fi
+else
+  for candidate in "${SIF_CANDIDATES[@]}"; do
+    if [ -f "$candidate" ]; then
+      IMG="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$IMG" ]; then
+  echo "[ERROR] Genesis container image not found. Looked in:"
+  for candidate in "${SIF_CANDIDATES[@]}"; do
+    echo "[ERROR]   - $candidate"
+  done
+  echo "[ERROR]"
+  echo "[ERROR] /scratch is purged by SCITAS, so a previously working image"
+  echo "[ERROR] disappears after a quiet spell. Rebuild it from the archive:"
+  echo "[ERROR]   mkdir -p /scratch/izar/\$USER/sif"
+  echo "[ERROR]   apptainer build /scratch/izar/\$USER/sif/mygenesis.sif \\"
+  echo "[ERROR]                   docker-archive://\$HOME/tar/mygenesis.tar"
+  echo "[ERROR]"
+  echo "[ERROR] Or point at an existing image: sbatch --export=ALL,GENESIS_SIF=/path/to.sif ..."
   exit 1
 fi
+echo "[CONFIG] container image  = ${IMG}"
 if [ ! -d "$SRC" ]; then
   echo "[ERROR] Bind source directory not found: $SRC"
   exit 1
@@ -161,7 +195,13 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
 # ------------------------------------------------------------
 # Copy run output to home for long-term storage
 # ------------------------------------------------------------
-echo "[POST] Copying run to $HOME/genesis_runs/outer_nsga/ ..."
+# The science is finished by this point, so archiving is best-effort: a full
+# quota must not turn a successful run into a Slurm FAILED (it did for jobs
+# 3092665 / 3092828). The `||` branch swallows the failure so the job's exit
+# status stays tied to the run itself; archive_run.sh prints the manual
+# re-run command on failure.
+echo "[POST] Archiving run to $HOME/genesis_runs/outer_nsga/ ..."
 mkdir -p "$HOME/genesis_runs/outer_nsga"
-cp -a "${RUN_DIR}" "$HOME/genesis_runs/outer_nsga/"
-echo "[POST] Done: $HOME/genesis_runs/outer_nsga/$(basename ${RUN_DIR})"
+bash "${SRC}/src/WP2_Outer_Loop/slurm_jobs/archive_run.sh" \
+  "${RUN_DIR}" "$HOME/genesis_runs/outer_nsga" \
+  || echo "[POST][WARN] Archiving failed — run preserved in ${RUN_DIR} (scratch is purged, copy it out before it ages away)."

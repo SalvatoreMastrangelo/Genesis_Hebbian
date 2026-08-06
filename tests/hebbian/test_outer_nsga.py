@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -29,13 +30,21 @@ from WP2_Outer_Loop.nsga_cma import (
     make_offspring_tournament,
     reduce_exam_metrics,
 )
+from WP2_Outer_Loop.pareto_fronts import _DIAG_KEYS, build_pareto_front_csv
 from WP2_Outer_Loop.pareto_plots import (
     _admission_mask,
+    _baseline_is_constant,
+    _cumulative_champions,
+    _exam_flew_nominal_forests,
     _hv_reference,
     _hypervolume_2d,
     _load_exam_baseline,
+    _load_exam_baseline_series,
     _load_min_progress,
+    _load_refresh_every,
+    _load_validation_baseline_series,
     _nondominated_mask,
+    plot_champion_curves,
     plot_pareto_front,
 )
 
@@ -510,22 +519,30 @@ def test_admission_mask_gate_off_or_no_progress_column():
     assert _admission_mask(df, specs, 30.0).all()  # no progress info → no gate
 
 
-def _synthetic_run_dir(tmp_path, min_progress_yaml=None):
-    """Minimal run dir: outer_population.csv + saved single-file config."""
+def _synthetic_run_dir(tmp_path, min_progress_yaml=None, obj_source="exam",
+                       with_obj_source=True):
+    """Minimal run dir: outer_population.csv + saved single-file config.
+
+    ``with_obj_source=False`` reproduces the legacy CSV layout (runs
+    predating the column, whose objectives are all phase means).
+    """
     (tmp_path / "results").mkdir(parents=True)
     (tmp_path / "reproducibility").mkdir(parents=True)
     rows = [
         # gen 0: degenerate low-progress/low-cot morph + two real flyers
-        (0, 0, "a.urdf", 8, "exam", 5.0, 0.05),
-        (0, 1, "b.urdf", 8, "exam", 80.0, 0.20),
-        (0, 2, "c.urdf", 8, "exam", 100.0, 0.30),
+        (0, 0, "a.urdf", 8, obj_source, 5.0, 0.05),
+        (0, 1, "b.urdf", 8, obj_source, 80.0, 0.20),
+        (0, 2, "c.urdf", 8, obj_source, 100.0, 0.30),
         # gen 1: entirely infeasible generation (robustness edge)
-        (1, 0, "d.urdf", 8, "exam", 4.0, 0.04),
-        (1, 1, "e.urdf", 8, "exam", 6.0, 0.06),
-        (1, 2, "f.urdf", 8, "exam", 8.0, 0.08),
+        (1, 0, "d.urdf", 8, obj_source, 4.0, 0.04),
+        (1, 1, "e.urdf", 8, obj_source, 6.0, 0.06),
+        (1, 2, "f.urdf", 8, obj_source, 8.0, 0.08),
     ]
-    lines = ["outer_gen,urdf_idx,urdf_file,n_score_gens,obj_source,"
-             "obj_progress_m,obj_cost_of_transport"]
+    if not with_obj_source:
+        rows = [r[:4] + r[5:] for r in rows]
+    lines = ["outer_gen,urdf_idx,urdf_file,n_score_gens"
+             + (",obj_source" if with_obj_source else "")
+             + ",obj_progress_m,obj_cost_of_transport"]
     lines += [",".join(map(str, r)) for r in rows]
     (tmp_path / "results" / "outer_population.csv").write_text("\n".join(lines) + "\n")
     cfg = (
@@ -580,9 +597,16 @@ def test_plot_pareto_front_fixed_ref_hv_respects_gate(tmp_path):
 
 def _exam_baseline_run_dir(
     tmp_path, rows=((0, 20.0, 0.4), (1, 30.0, 0.6)),
-    enable=True, validation_catalog="", write_csv=True,
+    enable=True, validation_catalog="", write_csv=True, exam_forest=None,
 ):
-    """Run dir carrying results/outer_exam_baseline.csv + a validation config."""
+    """Run dir carrying results/outer_exam_baseline.csv + a validation config.
+
+    ``exam_forest`` writes an ``outer.exam_forest`` block (e.g.
+    ``{"override_forest": True, "dens_max": 5.5}``) — an exam that flew a
+    forest distribution of its own. The default (``None``) is a run whose exam
+    flew the inner loop's forests, so the validation pass measured the
+    reference on the very distribution the exam scored on.
+    """
     run_dir = _synthetic_run_dir(tmp_path)
     if write_csv:
         lines = ["outer_gen,inner_gen,n_forests,fitness,velocity,progress_m,"
@@ -592,6 +616,16 @@ def _exam_baseline_run_dir(
         (run_dir / "results" / "outer_exam_baseline.csv").write_text(
             "\n".join(lines) + "\n")
     cfg = (run_dir / "reproducibility" / "config.yaml").read_text()
+    if exam_forest is not None:
+        cfg += "  exam_forest:\n"
+        for key, val in exam_forest.items():
+            if val is None:
+                text = "null"
+            elif isinstance(val, bool):
+                text = "true" if val else "false"
+            else:
+                text = str(val)
+            cfg += f"    {key}: {text}\n"
     cfg += (f"validation:\n"
             f"  enable: {'true' if enable else 'false'}\n"
             f"  validation_catalog: '{validation_catalog}'\n")
@@ -644,12 +678,311 @@ def test_plot_pareto_front_draws_exam_star(tmp_path):
 
 
 def test_plot_pareto_front_exam_run_without_baseline_csv_has_no_star(tmp_path):
-    # Runs predating outer.exam_baseline: no star rather than the validation
-    # baseline, which flew the (easier) nominal forests.
-    run_dir = _exam_baseline_run_dir(tmp_path, write_csv=False)
+    # Exam flew forests of its own (denser/longer) and the run predates
+    # outer.exam_baseline: no star rather than the validation baseline, which
+    # flew the easier nominal forests and would sit in the wrong place.
+    run_dir = _exam_baseline_run_dir(
+        tmp_path, write_csv=False,
+        exam_forest={"override_forest": True, "dens_min": 3.0, "x_upper": 300.0},
+    )
     (run_dir / "results" / "validation_summary.csv").write_text(
         "generation,baseline_progress,baseline_cot\n0,150.0,0.05\n")
     assert plot_pareto_front(run_dir)["star"] is None
+
+
+# --- exam without forest overrides: validation IS the exam distribution -----
+
+def test_exam_flew_nominal_forests_for_runs_predating_exam_forest(tmp_path):
+    # No exam_forest block at all ⇒ the exam could only have flown the inner
+    # loop's forests.
+    assert _exam_flew_nominal_forests(_exam_baseline_run_dir(tmp_path)) is True
+
+
+def test_exam_flew_nominal_forests_when_master_switch_is_off(tmp_path):
+    # override_forest false makes the values inert (ExamForestConfig.overrides
+    # returns {}), so a populated block with the switch off still flies nominal.
+    run_dir = _exam_baseline_run_dir(
+        tmp_path, exam_forest={"override_forest": False, "dens_min": 3.0,
+                               "x_upper": 300.0},
+    )
+    assert _exam_flew_nominal_forests(run_dir) is True
+
+
+def test_exam_flew_nominal_forests_when_every_override_is_null(tmp_path):
+    run_dir = _exam_baseline_run_dir(
+        tmp_path, exam_forest={"override_forest": True, "dens_min": None,
+                               "x_upper": None},
+    )
+    assert _exam_flew_nominal_forests(run_dir) is True
+
+
+def test_exam_flew_nominal_forests_false_when_an_override_is_set(tmp_path):
+    run_dir = _exam_baseline_run_dir(
+        tmp_path, exam_forest={"override_forest": True, "dens_max": 5.5},
+    )
+    assert _exam_flew_nominal_forests(run_dir) is False
+
+
+def test_plot_pareto_front_falls_back_to_validation_star_on_nominal_exam(tmp_path):
+    # Exam-scored run with no forest overrides: the exam and the held-out
+    # validation pass flew the SAME distribution, so the validation baseline
+    # is the right star even though outer_exam_baseline.csv was never written.
+    run_dir = _exam_baseline_run_dir(tmp_path, write_csv=False)
+    (run_dir / "results" / "validation_summary.csv").write_text(
+        "generation,baseline_progress,baseline_cot\n"
+        "0,116.0,0.28\n1,118.0,0.30\n")
+    assert plot_pareto_front(run_dir)["star"] == pytest.approx((117.0, 0.29))
+
+
+def test_exam_baseline_csv_wins_over_the_validation_fallback(tmp_path):
+    # When the run did write the exam baseline, that measurement is the star —
+    # the fallback only fills a gap, it never overrides a real measurement.
+    run_dir = _exam_baseline_run_dir(tmp_path)  # star = (25.0, 0.5)
+    (run_dir / "results" / "validation_summary.csv").write_text(
+        "generation,baseline_progress,baseline_cot\n0,116.0,0.28\n")
+    assert plot_pareto_front(run_dir)["star"] == pytest.approx((25.0, 0.5))
+
+
+def test_validation_star_fallback_still_needs_the_standard_drone(tmp_path):
+    # Custom validation catalog ⇒ the reference drone is not the standard
+    # mydrone; the fallback must not smuggle in a mislabelled star.
+    run_dir = _exam_baseline_run_dir(
+        tmp_path, write_csv=False, validation_catalog="my_cat.txt")
+    (run_dir / "results" / "validation_summary.csv").write_text(
+        "generation,baseline_progress,baseline_cot\n0,116.0,0.28\n")
+    assert plot_pareto_front(run_dir)["star"] is None
+
+
+# ------------------------------------- exam champion curves (pareto_plots)
+
+_CHAMP_SPECS = [("progress_m", "maximize"), ("cost_of_transport", "minimize")]
+
+
+def _champ_df():
+    """The exam rows of `_synthetic_run_dir` as a frame: gen 0 holds the real
+    flyers, gen 1 only degenerate low-progress/low-CoT morphs."""
+    import pandas as pd
+    return pd.DataFrame({
+        "outer_gen": [0, 0, 0, 1, 1, 1],
+        "urdf_file": ["a.urdf", "b.urdf", "c.urdf",
+                      "d.urdf", "e.urdf", "f.urdf"],
+        "obj_progress_m": [5.0, 80.0, 100.0, 4.0, 6.0, 8.0],
+        "obj_cost_of_transport": [0.05, 0.20, 0.30, 0.04, 0.06, 0.08],
+    })
+
+
+def test_cumulative_champions_report_both_objectives_of_each_champion():
+    ch = _cumulative_champions(_champ_df(), _CHAMP_SPECS)
+    # c.urdf holds the progress record, a.urdf the CoT record; each champion
+    # contributes BOTH of its objectives, so the CoT curve shows what the
+    # progress champion actually costs (0.30) — not the population minimum.
+    assert ch.loc[0, "a_obj0"] == pytest.approx(100.0)
+    assert ch.loc[0, "a_obj1"] == pytest.approx(0.30)
+    assert ch.loc[0, "b_obj0"] == pytest.approx(5.0)
+    assert ch.loc[0, "b_obj1"] == pytest.approx(0.05)
+
+
+def test_cumulative_champions_carry_the_record_holder_forward():
+    ch = _cumulative_champions(_champ_df(), _CHAMP_SPECS)
+    # Nothing in gen 1 beats 100 m, so c.urdf still holds progress; d.urdf
+    # does take the CoT record (0.04 < 0.05).
+    assert ch.loc[1, "a_obj0"] == pytest.approx(100.0)
+    assert ch.loc[1, "a_urdf"] == "c.urdf"
+    assert ch.loc[1, "b_obj1"] == pytest.approx(0.04)
+    assert ch.loc[1, "b_urdf"] == "d.urdf"
+
+
+def test_cumulative_champions_honour_objective_directions():
+    # Flipped directions must flip both champions — the sign comes from the
+    # config spec, it is not hardcoded to "progress up, CoT down".
+    specs = [("progress_m", "minimize"), ("cost_of_transport", "maximize")]
+    ch = _cumulative_champions(_champ_df(), specs)
+    assert ch.loc[1, "a_obj0"] == pytest.approx(4.0)
+    assert ch.loc[1, "b_obj1"] == pytest.approx(0.30)
+
+
+def test_cumulative_champions_ignore_nan_objectives():
+    df = _champ_df()
+    df.loc[2, "obj_progress_m"] = float("nan")  # c.urdf's exam produced no score
+    ch = _cumulative_champions(df, _CHAMP_SPECS)
+    assert ch.loc[0, "a_obj0"] == pytest.approx(80.0)
+    assert ch.loc[0, "a_urdf"] == "b.urdf"
+
+
+def test_plot_champion_curves_smoke(tmp_path):
+    run_dir = _synthetic_run_dir(tmp_path)
+    res = plot_champion_curves(run_dir)
+    assert res is not None and res["source"] == "exam"
+    assert res["baseline"] is False
+    assert (run_dir / "plots" / "exam_champions.png").is_file()
+
+
+def test_plot_champion_curves_falls_back_to_phase_mean_rows(tmp_path):
+    # No exam rows → plot the phase-mean objectives instead of skipping, but
+    # under a filename that cannot be mistaken for an exam figure.
+    run_dir = _synthetic_run_dir(tmp_path, obj_source="phase_mean")
+    res = plot_champion_curves(run_dir)
+    assert res["source"] == "phase_mean"
+    assert (run_dir / "plots" / "phase_mean_champions.png").is_file()
+    assert not (run_dir / "plots" / "exam_champions.png").exists()
+
+
+def test_plot_champion_curves_handles_legacy_csv_without_obj_source(tmp_path):
+    # Runs predating the column are uniformly phase-mean scored.
+    run_dir = _synthetic_run_dir(tmp_path, with_obj_source=False)
+    res = plot_champion_curves(run_dir)
+    assert res["source"] == "phase_mean"
+    assert res["champions"].loc[1, "a_obj0"] == pytest.approx(100.0)
+    assert (run_dir / "plots" / "phase_mean_champions.png").is_file()
+
+
+def test_plot_champion_curves_prefer_exam_rows_over_phase_mean_fallback(tmp_path):
+    # A run with both sources must score champions from the exam rows alone —
+    # the trailing phase_mean phase flies an easier forest distribution and
+    # would forge a fake record.
+    run_dir = _synthetic_run_dir(tmp_path)
+    csv = run_dir / "results" / "outer_population.csv"
+    csv.write_text(csv.read_text()
+                   + "2,0,z.urdf,8,phase_mean,999.0,0.001\n")
+    res = plot_champion_curves(run_dir)
+    assert res["source"] == "exam"
+    assert res["champions"].index.max() == 1          # gen 2 dropped entirely
+    assert res["champions"].loc[1, "a_obj0"] == pytest.approx(100.0)
+    assert res["champions"].loc[1, "b_obj1"] == pytest.approx(0.04)
+
+
+def test_plot_champion_curves_draw_per_gen_baseline(tmp_path):
+    run_dir = _exam_baseline_run_dir(tmp_path)
+    res = plot_champion_curves(run_dir)
+    assert res["baseline"] is True
+    assert (run_dir / "plots" / "exam_champions.png").is_file()
+
+
+def test_plot_champion_curves_no_baseline_for_custom_validation_catalog(tmp_path):
+    # Custom catalog → the reference drone is not the standard mydrone, so
+    # the dashed line would be mislabelled.
+    run_dir = _exam_baseline_run_dir(tmp_path, validation_catalog="my_cat.txt")
+    assert plot_champion_curves(run_dir)["baseline"] is False
+
+
+def test_plot_champion_curves_fall_back_to_validation_on_nominal_exam(tmp_path):
+    # Same fallback as the Pareto star: no exam baseline CSV, but the exam
+    # flew the inner loop's forests, so the validation pass is the reference.
+    run_dir = _exam_baseline_run_dir(tmp_path, write_csv=False)
+    (run_dir / "results" / "validation_summary.csv").write_text(
+        "generation,baseline_progress,baseline_cot\n0,116.0,0.28\n")
+    assert plot_champion_curves(run_dir)["baseline"] is True
+
+
+def test_plot_champion_curves_no_baseline_when_the_exam_forest_differed(tmp_path):
+    run_dir = _exam_baseline_run_dir(
+        tmp_path, write_csv=False,
+        exam_forest={"override_forest": True, "dens_max": 5.5},
+    )
+    (run_dir / "results" / "validation_summary.csv").write_text(
+        "generation,baseline_progress,baseline_cot\n0,116.0,0.28\n")
+    assert plot_champion_curves(run_dir)["baseline"] is False
+
+
+def test_exam_baseline_series_keeps_per_phase_rows(tmp_path):
+    run_dir = _exam_baseline_run_dir(tmp_path)  # rows at outer_gen 0 and 1
+    base = _load_exam_baseline_series(run_dir, ["progress_m", "cost_of_transport"])
+    assert base.index.tolist() == [0, 1]
+    assert base.iloc[1].tolist() == pytest.approx([30.0, 0.6])
+    assert not _baseline_is_constant(base)
+
+
+def test_baseline_is_constant_for_whole_run_sentinel_row(tmp_path):
+    # A standalone re-run (exam_baseline_rerun) writes one row tagged
+    # outer_gen=-1: it measures the whole run, not a phase, so it belongs on
+    # the panels as a horizontal line — never as a point at x=-1.
+    run_dir = _exam_baseline_run_dir(tmp_path, rows=((-1, 224.0, 0.29),))
+    base = _load_exam_baseline_series(run_dir, ["progress_m", "cost_of_transport"])
+    assert _baseline_is_constant(base)
+
+
+def test_plot_champion_curves_draws_whole_run_exam_baseline(tmp_path):
+    run_dir = _exam_baseline_run_dir(tmp_path, rows=((-1, 224.0, 0.29),))
+    assert plot_champion_curves(run_dir)["baseline"] is True
+
+
+def _phase_mean_run_dir(tmp_path, refresh_every=2, enable=True,
+                        validation_catalog="", write_csv=True):
+    """Phase-mean run dir carrying results/validation_summary.csv — the
+    standard-mydrone reference for runs with no exam rollout."""
+    run_dir = _synthetic_run_dir(tmp_path, obj_source="phase_mean")
+    if write_csv:
+        # Four inner gens → two phases of two at refresh_every=2.
+        lines = ["generation,baseline_progress,baseline_cot"]
+        lines += [f"{g},{prog},{cot}" for g, prog, cot in
+                  [(0, 100.0, 0.30), (1, 102.0, 0.30),
+                   (2, 110.0, 0.20), (3, 114.0, 0.20)]]
+        (run_dir / "results" / "validation_summary.csv").write_text(
+            "\n".join(lines) + "\n")
+    cfg = (run_dir / "reproducibility" / "config.yaml").read_text()
+    cfg += (f"catalog:\n  refresh_urdfs_every: {refresh_every}\n"
+            f"validation:\n"
+            f"  enable: {'true' if enable else 'false'}\n"
+            f"  validation_catalog: '{validation_catalog}'\n")
+    (run_dir / "reproducibility" / "config.yaml").write_text(cfg)
+    return run_dir
+
+
+def test_load_refresh_every_reads_catalog_section(tmp_path):
+    assert _load_refresh_every(_phase_mean_run_dir(tmp_path, refresh_every=7)) == 7
+
+
+def test_validation_baseline_series_averages_within_phase_windows(tmp_path):
+    # validation_summary.csv is indexed by INNER generation; the champion
+    # curves are per OUTER generation, so each phase window collapses to its
+    # mean: gens 0-1 → outer 0, gens 2-3 → outer 1.
+    run_dir = _phase_mean_run_dir(tmp_path, refresh_every=2)
+    base = _load_validation_baseline_series(
+        run_dir, ["progress_m", "cost_of_transport"])
+    assert base.index.tolist() == [0, 1]
+    assert base.iloc[0].tolist() == pytest.approx([101.0, 0.30])
+    assert base.iloc[1].tolist() == pytest.approx([112.0, 0.20])
+
+
+def test_validation_baseline_series_falls_back_to_whole_run_mean(tmp_path):
+    # Unreadable refresh period → the inner gens cannot be mapped to phases,
+    # so collapse to one whole-run row under the same outer_gen=-1 sentinel
+    # the exam re-run uses, and let the plot draw it flat.
+    run_dir = _phase_mean_run_dir(tmp_path, refresh_every=0)
+    base = _load_validation_baseline_series(
+        run_dir, ["progress_m", "cost_of_transport"])
+    assert base.index.tolist() == [-1]
+    assert _baseline_is_constant(base)
+    assert base.iloc[0].tolist() == pytest.approx([106.5, 0.25])
+
+
+def test_validation_baseline_series_none_for_custom_validation_catalog(tmp_path):
+    run_dir = _phase_mean_run_dir(tmp_path, validation_catalog="my_cat.txt")
+    assert _load_validation_baseline_series(
+        run_dir, ["progress_m", "cost_of_transport"]) is None
+
+
+def test_plot_champion_curves_draws_validation_baseline_on_phase_mean(tmp_path):
+    run_dir = _phase_mean_run_dir(tmp_path)
+    res = plot_champion_curves(run_dir)
+    assert res["source"] == "phase_mean"
+    assert res["baseline"] is True
+
+
+def test_plot_champion_curves_no_baseline_when_validation_csv_absent(tmp_path):
+    run_dir = _phase_mean_run_dir(tmp_path, write_csv=False)
+    assert plot_champion_curves(run_dir)["baseline"] is False
+
+
+def test_plot_champion_curves_no_exam_baseline_on_phase_mean_figure(tmp_path):
+    # The baseline flew the EXAM forests; drawing it against phase-mean
+    # champions would compare two different distributions on one axis.
+    run_dir = _exam_baseline_run_dir(tmp_path)
+    csv = run_dir / "results" / "outer_population.csv"
+    csv.write_text(csv.read_text().replace(",exam,", ",phase_mean,"))
+    res = plot_champion_curves(run_dir)
+    assert res["source"] == "phase_mean"
+    assert res["baseline"] is False
 
 
 # ------------------------------------------------- per-URDF reductions
@@ -675,3 +1008,213 @@ def test_per_urdf_cot_penalises_crashers():
     pu_dx = dx.mean(dim=2)
     cot = pu_energy / (mg * pu_dx.clamp(min=1e-2))
     assert cot[0, 1] > 100 * cot[0, 0]
+
+
+# ------------------------------------------------- per-generation front CSV
+
+def _pop_csv(tmp_path, rows, *, with_source=True, n_genes=3):
+    """Write a minimal results/outer_population.csv; return the run dir.
+
+    Each row is a dict with at least ``outer_gen``, ``obj_progress_m`` and
+    ``obj_cost_of_transport``; missing optional fields are filled in.
+    """
+    results = tmp_path / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    gene_cols = [f"g{i}" for i in range(n_genes)]
+    header = (["outer_gen", "urdf_idx", "urdf_file", "n_score_gens"]
+              + (["obj_source"] if with_source else [])
+              + ["obj_progress_m", "obj_cost_of_transport"]
+              + list(_DIAG_KEYS) + gene_cols)
+    lines = [",".join(header)]
+    for i, r in enumerate(rows):
+        rec = {
+            "outer_gen": r["outer_gen"],
+            "urdf_idx": r.get("urdf_idx", i),
+            "urdf_file": r.get("urdf_file", f"ind_{r.get('urdf_idx', i):03d}.urdf"),
+            "n_score_gens": r.get("n_score_gens", 4),
+            "obj_source": r.get("obj_source", "exam"),
+            "obj_progress_m": r["obj_progress_m"],
+            "obj_cost_of_transport": r["obj_cost_of_transport"],
+            "fitness": r.get("fitness", 1.0),
+            "cost_of_transport": r["obj_cost_of_transport"],
+            "progress_m": r["obj_progress_m"],
+            "velocity": r.get("velocity", 10.0),
+            "crash_rate": r.get("crash_rate", 0.5),
+        }
+        for j, c in enumerate(gene_cols):
+            rec[c] = r.get(c, round(0.1 * (i + j), 4))
+        lines.append(",".join(str(rec[c]) for c in header))
+    (results / "outer_population.csv").write_text("\n".join(lines) + "\n")
+    return tmp_path
+
+
+_SPECS = [("progress_m", "maximize"), ("cost_of_transport", "minimize")]
+
+
+def test_front_csv_keeps_only_nondominated_rows(tmp_path):
+    """Front membership per generation, on a hand-checked population."""
+    run = _pop_csv(tmp_path, [
+        # gen 0: idx 0 and 2 are nondominated; idx 1 is dominated by idx 0.
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=100.0, obj_cost_of_transport=0.20),
+        dict(outer_gen=0, urdf_idx=1, obj_progress_m=90.0, obj_cost_of_transport=0.30),
+        dict(outer_gen=0, urdf_idx=2, obj_progress_m=80.0, obj_cost_of_transport=0.10),
+        # gen 1: only idx 0 survives (best on both objectives).
+        dict(outer_gen=1, urdf_idx=0, obj_progress_m=120.0, obj_cost_of_transport=0.05),
+        dict(outer_gen=1, urdf_idx=1, obj_progress_m=110.0, obj_cost_of_transport=0.09),
+    ])
+    out = build_pareto_front_csv(run, specs=_SPECS, min_progress=0.0)
+    assert out == run / "results" / "pareto_front.csv"
+
+    df = pd.read_csv(out)
+    assert list(zip(df["outer_gen"], df["urdf_idx"])) == [(0, 0), (0, 2), (1, 0)]
+    assert df.loc[df["outer_gen"] == 0, "front_size"].tolist() == [2, 2]
+    # front_rank sorts by the first objective, best first.
+    assert df.loc[df["outer_gen"] == 0, "front_rank"].tolist() == [0, 1]
+
+
+def test_front_csv_applies_min_progress_gate(tmp_path):
+    """A gated-out morph is excluded even when it is nondominated."""
+    rows = [
+        # Cheapest CoT in the population, but below the progress gate.
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=10.0, obj_cost_of_transport=0.01),
+        dict(outer_gen=0, urdf_idx=1, obj_progress_m=100.0, obj_cost_of_transport=0.20),
+        dict(outer_gen=0, urdf_idx=2, obj_progress_m=80.0, obj_cost_of_transport=0.10),
+    ]
+    ungated = pd.read_csv(build_pareto_front_csv(
+        _pop_csv(tmp_path / "a", rows), specs=_SPECS, min_progress=0.0))
+    assert 0 in ungated["urdf_idx"].tolist()
+
+    gated = pd.read_csv(build_pareto_front_csv(
+        _pop_csv(tmp_path / "b", rows), specs=_SPECS, min_progress=30.0))
+    assert gated["urdf_idx"].tolist() == [1, 2]
+
+
+def test_front_csv_missing_min_progress_means_gate_off(tmp_path):
+    """No saved config (or no min_progress_m key) => nothing is barred."""
+    rows = [
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=10.0, obj_cost_of_transport=0.01),
+        dict(outer_gen=0, urdf_idx=1, obj_progress_m=100.0, obj_cost_of_transport=0.20),
+    ]
+    # min_progress=None => resolved from the run dir, which has no config.
+    run = _pop_csv(tmp_path, rows)
+    df = pd.read_csv(build_pareto_front_csv(run, specs=_SPECS, min_progress=None))
+    assert df["urdf_idx"].tolist() == [1, 0]
+
+    # An explicit config that omits the knob behaves identically.
+    repro = run / "reproducibility"
+    repro.mkdir()
+    (repro / "config.yaml").write_text("outer:\n  n_elites: 2\n")
+    assert _load_min_progress(run) == 0.0
+    df2 = pd.read_csv(build_pareto_front_csv(run, specs=_SPECS, min_progress=None))
+    assert df2["urdf_idx"].tolist() == [1, 0]
+
+
+def test_front_csv_drops_phase_mean_when_exam_rows_exist(tmp_path):
+    """The final-phase phase_mean fallback must not forge a front tail."""
+    rows = [
+        dict(outer_gen=0, urdf_idx=0, obj_source="exam",
+             obj_progress_m=100.0, obj_cost_of_transport=0.20),
+        dict(outer_gen=1, urdf_idx=0, obj_source="phase_mean",
+             obj_progress_m=500.0, obj_cost_of_transport=0.01),
+    ]
+    df = pd.read_csv(build_pareto_front_csv(
+        _pop_csv(tmp_path, rows), specs=_SPECS, min_progress=0.0))
+    assert df["outer_gen"].tolist() == [0]
+
+
+def test_front_csv_keeps_phase_mean_when_that_is_all_there_is(tmp_path):
+    """Legacy / rescore-off runs: every row is phase_mean, keep them all."""
+    rows = [
+        dict(outer_gen=0, urdf_idx=0, obj_source="phase_mean",
+             obj_progress_m=100.0, obj_cost_of_transport=0.20),
+        dict(outer_gen=1, urdf_idx=0, obj_source="phase_mean",
+             obj_progress_m=120.0, obj_cost_of_transport=0.10),
+    ]
+    df = pd.read_csv(build_pareto_front_csv(
+        _pop_csv(tmp_path, rows), specs=_SPECS, min_progress=0.0))
+    assert df["outer_gen"].tolist() == [0, 1]
+
+
+def test_front_csv_handles_missing_obj_source_column(tmp_path):
+    """Pre-obj_source runs (e.g. outer_full_run_4_64_64_r1) pass through."""
+    rows = [
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=100.0, obj_cost_of_transport=0.20),
+        dict(outer_gen=0, urdf_idx=1, obj_progress_m=80.0, obj_cost_of_transport=0.10),
+    ]
+    df = pd.read_csv(build_pareto_front_csv(
+        _pop_csv(tmp_path, rows, with_source=False),
+        specs=_SPECS, min_progress=0.0))
+    assert sorted(df["urdf_idx"].tolist()) == [0, 1]
+
+
+def test_front_csv_carries_genome_unchanged(tmp_path):
+    """g* columns must round-trip, so materialize_urdfs can rebuild a front
+    morphology straight from this file."""
+    rows = [
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=100.0,
+             obj_cost_of_transport=0.20, g0=0.125, g1=0.5, g2=0.875),
+        dict(outer_gen=0, urdf_idx=1, obj_progress_m=90.0,
+             obj_cost_of_transport=0.30, g0=0.25, g1=0.75, g2=0.5),
+    ]
+    run = _pop_csv(tmp_path, rows)
+    front = pd.read_csv(build_pareto_front_csv(run, specs=_SPECS, min_progress=0.0))
+    pop = pd.read_csv(run / "results" / "outer_population.csv")
+    for _, fr in front.iterrows():
+        src = pop[(pop["outer_gen"] == fr["outer_gen"])
+                  & (pop["urdf_idx"] == fr["urdf_idx"])].iloc[0]
+        for c in ("g0", "g1", "g2"):
+            assert fr[c] == pytest.approx(src[c])
+
+
+def test_front_csv_hypervolume_matches_direct_computation(tmp_path):
+    """Per-gen hypervolume, against the fixed (0 m, CoT 1) reference."""
+    rows = [
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=100.0, obj_cost_of_transport=0.20),
+        dict(outer_gen=0, urdf_idx=1, obj_progress_m=80.0, obj_cost_of_transport=0.10),
+    ]
+    df = pd.read_csv(build_pareto_front_csv(
+        _pop_csv(tmp_path, rows), specs=_SPECS, min_progress=0.0))
+    ref, fixed = _hv_reference(_SPECS, np.array([[100.0, -0.20], [80.0, -0.10]]))
+    expected = _hypervolume_2d(np.array([[100.0, -0.20], [80.0, -0.10]]), ref)
+    assert bool(df["hv_reference_fixed"].iloc[0]) is fixed is True
+    assert df["hypervolume"].iloc[0] == pytest.approx(expected)
+    assert df["hypervolume"].nunique() == 1  # per-gen scalar, repeated
+
+
+def test_front_csv_is_idempotent(tmp_path):
+    """Rebuilding must not append or reorder — the live writer rewrites this
+    file at every phase end."""
+    run = _pop_csv(tmp_path, [
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=100.0, obj_cost_of_transport=0.20),
+        dict(outer_gen=0, urdf_idx=1, obj_progress_m=80.0, obj_cost_of_transport=0.10),
+    ])
+    first = build_pareto_front_csv(run, specs=_SPECS, min_progress=0.0).read_bytes()
+    second = build_pareto_front_csv(run, specs=_SPECS, min_progress=0.0).read_bytes()
+    assert first == second
+
+
+def test_front_csv_missing_or_empty_source_returns_none(tmp_path):
+    """No outer_population.csv, or a zero-byte one, must not raise."""
+    assert build_pareto_front_csv(tmp_path, specs=_SPECS, min_progress=0.0) is None
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "outer_population.csv").write_text("")
+    assert build_pareto_front_csv(tmp_path, specs=_SPECS, min_progress=0.0) is None
+
+
+def test_front_csv_all_rows_gated_out_returns_none(tmp_path):
+    """A generation with nothing admissible yields no rows, not a crash."""
+    run = _pop_csv(tmp_path, [
+        dict(outer_gen=0, urdf_idx=0, obj_progress_m=5.0, obj_cost_of_transport=0.20),
+    ])
+    assert build_pareto_front_csv(run, specs=_SPECS, min_progress=50.0) is None
+
+
+def test_front_csv_safe_swallows_failures(tmp_path, monkeypatch):
+    """The live writer must never take down an evolution run."""
+    import WP2_Outer_Loop.pareto_fronts as pf
+
+    def boom(*a, **k):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(pf, "build_pareto_front_csv", boom)
+    assert pf.build_pareto_front_csv_safe(tmp_path) is None
