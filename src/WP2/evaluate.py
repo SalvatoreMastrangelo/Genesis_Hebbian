@@ -946,6 +946,27 @@ def _rollout_episode_multi_urdf(
         pu_energy / (mg_per_drone * pu_dx_t.clamp(min=1e-2))
     ).cpu().numpy()
 
+    # Unreduced per-(URDF, individual, forest) views, shape (D, P, F). Nothing
+    # in the inner/outer loops reads these — they exist so offline tools can
+    # report a spread across forests (e.g. WP2_Outer_Loop.transfer_eval's
+    # standard error), which the (D, P) means above have already averaged out.
+    # CoT uses the same distance clamp as the per-URDF ratio, so a slot that
+    # crashed at ~zero distance reads as expensive, not free.
+    def _per_slot(metric: torch.Tensor) -> np.ndarray:
+        return metric.view(D, P, F).float().cpu().numpy()
+
+    ps_t = _per_slot(t_acc)
+    ps_dx = _per_slot(dx_acc)
+    per_slot = {
+        "per_slot_reward":   _per_slot(reward_sum),
+        "per_slot_progress": ps_dx,
+        "per_slot_velocity": np.where(ps_t > 1e-6, ps_dx / np.maximum(ps_t, 1e-12), 0.0),
+        "per_slot_crash":    _per_slot(crashed),
+        "per_slot_cot": _per_slot(
+            energy_acc / (mg_per_drone * dx_acc.clamp(min=1e-2))
+        ),
+    }
+
     if comp_per_ind is not None:
         comp_arr = comp_per_ind.cpu().numpy()
     else:
@@ -965,6 +986,7 @@ def _rollout_episode_multi_urdf(
         "per_urdf_velocity": pu_velocity,
         "per_urdf_crash": pu_crash,
         "per_urdf_cot": pu_cot,
+        **per_slot,
     }
 
 
@@ -1122,6 +1144,12 @@ def evaluate_population_multi_urdf(
         "per_urdf_velocity": np.zeros((N, P)),
         "per_urdf_crash":    np.zeros((N, P)),
         "per_urdf_cot":      np.zeros((N, P)),
+        # Unreduced (URDF, individual, forest) views — see _rollout_episode_multi_urdf.
+        "per_slot_reward":   np.zeros((N, P, F)),
+        "per_slot_progress": np.zeros((N, P, F)),
+        "per_slot_velocity": np.zeros((N, P, F)),
+        "per_slot_crash":    np.zeros((N, P, F)),
+        "per_slot_cot":      np.zeros((N, P, F)),
     }
     acc_components: Optional[np.ndarray] = None
     reward_names: List[str] = []
@@ -1139,7 +1167,9 @@ def evaluate_population_multi_urdf(
             acc["cots"]         += ep_metrics["cots"]
             acc["v_deviations"] += ep_metrics["v_deviations"]
             for _pu in ("per_urdf_reward", "per_urdf_progress",
-                        "per_urdf_velocity", "per_urdf_crash", "per_urdf_cot"):
+                        "per_urdf_velocity", "per_urdf_crash", "per_urdf_cot",
+                        "per_slot_reward", "per_slot_progress",
+                        "per_slot_velocity", "per_slot_crash", "per_slot_cot"):
                 acc[_pu] += ep_metrics[_pu]
 
             ep_comp = ep_metrics.get("reward_components")
