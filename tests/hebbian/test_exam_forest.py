@@ -163,6 +163,71 @@ def test_generator_unknown_override_key_raises():
         apply_generator_overrides(gen, {"tree_radius": 2.0})
 
 
+def _lead_in_density(gen, x_window=20.0):
+    """Mean trees/meter in x ∈ [0, x_window) over all generated forests."""
+    cyl = gen.cylinders
+    c = gen.config
+    xs, ys = cyl[..., 0], cyl[..., 1]
+    active = (ys >= c.y_lower) & (ys <= c.y_upper)
+    F = cyl.shape[0]
+    return float(((xs < x_window) & active).sum()) / F / x_window
+
+
+def test_generator_eval_dens_min_override_beats_randomization_keys():
+    # Regression (2026-08-10, blind-exam batch): the run configs set
+    # forest.dens_min_min: 0.0 / dens_min_max: 0.0 (training-only per-forest
+    # randomization knobs), which silently shadowed `dens_min` in the growing
+    # sampler — the exam's dens_min override (3.0 in batch_2, 1.0 in batch_3)
+    # was ignored and both batches flew identical near-zero-floor forests.
+    # In evaluation mode the explicit dens_min floor must always win.
+    gen = _make_generator(
+        dens_min=0.0, dens_max=5.0,
+        dens_min_min=0.0, dens_min_max=0.0,
+        x_lower=0.0, x_upper=100.0,
+    )
+    prev = apply_generator_overrides(
+        gen, {"dens_min": 3.0, "dens_max": 5.5, "x_upper": 300.0}
+    )
+    gen.generate()
+    lead_in = _lead_in_density(gen)
+    # floor 3.0 → ≈3.1 trees/m in the lead-in; the shadow bug gives ≈0.19
+    assert lead_in > 2.0, (
+        f"exam dens_min override ignored: lead-in density {lead_in:.2f} "
+        f"trees/m (expected ≈3.1)"
+    )
+
+    # restore puts the nominal near-zero lead-in back
+    apply_generator_overrides(gen, prev)
+    gen.generate()
+    assert _lead_in_density(gen) < 1.0
+
+
+def test_generator_training_dens_min_randomization_still_active():
+    # The eval-mode fix must not touch training: with a non-degenerate
+    # [dens_min_min, dens_min_max] range, training forests still randomize
+    # their ramp floor per forest (WP1 domain randomization).
+    _, _, gen = generate_forests(
+        num_envs=64,
+        evaluation=False,
+        unique_forests_eval=False,
+        growing_forest=True,
+        env_cfg=dict(
+            dens_min=0.0, dens_max=5.0,
+            dens_min_min=0.5, dens_min_max=3.0,
+            x_lower=0.0, x_upper=100.0,
+        ),
+        device="cpu",
+    )
+    cyl = gen.cylinders
+    c = gen.config
+    ys = cyl[..., 1]
+    active = (ys >= c.y_lower) & (ys <= c.y_upper)
+    # per-forest active tree counts vary because each forest drew its own
+    # ramp floor in [0.5, 3.0] (identical counts ⇒ randomization dead)
+    counts = active.sum(dim=1).float()
+    assert float(counts.std()) > 1.0
+
+
 # ---------------------------------------------------- env-level method
 
 class _EnvStub:

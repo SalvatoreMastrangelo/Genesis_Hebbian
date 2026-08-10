@@ -164,7 +164,14 @@ class ForestGenerator:
         if dens_min_hi < dens_min_lo:
             raise ValueError("ForestConfig.dens_min_max must be >= dens_min_min")
 
-        if (not self.evaluation) and dens_min_hi > dens_min_lo:
+        if self.evaluation:
+            # dens_min_min / dens_min_max are TRAINING-only per-forest
+            # randomization knobs; evaluation always honors the explicit
+            # dens_min floor. Runtime overrides (the outer-loop exam) write
+            # c.dens_min, so letting dens_min_min shadow it here silently
+            # discards them (blind-exam batches, 2026-08-10).
+            dens_min = torch.full((F,), float(c.dens_min), device=device, dtype=torch.float32)
+        elif dens_min_hi > dens_min_lo:
             dens_min = torch.empty((F,), device=device).uniform_(dens_min_lo, dens_min_hi)
         else:
             dens_min = torch.full((F,), dens_min_lo, device=device, dtype=torch.float32)

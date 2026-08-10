@@ -829,21 +829,10 @@ class WingedDroneEnv:
         # ------------------------------------------------------------------ #
         # Depth solver + precomputed ray directions                          #
         # ------------------------------------------------------------------ #
-        tree_radius = self._tree_radius
-        y_lower = float(self.env_cfg.get("y_lower", -50.0))
-        y_upper = float(self.env_cfg.get("y_upper", 50.0))
+        self._depth_y_lower = float(self.env_cfg.get("y_lower", -50.0))
+        self._depth_y_upper = float(self.env_cfg.get("y_upper", 50.0))
 
-        self.depth_solver = depth_utils.DepthSolver(
-            num_sectors=self.NUM_SECTORS_ACTOR,
-            cone_angle_deg=self.CONE_ACTOR_DEG,
-            max_distance=self.MAX_DISTANCE,
-            short_range=self.SHORT_RANGE,
-            tree_radius=tree_radius,
-            y_lower=y_lower,
-            y_upper=y_upper,
-            torch_device=self.device,
-            backend=self.obs_cfg.get("depth_backend", "torch"),
-        )
+        self.depth_solver = self._make_depth_solver()
 
         # Torch copy of ray directions (for obstacle reward, no Taichi needed)
         angles = torch.linspace(
@@ -1413,6 +1402,36 @@ class WingedDroneEnv:
         self._apply_genome_noise_(self._genome_obs_scratch, self._genome_step_noise_std)
         return self._genome_obs_scratch
 
+    def _make_depth_solver(self):
+        """Fresh DepthSolver with this env's build-time perception params."""
+        return depth_utils.DepthSolver(
+            num_sectors=self.NUM_SECTORS_ACTOR,
+            cone_angle_deg=self.CONE_ACTOR_DEG,
+            max_distance=self.MAX_DISTANCE,
+            short_range=self.SHORT_RANGE,
+            tree_radius=self._tree_radius,
+            y_lower=self._depth_y_lower,
+            y_upper=self._depth_y_upper,
+            torch_device=self.device,
+            backend=self.obs_cfg.get("depth_backend", "torch"),
+        )
+
+    def _depth_solver_for(self, cyl_xy: Optional[torch.Tensor]):
+        """Depth solver valid for the CURRENT cylinder tensor.
+
+        gstaichi kernels bind fields at first compilation, so once the
+        per-forest tree count changes (exam forest overrides regenerate a
+        bigger/smaller forest via ``refresh_forests``) the old instance would
+        silently keep reading the stale pre-override trees — the policy flies
+        blind while collision uses the real forest (blind-exam batches,
+        2026-08-10). Swap in a fresh solver whenever shapes no longer match;
+        the torch backend never needs this.
+        """
+        T = 0 if cyl_xy is None else int(cyl_xy.shape[1])
+        if self.depth_solver.needs_rebuild(self.num_envs, T):
+            self.depth_solver = self._make_depth_solver()
+        return self.depth_solver
+
     def _warmup_runtime_kernels(self) -> None:
         """
         Compile late-bound runtime kernels once during env construction.
@@ -1428,7 +1447,7 @@ class WingedDroneEnv:
         cyl_xy = self.cylinders_xy
         if cyl_xy is None and self.cylinders_array is not None:
             cyl_xy = self.cylinders_array[self.forest_ids, :, :2]
-        self.depth_solver.compute_depth(
+        self._depth_solver_for(cyl_xy).compute_depth(
             base_pos=self.base_pos,
             base_euler=self.base_euler,
             cyl_xy_b=cyl_xy,
@@ -1550,7 +1569,7 @@ class WingedDroneEnv:
             # cylinders_array: (F, T, 3) → (B, T, 2) via forest_ids
             cyl_xy = self.cylinders_array[self.forest_ids, :, :2]
 
-        self.depth = self.depth_solver.compute_depth(
+        self.depth = self._depth_solver_for(cyl_xy).compute_depth(
             base_pos=self.base_pos,
             base_euler=self.base_euler,
             cyl_xy_b=cyl_xy,

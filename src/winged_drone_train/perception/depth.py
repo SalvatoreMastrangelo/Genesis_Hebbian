@@ -106,6 +106,15 @@ class DepthSolver:
         self.depth = None
         self._depth_t = None
 
+        # Taichi kernels bind the fields they reference at FIRST compilation
+        # and keep reading those exact fields forever — reallocating an input
+        # field afterwards would leave the compiled kernel on stale data.
+        # Record the shapes the kernels were compiled against so we can
+        # refuse (and let callers rebuild) instead of silently going blind.
+        self._kernels_launched = False
+        self._bound_B = 0
+        self._bound_T = 0
+
     # ------------------------------------------------------------------ #
     # Public API                                                         #
     # ------------------------------------------------------------------ #
@@ -127,6 +136,17 @@ class DepthSolver:
 
         B = int(base_pos.shape[0])
         T = 0 if cyl_xy_b is None else int(cyl_xy_b.shape[1])
+
+        if self.needs_rebuild(B, T):
+            raise RuntimeError(
+                f"DepthSolver(taichi): input shape changed after kernel "
+                f"compilation (B {self._bound_B}->{B}, "
+                f"T {self._bound_T}->{max(T, 1)}). Compiled gstaichi kernels "
+                f"stay bound to the fields captured at first launch, so "
+                f"continuing would silently read stale tree data (the "
+                f"blind-exam bug). Construct a fresh DepthSolver instead "
+                f"(see WingedDroneEnv._depth_solver_for)."
+            )
 
         self._ensure_buffers(B)
         self._ensure_input_buffers(B, T)
@@ -162,6 +182,10 @@ class DepthSolver:
         # Clear and compute
         self._k_clear()
         self._kernel_depth()
+        if not self._kernels_launched:
+            self._kernels_launched = True
+            self._bound_B = B
+            self._bound_T = max(T, 1)
 
         depth = self.depth.to_torch(device=str(self._torch_device))
         self._depth_t.copy_(depth)
@@ -273,6 +297,19 @@ class DepthSolver:
 
         self._depth_t.copy_(depth)
         return self._depth_t
+
+    def needs_rebuild(self, B: int, T: int) -> bool:
+        """True when this solver can no longer serve inputs of shape (B, T).
+
+        The taichi backend compiles its kernels against the concrete fields
+        allocated for the first (B, T) it sees; a later shape change would
+        make ``compute_depth`` raise. Callers should then construct a fresh
+        ``DepthSolver`` (fresh instance ⇒ fresh kernel bindings). The torch
+        backend is shape-dynamic and never needs a rebuild.
+        """
+        if self.backend != "taichi" or not self._kernels_launched:
+            return False
+        return int(B) != self._bound_B or max(int(T), 1) != self._bound_T
 
     # ------------------------------------------------------------------ #
     # Setup / housekeeping                                               #

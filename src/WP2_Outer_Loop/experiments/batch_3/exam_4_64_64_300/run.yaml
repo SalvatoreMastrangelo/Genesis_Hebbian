@@ -24,7 +24,7 @@
 # (the slurm script injects checkpoint_path / checkpoint_config_path)
 
 exp_name: exam_4_64_64_300
-repeat: 4
+repeat: 2
 
 checkpoint_path: ""        # injected by the slurm script (checkpoint.pt)
 checkpoint_config_path: "" # injected by the slurm script (wp1_config.yaml)
