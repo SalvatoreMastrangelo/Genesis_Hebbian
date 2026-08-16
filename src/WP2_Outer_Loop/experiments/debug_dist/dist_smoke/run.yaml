@@ -1,0 +1,90 @@
+# 2-node debug-QoS smoke test for the multi-node sharded outer loop
+# ==================================================================
+# Same tiny config the docker E2E (tests/hebbian/test_dist_e2e.py) passed
+# with locally, plus the production-style intra-node topology
+# (num_eval_workers: 2). N=4 URDFs shard 2+2 across the two ranks; 6 CMA
+# gens → refreshes at gens 2 and 4 → two exam-scored phases (the second on
+# the rebuilt env) + the phase-mean final flush. Short 60 m course keeps
+# episodes to a few seconds of sim time.
+#
+# Submit (from the repo root on IZAR):
+#   bash src/WP2_Outer_Loop/slurm_jobs/run_parallel.sh \
+#        src/WP2_Outer_Loop/experiments/debug_dist/ \
+#        --qos=debug --nodes=2 --gpus-per-node=1 --time=00:45:00 --mem=32G
+
+exp_name: dist_smoke
+repeat: 1
+
+checkpoint_path: ""        # injected by the slurm script (checkpoint.pt)
+checkpoint_config_path: "" # injected by the slurm script (wp1_config.yaml)
+
+outer:
+  n_elites: 2
+  score_top_frac: 0.5
+  score_window: 0
+  rescore: true
+  rescore_top_frac: 0.25
+  exam_forest:
+    override_forest: true
+    x_upper: 80.0
+    dens_min: 0.5
+    dens_max: 3.5
+  exam_baseline: true
+  min_progress_m: 0.0
+  objectives:
+    - name: progress_m
+      direction: maximize
+    - name: cost_of_transport
+      direction: minimize
+
+hebbian:
+  enabled: true
+  eta: 0.005
+  decay: 0.05
+  initialize_rules_to_zero: true
+  w_max: 5000.0
+
+evolution:
+  num_generations: 6
+  population_size: 0
+
+cmaes:
+  algorithm: "cmaes"
+  sigma0: 0.075
+  population_size: 4
+
+catalog:
+  path: ""
+  num_urdfs: 4
+  num_episodes: 1
+  refresh_urdfs_every: 2
+  mutate: false
+
+validation:
+  enable: true
+  n_val_envs: 8
+  validation_catalog: ""
+  period: 2
+
+evaluation:
+  num_eval_envs: 32
+  num_eval_workers: 2   # intra-node ParallelMultiSceneEvalEnv inside each rank
+  num_gpus: 0           # auto-detect the node's allocated GPU(s)
+  vmin: 10.0
+  vmax: 20.0
+  stochastic: true
+  run_baseline: true
+  baseline_every: 2
+  refresh_forests_per_generation: true
+  crn: false
+
+forest:
+  mode: "growing"
+  x_lower: 0
+  x_upper: 60
+  dens_min: 0.0
+  dens_max: 3.0
+
+seed: 3
+device: "cuda:0"
+base_dir: "logs/runs_outer"

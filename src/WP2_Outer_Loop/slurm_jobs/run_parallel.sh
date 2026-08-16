@@ -13,7 +13,12 @@
 # Examples:
 #   bash run_parallel.sh                                                # uses src/WP2_Outer_Loop/experiments/
 #   bash run_parallel.sh src/WP2_Outer_Loop/experiments/batch_0/       # explicit batch
-#   bash run_parallel.sh src/WP2_Outer_Loop/experiments/batch_0/ --gpus=2
+#   bash run_parallel.sh src/WP2_Outer_Loop/experiments/batch_0/ --gpus-per-node=2
+#   # multi-node (URDF-sharded eval, see WP2/dist_eval.py — per-run wall time
+#   # drops roughly by the node count):
+#   bash run_parallel.sh src/WP2_Outer_Loop/experiments/batch_0/ --nodes=4 --gpus-per-node=2
+# NOTE: train.slurm uses per-node directives (--ntasks-per-node/--gpus-per-node);
+# pass --gpus-per-node=2, NOT the old job-total --gpus=2, to use both V100s.
 #
 # Each run.yaml may declare:
 #   - exp_name : str   (used in the job/run tag; default = experiment folder name)

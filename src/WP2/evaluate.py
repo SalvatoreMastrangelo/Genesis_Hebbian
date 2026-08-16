@@ -946,6 +946,15 @@ def _rollout_episode_multi_urdf(
         pu_energy / (mg_per_drone * pu_dx_t.clamp(min=1e-2))
     ).cpu().numpy()
 
+    # Sufficient statistics for exact cross-shard merging (WP2.dist_eval):
+    # raw F-means so every per-individual reduction above can be reconstructed
+    # as a D-mean over concatenated shard rows. v_dev stays UNnormalized
+    # (global v_deviation = mean v_dev integral / mean t); cot_mean averages
+    # the same cot_slot the per-individual `cots` uses (1e-6 clamp + zeroing),
+    # unlike per_urdf_cot's ratio-of-sums.
+    pu_v_dev = _per_urdf(v_dev_acc).cpu().numpy()
+    pu_cot_mean = _per_urdf(cot_slot).cpu().numpy()
+
     # Unreduced per-(URDF, individual, forest) views, shape (D, P, F). Nothing
     # in the inner/outer loops reads these — they exist so offline tools can
     # report a spread across forests (e.g. WP2_Outer_Loop.transfer_eval's
@@ -986,6 +995,9 @@ def _rollout_episode_multi_urdf(
         "per_urdf_velocity": pu_velocity,
         "per_urdf_crash": pu_crash,
         "per_urdf_cot": pu_cot,
+        "per_urdf_t": pu_t,
+        "per_urdf_v_dev": pu_v_dev,
+        "per_urdf_cot_mean": pu_cot_mean,
         **per_slot,
     }
 
@@ -1144,6 +1156,9 @@ def evaluate_population_multi_urdf(
         "per_urdf_velocity": np.zeros((N, P)),
         "per_urdf_crash":    np.zeros((N, P)),
         "per_urdf_cot":      np.zeros((N, P)),
+        "per_urdf_t":        np.zeros((N, P)),
+        "per_urdf_v_dev":    np.zeros((N, P)),
+        "per_urdf_cot_mean": np.zeros((N, P)),
         # Unreduced (URDF, individual, forest) views — see _rollout_episode_multi_urdf.
         "per_slot_reward":   np.zeros((N, P, F)),
         "per_slot_progress": np.zeros((N, P, F)),
@@ -1168,6 +1183,7 @@ def evaluate_population_multi_urdf(
             acc["v_deviations"] += ep_metrics["v_deviations"]
             for _pu in ("per_urdf_reward", "per_urdf_progress",
                         "per_urdf_velocity", "per_urdf_crash", "per_urdf_cot",
+                        "per_urdf_t", "per_urdf_v_dev", "per_urdf_cot_mean",
                         "per_slot_reward", "per_slot_progress",
                         "per_slot_velocity", "per_slot_crash", "per_slot_cot"):
                 acc[_pu] += ep_metrics[_pu]

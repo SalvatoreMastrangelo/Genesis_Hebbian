@@ -586,6 +586,12 @@ class HebbianCMAES:
         self._env = None
         self._env_urdf_path = None
 
+        # Multi-node sharded evaluation (WP2.dist_eval). None = single-process
+        # legacy behavior, byte-identical to before the feature existed.
+        # Attach a DistributedEvalCoordinator via attach_distributed() BEFORE
+        # run(); only the multi-URDF path supports it.
+        self._dist = None
+
         # ------------------------------------------------------------------
         #  Held-out validation env (optional)
         # ------------------------------------------------------------------
@@ -668,6 +674,23 @@ class HebbianCMAES:
             F = max(1, (total // N) // H)
             envs_per_drone = H * F
             total_slots = N * envs_per_drone
+
+            if self._dist is not None:
+                # Multi-node: every rank (0 included) builds its URDF shard;
+                # self._env becomes a DistEnvHandle that broadcasts the ops
+                # the run loop touches (refresh_forests, set_dens_min,
+                # forest overrides, shutdown). Sizing is identical — each
+                # rank holds D/K scenes of `envs_per_drone` slots.
+                print(f"[HebbianCMAES] Building SHARDED eval env: N={N} "
+                      f"URDFs × {envs_per_drone} envs/drone = {total_slots} "
+                      f"slots across {self._dist.ctx.world_size} rank(s) "
+                      f"(H={H}, F={F})...", flush=True)
+                self._env = self._dist.build_env(
+                    list(self._urdf_paths), envs_per_drone
+                )
+                self._env_urdf_path = list(self._urdf_paths)
+                print("[HebbianCMAES] Sharded eval env ready", flush=True)
+                return
 
             print(f"[HebbianCMAES] Building MultiSceneEvalEnv: N={N} URDFs × "
                   f"{envs_per_drone} envs/drone = {total_slots} slots "
@@ -814,6 +837,57 @@ class HebbianCMAES:
         self._val_env = None
 
     # ------------------------------------------------------------------
+    #  Population evaluation dispatch (single-process or multi-node)
+    # ------------------------------------------------------------------
+
+    def attach_distributed(self, coordinator) -> None:
+        """Attach a ``WP2.dist_eval.DistributedEvalCoordinator`` (rank 0 of a
+        multi-node run). Must be called before ``run()``. Without it, every
+        code path below is byte-identical to the single-process behavior."""
+        self._dist = coordinator
+
+    def _evaluate_population(
+        self,
+        solutions,
+        cfg_override=None,
+        verbose: bool = False,
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """Evaluate genomes on the multi-URDF population env.
+
+        Single-process: the exact legacy ``evaluate_population_multi_urdf``
+        call on the pre-built env. Distributed: broadcast the genomes, roll
+        out every URDF shard in parallel across ranks, merge the shard
+        metrics into the identical format (``WP2.dist_eval``).
+
+        ``cfg_override`` swaps the config for reference-actor evaluations
+        (baseline/specialist: zero decay, possibly different checkpoint).
+        """
+        # getattr: tolerate shell instances built via object.__new__ (tests,
+        # recovery tools) that predate the _dist attribute.
+        dist = getattr(self, "_dist", None)
+        if dist is not None:
+            return dist.evaluate_population(
+                solutions, cfg_override=cfg_override, verbose=verbose
+            )
+        # Late binding through the module keeps the historical patch point
+        # (tests monkeypatch WP2.evaluate.evaluate_population_multi_urdf).
+        from WP2 import evaluate as _evaluate_mod
+
+        cfg = cfg_override if cfg_override is not None else self.cfg
+        existing_env = (
+            (self._env, self._env_urdf_path) if self._env is not None else None
+        )
+        return _evaluate_mod.evaluate_population_multi_urdf(
+            solutions,
+            cfg,
+            self._model_and_layer,
+            self._wp1_cfg,
+            urdf_paths=self._urdf_paths,
+            existing_env=existing_env,
+            verbose=verbose,
+        )
+
+    # ------------------------------------------------------------------
     #  Periodic URDF refresh
     # ------------------------------------------------------------------
 
@@ -949,20 +1023,12 @@ class HebbianCMAES:
         fold forest-draw variance (which CRN makes common across individuals)
         back into the measurement.
         """
-        existing_env = (
-            (self._env, self._env_urdf_path) if self._env is not None else None
-        )
         if self._use_multi_urdf:
-            fitnesses, _ = evaluate_population_multi_urdf(
-                solutions,
-                self.cfg,
-                self._model_and_layer,
-                self._wp1_cfg,
-                urdf_paths=self._urdf_paths,
-                existing_env=existing_env,
-                verbose=False,
-            )
+            fitnesses, _ = self._evaluate_population(solutions, verbose=False)
         else:
+            existing_env = (
+                (self._env, self._env_urdf_path) if self._env is not None else None
+            )
             fitnesses, _ = evaluate_population_cma_batched(
                 solutions,
                 self.cfg,
@@ -1161,15 +1227,24 @@ class HebbianCMAES:
                 print(f"[HebbianCMAES] Evaluating {label.lower()} "
                       f"(zero-Hebbian, zero-decay)...")
             if use_multi:
-                fitnesses, metrics = evaluate_population_multi_urdf(
-                    [ref_genome],
-                    ref_cfg,
-                    self._model_and_layer,
-                    self._wp1_cfg,
-                    urdf_paths=urdf_paths,
-                    existing_env=existing_env,
-                    verbose=verbose,
-                )
+                if env_override is None:
+                    # Population env → distributed-aware dispatch (the
+                    # reference actor flies the same sharded env as the
+                    # population when a coordinator is attached).
+                    fitnesses, metrics = self._evaluate_population(
+                        [ref_genome], cfg_override=ref_cfg, verbose=verbose,
+                    )
+                else:
+                    # Explicit env (held-out validation) — rank-0-local.
+                    fitnesses, metrics = evaluate_population_multi_urdf(
+                        [ref_genome],
+                        ref_cfg,
+                        self._model_and_layer,
+                        self._wp1_cfg,
+                        urdf_paths=urdf_paths,
+                        existing_env=existing_env,
+                        verbose=verbose,
+                    )
             else:
                 fitnesses, metrics = evaluate_population_cma_batched(
                     [ref_genome],
@@ -1842,14 +1917,8 @@ class HebbianCMAES:
                     else None
                 )
                 if self._use_multi_urdf:
-                    fitnesses, metrics = evaluate_population_multi_urdf(
-                        solutions,
-                        self.cfg,
-                        self._model_and_layer,
-                        self._wp1_cfg,
-                        urdf_paths=self._urdf_paths,
-                        existing_env=existing_env,
-                        verbose=verbose,
+                    fitnesses, metrics = self._evaluate_population(
+                        solutions, verbose=verbose,
                     )
                 else:
                     fitnesses, metrics = evaluate_population_cma_batched(

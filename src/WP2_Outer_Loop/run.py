@@ -52,9 +52,16 @@ if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
 
-def _configure_cache_root() -> Path:
-    """Force Taichi/genesis cache into a writable location. Matches WP2/run.py."""
-    cache_root = (Path("logs") / ".cache" / "gstaichi").expanduser().resolve()
+def _configure_cache_root(rank_suffix: str = "") -> Path:
+    """Force Taichi/genesis cache into a writable location. Matches WP2/run.py.
+
+    ``rank_suffix`` isolates the compile cache per rank on multi-node runs —
+    the cache dir lives on the shared run filesystem and concurrent writers
+    from different nodes could race on the same cache files.
+    """
+    cache_root = (
+        Path("logs") / ".cache" / f"gstaichi{rank_suffix}"
+    ).expanduser().resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
     for env_key in ("XDG_CACHE_HOME", "TI_CACHE_DIR", "TAICHI_CACHE_DIR", "GSTAICHI_CACHE_DIR"):
         os.environ[env_key] = str(cache_root)
@@ -111,10 +118,44 @@ def main() -> None:
         print(f"[ERROR] {exc}")
         sys.exit(1)
 
-    _configure_cache_root()
+    # ------------------------------------------------------------------
+    #  Multi-node sharded evaluation (WP2.dist_eval)
+    # ------------------------------------------------------------------
+    # Activated ONLY when the job runs with >1 task (Slurm --nodes=K with the
+    # launcher's --ntasks-per-node=1 header, or explicit WP2_DIST_* env vars).
+    # Single-task submissions and local runs take the unchanged path below.
+    from WP2.dist_eval import detect_dist_env
+
+    dist_info = detect_dist_env()
+    rank = dist_info[0] if dist_info else 0
+    world_size = dist_info[1] if dist_info else 1
+
+    _configure_cache_root(f"_rank{rank}" if world_size > 1 else "")
 
     from WP2.utils import seed_everything
-    seed_everything(cfg.seed)
+    seed_everything(cfg.seed + rank)
+
+    if world_size > 1 and rank > 0:
+        # Worker rank: no run dir, no CSVs, no CMA-ES — just a shard-eval
+        # command loop serving rank 0 until it broadcasts "shutdown".
+        from WP2.dist_eval import shard_worker_main
+
+        print(f"[run] Distributed worker rank {rank}/{world_size} — "
+              f"entering shard-eval loop")
+        shard_worker_main(cfg, rank, world_size)
+        print(f"[run] Worker rank {rank} done.")
+        return
+
+    coordinator = None
+    if world_size > 1:
+        # Rank 0: join the process group NOW so worker ranks can rendezvous;
+        # the coordinator is attached to the runner after construction (the
+        # runner loads the frozen actor and materializes the initial URDFs,
+        # both of which the local shard session reuses).
+        from WP2.dist_eval import DistContext
+
+        dist_ctx = DistContext(rank=0, world_size=world_size)
+        print(f"[run] Distributed coordinator: rank 0/{world_size}")
 
     N = int(cfg.catalog.num_urdfs)
     H = cfg.cma_population_size()
@@ -141,8 +182,31 @@ def main() -> None:
     print("=" * 70 + "\n")
 
     from WP2_Outer_Loop.nsga_cma import NSGA2MorphCMAES
-    runner = NSGA2MorphCMAES(cfg)
-    runner.run()
+
+    try:
+        runner = NSGA2MorphCMAES(cfg)
+
+        if world_size > 1:
+            from WP2.dist_eval import (
+                DistributedEvalCoordinator,
+                ShardEvalSession,
+            )
+
+            session = ShardEvalSession(
+                cfg, runner._wp1_cfg, runner._model_and_layer, rank=0,
+            )
+            coordinator = DistributedEvalCoordinator(dist_ctx, session, cfg)
+            runner.attach_distributed(coordinator)
+
+        runner.run()
+    finally:
+        # Always release the worker ranks — also when construction or the run
+        # itself fails — so the Slurm job ends instead of the other ranks
+        # blocking on a collective until the gloo timeout.
+        if coordinator is not None:
+            coordinator.shutdown()
+        elif world_size > 1:
+            dist_ctx.close()
     print(f"\n[run] All done. Results in: {runner.run_dir}")
 
     # Inner-loop-style plots (population/summary CSVs are the same format).

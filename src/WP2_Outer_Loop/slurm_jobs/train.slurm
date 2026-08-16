@@ -1,16 +1,21 @@
 #!/bin/bash -l
 #SBATCH --job-name=outer_nsga
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --gpus=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
 #SBATCH --mem=160G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=144:00:00
-# To use multiple GPUs for ParallelMultiSceneEvalEnv, override --gpus on
-# submission (e.g. `bash run_parallel.sh ... --gpus=2`). The Python code
-# auto-detects via torch.cuda.device_count() when evaluation.num_gpus is 0,
-# so no other change is needed. CPU count and OMP threads scale with --gpus
-# automatically via the SLURM_CPUS_PER_GPU block below.
+# Per-node directives so the same script scales from one node to many:
+#   single node, 2 GPUs : bash run_parallel.sh ... --gpus-per-node=2
+#   multi-node (K nodes): bash run_parallel.sh ... --nodes=4 --gpus-per-node=2
+# With --nodes=K srun launches K tasks (one per node); WP2_Outer_Loop.run
+# detects SLURM_PROCID/SLURM_NTASKS and shards the URDF population across
+# ranks (WP2.dist_eval) — rank 0 keeps CMA-ES/NSGA-II/CSVs, every rank flies
+# its URDF shard. A single-task job (the default) is byte-identical to the
+# pre-multi-node behavior. evaluation.num_gpus: 0 auto-detects each node's
+# GPUs; CPU count and OMP threads scale via the SLURM_CPUS_PER_GPU block
+# below.
 #SBATCH --output=/home/%u/slurm_logs/%x-%j.out
 #SBATCH --error=/home/%u/slurm_logs/%x-%j.err
 #SBATCH --mail-user=salvatore.mastrangelo@epfl.ch
@@ -151,9 +156,20 @@ echo "[CONFIG] RUN_TAG          = ${RUN_TAG}"
 echo "[CONFIG] CLI_OVERRIDES    = ${CLI_OVERRIDES}"
 
 # ------------------------------------------------------------
+# Multi-node rendezvous (torch.distributed gloo; harmless single-node)
+# ------------------------------------------------------------
+MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST:-}" 2>/dev/null | head -n1)"
+MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+MASTER_PORT=$(( 20000 + ${SLURM_JOB_ID:-0} % 10000 ))
+export MASTER_ADDR MASTER_PORT
+echo "[CONFIG] MASTER_ADDR=${MASTER_ADDR}  MASTER_PORT=${MASTER_PORT}  ntasks=${SLURM_NTASKS:-1}"
+
+# ------------------------------------------------------------
 # Run
 # ------------------------------------------------------------
-srun apptainer exec --nv $BINDS "$IMG" bash -lc "
+# --kill-on-bad-exit: one dying rank must take the whole step down instead of
+# leaving the surviving ranks blocked on a collective until the gloo timeout.
+srun --kill-on-bad-exit=1 apptainer exec --nv $BINDS "$IMG" bash -lc "
   set -euo pipefail
 
   export PYTHONPATH=/workspace/bind/src:/workspace/bind:\${PYTHONPATH:-}
@@ -170,19 +186,33 @@ srun apptainer exec --nv $BINDS "$IMG" bash -lc "
   echo \"[RUNTIME] CUDA_VISIBLE_DEVICES: \${CUDA_VISIBLE_DEVICES:-<unset>}\"
   nvidia-smi -L || true
 
-  # Stage URDF meshes + aero assets so WingedDroneEnv can load them
-  SRC_URDF_DIR=/workspace/bind/src/urdf_generated
-  SRC_AERO_DIR=/workspace/bind/genesis/assets/urdf/mydrone
-  if [ -d \"\${SRC_URDF_DIR}/meshes\" ]; then
-    mkdir -p /workspace/out/urdf_generated/meshes
-    cp -r \"\${SRC_URDF_DIR}/meshes/.\" /workspace/out/urdf_generated/meshes/
-  fi
-  for fname in aero_parameters.yaml actuators.csv; do
-    if [ -f \"\${SRC_AERO_DIR}/\${fname}\" ]; then
-      mkdir -p /workspace/out/urdf_generated
-      cp -r \"\${SRC_AERO_DIR}/\${fname}\" /workspace/out/urdf_generated/
+  # Stage URDF meshes + aero assets so WingedDroneEnv can load them.
+  # /workspace/out is SHARED across nodes: only task 0 copies, the other
+  # ranks wait for the sentinel (avoids K ranks racing on the same cp).
+  if [ \"\${SLURM_PROCID:-0}\" = \"0\" ]; then
+    SRC_URDF_DIR=/workspace/bind/src/urdf_generated
+    SRC_AERO_DIR=/workspace/bind/genesis/assets/urdf/mydrone
+    if [ -d \"\${SRC_URDF_DIR}/meshes\" ]; then
+      mkdir -p /workspace/out/urdf_generated/meshes
+      cp -r \"\${SRC_URDF_DIR}/meshes/.\" /workspace/out/urdf_generated/meshes/
     fi
-  done
+    for fname in aero_parameters.yaml actuators.csv; do
+      if [ -f \"\${SRC_AERO_DIR}/\${fname}\" ]; then
+        mkdir -p /workspace/out/urdf_generated
+        cp -r \"\${SRC_AERO_DIR}/\${fname}\" /workspace/out/urdf_generated/
+      fi
+    done
+    touch /workspace/out/.stage_done
+  else
+    for _i in \$(seq 1 180); do
+      [ -f /workspace/out/.stage_done ] && break
+      sleep 1
+    done
+    if [ ! -f /workspace/out/.stage_done ]; then
+      echo \"[ERROR] rank \${SLURM_PROCID}: staging sentinel never appeared\"
+      exit 1
+    fi
+  fi
 
   python -m WP2_Outer_Loop.run \
     --cfg ${RUN_CFG_IN_CT} \

@@ -462,8 +462,6 @@ class NSGA2MorphCMAES(HebbianCMAES):
         if self._env is None or self._last_solutions is None:
             return None
 
-        from WP2.evaluate import evaluate_population_multi_urdf
-
         E = int(self._env.E)
         k = exam_top_k(
             len(self._last_solutions), E, float(self.outer.rescore_top_frac)
@@ -481,15 +479,9 @@ class NSGA2MorphCMAES(HebbianCMAES):
             # Fresh layouts so the exam's E/k forests are new, not the ones
             # that ranked these controllers (avoids selection bias).
             self._env.refresh_forests()
-            _fit, metrics = evaluate_population_multi_urdf(
-                sols,
-                self.cfg,
-                self._model_and_layer,
-                self._wp1_cfg,
-                urdf_paths=self._urdf_paths,
-                existing_env=(self._env, self._env_urdf_path),
-                verbose=False,
-            )
+            # Distributed-aware: flies every URDF shard in parallel when a
+            # coordinator is attached, the exact legacy call otherwise.
+            _fit, metrics = self._evaluate_population(sols, verbose=False)
             objs, diag = reduce_exam_metrics(metrics, self.outer.objectives)
         except Exception as exc:
             print(f"[NSGA2MorphCMAES] Exam rollout failed ({exc}) — "
