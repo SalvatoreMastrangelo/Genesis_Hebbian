@@ -646,14 +646,30 @@ def plot_transfer(
 
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
     palette = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e"]
+
+    def _split_standard(df):
+        std = (df.get("is_standard", pd.Series(0, index=df.index))
+               .fillna(0).astype(int) == 1).to_numpy()
+        return df[~std], df[std]
+
+    # With exactly two controllers, join each morphology's two measurements
+    # (matched on urdf_idx) with a dotted segment, under the points, so the
+    # per-morph controller shift is readable straight off the overlay.
+    if len(results) == 2:
+        a, b = _split_standard(results[0][1])[0], _split_standard(results[1][1])[0]
+        pair = a.merge(b, on="urdf_idx", suffixes=("_a", "_b"))
+        for _, r in pair.iterrows():
+            ax.plot([r["progress_m_a"], r["progress_m_b"]],
+                    [r["cost_of_transport_a"], r["cost_of_transport_b"]],
+                    linestyle=":", color="0.45", linewidth=0.8, alpha=0.65,
+                    zorder=1)
+
     for i, (label, df) in enumerate(results):
         color = palette[i % len(palette)]
         # The unevolved standard mydrone is a reference point, not a front
         # member: it gets a star and is kept out of the scatter and the
         # nondominated line, which describe the evolved population.
-        std_mask = (df.get("is_standard", pd.Series(0, index=df.index))
-                    .fillna(0).astype(int) == 1).to_numpy()
-        morphs, stds = df[~std_mask], df[std_mask]
+        morphs, stds = _split_standard(df)
 
         x = morphs["progress_m"].to_numpy(dtype=float)
         y = morphs["cost_of_transport"].to_numpy(dtype=float)
@@ -686,9 +702,7 @@ def plot_transfer(
     ax.set_xlabel("Progress [m]  (higher better)")
     ax.set_ylabel("Cost of transport  (lower better)")
     ax.set_title(title or "Front morphologies under a swapped controller")
-    # 5 m progress ticks: the fronts span only ~35 m, so matplotlib's default
-    # 10 m spacing gives too few gridlines to read a morph's position off.
-    ax.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(5))
+    ax.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(10))
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
     fig.tight_layout()
