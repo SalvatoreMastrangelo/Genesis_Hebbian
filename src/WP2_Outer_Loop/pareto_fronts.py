@@ -225,14 +225,18 @@ def _nondominated_mask(points_max: np.ndarray) -> np.ndarray:
     return keep
 
 
-# Absolute worst-case value (raw objective space) for objectives with a
-# physically fixed scale: zero progress / velocity, CoT 1, every drone
-# crashed. Reward-shaped objectives (fitness) have no absolute scale.
-_ABS_WORST_RAW = {
-    "progress_m": 0.0,
-    "progress": 0.0,
-    "cost_of_transport": 1.0,
-    "cot": 1.0,
+# Fixed hypervolume anchor (raw objective space) for objectives with a
+# meaningful absolute scale: the 80 m `outer.min_progress_m` admission gate
+# and a CoT ceiling of 0.5, just above the worst front CoT observed across
+# the Aug-2026 exam runs (0.391). The physical worst case (0 m, CoT 1) sits
+# so far from where fronts live that every run shared a huge dead rectangle,
+# compressing between-run differences to a few percent. Reward-shaped
+# objectives (fitness) have no absolute scale and fall back to run-relative.
+_FIXED_HV_REF_RAW = {
+    "progress_m": 80.0,
+    "progress": 80.0,
+    "cost_of_transport": 0.5,
+    "cot": 0.5,
 }
 
 
@@ -241,18 +245,19 @@ def _hv_reference(
 ) -> Tuple[np.ndarray, bool]:
     """Hypervolume reference point in maximization space.
 
-    When both objectives have an absolute worst bound (``_ABS_WORST_RAW``)
-    the reference is fixed there — (0 m, CoT 1) for the standard
-    progress/cot pair — so hypervolumes are comparable across runs.
-    Otherwise it is run-relative (worst observed − 5 % of span per
-    objective) and only the within-run curve is meaningful. Returns
-    ``(ref, fixed)``.
+    When both objectives have a fixed anchor (``_FIXED_HV_REF_RAW``) the
+    reference is fixed there — (80 m, CoT 0.5) for the standard
+    progress/cot pair — so hypervolumes are comparable across runs. Front
+    points worse than the anchor in either objective contribute nothing
+    (``_hypervolume_2d`` clips them). Otherwise it is run-relative (worst
+    observed − 5 % of span per objective) and only the within-run curve is
+    meaningful. Returns ``(ref, fixed)``.
     """
     names = [name for name, _ in specs[:2]]
-    if all(n in _ABS_WORST_RAW for n in names):
+    if all(n in _FIXED_HV_REF_RAW for n in names):
         sign = np.array([1.0 if d == "maximize" else -1.0
                          for _, d in specs[:2]])
-        return np.array([_ABS_WORST_RAW[n] for n in names]) * sign, True
+        return np.array([_FIXED_HV_REF_RAW[n] for n in names]) * sign, True
     span = pts_max.max(axis=0) - pts_max.min(axis=0)
     return pts_max.min(axis=0) - 0.05 * np.where(span > 0, span, 1.0), False
 

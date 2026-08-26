@@ -1,0 +1,158 @@
+# Outer NSGA-II morphology co-evolution — LSTM-15, 64 URDFs, EXAM batch
+# ======================================================================
+# Exact copy of experiments/batch_0/full_run_4_64_64 (same checkpoint,
+# hebbian params, CMA settings, env budget, forest, seed, repeats) with the
+# phase-end exam enabled AND exam-only forest overrides: the NSGA-II
+# objectives come from one dedicated rollout per phase where the top 12.5%
+# of the last generation's controllers (8 of 64) re-fly the URDF population
+# on 3840/8 = 480 fresh forests each — on a 3× longer (x_upper 100 → 300,
+# success line moves too) and denser (dens 0→5 becomes 3→5.5) course than
+# the inner loop. The inner CMA-ES generations are untouched; the per-gen
+# harvest (top score_top_frac, phase-averaged) stays as diagnostics.
+#
+# Objectives per URDF: mean forward progress [m] (maximize) vs cost of
+# transport (minimize), measured by the exam rollout.
+#
+# Local usage:
+#   PYTHONPATH=src python -m WP2_Outer_Loop.run \
+#       --cfg src/WP2_Outer_Loop/experiments/batch_2/exam_4_64_64/run.yaml \
+#       --cfg.checkpoint_path        src/WP2_Outer_Loop/experiments/batch_2/exam_4_64_64/checkpoint.pt \
+#       --cfg.checkpoint_config_path src/WP2_Outer_Loop/experiments/batch_2/exam_4_64_64/wp1_config.yaml
+#
+# IZAR: bash src/WP2_Outer_Loop/slurm_jobs/run_parallel.sh \
+#           src/WP2_Outer_Loop/experiments/batch_2/
+# (the slurm script injects checkpoint_path / checkpoint_config_path)
+
+exp_name: exam_4_64_64_300_extra
+repeat: 4
+
+checkpoint_path: ""        # injected by the slurm script (checkpoint.pt)
+checkpoint_config_path: "" # injected by the slurm script (wp1_config.yaml)
+
+# --- Outer loop: NSGA-II morphology update (fires at every URDF refresh) ---
+outer:
+  n_elites: 32               # survivors kept (and re-scored) per update — half of
+                             # num_urdfs, same elite ratio as the 4-URDF demo (2/4)
+  score_top_frac: 0.5        # top fraction of CMA individuals used to score URDFs
+  score_window: 0            # 0 = all gens of the phase; k>0 = last k gens only
+  rescore: true              # phase-end exam rollout sources the NSGA-II objectives
+  rescore_top_frac: 0.125    # top 8 of 64 controllers → 3840/8 = 480 forests each
+  # Exam-only forest (restored right after the exam; inner gens untouched)
+  exam_forest:
+    override_forest: true    # master switch: the exam flies THESE forests
+    x_upper: 300.0           # 3× the inner course (100 m); success line moves too
+    dens_min: 1.0            # inner loop floor: 0.0
+    dens_max: 5.5            # inner loop ceiling: 5.0
+  exam_baseline: true        # standard mydrone + zero-rules generalist re-flown
+                             # on the SAME exam forests (reuses the validation
+                             # env) → results/outer_exam_baseline.csv = the star
+  min_progress_m: 80.0       # hard admission gate on EXAM progress [m]: morphs
+                             # below it never become elites or parents (barely
+                             # flying / low-CoT morphs stop squatting on the
+                             # front). 0 = off; ungated + warning if nobody clears
+  crossover_prob: 0.9        # SBX application probability
+  mutation_prob: 0.0667      # per-gene polynomial mutation (≈1/15)
+  sbx_eta: 15.0              # SBX distribution index
+  pm_eta: 20.0               # polynomial mutation distribution index
+  objectives:
+    - name: progress_m
+      direction: maximize
+    - name: cost_of_transport
+      direction: minimize
+
+hebbian:
+  enabled: true
+  eta: 0.005
+  evolve_eta: false
+  decay: 0.05
+  evolve_decay: false
+  use_oja_coefficient: false
+  initialize_rules_to_zero: true
+  rules_per_neuron: false        # false = per-weight ABCD (4 × num_actions × hidden_dim genes)
+  w_max: 5000.0
+  A_range: [-1.5, 1.5]
+  B_range: [-1.5, 1.5]
+  C_range: [-1.5, 1.5]
+  D_range: [-1.5, 1.5]
+  decay_range: [0.0, 0.1]
+  eta_range: [0.0, 0.01]
+
+evolution:
+  num_generations: 200   # total CMA generations = 12 NSGA-II updates × 4 gens (+2)
+  population_size: 0     # hint only; actual pop size set in cmaes.population_size
+
+cmaes:
+  algorithm: "cmaes"
+  sigma0: 0.075
+  population_size: 64          # H
+  tol_sigma: 0.0
+  tol_fun: 0.0
+  sigma_reinflate: 1.0         # off (pure carry across morphology changes) — same as
+                               # the batch_8 reference; 1.5 compounds phase after
+                               # phase and blows sigma up (see experiments/README.md)
+  fitness_aggregator: "mean"
+  normalize_fitness: false
+  uh_enabled: false
+  uh_every: 1
+  uh_reevals: 0.0
+  uh_alphasigma: 0.0
+  uh_theta: 0.5
+
+catalog:
+  path: ""                         # empty ⇒ auto-generate the initial N random URDFs
+  num_urdfs: 64                    # N: NSGA-II population size, one Genesis scene each
+  num_episodes: 1
+  force_multi_urdf: false
+  include_standard_mydrone: false  # all-random start (same as the batch_8 reference)
+  refresh_urdfs_every: 4           # CMA generations per outer phase (NSGA-II cadence)
+  mutate: false                    # must stay false: NSGA-II replaces blind mutation
+
+validation:
+  enable: true               # held-out pass on the standard mydrone, as in batch_8
+  n_val_envs: 4096
+  validation_catalog: ""     # empty ⇒ standard mydrone drone
+  period: 1
+
+evaluation:
+  num_eval_envs: 245760 # TOTAL slots = N × H × F  (64 × 64 × 60 forests/pair)
+  num_eval_workers: 4   # ParallelMultiSceneEvalEnv (N worker processes)
+  num_gpus: 0           # 0 = auto-detect via torch.cuda.device_count()
+  vmin: 10.0
+  vmax: 20.0
+  stochastic: true
+  run_baseline: true
+  baseline_every: 4
+  refresh_forests_per_generation: true
+  crn: false
+  noise:
+    action_latency: true
+    mass_shift: true
+    com_shift: true
+    joint_target_episode_bias: true
+    joint_target_step_noise: true
+    aero_noise: true
+
+forest:
+  mode: "growing"
+  x_lower: 0
+  x_upper: 100
+  y_lower: null
+  y_upper: null
+  tree_radius: null
+  tree_height: null
+  dens_min: 0.0
+  dens_max: 5.0
+  dens_min_min: 0.0
+  dens_min_max: 0.0
+  dens_min_slope: 0
+  num_trees: null
+  num_trees_eval: null
+  x_spacing_start: 8.333
+  x_spacing_end: 6.667
+  forest_length: null
+  y_spacing_max: 3.0
+  y_spacing_min: 3.0
+
+seed: 12345
+device: "cuda:0"
+base_dir: "logs/runs_outer"

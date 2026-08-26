@@ -233,22 +233,23 @@ def test_nondominated_mask():
 # ------------------------------------------- fixed hypervolume reference
 
 def test_hv_reference_fixed_for_progress_cot():
-    # (progress_m max, cost_of_transport min) both have absolute worst
-    # bounds — 0 m progress, CoT 1 — so the reference is fixed at (0, -1)
-    # in maximization space and hypervolumes compare across runs.
-    pts = np.array([[50.0, -0.2], [80.0, -0.3]])
+    # (progress_m max, cost_of_transport min) both have a fixed anchor —
+    # the 80 m admission-gate progress and a CoT ceiling of 0.5 — so the
+    # reference is fixed at (80, -0.5) in maximization space and
+    # hypervolumes compare across runs without a shared dead rectangle.
+    pts = np.array([[150.0, -0.2], [180.0, -0.3]])
     ref, fixed = _hv_reference(
         [("progress_m", "maximize"), ("cost_of_transport", "minimize")], pts)
     assert fixed is True
-    np.testing.assert_allclose(ref, [0.0, -1.0])
+    np.testing.assert_allclose(ref, [80.0, -0.5])
 
 
 def test_hv_reference_fixed_accepts_aliases():
-    pts = np.array([[50.0, -0.2]])
+    pts = np.array([[150.0, -0.2]])
     ref, fixed = _hv_reference(
         [("progress", "maximize"), ("cot", "minimize")], pts)
     assert fixed is True
-    np.testing.assert_allclose(ref, [0.0, -1.0])
+    np.testing.assert_allclose(ref, [80.0, -0.5])
 
 
 def test_hv_reference_falls_back_for_unbounded_objective():
@@ -573,24 +574,25 @@ def test_plot_pareto_front_explicit_override_smoke(tmp_path):
 
 def test_plot_pareto_front_returns_fixed_ref_hypervolume(tmp_path):
     # progress/cot run, gate off → every point admitted; the cumulative
-    # front is all 6 points (progress and cot both ascending) and the HV
-    # is anchored at (progress 0, CoT 1):
-    # 100*0.70 + 80*0.10 + 8*0.12 + 6*0.02 + 5*0.01 + 4*0.01 = 79.17
+    # front is all 6 points (progress and cot both ascending) but only
+    # (100, 0.30) lies strictly beyond the (80 m, CoT 0.5) anchor:
+    # (100-80)*(0.5-0.30) = 4.0
     run_dir = _synthetic_run_dir(tmp_path, min_progress_yaml=None)
     res = plot_pareto_front(run_dir)
     assert res["ref_fixed"] is True
-    np.testing.assert_allclose(res["ref"], [0.0, 1.0])  # raw objective space
-    assert res["hypervolume"] == pytest.approx(79.17)
+    np.testing.assert_allclose(res["ref"], [80.0, 0.5])  # raw objective space
+    assert res["hypervolume"] == pytest.approx(4.0)
 
 
 def test_plot_pareto_front_fixed_ref_hv_respects_gate(tmp_path):
-    # min_progress 30 admits only (80, 0.20) and (100, 0.30):
-    # 100*(1-0.30) + 80*(0.30-0.20) = 78.0 — same anchor, so gated and
-    # ungated runs stay comparable.
+    # min_progress 30 admits only (80, 0.20) and (100, 0.30); the anchor
+    # already clips everything at or below 80 m, so as long as the anchor
+    # sits at/above the gate, gated and ungated runs give the SAME fixed-ref
+    # hypervolume: (100-80)*(0.5-0.30) = 4.0
     run_dir = _synthetic_run_dir(tmp_path, min_progress_yaml=30.0)
     res = plot_pareto_front(run_dir)
     assert res["ref_fixed"] is True
-    assert res["hypervolume"] == pytest.approx(78.0)
+    assert res["hypervolume"] == pytest.approx(4.0)
 
 
 # ------------------------------------- exam-baseline star (pareto_plots)
@@ -1167,7 +1169,7 @@ def test_front_csv_carries_genome_unchanged(tmp_path):
 
 
 def test_front_csv_hypervolume_matches_direct_computation(tmp_path):
-    """Per-gen hypervolume, against the fixed (0 m, CoT 1) reference."""
+    """Per-gen hypervolume, against the fixed (80 m, CoT 0.5) reference."""
     rows = [
         dict(outer_gen=0, urdf_idx=0, obj_progress_m=100.0, obj_cost_of_transport=0.20),
         dict(outer_gen=0, urdf_idx=1, obj_progress_m=80.0, obj_cost_of_transport=0.10),

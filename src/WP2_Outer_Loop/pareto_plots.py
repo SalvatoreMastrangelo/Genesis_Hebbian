@@ -62,7 +62,6 @@ _DIAG_METRICS = [
 # because callers and tests import them from ``pareto_plots``.
 
 from .pareto_fronts import (  # noqa: E402  (kept next to its explanation)
-    _ABS_WORST_RAW,
     _PROGRESS_NAMES,
     _admission_mask,
     _filter_exam_rows,
