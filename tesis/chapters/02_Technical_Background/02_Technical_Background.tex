@@ -1,0 +1,597 @@
+\chapter{Technical Background \& Related Work}
+This chapter introduces the main techniques used in this work, and a series of related works that have influenced the development of the approach proposed in the following chapters. Each of the methods presented here, in addition to some novelties presented in the following chapters, is a building block of the final system.
+
+% \section{Principal Component Analysis}
+
+% Principal Component Analysis (PCA) is a technique for finding low-dimensional structure in a dataset. It is most naturally introduced as an application of the Singular Value Decomposition (SVD) of the data matrix, rather than as a standalone eigenvalue problem: this is the route followed here, after \cite{trefethenbau1997,elden2007}, since it is also the numerically preferable one.
+
+% \subsection{The Singular Value Decomposition}
+
+% Let $A \in \mathbb{R}^{m \times n}$ and let $A^\top A = V \Lambda V^\top$ be an eigenvalue decomposition, with $V$ orthogonal and $\Lambda = \mathrm{diag}(\lambda_1, \dots, \lambda_n)$. Since $(AV)^\top (AV) = V^\top A^\top A V = \Lambda$, the columns of $AV$ are orthogonal to each other; scaling the $i$-th one by $\sigma_i = \sqrt{\lambda_i}$ yields a unit vector $u_i = (AV)_i / \sigma_i$, and the $u_i$ are in turn the columns of an orthogonal matrix $U$. This gives the SVD of $A$:
+
+% \begin{definition}[Singular Value Decomposition]
+% Every matrix $A \in \mathbb{R}^{m \times n}$ can be written as
+% \begin{equation}
+% A = U S V^\top = \sum_{i=1}^{\min(m,n)} u_i \sigma_i v_i^\top ,
+% \end{equation}
+% with $U \in \mathbb{R}^{m\times m}$ and $V \in \mathbb{R}^{n \times n}$ orthogonal, $S \in \mathbb{R}^{m \times n}$ diagonal (padded with zeros if $A$ is not square), and singular values ordered $\sigma_1 \ge \sigma_2 \ge \dots \ge \sigma_{\min(m,n)} \ge 0$.
+% \end{definition}
+
+% Unlike an eigendecomposition, the SVD exists for every matrix, square or not, and its singular values are always non-negative. The rank $r$ of $A$ equals the number of non-zero $\sigma_i$, so that $A = \sum_{i=1}^r u_i \sigma_i v_i^\top$; the first $r$ columns of $U$ span the image of $A$, and the last $n-r$ columns of $V$ span its kernel. The SVD also solves the problem of approximating $A$ with a lower-rank matrix, in both the induced $2$-norm and the Frobenius norm:
+
+% \begin{theorem}[Eckart--Young]
+% \label{thm:eckart-young}
+% Let $A = USV^\top$. For any $k \le \mathrm{rank}(A)$, the truncated SVD
+% \begin{equation}
+% A_k = \sum_{i=1}^{k} u_i \sigma_i v_i^\top
+% \end{equation}
+% solves $\min_{\mathrm{rank}(X) \le k} \|A - X\|$ for both $\|\cdot\|_2$ and $\|\cdot\|_F$, and the residual is $\|A - A_k\|_F^2 = \sum_{i > k} \sigma_i^2$.
+% \end{theorem}
+
+% \subsection{PCA as the SVD of Centered Data}
+
+% Consider a dataset of $n$ observations $x_1, \dots, x_n \in \mathbb{R}^d$, arranged as the columns of a matrix $A = \begin{bmatrix} x_1 & x_2 & \cdots & x_n \end{bmatrix} \in \mathbb{R}^{d \times n}$. PCA is the SVD of the \emph{centered} version of $A$: writing $\mu = \frac{1}{n}\sum_{j=1}^n x_j$ for the sample mean and $\hat{x}_j = x_j - \mu$,
+% \begin{equation}
+% \hat{A} = \begin{bmatrix} \hat{x}_1 & \hat{x}_2 & \cdots & \hat{x}_n \end{bmatrix} = U S V^\top .
+% \end{equation}
+% Centering removes the special status that the leading singular direction would otherwise be given purely by the data being offset from the origin: once $\hat{A}$ has zero mean, each column $u_i$ of $U$ — the $i$-th \emph{principal direction} — is generically of mixed sign, and is interpreted as a direction of joint variation of the (centered) observations rather than as an average observation.
+
+% Every centered observation can be written exactly in the basis given by $U$,
+% \begin{equation}
+% \hat{x}_j = \sum_{i=1}^{d} u_i \, \alpha_{ij}, \qquad \alpha = U^\top \hat{A} = S V^\top ,
+% \end{equation}
+% where $\alpha_{ij}$ is the \emph{score} of observation $j$ on principal component $i$. Because $U$ is orthogonal and the $\sigma_i$ are ordered, $u_1$ is, among all unit directions, the one along which the scores $\{\alpha_{1j}\}_{j=1}^n$ have the largest sum of squares, i.e. the direction of largest sample variance; $u_2$ is the direction orthogonal to $u_1$ with the second-largest variance, and so on for the remaining $u_i$. A large gap between consecutive singular values (e.g. $\sigma_1 \gg \sigma_2$, or $\sigma_1 \approx \sigma_2 \gg \sigma_3$) signals that only the first one, or first two, principal directions capture most of the variation in the dataset, with the remaining ones acting as increasingly minor corrections — eventually indistinguishable from noise.
+
+% A more commonly seen, and equivalent, definition of PCA takes the $u_i$ to be the eigenvectors of the empirical covariance matrix $\frac{1}{n}\hat{A}\hat{A}^\top$ (or $\frac{1}{n-1}\hat{A}\hat{A}^\top$). Since $\hat{A} \hat{A}^\top = U (SS^\top) U^\top$ is itself an eigendecomposition, the two definitions return the same principal directions $u_i$, with eigenvalues $\lambda_i = \sigma_i^2 / n$. The two are, however, not equally reliable in floating-point arithmetic: forming $\hat{A}\hat{A}^\top$ explicitly squares the condition number of the underlying problem, so computing the SVD of $\hat{A}$ directly, without ever assembling the covariance matrix, is the numerically stable choice.
+
+% \subsection{Dimensionality Reduction}
+
+% \autoref{thm:eckart-young} identifies $u_1, \dots, u_k$ as spanning the rank-$k$ subspace whose projection best approximates $\hat{A}$, so projecting the centered data onto the first $k$ principal directions is the linear projection that minimizes the total squared reconstruction error $\sum_{j=1}^n \|\hat{x}_j - p_j\|_2^2$ among all rank-$k$ projections. The projected coordinates of each observation are simply its first $k$ scores,
+% \begin{equation}
+% \begin{bmatrix} u_1^\top \hat{A} \\ \vdots \\ u_k^\top \hat{A} \end{bmatrix}
+% =
+% \begin{bmatrix} \sigma_1 v_1^\top \\ \vdots \\ \sigma_k v_k^\top \end{bmatrix} ,
+% \end{equation}
+% and the corresponding reconstruction of the $j$-th observation is $x_j \approx \mu + \sum_{i=1}^k u_i \alpha_{ij}$. Taking $k=1$ or $k=2$ gives the best line or plane through the data for visualization; larger $k$ trades off reconstruction fidelity against the size of the reduced representation, with residual error $\|\hat{A} - \hat{A}_k\|_F^2 = \sum_{i>k} \sigma_i^2$ shrinking as $k$ grows. Note that PCA identifies the directions of largest variation but does not, by itself, explain what a given component $u_i$ represents: that interpretation is left to the practitioner, typically by inspecting which original features dominate $u_i$ or by relating the scores $\alpha_{ij}$ to known properties of the observations $j$.
+
+\section{Deep Reinforcement Learning}
+
+% \textcolor{red}{\textbf{TO BE CHECKED}}
+
+A common approach to train a deep neural network controller is by using Reinforcement Learning (RL): an agent interacts with an environment through a sequence of actions, and the only training signal it receives is a scalar \emph{reward} that grades how well it is performing. RL rests on the \emph{reward hypothesis}: that any goal can be expressed as the maximization of expected cumulative reward \cite{suttonbarto2018}. 
+
+\subsection{Markov Decision Processes}
+
+At each discrete time step $t$, the agent observes the state $s_t \in \mathcal{S}$ of the environment and selects an action $a_t \in \mathcal{A}$; the environment responds with a new state $s_{t+1}$ and a scalar reward $r_{t+1}$, computed by the environment's own, generally unknown, transition and reward functions.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    >={Stealth[length=2mm]}, thick,
+    every node/.style={font=\normalsize},
+]
+\node[agentbox] (agent) at (0,1.6) {Agent};
+\node[envbox] (env) at (0,-1.6) {Environment};
+\draw[->] (agent.east) to[bend left=45] node[right]{$a_t$} (env.east);
+\draw[->] (env.west) to[bend left=45] node[left]{$s_{t+1},\, r_{t+1}$} (agent.west);
+\end{tikzpicture}
+\caption[The agent-environment interaction loop]{The agent-environment interaction loop. The reward $r_{t+1}$ is a scalar with no fixed sign convention beyond larger being better: it is the only feedback the agent receives beyond a partial, possibly noisy observation of the environment.}
+\label{fig:rl-loop}
+\end{figure}
+
+This loop is assumed to be \emph{Markovian}: the next state and reward depend only on the current state and action, not on the full history that produced them,
+\begin{equation}
+P(s_{t+1}, r_{t+1} \mid s_t, a_t) = P(s_{t+1}, r_{t+1} \mid s_0, a_0, r_1, \dots, s_{t-1}, a_{t-1}, r_t, s_t, a_t).
+\end{equation}
+The Markov property is what lets the current state summarize everything relevant about the past, and is what makes the following formalism, a Markov Decision Process (MDP), tractable.
+
+\begin{definition}[Markov Decision Process]
+A Markov Decision Process is a tuple $(\mathcal{S}, \mathcal{A}, P, R, \gamma)$, \\
+where: 
+\begin{itemize}
+    \item $\mathcal{S}$ is the set of states,
+    \item $\mathcal{A}$ is the set of actions,
+    \item $P(s' \mid s, a) = P(s_{t+1}{=}s' \mid s_t{=}s, a_t{=}a)$ is the state-transition distribution,
+    \item $R(s,a) = \mathbb{E}[r_{t+1} \mid s_t{=}s, a_t{=}a]$ is the expected immediate reward,
+    \item $\gamma \in [0,1]$ is a discount factor.
+\end{itemize}
+\end{definition}
+
+The agent's behaviour is described by a policy $\pi$, a map from states to actions: a \emph{deterministic} policy is a function $a = \pi(s)$, while a \emph{stochastic} policy $\pi(a \mid s) = P(a_t{=}a \mid s_t{=}s)$ is a conditional distribution over actions — the source of the exploration needed to discover good actions in the first place, since a purely deterministic agent can never try anything it does not already favour. The RL objective is to find a policy that maximizes the \emph{return}, the total discounted future reward from a given time step,
+\begin{equation}
+G_t = r_{t+1} + \gamma r_{t+2} + \gamma^2 r_{t+3} + \dots = \sum_{k=0}^{\infty} \gamma^k r_{t+k+1}.
+\end{equation}
+The discount factor trades off immediate against delayed reward: $\gamma \approx 0$ makes the agent myopic, $\gamma \approx 1$ far-sighted; besides this qualitative role, $\gamma < 1$ is also what keeps $G_t$ finite for a task with no fixed episode length and bounded per-step reward.
+
+Given a policy $\pi$, the \emph{state-value function} $v_\pi(s)$ and \emph{action-value function} $q_\pi(s,a)$ are the expected return obtained from a state, or from a state-action pair, when following $\pi$ thereafter:
+\begin{equation}
+v_\pi(s) = \mathbb{E}_\pi[G_t \mid s_t{=}s], \qquad q_\pi(s,a) = \mathbb{E}_\pi[G_t \mid s_t{=}s, a_t{=}a].
+\end{equation}
+Because the return decomposes into an immediate reward and a discounted continuation, $G_t = r_{t+1} + \gamma G_{t+1}$, the value functions satisfy a recursive consistency condition, the \emph{Bellman expectation equation}:
+\begin{equation}
+v_\pi(s) = \sum_{a \in \mathcal{A}} \pi(a\mid s) \left( R(s,a) + \gamma \sum_{s' \in \mathcal{S}} P(s'\mid s,a)\, v_\pi(s') \right) = \sum_{a\in\mathcal{A}} \pi(a\mid s)\, q_\pi(s,a).
+\end{equation}
+An \emph{optimal} policy $\pi_*$ is one whose action-value function $q_*(s,a) = \max_\pi q_\pi(s,a)$ dominates that of every other policy in every state; since some deterministic policy always achieves $q_*$, namely $\pi_*(s) = \arg\max_{a} q_*(s,a)$, finding $q_*$ is by itself sufficient to solve the MDP.
+
+When $\mathcal{S}$ and $\mathcal{A}$ are small and finite and $(P,R)$ are fully known, $v_\pi$ and $q_*$ can be computed exactly, by dynamic-programming methods such as policy iteration or value iteration, which apply the Bellman equations above as update rules until convergence — the \emph{model-based} setting. In the \emph{model-free} setting considered for the rest of this section, which includes every task in this work, $P$ and $R$ are unknown, and value functions must instead be estimated from sampled transitions $(s_t, a_t, r_{t+1}, s_{t+1})$ obtained by actually interacting with the environment. Whenever $\mathcal{S}$, or $\mathcal{A}$, is continuous or otherwise too large to enumerate — as is the case for the sensor observations and continuous control commands used throughout this work — a lookup table, as in tabular Q-Learning \cite{watkins1992qlearning}, is no longer an option, and $v_\pi$, $q_\pi$, or $\pi$ itself must instead be represented by parametric function approximators, typically deep neural networks; this is what is meant by \emph{deep} reinforcement learning. The remainder of this section develops the \emph{policy-based} branch of deep RL, which parametrizes the policy directly rather than deriving it from a value function, and which is the branch this work builds on.
+
+\subsection{Actor-Critic Reinforcement Learning}
+
+Policy-based methods parametrize the policy itself, $\pi_\theta(a\mid s)$ — a deep neural network with parameters $\theta$ — and optimize such parameters directly by gradient ascent on the expected return
+\begin{equation}
+J(\theta) = \mathbb{E}_{\pi_\theta}\!\left[G_0\right].
+\end{equation}
+Compared to deriving a policy from a value function, this tends to have better convergence properties and remains effective in high-dimensional or continuous action spaces. Its cost is that $J(\theta)$, and its gradient, can only be evaluated through samples, which tends to be high-variance and can converge to a local rather than a global optimum \cite{suttonbarto2018}.
+
+The \emph{policy gradient theorem} \cite{sutton1999policygradient} shows that, despite $J(\theta)$ depending on the environment's unknown transition dynamics through the states $\pi_\theta$ itself visits, its gradient can be written without any explicit knowledge of those dynamics:
+\begin{equation}
+\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\!\left[ \nabla_\theta \log \pi_\theta(a\mid s)\, q_{\pi_\theta}(s,a) \right].
+\end{equation}
+Intuitively, $\nabla_\theta \log \pi_\theta(a\mid s)$ is the direction in parameter space that most increases the probability of action $a$ in state $s$; weighting it by $q_{\pi_\theta}(s,a)$ pushes $\theta$ to raise the probability of actions that lead to high return and lower that of actions that lead to low return.
+
+\emph{Actor-critic} methods reduce this variance by learning a second, separate approximation of the value function — the \emph{critic}, e.g.\ $V_w(s) \approx v_{\pi_\theta}(s)$ — alongside the policy, or \emph{actor}, $\pi_\theta$ \cite{konda2000actorcritic}. The critic is trained as in any value-based method, by a temporal difference (TD) update towards $r_{t+1} + \gamma V_w(s_{t+1})$, while the actor is updated by policy gradient ascent, using the critic's own estimate of value in place of the true, unknown $q_{\pi_\theta}$.
+\vspace{3mm}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    >={Stealth[length=2mm]}, thick,
+    every node/.style={font=\normalsize},
+]
+\node (s) at (-3.3,0) {$s_t$};
+\node[agentbox] (actor) at (0,1.4) {Actor $\pi_\theta(a\mid s)$};
+\node[criticbox] (critic) at (0,-1.4) {Critic $V_w(s)$};
+\node (a) at (3.9,1.4) {$a_t \sim \pi_\theta(\cdot \mid s_t)$};
+\node (v) at (3.9,-1.4) {$V_w(s_t)$};
+
+\coordinate (split) at (-2.3,0);
+\draw (s) -- (split);
+\draw[->] (split) |- (actor.west);
+\draw[->] (split) |- (critic.west);
+\draw[->] (actor.east) -- (a);
+\draw[->] (critic.east) -- (v);
+\end{tikzpicture}
+\caption[Actor and critic networks]{The actor-critic architecture: two networks read the same state $s_t$, the actor to sample an action, the critic to estimate its value $V_w(s_t)$. The TD error between $V_w(s_t)$ and $r_{t+1}+\gamma V_w(s_{t+1})$, observed once the environment responds, is what trains the critic by regression and reweights the actor's policy-gradient update.}
+\label{fig:actor-critic}
+\end{figure}
+
+\autoref{fig:actor-critic} depicts both networks reading the same state $s_t$ for simplicity, but nothing in the algorithm requires this symmetry: since only the actor $\pi_\theta$ is kept for deployment while the critic $V_w$ is discarded once training ends, the critic is free to observe a wider, \emph{privileged} state that the actor never sees — quantities that are cheap to obtain in simulation but unavailable, or unreliable, on the deployed system. Because such an asymmetric critic only ever shapes the actor's parameter updates and never appears in its computation graph at test time, this cannot leak information the actor could not otherwise access; it simply gives the critic a less noisy value estimate to train against, which in turn lowers the variance of the advantage used to update the actor.
+
+\vspace{1mm}
+A further variance reduction method consists in subtracting a state-dependent baseline from the critic's estimate without introducing any bias: since, for any fixed $s$, $\mathbb{E}_{a\sim\pi_\theta}[\nabla_\theta \log \pi_\theta(a\mid s)] = 0$, replacing $q_{\pi_\theta}(s,a)$ in the policy gradient with the \emph{advantage function}
+\begin{equation}
+A_\pi(s,a) = q_\pi(s,a) - v_\pi(s)
+\end{equation}
+leaves $\nabla_\theta J(\theta)$ unchanged in expectation while typically reducing its variance substantially, since $A_\pi(s,a)$ measures how much better action $a$ is than the policy's own average behaviour in $s$, rather than the absolute, and generally much larger, magnitude of the return itself. Computing $A_\pi(s,a) = q_\pi(s,a) - v_\pi(s)$ exactly would still require two separate value functions, but the single TD error $\delta_t = r_{t+1} + \gamma V_w(s_{t+1}) - V_w(s_t)$ is already, on its own, a one-sample estimate of the advantage: it substitutes the critic's own $V_w$ for $v_\pi(s_t)$, and the sampled $r_{t+1} + \gamma V_w(s_{t+1})$ for $q_\pi(s_t,a_t)$. 
+
+Relying on a single $\delta_t$, however, looks only one step ahead, so the estimate inherits whatever bias $V_w$ currently has; summing several consecutive TD errors looks further into the future and averages more of that bias away, at the cost of compounding sampling variance the further the sum reaches. Generalized Advantage Estimation (GAE) \cite{schulman2016gae} controls this trade-off directly, combining successive TD errors into an exponentially-weighted sum governed by a decay parameter $\lambda \in [0,1]$:
+\begin{equation}
+\hat A_t^{\mathrm{GAE}(\gamma,\lambda)} = \sum_{k=0}^{\infty} (\gamma\lambda)^k \delta_{t+k}.
+\end{equation}
+GAE interpolates between the high-bias, low-variance one-step estimate $\hat A_t = \delta_t$ ($\lambda{=}0$) and the low-bias, high-variance Monte Carlo estimate obtained by summing every future TD error ($\lambda{=}1$) — the same bias-variance trade-off, controlled by the same kind of exponentially-decaying trace, that $\mathrm{TD}(\lambda)$ eligibility traces implement for the value function itself \cite{suttonbarto2018}. The actor and critic are typically two networks, or two heads of a partly shared network, trained jointly end to end: the critic by regression towards its TD target, the actor by advantage-weighted policy gradient ascent.
+
+\subsection{Proximal Policy Optimization}
+
+The actor-critic parameter update above does not, by itself, say how large a step to take. Each batch of collected experience is only informative about the policy $\pi_{\theta_{\mathrm{old}}}$ that generated it, yet the gradient estimate computed from it is noisy; an update that moves $\theta$ too far from $\theta_{\mathrm{old}}$ because of the strength of that noisy estimate can push $\pi_\theta$ into a region of the parameter space the batch says nothing reliable about, collapsing performance in a way that plain gradient ascent has no mechanism to prevent. Trust Region Policy Optimization (TRPO) \cite{schulman2015trpo} addresses this directly, by constraining each update to a region, measured by KL divergence between $\pi_\theta$ and $\pi_{\theta_{\mathrm{old}}}$, within which the current batch is trusted to be informative — at the cost of a second-order constrained-optimization step that is expensive computationally.
+
+Proximal Policy Optimization (PPO) \cite{schulman2017ppo} achieves a similar effect with an unconstrained, first-order objective, optimizable directly by ordinary stochastic gradient ascent, which is what has made it, in practice, a default choice for on-policy deep RL. Let
+\begin{equation}
+r_t(\theta) = \frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)}
+\end{equation}
+be the probability ratio between the policy being optimized and the fixed, older policy that generated the batch — so that $r_t(\theta_{\mathrm{old}}) = 1$ — and let $\hat A_t$ be an advantage estimate, e.g.\ GAE. The plain policy-gradient surrogate $\mathbb{E}_t[r_t(\theta)\hat A_t]$ has the correct gradient at $\theta = \theta_{\mathrm{old}}$, but nothing stops $r_t(\theta)$ from drifting arbitrarily far from $1$ once optimized repeatedly on the same batch. PPO instead maximizes the \emph{clipped surrogate objective}
+\begin{equation}
+L^{\mathrm{CLIP}}(\theta) = \mathbb{E}_t\!\left[ \min\big( r_t(\theta)\,\hat A_t,\; \mathrm{clip}(r_t(\theta),\, 1-\epsilon,\, 1+\epsilon)\,\hat A_t \big) \right],
+\end{equation}
+where $\epsilon$, typically between $0.1$ and $0.2$, sets the width of the trust region. When $\hat A_t > 0$, the clip caps the objective's growth once $r_t(\theta)$ exceeds $1+\epsilon$, removing any incentive to keep increasing $\pi_\theta(a_t\mid s_t)$ further on this particular batch; symmetrically, when $\hat A_t < 0$, it caps the objective once $r_t(\theta)$ falls below $1-\epsilon$. The outer minimum makes $L^{\mathrm{CLIP}}$ a pessimistic (lower) bound on the unclipped surrogate, so clipping only ever activates in the direction that would otherwise make the update too aggressive, never in the direction that would make it too conservative. In practice, this first-order clipping behaves much like TRPO's explicit trust region, at a fraction of its implementation and computational cost.
+
+The actor and critic are trained jointly, by combining $L^{\mathrm{CLIP}}$ with a value-function regression loss for the critic, $L^{\mathrm{VF}}(\theta) = \big(V_\theta(s_t) - (\hat A_t + V_{\theta_{\mathrm{old}}}(s_t))\big)^2$, and an entropy bonus $S[\pi_\theta](s_t)$ that discourages the policy from collapsing prematurely onto a deterministic one, into a single objective
+\begin{equation}
+L(\theta) = L^{\mathrm{CLIP}}(\theta) - c_1 L^{\mathrm{VF}}(\theta) + c_2 S[\pi_\theta](s_t),
+\end{equation}
+maximized by a handful of epochs of minibatch stochastic gradient ascent over each freshly collected batch of trajectories \cite{schulman2017ppo}. Once these epochs are done the batch is discarded, $\theta_{\mathrm{old}} \leftarrow \theta$ is refreshed, and a new batch is collected with the updated policy: an on-policy training loop that strictly alternates environment interaction under a fixed policy with optimization of that same policy on the data it just produced.
+
+\section{Long Short-Term Memory Networks}
+
+\subsection{Recurrent Neural Networks}
+
+Since the state-describing vectors are often inaccessible to a controller, and the only accessible knowledge is the sequence of observations, such settings are formally \emph{Partially Observable Markov Decision Processes} (POMDPs) \cite{kaelbling1998pomdp}. A recurrent neural network (RNN) bridges this gap by maintaining an internal state that captures information about the past. It processes a sequence $x_1, \dots, x_T$, that might represent a time series or a sequence of observations itself, and maintains a state $h_t$ that is updated at every step from the current input and the previous state \cite{elman1990finding}:
+\begin{equation}
+h_t = g(U h_{t-1} + W x_t + b), \qquad h_t \in \mathbb{R}^{d_h}, \; x_t \in \mathbb{R}^{d_{in}}, \; U \in \mathbb{R}^{d_h \times d_h}, \; W \in \mathbb{R}^{d_h \times d_{in}},
+\end{equation}
+with $g$ a pointwise nonlinearity (typically $\tanh$). Unrolled over time, this is a feed-forward computation with the same weights $U, W$ shared across every step, trained end-to-end by backpropagation through time (BPTT) \cite{werbos1990backprop}: a forward pass computes every $h_t$ in temporal order, and a backward pass propagates gradients from the last step back to the first, through the same recurrent weight matrix $U$ at every step.
+
+\subsection{Vanishing Gradient Problem}
+
+This repeated multiplication by $U$ is also the vanilla RNN's main weakness. Informally, the gradient of the loss at step $T$ with respect to an early state $h_t$ scales, over the $T-t$ intervening steps, with a product of $T-t$ Jacobians of the state-transition function, each dominated by $U$; if the dominant eigenvalue of $U$ is below $1$ this product shrinks geometrically with $T-t$ (\emph{vanishing gradient}), and if it is above $1$ it grows geometrically (\emph{exploding gradient}) \cite{pascanu2013difficulty}. In the vanishing case, the influence of inputs far in the past disappears from the state before training can pick up on it, which makes vanilla RNNs difficult to train on long-range dependencies. A first fix is to make the state update a convex combination, $h_t = \alpha\, h_{t-1} + (1-\alpha) \tanh(Uh_{t-1} + Wx_t)$, so that a fraction $\alpha$ of the state is carried over unchanged instead of being fully overwritten at every step; the LSTM (below) can be read as turning this fixed, hand-set $\alpha$ into a learned, input-dependent, per-dimension quantity.
+
+\subsection{Long Short-Term Memory}
+
+Long Short-Term Memory (LSTM) networks \cite{hochreiter1997lstm} address the vanishing/exploding gradient problem by keeping two separate pieces of recurrent state instead of one, and by making the recurrence of the long-term one additive rather than a repeated matrix multiplication:
+\begin{itemize}
+    \item the \emph{hidden state} $h_t \in \mathbb{R}^{d_h}$ plays the same role as the state of a vanilla RNN: it is what is read out for prediction or further processing at step $t$;
+    \item the \emph{cell state} $c_t \in \mathbb{R}^{d_h}$ is an internal memory that carries information across time-steps, and is only ever combined with the rest of the network through an elementwise multiplication and an elementwise addition — never a matrix product. This is what keeps the gradient with respect to $c_t$ from vanishing or exploding as it is backpropagated through time.
+\end{itemize}
+What is written into $c_t$, what is dropped from it, and what part of it is exposed through $h_t$ is decided at every step by three \emph{gates}.
+
+\begin{definition}[Gate]
+A gate is a standard affine layer of $h_{t-1}$ and $x_t$ followed by a sigmoid activation, used to modulate a signal by elementwise multiplication:
+\begin{equation}
+\gamma_t = \sigma(U_\gamma h_{t-1} + W_\gamma x_t + b_\gamma) \in (0,1)^{d_h},
+\end{equation}
+so that, for any signal $v \in \mathbb{R}^{d_h}$, $\gamma_t \odot v$ lets a component of $v$ through unchanged where $\gamma_t \approx 1$ and suppresses it where $\gamma_t \approx 0$.
+\end{definition}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    >={Stealth[length=2mm]}, thick,
+    every node/.style={font=\normalsize},
+]
+\node[affbox] (aff) at (-1,0) {$U_\gamma h_{t-1} + W_\gamma x_t + b_\gamma$};
+\node[actbox, right=1.4cm of aff] (sig) {$\sigma$};
+\node[opdot, right=2.6cm of sig] (mul) {$\times$};
+\node[left=1.2cm of aff] (in) {$h_{t-1}, x_t$};
+\node[right=1.2cm of mul] (out) {$\gamma_t \odot v$};
+\node[below=1.5cm of in] (v) {$v$};
+
+\draw[->] (in) -- (aff);
+\draw[->] (aff) -- (sig);
+\draw[->] (sig) -- node[above]{$\gamma_t \in (0,1)$} (mul);
+\draw[->] (mul) -- (out);
+\draw[->] (v) -| (mul.south);
+\end{tikzpicture}
+\caption[A LSTM gate]{A gate: an affine map of the previous hidden state and the current input, squashed to $(0,1)$ by a sigmoid, used to modulate a signal $v$ by elementwise multiplication.}
+\label{fig:lstm-gate}
+\end{figure}
+
+An LSTM cell uses three such gates, each with its own parameters:
+\begin{itemize}
+    \item the \textbf{forget gate} $f_t$ decides which part of the old cell state $c_{t-1}$ is kept;
+    \item the \textbf{input gate} $i_t$ decides which part of a candidate update $g_t$ — computed exactly as a vanilla RNN state would be — is written into the cell state;
+    \item the \textbf{output gate} $o_t$ decides which part of the cell state is exposed as the new hidden state $h_t$.
+\end{itemize}
+\begin{align}
+f_t &= \sigma(U_f h_{t-1} + W_f x_t + b_f) &&\text{forget gate} \\
+i_t &= \sigma(U_i h_{t-1} + W_i x_t + b_i) &&\text{input gate} \\
+g_t &= \tanh(U_g h_{t-1} + W_g x_t + b_g) &&\text{candidate cell content} \\
+c_t &= f_t \odot c_{t-1} + i_t \odot g_t &&\text{cell state update} \\
+o_t &= \sigma(U_o h_{t-1} + W_o x_t + b_o) &&\text{output gate} \\
+h_t &= o_t \odot \tanh(c_t) &&\text{hidden state update}
+\end{align}
+where $\odot$ denotes the elementwise product. Each gate, and the candidate $g_t$, has its own weight matrices $U_\square, W_\square$ and bias $b_\square$, learned jointly with the rest of the network: a single LSTM layer of hidden size $d_h$ therefore holds four sets of parameters shaped like a single vanilla-RNN layer's, one each for $f_t, i_t, g_t, o_t$.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    >={Stealth[length=2mm]}, thick,
+    every node/.style={font=\normalsize},
+]
+
+% top rail: cell state
+\node (ctm1) at (-1,6)   {$c_{t-1}$};
+\node[opdot] (mf) at (2.5,6) {$\times$};
+\node[opdot] (ad) at (6,6) {$+$};
+\coordinate (cjunc) at (9,6);
+\node (ct) at (11,6) {$c_t$};
+
+\draw[->] (ctm1) -- (mf);
+\draw[->] (mf) -- (ad);
+\draw (ad) -- (cjunc);
+\draw[->] (cjunc) -- (ct);
+
+% tanh(c_t) + output gate branch
+\node[tanhbox] (tanhc) at (9,4.4) {$\tanh$};
+\node[opdot] (mo) at (9,2.8) {$\times$};
+\node (ht) at (11,2.8) {$h_t$};
+\node (htm1) at (-1,2.8) {$h_{t-1}$};
+
+\draw[->] (cjunc) -- (tanhc);
+\draw[->] (tanhc) -- (mo);
+\draw[->] (mo) -- (ht);
+
+% i_t, g_t multiply into the add
+\node[opdot] (mig) at (6,4) {$\times$};
+\draw[->] (mig) -- (ad);
+
+% gate row
+\node[actbox] (fgate) at (2.5,1.2) {\sigmoidicon};
+\node[actbox] (igate) at (5.0,1.2) {\sigmoidicon};
+\node[tanhbox] (ggate) at (7.0,1.2) {$\tanh$};
+\node[actbox] (ogate) at (9,1.2) {\sigmoidicon};
+
+\node[font=\small] at ($(fgate.north)+(-0.36,0.18)$) {$f_t$};
+\node[font=\small] at ($(igate.north)+(-0.36,0.18)$) {$i_t$};
+\node[font=\small] at ($(ggate.north)+(-0.36,0.18)$) {$g_t$};
+\node[font=\small] at ($(ogate.north)+(-0.36,0.18)$) {$o_t$};
+
+\draw[->] (fgate) -- (mf);
+\draw[->] (igate) |- (mig.west);
+\draw[->] (ggate) |- (mig.east);
+\draw[->] (ogate) -- (mo);
+
+% bottom bus: concat(h_{t-1}, x_t)
+\node[concatbox] (concat) at (1.4,0) {concat};
+\coordinate (busR) at (9,0);
+\draw (concat.east) -- (busR);
+\foreach \gx in {2.5,5.0,7.0,9} {
+  \draw[->] (\gx,0) -- (\gx,0.8);
+}
+\node (hin) at (-1,0) {$x_t$};
+\draw[->] (hin) -- (concat.west);
+\draw[->] (htm1) -| (concat.north);
+
+\begin{scope}[on background layer]
+\node[draw, dashed, rounded corners, fit=(ctm1)(ct)(hin)(ogate)(tanhc)(htm1), inner sep=10pt, label={[font=\normalsize]below:LSTM cell}] {};
+\end{scope}
+
+\end{tikzpicture}
+\caption[Structure of an LSTM cell]{Structure of an LSTM cell. The top rail carries the cell state $c_t$ across time-steps through only an elementwise multiplication (forget gate $f_t$) and an elementwise addition (gated candidate $i_t \odot g_t$), with no matrix product in between — the property that keeps gradients from vanishing or exploding along this path. The hidden state $h_t$ is a gated, squashed read-out of $c_t$, and $h_{t-1}, x_t$ jointly drive all four gates/candidate at the bottom.}
+\label{fig:lstm-cell}
+\end{figure}
+
+\autoref{fig:lstm-cell} makes explicit why this design addresses the problem laid out in the previous section: the path carrying $c_t$ across time-steps involves only elementwise operations gated by $f_t$ and $i_t \odot g_t$, with no repeated multiplication by a shared weight matrix. Backpropagating through this path therefore does not force the gradient to contract or expand geometrically with the number of time-steps, which is what allows an LSTM to learn dependencies over much longer sequences than a vanilla RNN.
+
+\section{Evolutionary Algorithms}
+\label{sec:ea}
+
+Evolutionary Algorithms (EAs) are a family of population-based, gradient-free optimization methods loosely inspired by natural selection \cite{eiben2015introduction}. Where a gradient method follows the slope of the objective from a single point, an EA maintains a whole \emph{population} of candidate solutions, or \emph{individuals}, each encoded by a vector of parameters called its \emph{genome}, and repeats a simple loop over successive \emph{generations}:
+\begin{enumerate}
+    \item \emph{Evaluation}: every individual is assigned a \emph{fitness}, a scalar score obtained by actually running it on the task;
+    \item \emph{Selection}: the fitter individuals are chosen as \emph{parents}, so that good genomes get to reproduce more than bad ones;
+    \item \emph{Variation}: new individuals, the \emph{offspring}, are produced from the parents by \emph{mutation} — a random perturbation of a single genome — and \emph{recombination}, or \emph{crossover}, which mixes the genomes of two parents;
+    \item \emph{Replacement}: the offspring form the next population, possibly alongside the best individuals of the current one (\emph{elitism}), so that a good solution, once found, is never lost.
+\end{enumerate}
+Over many generations, selection pressure concentrates the population in high-fitness regions of the search space, while variation keeps exploring around it.
+
+The appeal of this recipe is that it treats the objective as a black box: nothing is assumed about it beyond the ability to evaluate it. It needs no gradient, no differentiability, and no smoothness, and it is indifferent to whether the genome is continuous, discrete, or mixed. This makes EAs the natural tool whenever the quantity being optimized is only defined through a complete simulation and, more generally, whenever gradient-based training, such as the RL methods of the previous section, cannot reach the parameters of interest. The price is sample efficiency: every generation costs as many full evaluations as there are individuals, which is affordable mainly when evaluations can be run in parallel, as is the case for GPU-batched simulation. Two EAs are used in this work, one for each of the two settings they were designed for: CMA-ES for single-objective optimization over continuous parameters, and NSGA-II for problems with several competing objectives.
+
+\subsection{CMA-ES}
+\label{subsec:cmaes}
+
+\emph{Evolution Strategies} (ES) are the branch of EAs specialized to continuous search spaces, $x \in \mathbb{R}^n$. In an ES, variation is not a discrete crossover but a Gaussian perturbation: at every generation, $\lambda$ offspring are sampled around a single mean vector $m$,
+\begin{equation}
+x_k = m + \sigma\, z_k, \qquad z_k \sim \mathcal{N}(0, C), \qquad k = 1, \dots, \lambda,
+\label{eq:es-sampling}
+\end{equation}
+where $\sigma > 0$ is a global \emph{step size} and $C \in \mathbb{R}^{n\times n}$ is a covariance matrix that shapes the cloud of samples. The offspring are evaluated and sorted by fitness, and the mean is moved to a weighted average of the best $\mu < \lambda$ of them,
+\begin{equation}
+m \leftarrow \sum_{i=1}^{\mu} w_i\, x_{i:\lambda}, \qquad w_1 \ge w_2 \ge \dots \ge w_\mu > 0, \qquad \sum_{i=1}^{\mu} w_i = 1,
+\label{eq:es-mean}
+\end{equation}
+where $x_{i:\lambda}$ denotes the $i$-th best of the $\lambda$ samples. Note that only the \emph{ranking} of the fitness values enters the update, never their magnitude: the algorithm is therefore invariant to any monotone rescaling of the objective, and requires no normalization of the reward. The flip side is that, when the fitness is a noisy estimate — as the outcome of a stochastic simulation is — what degrades the update is precisely noise large enough to reorder the candidates, and the standard remedies are to enlarge $\lambda$ or to average each individual's fitness over repeated evaluations.
+
+With $\sigma$ and $C$ fixed, this is a very simple algorithm, whose performance depends entirely on whether the cloud of samples happens to match the local shape of the fitness landscape: a narrow, tilted valley, for instance, forces an isotropic Gaussian to take tiny steps, since most large steps fall off the valley walls. The Covariance Matrix Adaptation Evolution Strategy (CMA-ES) \cite{hansen2001cma, hansen2016tutorial} removes this dependence by adapting both $\sigma$ and $C$ online, from the history of the steps that turned out to be successful, so that the sampling distribution itself learns the shape of the landscape; \autoref{fig:cma-es} illustrates the effect.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9, >={Stealth[length=2mm]}, thick]
+% fitness landscape: a narrow, tilted valley
+\foreach \k in {0.5,1.0,1.5,2.0,2.5,3.0}{
+  \draw[gray!50, thin, rotate=30] (0,0) ellipse ({1.8*\k} and {0.6*\k});
+}
+\node at (0,0) {$\star$};
+\node[font=\small, anchor=west] at (0.2,0.35) {$x^{*}$};
+% generation 1: isotropic distribution and its samples
+\draw[blue!70!black, dashed, shift={(-4.0,-3.0)}] (0,0) ellipse (0.5 and 0.5);
+\foreach \p in {(-4.3,-2.7),(-3.7,-3.35),(-4.45,-3.2),(-3.6,-2.75),(-4.05,-3.45),(-3.75,-3.05)}{
+  \fill[blue!70!black] \p circle (1.2pt);
+}
+\fill[blue!70!black] (-4.0,-3.0) circle (2pt);
+\node[font=\small, blue!70!black] at (-4.0,-3.85) {$g=1$};
+% generation 2
+\draw[blue!70!black, dashed, shift={(-2.9,-1.95)}, rotate=15] (0,0) ellipse (0.65 and 0.4);
+\fill[blue!70!black] (-2.9,-1.95) circle (2pt);
+\node[font=\small, blue!70!black] at (-2.75,-2.7) {$g=2$};
+% generation 3: aligned with the valley
+\draw[blue!70!black, dashed, shift={(-1.75,-1.0)}, rotate=30] (0,0) ellipse (0.9 and 0.32);
+\foreach \p in {(-2.4,-1.4),(-1.2,-0.65),(-1.9,-1.25),(-1.45,-0.75),(-2.1,-0.95),(-1.6,-1.15)}{
+  \fill[blue!70!black] \p circle (1.2pt);
+}
+\fill[blue!70!black] (-1.75,-1.0) circle (2pt);
+\node[font=\small, blue!70!black] at (-1.5,-1.9) {$g=3$};
+% generation 4
+\draw[blue!70!black, dashed, shift={(-0.65,-0.38)}, rotate=30] (0,0) ellipse (0.55 and 0.2);
+\fill[blue!70!black] (-0.65,-0.38) circle (2pt);
+\node[font=\small, blue!70!black] at (-0.3,-1.05) {$g=4$};
+% mean trajectory
+\draw[->, blue!70!black] (-4.0,-3.0) -- (-2.9,-1.95);
+\draw[->, blue!70!black] (-2.9,-1.95) -- (-1.75,-1.0);
+\draw[->, blue!70!black] (-1.75,-1.0) -- (-0.65,-0.38);
+\end{tikzpicture}
+\caption[Covariance adaptation in CMA-ES]{Covariance adaptation in CMA-ES on a fitness landscape shaped like a narrow, tilted valley (grey contours; the optimum is $x^{*}$). Each dashed ellipse is the one-standard-deviation contour of the sampling distribution $\mathcal{N}(m, \sigma^2 C)$ at generation $g$, and the dots are its samples. The search starts isotropic ($C = I$), but the successful samples of each generation lie preferentially along the valley, and the covariance update progressively stretches the distribution in that direction: by $g=3$ the algorithm is taking long steps along the valley and short ones across it, which an isotropic search could never do.}
+\label{fig:cma-es}
+\end{figure}
+
+The covariance is updated, after every generation, towards the directions in which the selected offspring were found. Writing $y_{i:\lambda} = (x_{i:\lambda} - m)/\sigma$ for the normalized step that produced the $i$-th best sample, the update reads
+\begin{equation}
+C \leftarrow (1 - c_1 - c_\mu)\, C \;+\; c_1\, p_c\, p_c^{\top} \;+\; c_\mu \sum_{i=1}^{\mu} w_i\, y_{i:\lambda}\, y_{i:\lambda}^{\top},
+\label{eq:cma-cov}
+\end{equation}
+with small learning rates $c_1, c_\mu \in (0,1)$. The last term is the weighted empirical covariance of this generation's successful steps: it stretches the distribution along the directions the good samples came from, and shrinks it along the others. The middle term does the same across generations, through the \emph{evolution path} $p_c$, an exponentially-decaying running sum of the successive displacements of the mean: a direction in which $m$ keeps moving, generation after generation, is amplified, while directions in which it merely oscillates cancel out. On a smooth objective the net effect is that $C$ comes to approximate the inverse Hessian near the optimum, so that CMA-ES behaves much like a second-order method — without ever computing a derivative.
+
+The step size is adapted separately, by \emph{cumulative step-size adaptation}: a second evolution path accumulates the displacements of the mean, rescaled by $C^{-1/2}$ so that, if selection were purely random, its length would be that of a random walk. If consecutive steps point in a consistent direction the path grows longer than a random walk would, which signals that the steps are too short and $\sigma$ is increased; if they largely cancel out, the path is shorter than expected and $\sigma$ is decreased. This lets the algorithm take large steps while far from the optimum and contract progressively as it closes in on it. The learning rates, the weights $w_i$, and the population size $\lambda = 4 + \lfloor 3\ln n \rfloor$ all have default values that work robustly across problems, so that the number of parameters the user must provide is reduced to just the initial mean $m^{(0)}$ and step size $\sigma^{(0)}$: this near absence of tuning is a large part of why CMA-ES is the default choice for black-box optimization in moderate dimensions.
+
+\subsection{NSGA-II}
+\label{subsec:nsga2}
+
+Many design problems do not have a single objective. A plane should travel far \emph{and} consume little energy; a structure should be light \emph{and} stiff. Typically such objectives conflict, so that improving one worsens the other, and no single solution is best in every respect. \emph{Multi-objective optimization} makes this explicit by asking to minimize a vector of $M$ objectives at once, $f(x) = \big(f_1(x), \dots, f_M(x)\big)$, where an objective to be maximized is handled simply by negating it. Since there is no natural total order among vectors, the notion of ``better'' has to be replaced by a partial one:
+
+\begin{definition}[Pareto dominance]
+A solution $x$ \emph{dominates} a solution $x'$, written $x \prec x'$, if it is no worse in every objective and strictly better in at least one:
+\begin{equation}
+f_i(x) \le f_i(x') \;\; \forall\, i \in \{1,\dots,M\} \qquad \text{and} \qquad f_j(x) < f_j(x') \;\; \text{for some } j.
+\end{equation}
+\end{definition}
+
+The representation of such dominance can be visualized in a two-dimensional space in Figure~\ref{fig:pareto}(a). A solution that is dominated by no other is \emph{Pareto-optimal}; the set of all such solutions is the \emph{Pareto set}, and its image in objective space is the \emph{Pareto front}. Every point on the front is a trade-off that cannot be improved in one objective without giving something up in another, and which of them is ``best'' is not a question the optimizer can answer: it is left to the designer, once the front is known. The goal of a multi-objective optimizer is therefore not one point but an approximation of the whole front — a set of solutions that lies close to it (\emph{convergence}) and is spread evenly along it (\emph{diversity}). One could obtain this by fixing a weighted sum of the objectives and running a single-objective optimizer once per choice of weights, but that requires choosing the weights in advance, and a weighted sum cannot reach the points of a front where it bends inwards (its non-convex parts). A population-based method, in contrast, already maintains a set of solutions, and can be steered to spread that set along the front within a single run; this is why EAs are the dominant approach to multi-objective optimization.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.8, >={Stealth[length=2mm]}, thick]
+% (a) Pareto dominance
+\fill[red!12] (2.2,2.4) rectangle (5.0,5.0);
+\fill[green!16] (0,0) rectangle (2.2,2.4);
+\draw[->] (0,0) -- (5.4,0) node[right] {$f_1$};
+\draw[->] (0,0) -- (0,5.4) node[above] {$f_2$};
+\draw[gray!70, dashed] (2.2,0) -- (2.2,5.0);
+\draw[gray!70, dashed] (0,2.4) -- (5.0,2.4);
+\fill (2.2,2.4) circle (2.2pt) node[above right, font=\small] {$p$};
+\fill[red!60!black] (3.3,3.3) circle (2pt) node[below right, font=\small] {$q_1$};
+\fill[green!40!black] (1.0,1.2) circle (2pt) node[above right, font=\small] {$q_2$};
+\fill (0.8,4.2) circle (2pt) node[above right, font=\small] {$q_3$};
+\fill (4.1,0.9) circle (2pt) node[above right, font=\small] {$q_4$};
+\node[font=\footnotesize, red!60!black, align=center] at (4.0,4.65) {dominated\\by $p$};
+\node[font=\footnotesize, green!40!black, align=center] at (1.1,0.45) {dominate $p$};
+\node[font=\small] at (2.6,-0.6) {(a)};
+\end{tikzpicture}
+\hspace{0.8cm}
+\begin{tikzpicture}[scale=0.8, >={Stealth[length=2mm]}, thick]
+% (b) non-dominated fronts and crowding distance
+\draw[->] (0,0) -- (7.0,0) node[right] {$f_1$};
+\draw[->] (0,0) -- (0,5.8) node[above] {$f_2$};
+% crowding cuboid around (2.8,1.5), neighbours (1.8,2.3) and (4.2,1.0)
+\draw[orange!80!black, dashed] (1.8,1.0) rectangle (4.2,2.3);
+% front 3
+\draw[gray!60] (2.6,5.2) -- (3.8,4.1) -- (5.2,3.3) -- (6.3,2.9);
+\foreach \p in {(2.6,5.2),(3.8,4.1),(5.2,3.3),(6.3,2.9)}{ \fill[gray!60] \p circle (2pt); }
+\node[font=\small, gray!60!black] at (6.3,3.45) {$\mathcal{F}_3$};
+% front 2
+\draw[blue!50] (1.5,4.9) -- (2.4,3.6) -- (3.4,2.6) -- (4.8,2.0) -- (6.0,1.7);
+\foreach \p in {(1.5,4.9),(2.4,3.6),(3.4,2.6),(4.8,2.0),(6.0,1.7)}{ \fill[blue!50] \p circle (2pt); }
+\node[font=\small, blue!50!black] at (6.15,2.25) {$\mathcal{F}_2$};
+% front 1
+\draw[blue!70!black] (0.6,4.6) -- (1.1,3.2) -- (1.8,2.3) -- (2.8,1.5) -- (4.2,1.0) -- (5.6,0.8);
+\foreach \p in {(0.6,4.6),(1.1,3.2),(1.8,2.3),(4.2,1.0),(5.6,0.8)}{ \fill[blue!70!black] \p circle (2pt); }
+\fill[orange!80!black] (2.8,1.5) circle (2.4pt);
+\node[font=\small, blue!70!black] at (5.9,0.4) {$\mathcal{F}_1$};
+\draw[orange!80!black, thin] (4.2,1.5) -- (4.55,1.3);
+\node[font=\footnotesize, orange!80!black, align=center, anchor=west] at (4.55,1.3) {crowding\\distance};
+\node[font=\small] at (3.5,-0.6) {(b)};
+\end{tikzpicture}
+\caption[Pareto dominance, non-dominated fronts and crowding distance]{Two objectives, both to be minimized. (a) Pareto dominance: $p$ dominates every point in the shaded red region ($q_1$), is dominated by every point in the green one ($q_2$), and is \emph{incomparable} with points such as $q_3$ and $q_4$, each of which is better than $p$ in one objective and worse in the other. (b) Non-dominated sorting of a population into fronts $\mathcal{F}_1 \prec \mathcal{F}_2 \prec \mathcal{F}_3$: $\mathcal{F}_1$ contains the points dominated by no other, $\mathcal{F}_2$ those dominated only by members of $\mathcal{F}_1$, and so on. The dashed box is the crowding cuboid of the orange point of $\mathcal{F}_1$: the rectangle spanned by its nearest neighbours along each objective, whose side lengths sum to its crowding distance. A point with a large cuboid sits in a sparsely populated part of its front, and is preferred over one in a crowded region.}
+\label{fig:pareto}
+\end{figure}
+
+The Non-dominated Sorting Genetic Algorithm II (NSGA-II) \cite{deb2002nsga2} is the most widely used such method. It is a genetic algorithm in the sense of \autoref{sec:ea} — for real-valued genomes, the standard variation operators are simulated binary crossover (SBX) and polynomial mutation \cite{deb1995sbx}, both of which produce offspring in the neighbourhood of their parents — whose selection step is built on two ingredients, both illustrated in \autoref{fig:pareto}(b).
+
+The first is \emph{non-dominated sorting}, which partitions the population into a sequence of \emph{fronts} $\mathcal{F}_1, \mathcal{F}_2, \dots$: $\mathcal{F}_1$ is the set of individuals that no other individual dominates, $\mathcal{F}_2$ the set of those that become non-dominated once $\mathcal{F}_1$ is removed, and so on until every individual has been assigned to a front. The index of an individual's front is its \emph{rank}, and lower is better: $\mathcal{F}_1$ is the current approximation of the Pareto front, $\mathcal{F}_2$ the second-best layer behind it. The ``fast'' procedure of NSGA-II computes this partition in $O(M N^2)$ time for a population of $N$ individuals, which is negligible next to the cost of evaluating them.
+
+The second is the \emph{crowding distance}, which breaks ties among individuals of the same front in favour of diversity. For each objective, the front is sorted along that objective and each individual is assigned the distance between its two neighbours, normalized by the objective's range; the crowding distance is the sum of these values over all objectives, and the two extreme individuals of each front, which have only one neighbour, receive an infinite value so that they are always kept. Geometrically, it measures the size of the largest box around an individual that contains no other member of its front: a large value marks an isolated individual in a sparsely covered region, which is exactly where the front's approximation most needs improving.
+
+The two are combined into a single \emph{crowded-comparison} rule: between two individuals, the one with the lower rank wins, and if the ranks are equal, the one with the larger crowding distance does. A generation of NSGA-II then proceeds as follows. Parents are chosen from the population $P$ of size $N$ by binary tournaments under this rule, and produce $N$ offspring $Q$ by crossover and mutation. Parents and offspring are merged into a pool $P \cup Q$ of size $2N$, the pool is sorted into fronts, and the next population is filled with whole fronts in order, $\mathcal{F}_1$ first, until the next front no longer fits; that last front is truncated to the remaining slots by keeping its most isolated members, in descending order of crowding distance. Merging parents and offspring makes the algorithm elitist — a non-dominated individual can only be displaced by one that dominates it or by a more isolated peer — while the crowding distance keeps the population spread along the front without any additional parameter to tune, which is the combination that made NSGA-II the reference algorithm for problems with two or three objectives.
+
+Since the output of a multi-objective run is a set rather than a number, comparing two runs, or tracking a single run across generations, requires a scalar measure of front quality. The most common is the \emph{hypervolume} indicator \cite{zitzler1999hypervolume}: the volume of objective space — an area, when $M=2$ — that is dominated by the front and bounded by a fixed \emph{reference point}, chosen to be worse than every solution in every objective. A front that lies closer to the true Pareto front, or covers a wider portion of it, dominates a larger region, so the hypervolume rewards convergence and diversity at once; it is only meaningful, however, when the same reference point is used for every front being compared.
+
+\section{Hebbian Learning}
+\label{sec:hebbian}
+
+ Hebbian learning is a different, and much older, view of what learning in a neural network can be: a synaptic weight changes as a consequence of the activity that flows through it, according to a \emph{local} rule that involves no error signal and needs no supervision, and keeps doing so for as long as the network is running.
+
+\subsection{Hebb's Postulate}
+\label{subsec:hebb-postulate}
+
+The idea originates in neuropsychology. Hebb \cite{hebb1949organization} proposed, as the mechanism by which associations form in the brain, that
+\begin{quote}
+When an axon of cell A is near enough to excite a cell B and repeatedly or persistently takes part in firing it, some growth process or metabolic change takes place in one or both cells such that A's efficiency, as one of the cells firing B, is increased,
+\end{quote}
+a statement usually compressed into the slogan \emph{``cells that fire together wire together''}. The postulate says nothing about what the strengthened connection is \emph{for}: the synapse strengthens simply because the two neurons it links have repeatedly been active at the same time.
+
+For a rate-based neuron model — the one used by artificial neural networks — the simplest formalization considers a single postsynaptic unit with output $y$, receiving presynaptic activities $x \in \mathbb{R}^{n}$ through a weight vector $w \in \mathbb{R}^{n}$, $y = w^{\top} x$, and lets each weight change in proportion to the product of the activities at its two ends:
+\begin{equation}
+\Delta w_j = \eta\, x_j\, y, \qquad j = 1, \dots, n,
+\label{eq:hebb-basic}
+\end{equation}
+with $\eta > 0$ a small \emph{learning rate}. For a whole layer with input $x \in \mathbb{R}^{n}$, output $y \in \mathbb{R}^{m}$ and weight matrix $W \in \mathbb{R}^{m \times n}$, the same rule reads, in matrix form, as an outer product:
+\begin{equation}
+\Delta W = \eta\, y\, x^{\top}, \qquad \Delta W_{ij} = \eta\, y_i\, x_j.
+\label{eq:hebb-matrix}
+\end{equation}
+
+The dominant property of \eqref{eq:hebb-basic}, shared by the whole family of rules that descends from it, is \emph{locality}. The update of $W_{ij}$ depends only on $x_j$ and $y_i$, the two activities physically present at the synapse, and on nothing else: not on the activity of other neurons, not on the state of other layers, and not on any measure of how well the network is doing. By contrast, with backpropagation the gradient of a loss $L$ with respect to the same weight, $\partial L / \partial W_{ij} = \delta_i\, x_j$, has the same presynaptic factor $x_j$ but replaces the postsynaptic activity $y_i$ with an error term $\delta_i$ that is computed at the output of the network and transported backwards through every downstream layer (\autoref{fig:hebb-locality}). A Hebbian update can therefore be applied at every forward pass, during the normal operation of the network.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9, every node/.style={transform shape}, >={Stealth[length=2mm]}, thick,
+  neuron/.style={circle, draw=black!70, fill=white, minimum size=0.62cm, inner sep=0pt, font=\small},
+  hl/.style={circle, draw=blue!70!black, fill=blue!16, minimum size=0.62cm, inner sep=0pt, font=\small, thick},
+  syn/.style={gray!55, thin}]
+% (a) Hebbian update: local
+\node[neuron] (x1) at (0,1.4)  {$x_1$};
+\node[hl]     (x2) at (0,0)    {$x_2$};
+\node[neuron] (x3) at (0,-1.4) {$x_3$};
+\node[hl]     (y1) at (2.8,0.7)  {$y_1$};
+\node[neuron] (y2) at (2.8,-0.7) {$y_2$};
+\foreach \i in {1,2,3} \foreach \j in {1,2} \draw[syn] (x\i) -- (y\j);
+\draw[blue!70!black, very thick] (x2) -- node[above, sloped, font=\small, pos=0.4] {$W_{12}$} (y1);
+\node[font=\small, blue!70!black] at (1.4,-2.3) {$\Delta W_{12} = \eta\, y_1\, x_2$};
+\node[font=\small] at (1.4,-3.0) {(a)};
+\end{tikzpicture}
+\hspace{1.0cm}
+\begin{tikzpicture}[scale=0.9, every node/.style={transform shape}, >={Stealth[length=2mm]}, thick,
+  neuron/.style={circle, draw=black!70, fill=white, minimum size=0.62cm, inner sep=0pt, font=\small},
+  hl/.style={circle, draw=blue!70!black, fill=blue!16, minimum size=0.62cm, inner sep=0pt, font=\small, thick},
+  syn/.style={gray!55, thin},
+  err/.style={->, red!60!black, dashed, very thick}]
+% (b) backpropagation: the same synapse needs a global error signal
+\node[neuron] (x1) at (0,1.4)  {$x_1$};
+\node[hl]     (x2) at (0,0)    {$x_2$};
+\node[neuron] (x3) at (0,-1.4) {$x_3$};
+\node[hl]     (y1) at (2.8,0.7)  {$y_1$};
+\node[neuron] (y2) at (2.8,-0.7) {$y_2$};
+\node[neuron] (z1) at (5.6,0.7)  {$z_1$};
+\node[neuron] (z2) at (5.6,-0.7) {$z_2$};
+\node[draw=red!60!black, fill=red!12, rounded corners, thick, minimum width=0.8cm, minimum height=0.7cm, font=\small] (L) at (8.0,0) {$L$};
+\foreach \i in {1,2,3} \foreach \j in {1,2} \draw[syn] (x\i) -- (y\j);
+\foreach \i in {1,2} \foreach \j in {1,2} \draw[syn] (y\i) -- (z\j);
+\draw[syn] (z1) -- (L); \draw[syn] (z2) -- (L);
+\draw[blue!70!black, very thick] (x2) -- node[above, sloped, font=\small, pos=0.4] {$W_{12}$} (y1);
+% error path, drawn slightly above the forward edges it retraces
+\begin{scope}[transform canvas={yshift=4pt}]
+\draw[err] (L.west) -- (z1.east);
+\draw[err] (L.west) -- (z2.east);
+\draw[err] (z1.west) -- node[above, font=\small, red!60!black, pos=0.5] {$\delta_1$} (y1.east);
+\draw[err] (z2.west) -- (y1.east);
+\end{scope}
+\node[font=\small, red!60!black] at (4.0,-2.3) {$\partial L / \partial W_{12} = \delta_1\, x_2$};
+\node[font=\small] at (4.0,-3.0) {(b)};
+\end{tikzpicture}
+\caption[Locality of the Hebbian update]{Locality of the Hebbian update. (a) Under Hebb's rule, the change of the highlighted weight $W_{12}$ is a function of the two activities at its ends, $x_2$ and $y_1$, and of nothing else; it can be computed in the forward pass, at the synapse. (b) Under backpropagation, the same weight's gradient keeps the presynaptic factor $x_2$ but replaces $y_1$ with an error $\delta_1$, which only exists once a loss $L$ has been evaluated at the output and its gradient carried back (dashed) through every layer downstream of the synapse.}
+\label{fig:hebb-locality}
+\end{figure}
+
+\subsection{The Generalized Hebbian Rule}
+\label{subsec:abcd}
+
+A local rule is any function $F(\cdot)$ of the quantities available at the synapse:
+\[\Delta W_{ij} = \eta\, F(x_j, y_i, W_{ij})\]
+ Gerstner and Kistler \cite{gerstner2002mathematical} note that, for small activities, any such $F$ can be expanded in a Taylor series around $x_j = y_i = 0$, and that truncating the expansion after the bilinear term gives the most general rule that is at most linear in each activity:
+\begin{equation}
+\Delta W_{ij} = \eta \left( A_{ij}\, x_j\, y_i + B_{ij}\, x_j + C_{ij}\, y_i + D_{ij} \right),
+\label{eq:abcd}
+\end{equation}
+usually referred to as the \emph{ABCD rules} \cite{niv2002evolution, soltoggio2008evolutionary}. Each coefficient has a distinct meaning:
+\begin{itemize}
+    \item $A$ is the \emph{correlation} term, Hebb's rule itself. A positive $A$ strengthens a synapse when its two ends are simultaneously active, a negative one weakens it, which decorrelates the neuron's output from that input;
+    \item $B$ is the \emph{presynaptic} term: the weight changes whenever the input is active, regardless of what the neuron does. With $B < 0$, an input that keeps firing without contributing to the output is progressively weakened, the ``pre active, post silent'' form of suppression;
+    \item $C$ is the \emph{postsynaptic} term: the weight changes whenever the neuron fires, regardless of that particular input. With $C < 0$, every synapse of a neuron is weakened each time it fires, a normalization that redistributes strength from the inputs that stay silent to those that actually drive it;
+    \item $D$ is a constant drift, independent of activity: a steady creep of the weight in one direction, which can act as a bias, or, with the opposite sign to the weight, as a crude decay.
+\end{itemize}
+
+
+
+It should be noted that in case of repeated activations, the rule may lead to a runaway effect, where the weights grow without bound. This is particularly true for the $A$ term, which can cause a positive feedback loop if the inputs are consistently active, and the $D$ term, which can cause a steady drift in the weights. To overcome this problem, various normalization techniques can be applied, such as weight clipping or weight decay. While weight clipping simply limits the maximum value a weight can take, weight decay introduces a small penalty to the weight values, effectively reducing them over time, in a fashion similar to regularization in supervised learning:
+\[\Delta W_{ij} = \eta \left( A_{ij}\, x_j\, y_i + B_{ij}\, x_j + C_{ij}\, y_i + D_{ij} \right) - \lambda W_{ij}\]
+
+ The coefficients can be shared by an entire layer, as one rule for all the synapses, or, as written in \eqref{eq:abcd}, be a separate matrix each, of the same shape as $W$, so that every synapse follows its own rule \cite{niv2002evolution, najarro2020meta}. In the latter case a layer of $m \times n$ weights is described by $4mn$ coefficients, and the learning rate $\eta$ may itself be per synapse. If $\eta$ is not fixed but modulated by a dedicated signal, this is called \emph{neuromodulation} \cite{soltoggio2008evolutionary}. The point of this parametrization is that the same template, with different coefficients, produces qualitatively different behaviours: a pure correlation detector, a decorrelating one, a synapse that only ever decays, one that potentiates and then forgets. Which of them is appropriate at a given synapse is not something the rule can decide, since it has no access to the task; the coefficients are the knobs through which a purpose is imposed on a rule that is otherwise blind to it.
+
+\subsection{Plasticity Rules as the Object of Optimization}
+\label{subsec:evolved-plasticity}
+
+In a \emph{plastic} network, the weights are no longer the parameters that define the network: they are part of its state, initialized to some value at the beginning of a \emph{lifetime}, either an episode or the deployment itself, and driven from then on by the rules, along a trajectory that depends on the inputs the network happens to receive. What stays fixed across lifetimes, and is therefore what actually defines the network, are the rules, the rate $\eta$ and the initial weights. The consequence is that the same network, placed in two different environments, ends up with two different sets of weights, each shaped by the activity that environment induced. This is the mechanism by which a plastic network can adapt, within a lifetime and without any gradient, to conditions that were not present when it was designed — and, at the same time, the reason a rule is not a solution: it is a procedure, which only becomes useful once its coefficients are such that the weight trajectory it produces improves the network's behaviour rather than degrading it.
+
+Finding such coefficients is an optimization problem, with an unusual objective: the quality of a rule is the performance of the network at the end of, or throughout, a lifetime of applying it, which depends on the coefficients only through the whole sequence of weight updates and of the outputs those weights produced. This is a form of \emph{meta-learning} in which the outer level searches over learning rules and the inner level is the lifetime of the network under one set of them. The objective can in principle be differentiated through the chain of updates \cite{miconi2018differentiable}, but when the lifetime is a closed-loop interaction with an environment, as in control, the dependence of the outcome on the coefficients is long, indirect, and only defined by running it. In such cases it is possible to treat them as a black box and search them with the evolutionary algorithms of \autoref{sec:ea}. Networks obtained this way, whose genome encodes rules rather than weights, are known as \emph{evolved plastic artificial neural networks}, or EPANNs \cite{floreano2000evolutionary, soltoggio2018born}.
+
+\section{Related Work}
+
+\subsection{Hebbian Learning and Plasticity}
+
+\subsection{Co-Design}

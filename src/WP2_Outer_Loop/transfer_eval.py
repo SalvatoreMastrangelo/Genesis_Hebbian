@@ -744,6 +744,30 @@ def paired_summary(
 #  CLI
 # ----------------------------------------------------------------------------
 
+def add_forest_arguments(ap: argparse.ArgumentParser) -> None:
+    """The forest-settings flag group, shared with ``controller_generality``
+    so both tools accept identical overrides (parsed by
+    ``_parse_forest_args``)."""
+    g = ap.add_argument_group("forest settings (applied at env build)")
+    for name, typ, help_ in (
+        ("x-lower", float, "forest start [m]"),
+        ("x-upper", float, "forest end + eval success line [m]"),
+        ("y-lower", float, "corridor lower bound [m]"),
+        ("y-upper", float, "corridor upper bound [m]"),
+        ("dens-min", float, "density at x_lower [trees/m]"),
+        ("dens-max", float, "density at x_upper [trees/m]"),
+        ("num-trees", int, "tree count (uniform mode)"),
+        ("tree-radius", float, "tree radius [m]"),
+        ("tree-height", float, "tree height [m]"),
+        ("forest-length", float, "lattice/latin mode length [m]"),
+    ):
+        g.add_argument(f"--{name}", type=typ, default=None, help=help_)
+    g.add_argument("--forest-mode", default=None,
+                   help="uniform | growing | lattice | latin")
+    g.add_argument("--forest", action="append", metavar="KEY=VALUE",
+                   help="Any other cfg.forest field; repeatable.")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Re-fly an outer run's Pareto-front morphologies under one "
@@ -796,24 +820,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dry-run", action="store_true",
                     help="Resolve everything, print the plan, fly nothing.")
 
-    g = ap.add_argument_group("forest settings (applied at env build)")
-    for name, typ, help_ in (
-        ("x-lower", float, "forest start [m]"),
-        ("x-upper", float, "forest end + eval success line [m]"),
-        ("y-lower", float, "corridor lower bound [m]"),
-        ("y-upper", float, "corridor upper bound [m]"),
-        ("dens-min", float, "density at x_lower [trees/m]"),
-        ("dens-max", float, "density at x_upper [trees/m]"),
-        ("num-trees", int, "tree count (uniform mode)"),
-        ("tree-radius", float, "tree radius [m]"),
-        ("tree-height", float, "tree height [m]"),
-        ("forest-length", float, "lattice/latin mode length [m]"),
-    ):
-        g.add_argument(f"--{name}", type=typ, default=None, help=help_)
-    g.add_argument("--forest-mode", default=None,
-                   help="uniform | growing | lattice | latin")
-    g.add_argument("--forest", action="append", metavar="KEY=VALUE",
-                   help="Any other cfg.forest field; repeatable.")
+    add_forest_arguments(ap)
 
     ap.add_argument("--plot", nargs="+", type=Path, default=None,
                     help="Overlay mode: result CSVs to plot together.")

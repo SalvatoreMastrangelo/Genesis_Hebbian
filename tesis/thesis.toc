@@ -1,0 +1,66 @@
+\babel@toc {english}{}\relax 
+\contentsline {chapter}{\numberline {1}Introduction}{5}{chapter.1}%
+\contentsline {chapter}{\numberline {2}Technical Background \& Related Work}{6}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Deep Reinforcement Learning}{6}{section.2.1}%
+\contentsline {subsection}{\numberline {2.1.1}Markov Decision Processes}{6}{subsection.2.1.1}%
+\contentsline {subsection}{\numberline {2.1.2}Actor-Critic Reinforcement Learning}{8}{subsection.2.1.2}%
+\contentsline {subsection}{\numberline {2.1.3}Proximal Policy Optimization}{10}{subsection.2.1.3}%
+\contentsline {section}{\numberline {2.2}Long Short-Term Memory Networks}{11}{section.2.2}%
+\contentsline {subsection}{\numberline {2.2.1}Recurrent Neural Networks}{11}{subsection.2.2.1}%
+\contentsline {subsection}{\numberline {2.2.2}Vanishing Gradient Problem}{11}{subsection.2.2.2}%
+\contentsline {subsection}{\numberline {2.2.3}Long Short-Term Memory}{11}{subsection.2.2.3}%
+\contentsline {section}{\numberline {2.3}Evolutionary Algorithms}{13}{section.2.3}%
+\contentsline {subsection}{\numberline {2.3.1}CMA-ES}{14}{subsection.2.3.1}%
+\contentsline {subsection}{\numberline {2.3.2}NSGA-II}{16}{subsection.2.3.2}%
+\contentsline {section}{\numberline {2.4}Hebbian Learning}{18}{section.2.4}%
+\contentsline {subsection}{\numberline {2.4.1}Hebb's Postulate}{18}{subsection.2.4.1}%
+\contentsline {subsection}{\numberline {2.4.2}The Generalized Hebbian Rule}{19}{subsection.2.4.2}%
+\contentsline {subsection}{\numberline {2.4.3}Plasticity Rules as the Object of Optimization}{20}{subsection.2.4.3}%
+\contentsline {section}{\numberline {2.5}Related Work}{21}{section.2.5}%
+\contentsline {subsection}{\numberline {2.5.1}Hebbian Learning and Plasticity}{21}{subsection.2.5.1}%
+\contentsline {subsection}{\numberline {2.5.2}Co-Design}{21}{subsection.2.5.2}%
+\contentsline {chapter}{\numberline {3}Problems}{22}{chapter.3}%
+\contentsline {section}{\numberline {3.1}The Sequential Design Problem}{22}{section.3.1}%
+\contentsline {section}{\numberline {3.2}The Morphology Optimization Problem}{22}{section.3.2}%
+\contentsline {section}{\numberline {3.3}The Computational Feasibility Problem}{22}{section.3.3}%
+\contentsline {chapter}{\numberline {4}Experimental Setup}{23}{chapter.4}%
+\contentsline {section}{\numberline {4.1}Genesis: The Simulator}{23}{section.4.1}%
+\contentsline {subsection}{\numberline {4.1.1}Advantages and Disadvantages}{23}{subsection.4.1.1}%
+\contentsline {subsection}{\numberline {4.1.2}Physics Simulation}{23}{subsection.4.1.2}%
+\contentsline {subsection}{\numberline {4.1.3}Aerodynamics Simulation}{23}{subsection.4.1.3}%
+\contentsline {section}{\numberline {4.2}Flight Environment}{23}{section.4.2}%
+\contentsline {subsection}{\numberline {4.2.1}Uniform Forests}{23}{subsection.4.2.1}%
+\contentsline {subsection}{\numberline {4.2.2}Growing Forests}{23}{subsection.4.2.2}%
+\contentsline {subsection}{\numberline {4.2.3}Latin Hypercube Forests}{23}{subsection.4.2.3}%
+\contentsline {section}{\numberline {4.3}Drone Model}{23}{section.4.3}%
+\contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{23}{subsection.4.3.1}%
+\contentsline {subsection}{\numberline {4.3.2}Drone Genome}{23}{subsection.4.3.2}%
+\contentsline {subsection}{\numberline {4.3.3}The Standard Drone}{23}{subsection.4.3.3}%
+\contentsline {section}{\numberline {4.4}Base Controllers}{23}{section.4.4}%
+\contentsline {subsection}{\numberline {4.4.1}Specialist LSTM Controller}{23}{subsection.4.4.1}%
+\contentsline {subsection}{\numberline {4.4.2}Generalist LSTM Controller}{23}{subsection.4.4.2}%
+\contentsline {subsection}{\numberline {4.4.3}Training the Generalist LSTM Controller}{23}{subsection.4.4.3}%
+\contentsline {chapter}{\numberline {5}Methodology}{24}{chapter.5}%
+\contentsline {section}{\numberline {5.1}The Hebbian Controller}{24}{section.5.1}%
+\contentsline {subsection}{\numberline {5.1.1}Hebbian Rules on the Output Layer}{24}{subsection.5.1.1}%
+\contentsline {subsection}{\numberline {5.1.2}Weight Decay and Reset Semantics}{24}{subsection.5.1.2}%
+\contentsline {section}{\numberline {5.2}Inner Loop: Evolving the Hebbian Rules}{24}{section.5.2}%
+\contentsline {section}{\numberline {5.3}Outer Loop: Evolving the Drone Morphology}{24}{section.5.3}%
+\contentsline {section}{\numberline {5.4}The Full Co-Design Pipeline}{24}{section.5.4}%
+\contentsline {chapter}{\numberline {6}Results and Experiments}{25}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Inner Loop Experiments}{25}{section.6.1}%
+\contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{25}{subsection.6.1.1}%
+\contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{25}{subsection.6.1.2}%
+\contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{25}{section.6.2}%
+\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{25}{subsection.6.2.1}%
+\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{25}{subsection.6.2.2}%
+\contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{25}{subsection.6.2.3}%
+\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{25}{subsection.6.2.4}%
+\contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{25}{subsection.6.2.5}%
+\contentsline {subsection}{\numberline {6.2.6}Convergence or Plasticity?}{25}{subsection.6.2.6}%
+\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{26}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Conclusions}{26}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Future Work}{26}{section.7.2}%
+\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{26}{subsection.7.2.1}%
+\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{26}{subsection.7.2.2}%
+\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{26}{subsection.7.2.3}%
