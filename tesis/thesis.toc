@@ -23,7 +23,7 @@
 \contentsline {section}{\numberline {3.1}The Sequential Design Problem}{22}{section.3.1}%
 \contentsline {section}{\numberline {3.2}The Morphology Optimization Problem}{22}{section.3.2}%
 \contentsline {section}{\numberline {3.3}The Computational Feasibility Problem}{22}{section.3.3}%
-\contentsline {chapter}{\numberline {4}Experimental Setup}{23}{chapter.4}%
+\contentsline {chapter}{\numberline {4}Simulation Environment}{23}{chapter.4}%
 \contentsline {section}{\numberline {4.1}Genesis: The Simulator}{23}{section.4.1}%
 \contentsline {subsection}{\numberline {4.1.1}Advantages and Disadvantages}{23}{subsection.4.1.1}%
 \contentsline {subsection}{\numberline {4.1.2}Physics Simulation}{23}{subsection.4.1.2}%
@@ -36,17 +36,17 @@
 \contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{23}{subsection.4.3.1}%
 \contentsline {subsection}{\numberline {4.3.2}Drone Genome}{23}{subsection.4.3.2}%
 \contentsline {subsection}{\numberline {4.3.3}The Standard Drone}{23}{subsection.4.3.3}%
-\contentsline {section}{\numberline {4.4}Base Controllers}{23}{section.4.4}%
-\contentsline {subsection}{\numberline {4.4.1}Specialist LSTM Controller}{23}{subsection.4.4.1}%
-\contentsline {subsection}{\numberline {4.4.2}Generalist LSTM Controller}{23}{subsection.4.4.2}%
-\contentsline {subsection}{\numberline {4.4.3}Training the Generalist LSTM Controller}{23}{subsection.4.4.3}%
 \contentsline {chapter}{\numberline {5}Methodology}{24}{chapter.5}%
-\contentsline {section}{\numberline {5.1}The Hebbian Controller}{24}{section.5.1}%
-\contentsline {subsection}{\numberline {5.1.1}Hebbian Rules on the Output Layer}{24}{subsection.5.1.1}%
-\contentsline {subsection}{\numberline {5.1.2}Weight Decay and Reset Semantics}{24}{subsection.5.1.2}%
-\contentsline {section}{\numberline {5.2}Inner Loop: Evolving the Hebbian Rules}{24}{section.5.2}%
-\contentsline {section}{\numberline {5.3}Outer Loop: Evolving the Drone Morphology}{24}{section.5.3}%
-\contentsline {section}{\numberline {5.4}The Full Co-Design Pipeline}{24}{section.5.4}%
+\contentsline {section}{\numberline {5.1}Base Controllers}{24}{section.5.1}%
+\contentsline {subsection}{\numberline {5.1.1}Specialist LSTM Controller}{24}{subsection.5.1.1}%
+\contentsline {subsection}{\numberline {5.1.2}Generalist LSTM Controller}{24}{subsection.5.1.2}%
+\contentsline {subsection}{\numberline {5.1.3}Training the Generalist LSTM Controller}{24}{subsection.5.1.3}%
+\contentsline {section}{\numberline {5.2}The Hebbian Controller}{24}{section.5.2}%
+\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{24}{subsection.5.2.1}%
+\contentsline {subsection}{\numberline {5.2.2}Weight Decay and Reset Semantics}{24}{subsection.5.2.2}%
+\contentsline {section}{\numberline {5.3}Inner Loop: Evolving the Hebbian Rules}{24}{section.5.3}%
+\contentsline {section}{\numberline {5.4}Outer Loop: Evolving the Drone Morphology}{24}{section.5.4}%
+\contentsline {section}{\numberline {5.5}The Full Co-Design Pipeline}{24}{section.5.5}%
 \contentsline {chapter}{\numberline {6}Results and Experiments}{25}{chapter.6}%
 \contentsline {section}{\numberline {6.1}Inner Loop Experiments}{25}{section.6.1}%
 \contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{25}{subsection.6.1.1}%
