@@ -545,4 +545,4 @@ def test_default_title_distinguishes_the_three_sources():
     assert _default_title("hebbian", rand) == "hebbian on 4 random morphologies"
 
     only_std = pd.DataFrame([{"outer_gen": -1, "is_standard": 1}])
-    assert _default_title("hebbian", only_std) == "hebbian on the standard mydrone"
+    assert _default_title("hebbian", only_std) == "hebbian on the Bixler"

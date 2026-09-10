@@ -304,33 +304,6 @@ def summarize(df: pd.DataFrame, controllers: pd.DataFrame) -> pd.DataFrame:
 #  Companion series from the run's own CSVs (no GPU)
 # ----------------------------------------------------------------------------
 
-def _refresh_every(run_dir: Path | str) -> int:
-    import yaml
-    cfg_path = Path(run_dir) / "reproducibility" / "config.yaml"
-    raw = yaml.safe_load(cfg_path.read_text()) or {}
-    return int((raw.get("catalog") or {}).get("refresh_urdfs_every", 1))
-
-
-def morph_diversity(run_dir: Path | str) -> pd.DataFrame:
-    """Mean pairwise genome distance of the morphology population per outer
-    generation, with the inner-generation span each phase covers."""
-    pop = pd.read_csv(Path(run_dir) / "results" / "outer_population.csv")
-    genes = _gene_columns(pop)
-    every = _refresh_every(run_dir)
-    rows = []
-    for og, grp in pop.groupby("outer_gen", sort=True):
-        X = grp[genes].to_numpy(dtype=float)
-        if len(X) < 2:
-            d = 0.0
-        else:
-            D = np.sqrt(((X[:, None, :] - X[None, :, :]) ** 2).sum(-1))
-            d = float(D[np.triu_indices(len(X), 1)].mean())
-        og = int(og)
-        rows.append({"outer_gen": og, "gen_start": og * every,
-                     "gen_end": (og + 1) * every - 1, "diversity": d})
-    return pd.DataFrame(rows)
-
-
 def final_centroid(run_dir: Path | str) -> np.ndarray:
     """Genome-space centroid of the last outer generation's population."""
     pop = pd.read_csv(Path(run_dir) / "results" / "outer_population.csv")
@@ -542,12 +515,10 @@ _PANELS = (("fitness", "Fitness (WP1 reward sum)"),
            ("cost_of_transport", "Cost of transport"))
 
 
-def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str],
-                    diversity: Optional[pd.DataFrame] = None) -> None:
-    """Fitness / progress / CoT vs generation on three axes: per body set a
-    best-of-gen line (± SE across bodies) and the zero-rules generalist as a
-    dashed horizontal reference. The morphology population's diversity, when
-    given, goes on a twin axis of the first panel."""
+def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str]) -> None:
+    """Fitness / progress / CoT vs generation on three axes: per body set the
+    best-of-gen Hebbian controller as a solid line (± SE across bodies) and
+    the zero-rules generalist as a dashed horizontal reference."""
     present = [bs for bs in body_sets if bs in set(summary["body_set"])]
     for ax, (metric, ylabel) in zip(axes, _PANELS):
         if metric not in summary.columns:
@@ -563,7 +534,7 @@ def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str],
                 y = best[metric].to_numpy(float)
                 se = best.get(f"{metric}_se", pd.Series(0.0, index=best.index)).to_numpy(float)
                 ax.plot(x, y, "-", color=color, linewidth=1.6,
-                        label=f"best-of-gen on {bs} bodies (n={n})")
+                        label=f"hebbian - {bs} morphologies")
                 ax.fill_between(x, y - se, y + se, color=color, alpha=0.18,
                                 linewidth=0)
             zero = sub[sub["kind"] == "zero"]
@@ -571,7 +542,7 @@ def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str],
                 z = float(zero[metric].iloc[0])
                 zse = float(zero.get(f"{metric}_se", pd.Series([0.0])).iloc[0])
                 ax.axhline(z, linestyle="--", color=color, linewidth=1.3,
-                           label=f"zero rules on {bs} bodies")
+                           label=f"generalist - {bs} morphologies")
                 if zse > 0:
                     ax.axhspan(z - zse, z + zse, color=color, alpha=0.08,
                                linewidth=0)
@@ -579,33 +550,19 @@ def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str],
         ax.set_ylabel(ylabel)
         ax.grid(True, linestyle="--", alpha=0.4)
 
-    if diversity is not None and len(diversity) and len(axes):
-        ax2 = axes[0].twinx()
-        xs, ys = [], []
-        for _, r in diversity.sort_values("outer_gen").iterrows():
-            xs += [float(r["gen_start"]), float(r["gen_end"]) + 1.0]
-            ys += [float(r["diversity"])] * 2
-        ax2.plot(xs, ys, color="0.45", linewidth=1.0, alpha=0.8,
-                 label="morphology diversity (mean pairwise dist)")
-        ax2.set_ylabel("morph. population diversity", color="0.45")
-        ax2.tick_params(axis="y", colors="0.45")
-        h1, l1 = axes[0].get_legend_handles_labels()
-        h2, l2 = ax2.get_legend_handles_labels()
-        axes[0].legend(h1 + h2, l1 + l2, fontsize=8, loc="lower left")
-    elif len(axes):
+    if len(axes):
         axes[0].legend(fontsize=8, loc="lower left")
 
 
 def plot_generality(summary: pd.DataFrame, out_path: Path,
                     body_sets: Sequence[str] = BODY_SETS,
-                    diversity: Optional[pd.DataFrame] = None,
                     title: str = "") -> Path:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
-    draw_generality(axes, summary, body_sets, diversity)
+    draw_generality(axes, summary, body_sets)
     if title:
         fig.suptitle(title)
     fig.tight_layout()
@@ -706,22 +663,16 @@ def write_outputs(out_dir: Path, df: pd.DataFrame, controllers: pd.DataFrame,
     summary.to_csv(summary_path, index=False)
     written.append(summary_path)
 
-    try:
-        diversity = morph_diversity(run_dir)
-    except Exception as exc:  # companion series is optional
-        print(f"[generality] no diversity series ({exc})")
-        diversity = None
-
     present = [bs for bs in BODY_SETS if bs in set(df["body_set"])]
     base = title or Path(run_dir).name
     for bs in present:
         written.append(plot_generality(
             summary, out_dir / f"generality_{bs}.png", body_sets=(bs,),
-            diversity=diversity, title=f"{base} — {bs} bodies"))
+            title=f"{base} — {bs} bodies"))
     if len(present) > 1:
         written.append(plot_generality(
             summary, out_dir / "generality_all.png", body_sets=tuple(present),
-            diversity=diversity, title=f"{base} — random vs front bodies"))
+            title=f"{base} — random vs front bodies"))
 
     if "random" in present:
         try:

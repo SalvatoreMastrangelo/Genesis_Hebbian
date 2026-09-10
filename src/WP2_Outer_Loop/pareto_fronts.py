@@ -107,6 +107,10 @@ def _load_min_progress(run_dir: Path) -> float:
 
 _PROGRESS_NAMES = ("progress_m", "progress")
 
+# Legend label of the reference point in every outer-loop plot: the standard
+# mydrone (the "Bixler") flown by the frozen WP1 generalist with zero rules.
+BIXLER_LABEL = "Bixler (generalist controller)"
+
 
 def _load_refresh_every(run_dir: Path) -> int:
     """Inner generations per outer phase, i.e. the URDF refresh period.
@@ -207,10 +211,40 @@ def _admission_mask(
 #  Non-domination / hypervolume
 # ----------------------------------------------------------------------------
 
+def _nondominated_mask_2d(points_max: np.ndarray) -> np.ndarray:
+    """O(n log n) sweep for the two-objective case: sort by x descending
+    (y descending within equal x) and keep a point iff its y beats the
+    best y seen among strictly larger x. Same semantics as the general
+    loop — a row is dropped iff some other row is >= in both objectives
+    and > in at least one — so exact duplicates are all kept."""
+    n = len(points_max)
+    order = np.lexsort((-points_max[:, 1], -points_max[:, 0]))
+    keep = np.zeros(n, dtype=bool)
+    best_y = -np.inf
+    i = 0
+    while i < n:
+        j = i
+        x = points_max[order[i], 0]
+        while j < n and points_max[order[j], 0] == x:
+            j += 1
+        block = order[i:j]
+        ymax = points_max[block, 1].max()
+        if ymax > best_y:
+            keep[block[points_max[block, 1] == ymax]] = True
+            best_y = ymax
+        i = j
+    return keep
+
+
 def _nondominated_mask(points_max: np.ndarray) -> np.ndarray:
     """Boolean mask of nondominated rows; ``points_max`` is (n, m) in
-    maximization space (all objectives flipped to higher-is-better)."""
+    maximization space (all objectives flipped to higher-is-better).
+    Two objectives take the O(n log n) sweep (``_nondominated_mask_2d``);
+    any other m falls back to the pairwise loop."""
+    points_max = np.asarray(points_max, dtype=float)
     n = len(points_max)
+    if n and points_max.ndim == 2 and points_max.shape[1] == 2:
+        return _nondominated_mask_2d(points_max)
     keep = np.ones(n, dtype=bool)
     for i in range(n):
         if not keep[i]:

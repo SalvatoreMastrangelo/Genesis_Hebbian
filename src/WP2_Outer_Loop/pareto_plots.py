@@ -62,6 +62,7 @@ _DIAG_METRICS = [
 # because callers and tests import them from ``pareto_plots``.
 
 from .pareto_fronts import (  # noqa: E402  (kept next to its explanation)
+    BIXLER_LABEL,
     _PROGRESS_NAMES,
     _admission_mask,
     _filter_exam_rows,
@@ -317,17 +318,17 @@ def plot_pareto_front(
     # validation to have run on the standard drone.
     if exam_only:
         star = _load_exam_baseline(run_dir, name_x, name_y)
-        star_label = "standard mydrone (zero rules, exam forests)"
+        star_label = BIXLER_LABEL
         # Exam-scored run with no baseline CSV (it predates
         # ``outer.exam_baseline``): the validation pass is still the right
         # reference IF the exam flew the nominal forests, since then the two
         # rollouts sampled the same distribution.
         if star is None and _exam_flew_nominal_forests(run_dir):
             star = _load_standard_drone_baseline(run_dir, name_x, name_y)
-            star_label = "standard mydrone (zero rules)"
+            star_label = BIXLER_LABEL
     else:
         star = _load_standard_drone_baseline(run_dir, name_x, name_y)
-        star_label = "standard mydrone (zero rules)"
+        star_label = BIXLER_LABEL
     if star is not None:
         ax.scatter([star[0]], [star[1]], marker="*", s=340, color="gold",
                    edgecolors="black", linewidths=0.9, zorder=5,
@@ -635,11 +636,11 @@ def plot_champion_curves(run_dir: Path | str) -> Optional[dict]:
                 if _baseline_is_constant(base):
                     ax.axhline(float(base.iloc[:, k].mean()), color="gray",
                                linestyle="--", linewidth=1.4,
-                               label="standard mydrone (zero rules)")
+                               label=BIXLER_LABEL)
                 else:
                     ax.plot(base.index.to_numpy(), base.iloc[:, k].to_numpy(),
                             color="gray", linestyle="--", linewidth=1.4,
-                            label="standard mydrone (zero rules)")
+                            label=BIXLER_LABEL)
             ax.set_ylabel(_axis_label(name, direction))
             ax.set_title(f"{label} — {name}", fontsize=11)
             ax.grid(True, linestyle="--", alpha=0.4)

@@ -438,7 +438,7 @@ def _default_title(tag: str, df: pd.DataFrame) -> str:
     if "is_standard" in df.columns:
         n = int((df["is_standard"].fillna(0).astype(int) != 1).sum())
     if n == 0:
-        return f"{tag} on the standard mydrone"
+        return f"{tag} on the Bixler"
     return f"{tag} on {n} random morphologies"
 
 
@@ -696,7 +696,7 @@ def plot_transfer(
                 yerr=[[s.get("cost_of_transport_se", 0.0)]] * 2,
                 fmt="*", color=color, markersize=20, markeredgecolor="black",
                 markeredgewidth=0.8, elinewidth=0.9, capsize=0, zorder=5,
-                label=f"standard mydrone — {label}",
+                label=f"Bixler — {label}",
             )
 
     ax.set_xlabel("Progress [m]  (higher better)")

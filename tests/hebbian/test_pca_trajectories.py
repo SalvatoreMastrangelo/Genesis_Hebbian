@@ -274,3 +274,155 @@ def test_main_cli(tmp_path):
     main([str(dirs[0]), str(dirs[1]), "--labels", "runA", "runB"])
     assert (dirs[0] / "plots" / "pca_trajectories_runA__runB"
             / "pca_population.png").is_file()
+
+
+# ----------------------------------------------------------------------------
+#  Condition groups: colour by group, seed-paired distance summary, --out
+# ----------------------------------------------------------------------------
+
+def _write_seed(run_dir: Path, seed: int) -> None:
+    import yaml
+    cfg = run_dir / "reproducibility" / "config.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    with open(cfg, "w") as f:
+        yaml.safe_dump({"seed": seed, "outer": {}}, f)
+
+
+def _constant_run(tmp_path, name: str, seed: int, final: float) -> Path:
+    """Two gens; every genome of the last gen equals ``final`` on all 15
+    genes, so the final centroid is exactly known."""
+    run_dir = tmp_path / name
+    genomes = {0: [[0.5] * 15] * 3, 1: [[final] * 15] * 3}
+    _write_population_csv(run_dir, genomes)
+    _write_seed(run_dir, seed)
+    return run_dir
+
+
+def test_load_seed_reads_config_and_tolerates_absence(tmp_path):
+    from WP2_Outer_Loop.pca_trajectories import load_seed
+    run = _constant_run(tmp_path, "a", 67, 0.6)
+    assert load_seed(run) == 67
+    (run / "reproducibility" / "config.yaml").unlink()
+    assert load_seed(run) is None
+
+
+def test_final_centroid_distances_classify_seed_pairs(tmp_path):
+    from WP2_Outer_Loop.pca_trajectories import (
+        RunGroup, final_centroid_distances, load_genomes, summarize_distances)
+    a = _constant_run(tmp_path, "cod67", 67, 0.6)
+    b = _constant_run(tmp_path, "cod68", 68, 0.7)
+    c = _constant_run(tmp_path, "morph67", 67, 0.6)   # same endpoint as cod67
+    d = _constant_run(tmp_path, "morph68", 68, 0.9)
+    groups = [RunGroup("co-design", "red", [a, b], ["cod67", "cod68"]),
+              RunGroup("morph-only", "blue", [c, d], ["morph67", "morph68"])]
+    dist = final_centroid_distances(groups)
+    assert set(dist.columns) >= {"run_a", "run_b", "group_a", "group_b",
+                                 "seed_a", "seed_b", "relation", "distance"}
+    assert len(dist) == 6                      # 4 choose 2
+    rel = dict(zip(zip(dist.run_a, dist.run_b), dist.relation))
+    assert rel[("cod67", "cod68")] == "same condition"
+    assert rel[("morph67", "morph68")] == "same condition"
+    assert rel[("cod67", "morph67")] == "across conditions, same seed"
+    assert rel[("cod67", "morph68")] == "across conditions, different seed"
+    d_ = dict(zip(zip(dist.run_a, dist.run_b), dist.distance))
+    assert d_[("cod67", "morph67")] == pytest.approx(0.0)
+    assert d_[("cod67", "cod68")] == pytest.approx(np.sqrt(15) * 0.1)
+    summ = summarize_distances(dist).set_index("relation")
+    assert summ.loc["across conditions, same seed", "n"] == 2
+    assert summ.loc["same condition", "n"] == 2
+    assert summ.loc["across conditions, different seed", "n"] == 2
+    assert summ.loc["across conditions, same seed", "mean"] == pytest.approx(
+        (0.0 + np.sqrt(15) * 0.2) / 2)
+
+
+def test_group_mode_writes_to_out_dir_only_with_group_legend(tmp_path):
+    a = _constant_run(tmp_path, "cod67", 67, 0.6)
+    b = _constant_run(tmp_path, "cod68", 68, 0.7)
+    c = _constant_run(tmp_path, "morph67", 67, 0.65)
+    d = _constant_run(tmp_path, "morph68", 68, 0.9)
+    out = tmp_path / "pca_out"
+    main(["--group", "co-design", "red", str(a), str(b),
+          "--group", "morph-only", "blue", str(c), str(d),
+          "--labels", "cod67", "cod68", "morph67", "morph68",
+          "--out", str(out)])
+    for fname in ("pca_population.png", "pca_population_centroid_fit.png",
+                  "pca_pareto_front.png", "pca_pareto_front_centroid_fit.png",
+                  "final_centroid_distances.csv", "distance_summary.csv"):
+        assert (out / fname).stat().st_size > 0, fname
+    # nothing written into the run folders in --out mode
+    assert not any((r / "plots").exists() for r in (a, b, c, d))
+    dist = pd.read_csv(out / "final_centroid_distances.csv")
+    assert len(dist) == 6
+
+
+def test_group_legend_lists_groups_not_runs():
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import RunGroup, _draw_trajectories
+    paths = pd.DataFrame({
+        "run": ["a", "a", "b", "b", "c", "c"],
+        "outer_gen": [0, 1, 0, 1, 0, 1],
+        "pc1": [0.0, 1.0, 0.0, -1.0, 0.5, 0.5],
+        "pc2": [0.0, 0.0, 0.0, 0.0, 0.5, 1.0],
+    })
+    groups = [RunGroup("co-design", "red", [], ["a", "b"]),
+              RunGroup("morph-only", "blue", [], ["c"])]
+    fig = _draw_trajectories(paths, np.array([0.6, 0.3]), ["a", "b", "c"],
+                             "t", groups=groups)
+    texts = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    plt.close(fig)
+    assert any(t.startswith("co-design") for t in texts)
+    assert any(t.startswith("morph-only") for t in texts)
+    assert not any(t.startswith("a ") or t.startswith("b ") for t in texts)
+
+
+# ----------------------------------------------------------------------------
+#  Pairwise-by-seed panels (shared basis, one panel per seed)
+# ----------------------------------------------------------------------------
+
+def test_seed_panels_group_runs_by_seed_and_skip_unseeded():
+    from WP2_Outer_Loop.pca_trajectories import RunGroup, seed_panels
+    groups = [RunGroup("cod", "red", [], ["cod67", "cod68", "cod_noseed"]),
+              RunGroup("morph", "blue", [], ["morph67", "morph68"])]
+    seeds = {"cod67": 67, "cod68": 68, "cod_noseed": None,
+             "morph67": 67, "morph68": 68}
+    panels = seed_panels(groups, seeds)
+    assert [s for s, _ in panels] == [67, 68]
+    assert dict(panels)[67] == ["cod67", "morph67"]
+    assert dict(panels)[68] == ["cod68", "morph68"]
+
+
+def test_draw_by_seed_makes_one_panel_per_seed_with_shared_limits():
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import RunGroup, _draw_by_seed
+    paths = pd.DataFrame({
+        "run": ["cod67", "cod67", "morph67", "morph67", "cod68", "cod68", "morph68", "morph68"],
+        "outer_gen": [0, 1] * 4,
+        "pc1": [0.0, 1.0, 0.0, 0.5, 0.0, -1.0, 0.0, -0.5],
+        "pc2": [0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 2.0],
+    })
+    groups = [RunGroup("co-design", "red", [], ["cod67", "cod68"]),
+              RunGroup("morph-only", "blue", [], ["morph67", "morph68"])]
+    seeds = {"cod67": 67, "cod68": 68, "morph67": 67, "morph68": 68}
+    fig = _draw_by_seed(paths, np.array([0.5, 0.3]), ["cod67", "cod68", "morph67", "morph68"],
+                        "t", groups, seeds)
+    panels = [ax for ax in fig.axes if ax.get_title()]
+    titles = [ax.get_title() for ax in panels]
+    xl = [ax.get_xlim() for ax in panels]; yl = [ax.get_ylim() for ax in panels]
+    plt.close(fig)
+    assert titles == ["seed 67", "seed 68"]
+    assert all(np.allclose(l, xl[0]) for l in xl) and all(np.allclose(l, yl[0]) for l in yl)
+
+
+def test_group_mode_writes_by_seed_figures(tmp_path):
+    a = _constant_run(tmp_path, "cod67", 67, 0.6)
+    b = _constant_run(tmp_path, "cod68", 68, 0.7)
+    c = _constant_run(tmp_path, "morph67", 67, 0.65)
+    d = _constant_run(tmp_path, "morph68", 68, 0.9)
+    out = tmp_path / "pca_out"
+    main(["--group", "co-design", "red", str(a), str(b),
+          "--group", "morph-only", "blue", str(c), str(d),
+          "--labels", "cod67", "cod68", "morph67", "morph68",
+          "--out", str(out)])
+    for fname in ("pca_population_by_seed.png", "pca_population_centroid_fit_by_seed.png",
+                  "pca_pareto_front_by_seed.png", "pca_pareto_front_centroid_fit_by_seed.png"):
+        assert (out / fname).stat().st_size > 0, fname

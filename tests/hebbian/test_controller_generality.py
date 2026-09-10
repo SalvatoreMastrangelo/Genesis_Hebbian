@@ -5,7 +5,7 @@ controllers re-flown on random and own-front morphologies.
 Everything except the rollout is exercised here: generation discovery and
 thinning, best-of-generation extraction, controller/body tables, the exam
 forest mapping, pass grouping, metric reduction, resume bookkeeping, the
-per-generation summary, the diversity companion series, and the plots.
+per-generation summary, the final-centroid companion, and the plots.
 Runs inside the docker image (pandas/matplotlib):
 
     docker run --rm -v "$PWD":/workspace/bind -w /workspace/bind \
@@ -35,7 +35,6 @@ from WP2_Outer_Loop.controller_generality import (  # noqa: E402
     exam_forest_settings,
     final_centroid,
     generation_indices,
-    morph_diversity,
     reduce_pass,
     select_generations,
     summarize,
@@ -332,16 +331,6 @@ def test_summarize_means_over_bodies_per_generation():
 
 # ---------------------------------------------------------------- companions
 
-def test_morph_diversity_per_outer_gen_and_inner_gen_span(tmp_path):
-    run = _fake_run(tmp_path, refresh_every=2)
-    div = morph_diversity(run)
-    assert list(div["outer_gen"]) == [0, 1]
-    assert list(div["gen_start"]) == [0, 2]
-    assert list(div["gen_end"]) == [1, 3]
-    # Phase 0 was written with a 4× wider spread than phase 1.
-    assert div["diversity"].iloc[0] == pytest.approx(4 * div["diversity"].iloc[1])
-
-
 def test_final_centroid_is_the_last_phase_mean(tmp_path):
     run = _fake_run(tmp_path)
     c = final_centroid(run)
@@ -399,9 +388,12 @@ def test_draw_generality_has_a_baseline_line_per_body_set():
     fig, axes = plt.subplots(1, 3)
     draw_generality(axes, _summary_df(), body_sets=("random", "front"))
     labels = [l.get_label() for l in axes[0].get_lines()]
-    assert sum("zero rules" in l and "random" in l for l in labels) == 1
-    assert sum("zero rules" in l and "front" in l for l in labels) == 1
-    assert any("best-of-gen" in l and "random" in l for l in labels)
+    assert labels.count("generalist - random morphologies") == 1
+    assert labels.count("generalist - front morphologies") == 1
+    assert labels.count("hebbian - random morphologies") == 1
+    assert labels.count("hebbian - front morphologies") == 1
+    # no twin axis: the morphology-diversity companion line is gone
+    assert len(fig.axes) == 3
     plt.close(fig)
 
 
@@ -418,13 +410,10 @@ def test_draw_generality_ignores_absent_body_sets():
     plt.close(fig)
 
 
-def test_plot_generality_writes_png_with_diversity_axis(tmp_path):
+def test_plot_generality_writes_png(tmp_path):
     from WP2_Outer_Loop.controller_generality import plot_generality
-    div = pd.DataFrame({"outer_gen": [0, 1], "gen_start": [0, 4],
-                        "gen_end": [3, 7], "diversity": [1.5, 1.0]})
     out = plot_generality(_summary_df(), tmp_path / "g.png",
-                          body_sets=("random", "front"), diversity=div,
-                          title="t")
+                          body_sets=("random", "front"), title="t")
     assert out.is_file() and out.stat().st_size > 0
 
 
