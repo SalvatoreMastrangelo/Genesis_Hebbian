@@ -841,7 +841,7 @@ class _URDFHistogramPlotterCoreMixin:
             rgb_np = tensor_to_array(rgb)
             if rgb_np.ndim == 4:
                 rgb_np = rgb_np[0]
-            rgb_np = np.flip(rgb_np, axis=-1)
+            # RGB already; a channel flip turned the URDF's red profiles blue.
             if rgb_np.shape[-1] == 4:
                 rgb_np = rgb_np[..., :3]
             rgb_np = np.asarray(rgb_np)

@@ -120,8 +120,8 @@ class TopDroneVisualizer:
             if rgb_np.ndim == 4:
                 rgb_np = rgb_np[0]
 
-            # Renderer returns BGR; flip to RGB and drop alpha if present.
-            rgb_np = np.flip(rgb_np, axis=-1)
+            # Renderer returns RGB(A): drop alpha if present. Do NOT flip the
+            # channel axis; that turned the URDF's red profiles blue.
             if rgb_np.shape[-1] == 4:
                 rgb_np = rgb_np[..., :3]
 

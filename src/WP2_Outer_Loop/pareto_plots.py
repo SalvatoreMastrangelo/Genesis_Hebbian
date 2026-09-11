@@ -17,10 +17,14 @@ Figures written to ``<run_dir>/plots``:
   morphologies vs outer generation, ``<source>`` being ``exam`` when the run
   has an exam rollout and ``phase_mean`` otherwise (``plot_champion_curves``)
 * ``outer_metrics_evolution.png``
+* ``champion_renders/`` — still renders (3/4 + top view) of the progress
+  champion and of the cheapest morphology passing the ``min_progress_m``
+  gate (``render_champions``; needs Genesis, best-effort, ``--no-render``
+  or ``render=False`` to skip)
 
 Usage
 -----
-    PYTHONPATH=src python -m WP2_Outer_Loop.pareto_plots <run_dir>
+    PYTHONPATH=src python -m WP2_Outer_Loop.pareto_plots <run_dir> [--min-progress X] [--no-render]
 
 Also callable programmatically::
 
@@ -745,18 +749,41 @@ def plot_outer_metrics(run_dir: Path | str) -> None:
     print(f"[pareto_plots] Saved {out}")
 
 
+def render_champions_safe(run_dir: Path | str) -> bool:
+    """Still renders of the exam champions (``render_champions.render_run``)
+    into ``plots/champion_renders/``; ``True`` on success.
+
+    Needs a Genesis runtime, so it can only succeed inside the simulator
+    environment (a live run, or the docker image). Anywhere else — or on any
+    render error — it prints one line and returns ``False`` so the plots
+    that came before it are never lost.
+    """
+    try:
+        from WP2_Outer_Loop.render_champions import render_run
+        render_run(run_dir)
+        return True
+    except Exception as exc:  # noqa: BLE001 — renders are best-effort
+        print(f"[pareto_plots] champion renders skipped: {exc}")
+        return False
+
+
 def plot_outer_run(
     run_dir: Path | str, min_progress: Optional[float] = None,
+    render: bool = True,
 ) -> None:
     """All outer-loop plots for a run directory.
 
     Also refreshes ``results/pareto_front.csv``, so re-plotting an old run
-    backfills the per-generation front table it never wrote live.
+    backfills the per-generation front table it never wrote live. With
+    ``render`` (the default) the two exam champion morphologies are rendered
+    last via ``render_champions_safe`` — best-effort, needs Genesis.
     """
     build_pareto_front_csv(run_dir, min_progress=min_progress)
     plot_pareto_front(run_dir, min_progress=min_progress)
     plot_champion_curves(run_dir)
     plot_outer_metrics(run_dir)
+    if render:
+        render_champions_safe(run_dir)
 
 
 if __name__ == "__main__":
@@ -770,8 +797,12 @@ if __name__ == "__main__":
             print("--min-progress requires a numeric value (meters)")
             sys.exit(1)
         del argv[i:i + 2]
+    _render = True
+    if "--no-render" in argv:
+        argv.remove("--no-render")
+        _render = False
     if len(argv) < 1:
         print("Usage: python -m WP2_Outer_Loop.pareto_plots <run_dir> "
-              "[--min-progress X]")
+              "[--min-progress X] [--no-render]")
         sys.exit(1)
-    plot_outer_run(argv[0], min_progress=_min_progress)
+    plot_outer_run(argv[0], min_progress=_min_progress, render=_render)

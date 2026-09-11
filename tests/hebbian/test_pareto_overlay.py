@@ -511,3 +511,221 @@ def test_cli_solid_min_runs_flag_reaches_the_csv(tmp_path):
     assert at(120.0)["co-design"] == pytest.approx(0.275)     # 2 of 3 cover → solid: (0.30 + 0.25) / 2
     assert np.isnan(at(210.0)["co-design"])                    # 1 of 3 → dashed only
     assert at(210.0)["co-design_partial"] == pytest.approx(0.32)
+
+
+# ----------------------------------------------------------------------------
+#  Signed area between the two solid means (``_area`` figure)
+# ----------------------------------------------------------------------------
+
+_RAMP = np.array([[100.0, 0.10], [150.0, 0.20], [200.0, 0.30]])   # attainment 0.1/0.2/0.3
+_FLAT = np.array([[100.0, 0.20], [150.0, 0.20], [200.0, 0.20]])   # attainment 0.2 everywhere
+_FLAT_LATE = np.array([[150.0, 0.20], [200.0, 0.20]])             # starts at 150 m
+
+
+def _gap_groups(second):
+    return [FrontGroup("co-design", "red", [_RAMP, _RAMP]),
+            FrontGroup("morphology-only", "blue", second)]
+
+
+def test_attainment_gap_area_splits_positive_and_negative_parts():
+    from WP2_Outer_Loop.pareto_overlay import attainment_gap_area
+    grid = np.array([100.0, 150.0, 200.0])
+    area = attainment_gap_area(_gap_groups([_FLAT, _FLAT]), grid)
+    # gap = second − first = [+0.1, 0, −0.1]: first group cheaper on the
+    # left (positive), dearer on the right (negative); trapezoids of 50 m
+    np.testing.assert_allclose(area.gap, [0.1, 0.0, -0.1])
+    assert area.positive == pytest.approx(2.5)
+    assert area.negative == pytest.approx(-2.5)
+    assert area.net == pytest.approx(0.0)
+    assert (area.lo, area.hi) == (100.0, 200.0)
+
+
+def test_attainment_gap_area_counts_only_where_both_means_are_solid():
+    from WP2_Outer_Loop.pareto_overlay import attainment_gap_area
+    grid = np.array([100.0, 150.0, 200.0])
+    # the second group's solid mean only starts at 150 m (one front is late)
+    area = attainment_gap_area(_gap_groups([_FLAT, _FLAT_LATE]), grid)
+    np.testing.assert_allclose(area.gap, [np.nan, 0.0, -0.1], equal_nan=True)
+    assert area.positive == pytest.approx(0.0)
+    assert area.negative == pytest.approx(-2.5)
+    assert area.net == pytest.approx(-2.5)
+    assert (area.lo, area.hi) == (150.0, 200.0)
+
+
+def test_attainment_gap_area_honours_min_runs():
+    from WP2_Outer_Loop.pareto_overlay import attainment_gap_area
+    grid = np.array([100.0, 150.0, 200.0])
+    # with one covering front enough, the late start no longer trims the support
+    area = attainment_gap_area(_gap_groups([_FLAT, _FLAT_LATE]), grid, min_runs=1)
+    np.testing.assert_allclose(area.gap, [0.1, 0.0, -0.1])
+    assert area.net == pytest.approx(0.0)
+
+
+def test_attainment_gap_area_needs_exactly_two_groups():
+    from WP2_Outer_Loop.pareto_overlay import attainment_gap_area
+    with pytest.raises(ValueError, match="two groups"):
+        attainment_gap_area(_gap_groups([_FLAT])[:1], np.array([100.0, 200.0]))
+
+
+def test_attainment_gap_area_is_zero_without_shared_support():
+    from WP2_Outer_Loop.pareto_overlay import attainment_gap_area
+    late = np.array([[210.0, 0.3], [250.0, 0.4]])
+    area = attainment_gap_area(_gap_groups([late, late]), np.array([100.0, 200.0, 250.0]))
+    assert np.isnan(area.gap).all()
+    assert area.net == 0.0 and area.lo is None and area.hi is None
+
+
+def test_shade_gap_fills_orange_where_first_group_cheaper_and_blue_otherwise():
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgb
+    from WP2_Outer_Loop.pareto_overlay import draw_front_overlay
+    fig, ax = plt.subplots()
+    draw_front_overlay(ax, _gap_groups([_FLAT, _FLAT]), star=(190.8, 0.288),
+                       tail=True, grid_step=50.0, shade_gap=True)
+    from matplotlib.collections import PolyCollection
+    fills = [c for c in ax.collections if isinstance(c, PolyCollection)]
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    texts = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+    colors = sorted(tuple(np.round(c.get_facecolor()[0][:3], 3)) for c in fills)
+    assert len(fills) == 2
+    assert tuple(np.round(to_rgb("orange"), 3)) in colors
+    assert tuple(np.round(to_rgb("skyblue"), 3)) in colors
+    # the fills stay out of the legend; the net area is written on the axes
+    assert len(labels) == 3
+    assert any("net area" in t and "+0.00" in t for t in texts), texts
+
+
+def test_shade_gap_annotation_carries_the_signed_net_area():
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pareto_overlay import draw_front_overlay
+    fig, ax = plt.subplots()
+    draw_front_overlay(ax, _gap_groups([_FLAT, _FLAT_LATE]), tail=True,
+                       grid_step=50.0, shade_gap=True)
+    texts = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+    assert any("net area" in t and "-2.50" in t for t in texts), texts
+
+
+def test_shade_gap_with_one_group_raises():
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pareto_overlay import draw_front_overlay
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError, match="two groups"):
+        draw_front_overlay(ax, _gap_groups([_FLAT])[:1], shade_gap=True)
+    plt.close(fig)
+
+
+def test_plot_front_overlay_shade_gap_writes_files(tmp_path):
+    out = plot_front_overlay(_gap_groups([_FLAT, _FLAT]), tmp_path / "area.png",
+                             tail=True, shade_gap=True)
+    assert out.stat().st_size > 0
+    assert (tmp_path / "area.pdf").stat().st_size > 0
+
+
+def test_main_writes_area_figure_for_two_groups(tmp_path, capsys):
+    c0 = _write_run(tmp_path / "c0", [(0, 100.0, 0.10, "exam"), (0, 150.0, 0.20, "exam"),
+                                      (0, 200.0, 0.30, "exam")])
+    m0 = _write_run(tmp_path / "m0", [(0, 100.0, 0.20, "exam"), (0, 200.0, 0.20, "exam")])
+    out = tmp_path / "fig" / "overlay.png"
+    assert main(["--group", "co-design", "red", str(c0),
+                 "--group", "morphology-only", "blue", str(m0),
+                 "--out", str(out), "--no-star", "--grid-step", "50"]) == 0
+    area = out.with_name("overlay_area.png")
+    assert area.stat().st_size > 0
+    assert area.with_suffix(".pdf").stat().st_size > 0
+    printed = capsys.readouterr().out
+    assert "net area" in printed and "+0.00" in printed
+
+
+def test_main_skips_area_figure_unless_exactly_two_groups(tmp_path, capsys):
+    c0 = _write_run(tmp_path / "c0", [(0, 100.0, 0.10, "exam"), (0, 200.0, 0.30, "exam")])
+    out = tmp_path / "fig" / "overlay.png"
+    assert main(["--group", "co-design", "red", str(c0),
+                 "--out", str(out), "--no-star"]) == 0
+    assert not out.with_name("overlay_area.png").exists()
+    assert "area figure skipped" in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------------
+#  Star-free copies: --no-bixler-subdir re-plots the star figures without it
+# ----------------------------------------------------------------------------
+
+def _figure_spy(monkeypatch):
+    """Patch ``Figure.savefig`` to record, per saved path, the legend
+    entries of the figure and how many gold (star) scatters it holds."""
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import PathCollection
+    from matplotlib.colors import to_rgba
+    seen = {}
+    real_savefig = plt.Figure.savefig
+    gold = to_rgba("gold")
+
+    def spy(self, fname, *a, **k):
+        labels, stars = [], 0
+        for ax in self.axes:
+            leg = ax.get_legend()
+            if leg is not None:
+                labels.extend(t.get_text() for t in leg.get_texts())
+            stars += sum(1 for c in ax.collections
+                         if isinstance(c, PathCollection) and len(c.get_facecolor())
+                         and tuple(c.get_facecolor()[0]) == gold)
+        seen[Path(fname)] = (labels, stars)
+        return real_savefig(self, fname, *a, **k)
+
+    monkeypatch.setattr(plt.Figure, "savefig", spy)
+    return seen
+
+
+def _three_runs_with_baseline(tmp_path):
+    base = [(190.0, 0.28)]
+    c0 = _write_run(tmp_path / "c0", [(0, 100.0, 0.10, "exam"), (0, 200.0, 0.30, "exam")], baseline=base)
+    c1 = _write_run(tmp_path / "c1", [(0, 100.0, 0.11, "exam"), (0, 205.0, 0.31, "exam")], baseline=base)
+    m0 = _write_run(tmp_path / "m0", [(0, 100.0, 0.15, "exam"), (0, 195.0, 0.35, "exam")], baseline=base)
+    return c0, c1, m0
+
+
+def test_no_bixler_subdir_replots_every_star_figure_without_the_star(tmp_path, monkeypatch, capsys):
+    seen = _figure_spy(monkeypatch)
+    c0, c1, m0 = _three_runs_with_baseline(tmp_path)
+    out = tmp_path / "fig" / "overlay.png"
+    assert main(["--group", "co-design", "red", str(c0), str(c1),
+                 "--group", "morphology-only", "blue", str(m0),
+                 "--out", str(out), "--no-bixler-subdir"]) == 0
+    sub = out.parent / "no_bixler"
+    names = ["overlay.png", "overlay_tail.png", "overlay_area.png"]
+    for name in names:
+        assert (sub / name).stat().st_size > 0
+        assert (sub / name).with_suffix(".pdf").stat().st_size > 0
+        labels, stars = seen[out.parent / name]
+        assert "Bixler (generalist controller)" in labels and stars == 1
+        labels, stars = seen[sub / name]
+        assert not any("Bixler" in l for l in labels) and stars == 0
+        assert len(labels) == 2                     # the two group means only
+    # the subfolder holds figures only: the mean-attainment CSV stays beside
+    # the originals, which are still written with the star
+    assert sorted(p.name for p in sub.iterdir()) == sorted(
+        n for name in names for n in (name, name.replace(".png", ".pdf")))
+    assert out.with_name("overlay_mean_attainment.csv").is_file()
+    assert not (sub / "overlay_mean_attainment.csv").exists()
+    assert str(sub) in capsys.readouterr().out
+
+
+def test_no_bixler_subdir_takes_a_custom_folder_name(tmp_path):
+    c0, c1, m0 = _three_runs_with_baseline(tmp_path)
+    out = tmp_path / "fig" / "overlay.png"
+    assert main(["--group", "co-design", "red", str(c0), str(c1),
+                 "--group", "morphology-only", "blue", str(m0),
+                 "--out", str(out), "--no-bixler-subdir", "star_free"]) == 0
+    assert (out.parent / "star_free" / "overlay_area.png").is_file()
+    assert not (out.parent / "no_bixler").exists()
+
+
+def test_no_bixler_subdir_is_skipped_when_no_star_is_drawn(tmp_path, capsys):
+    c0, c1, m0 = _three_runs_with_baseline(tmp_path)
+    out = tmp_path / "fig" / "overlay.png"
+    assert main(["--group", "co-design", "red", str(c0), str(c1),
+                 "--group", "morphology-only", "blue", str(m0),
+                 "--out", str(out), "--no-star", "--no-bixler-subdir"]) == 0
+    assert not (out.parent / "no_bixler").exists()
+    assert "no star drawn" in capsys.readouterr().out

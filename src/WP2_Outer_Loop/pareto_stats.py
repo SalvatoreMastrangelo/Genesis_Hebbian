@@ -60,10 +60,16 @@ effects, red shading and positive signs mean A is better). Writes into
 ``paired_tests.csv``, ``attainment_test.csv``, ``eaf_maps.npz``,
 ``progress_attainment_test.csv``, ``hv_trajectories.csv``,
 ``hv_time_test.csv``, ``summary.json`` and the figures
-``indicator_strips``, ``indicator_strips_progress``,
-``attainment_difference``, ``attainment_difference_progress``,
+``indicator_strips`` (CoT at ``--levels``), ``indicator_strips_progress``
+(progress at ``--cot-levels``), ``hypervolume_strip``,
+``attainment_difference``, ``attainment_difference_progress`` (max-T band,
+Hodges–Lehmann shift) and their raw-p-value siblings
+``attainment_difference_raw``, ``attainment_difference_progress_raw``,
 ``eaf_difference``, ``eaf_pvalue``, ``hypervolume_significance``
-(PNG + PDF). Pure numpy/pandas/scipy/matplotlib — runs outside docker.
+(PNG + PDF). ``--no-bixler-subdir [NAME]`` re-plots the two figures that
+carry the Bixler star (``eaf_difference``, ``eaf_pvalue``) without it into
+``--out/NAME/`` (default ``no_bixler``) as well. Pure
+numpy/pandas/scipy/matplotlib — runs outside docker.
 """
 
 from __future__ import annotations
@@ -102,8 +108,8 @@ from WP2_Outer_Loop.pareto_overlay import (
 )
 
 _COT_NAMES = ("cost_of_transport", "cot")
-DEFAULT_LEVELS: Tuple[float, ...] = (150.0, 170.0, 190.0)
-DEFAULT_COT_LEVELS: Tuple[float, ...] = (0.15, 0.20, 0.25)
+DEFAULT_LEVELS: Tuple[float, ...] = (130.0, 150.0, 170.0, 190.0, 210.0)
+DEFAULT_COT_LEVELS: Tuple[float, ...] = (0.15, 0.20, 0.25, 0.30, 0.35)
 ALPHA = 0.05
 
 
@@ -660,19 +666,20 @@ def paired_tests(
 #  Figures
 # ----------------------------------------------------------------------------
 
-def _pv(p: float) -> str:
-    return f"{p:.4f}" if p >= 1e-3 else f"{p:.1e}"
+def pvalue_label(p: float) -> str:
+    """``p-value < 0.001`` below one per mille, else ``p-value = <3 s.f.>``."""
+    return "p-value < 0.001" if p < 1e-3 else f"p-value = {p:.3g}"
 
 
-def plot_indicator_strips(ga: StatsGroup, gb: StatsGroup, ind: pd.DataFrame,
-                          out_path: Path, levels: Sequence[float] = DEFAULT_LEVELS) -> None:
+def _draw_strips(ga: StatsGroup, gb: StatsGroup, ind: pd.DataFrame,
+                 keys: Sequence[Tuple[str, str]], out_path: Path, suptitle: str,
+                 panel_width: float = 2.4) -> None:
+    """One strip panel per ``(key, title)``: jittered per-run dots for both
+    groups, median bars, the exact Mann–Whitney p-value in the title."""
     import matplotlib.pyplot as plt
 
-    keys = [("hv", "Hypervolume\n(ref 80 m, CoT 0.5)")]
-    keys += [(f"cot_at_{int(l)}", f"CoT at {int(l)} m") for l in levels]
-    keys += [("tip", "Front tip [m]")]
     t = ind.set_index("key")
-    fig, axes = plt.subplots(1, len(keys), figsize=(2.4 * len(keys), 3.6))
+    fig, axes = plt.subplots(1, len(keys), figsize=(panel_width * len(keys) + 0.8, 3.6))
     rng = np.random.default_rng(0)
     for ax, (k, name) in zip(np.atleast_1d(axes), keys):
         for x, g in ((0, ga), (1, gb)):
@@ -680,91 +687,114 @@ def plot_indicator_strips(ga: StatsGroup, gb: StatsGroup, ind: pd.DataFrame,
             ax.scatter(x + rng.uniform(-0.12, 0.12, len(v)), v, s=28, color=g.color,
                        alpha=0.85, edgecolors="white", linewidths=0.6, zorder=3)
             ax.hlines(np.median(v), x - 0.25, x + 0.25, color=g.color, lw=2, zorder=4)
-        ax.set_title(f"{name}\np-value = {_pv(t.loc[k, 'p_two_sided'])}", fontsize=9)
+        ax.set_title(f"{name}\n{pvalue_label(t.loc[k, 'p_two_sided'])}", fontsize=9)
         ax.set_xticks([0, 1])
         ax.set_xticklabels([ga.label, gb.label], fontsize=8)
         ax.set_xlim(-0.6, 1.6)
         ax.grid(True, axis="y", linestyle="--", alpha=0.4)
         ax.tick_params(labelsize=8)
-    fig.suptitle(f"Per-run cumulative exam-front indicators ({len(ga.runs)} vs "
-                 f"{len(gb.runs)} runs; exact two-sided Mann-Whitney p-value, bar = median)",
-                 fontsize=10)
+    fig.suptitle(suptitle, fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     fig.savefig(out_path.with_suffix(".pdf"))
     plt.close(fig)
+
+
+def plot_indicator_strips(ga: StatsGroup, gb: StatsGroup, ind: pd.DataFrame,
+                          out_path: Path, levels: Sequence[float] = DEFAULT_LEVELS) -> None:
+    """Strips of CoT at each progress level."""
+    keys = [(f"cot_at_{int(l)}", f"CoT at {int(l)} m") for l in levels]
+    _draw_strips(ga, gb, ind, keys, out_path,
+                 "Per-run CoT at fixed progress")
 
 
 def plot_indicator_strips_progress(ga: StatsGroup, gb: StatsGroup, ind: pd.DataFrame,
                                    out_path: Path,
                                    cot_levels: Sequence[float] = DEFAULT_COT_LEVELS) -> None:
-    """Strips of the progress-side indicators: HV, progress at each CoT
-    budget, cheapest-arm progress."""
-    import matplotlib.pyplot as plt
-
-    keys = [("hv", "Hypervolume\n(ref 80 m, CoT 0.5)")]
-    keys += [(_prog_key(c), f"Progress at CoT {float(c):g} [m]") for c in cot_levels]
-    keys += [("arm", "Cheapest-arm progress [m]")]
-    t = ind.set_index("key")
-    fig, axes = plt.subplots(1, len(keys), figsize=(2.4 * len(keys), 3.6))
-    rng = np.random.default_rng(0)
-    for ax, (k, name) in zip(np.atleast_1d(axes), keys):
-        for x, g in ((0, ga), (1, gb)):
-            v = np.array([r.indicators()[k] for r in g.runs])
-            ax.scatter(x + rng.uniform(-0.12, 0.12, len(v)), v, s=28, color=g.color,
-                       alpha=0.85, edgecolors="white", linewidths=0.6, zorder=3)
-            ax.hlines(np.median(v), x - 0.25, x + 0.25, color=g.color, lw=2, zorder=4)
-        ax.set_title(f"{name}\np-value = {_pv(t.loc[k, 'p_two_sided'])}", fontsize=9)
-        ax.set_xticks([0, 1])
-        ax.set_xticklabels([ga.label, gb.label], fontsize=8)
-        ax.set_xlim(-0.6, 1.6)
-        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-        ax.tick_params(labelsize=8)
-    fig.suptitle(f"Per-run progress-side indicators ({len(ga.runs)} vs {len(gb.runs)} runs; "
-                 f"exact two-sided Mann-Whitney p-value, bar = median)", fontsize=10)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=200)
-    fig.savefig(out_path.with_suffix(".pdf"))
-    plt.close(fig)
+    """Strips of progress at each CoT budget."""
+    keys = [(_prog_key(c), f"Progress at CoT {float(c):g} [m]") for c in cot_levels]
+    _draw_strips(ga, gb, ind, keys, out_path,
+                 "Per-run progress at fixed CoT budget")
 
 
-def plot_attainment_difference_progress(ga: StatsGroup, gb: StatsGroup, patt: pd.DataFrame,
-                                        out_path: Path) -> None:
-    """Δ progress at a given CoT budget (A − B) with the max-T band, and the
-    p-value panel — the transpose of ``plot_attainment_difference``."""
+def plot_hypervolume_strip(ga: StatsGroup, gb: StatsGroup, ind: pd.DataFrame,
+                           out_path: Path, panel_width: float = 2.0) -> None:
+    """The hypervolume strip on its own, as tight as one panel of the
+    multi-panel indicator strips (``panel_width`` in inches; the figure is
+    0.8 in wider for the y tick labels)."""
+    _draw_strips(ga, gb, ind, [("hv", "Hypervolume (ref 80 m, CoT 0.5)")], out_path,
+                 "Cumulative exam-front hypervolume", panel_width=panel_width)
+
+
+def _alpha_line(ax, color: str) -> None:
+    """The p-value = 0.05 threshold: a dashed red line with a red ``0.05``
+    tag at its left end, on the log-scaled p-value panel."""
+    ax.axhline(ALPHA, color=color, lw=0.9, ls=(0, (4, 2.5)))
+    ax.text(0.005, ALPHA, f"{ALPHA:g}", transform=ax.get_yaxis_transform(),
+            color="red", fontsize=8, ha="left", va="bottom")
+
+
+def _attainment_axes(ga: StatsGroup, gb: StatsGroup, df: pd.DataFrame, x: np.ndarray,
+                     diff_col: str, better: str, diff_floor: float, family_wise: bool,
+                     mean_label: str, p_label: str):
+    """Shared two-panel skeleton of the along-the-front figures: mean
+    difference (+ Hodges–Lehmann shift and max-T shading when
+    ``family_wise``, raw p-value < 0.05 shading otherwise) over the p-value
+    panel. Returns ``(fig, ax1, ax2, lo, hi)``."""
     import matplotlib.pyplot as plt
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6.4), sharex=True,
                                    gridspec_kw=dict(height_ratios=[2.2, 1]))
-    C = patt["cot"].to_numpy()
     ax1.axhline(0, color="0.4", lw=0.8)
-    ax1.plot(C, patt["mean_diff_progress"], color="black", lw=1.8,
-             label=f"mean progress(CoT), {ga.label} − {gb.label}")
-    ax1.plot(C, patt["hl_shift_progress"], color="0.45", lw=1.2, ls=(0, (4, 2.5)),
-             label="Hodges–Lehmann shift")
-    sig_a = ((patt["p_maxT"] < ALPHA) & (patt["t_obs"] > 0)).to_numpy()
-    sig_b = ((patt["p_maxT"] < ALPHA) & (patt["t_obs"] < 0)).to_numpy()
-    finite = patt["mean_diff_progress"].to_numpy()[np.isfinite(patt["mean_diff_progress"])]
-    lo = min(-5.0, float(finite.min()) * 1.25) if finite.size else -20.0
-    hi = max(5.0, float(finite.max()) * 1.25) if finite.size else 20.0
-    ax1.fill_between(C, lo, hi, where=sig_a, color=ga.color, alpha=0.12, lw=0,
-                     label=f"{ga.label} farther, family-wise p-value < 0.05 (max-T)")
+    ax1.plot(x, df[diff_col], color="black", lw=1.8, label=mean_label)
+    if family_wise:
+        hl_col = diff_col.replace("mean_diff", "hl_shift")
+        ax1.plot(x, df[hl_col], color="0.45", lw=1.2, ls=(0, (4, 2.5)),
+                 label="Hodges–Lehmann shift")
+        p_col, tag = "p_maxT", "family-wise p-value < 0.05 (max-T)"
+    else:
+        p_col, tag = "p_raw", "p-value < 0.05"
+    sig_a = ((df[p_col] < ALPHA) & (df["t_obs"] > 0)).to_numpy()
+    sig_b = ((df[p_col] < ALPHA) & (df["t_obs"] < 0)).to_numpy()
+    finite = df[diff_col].to_numpy()[np.isfinite(df[diff_col])]
+    lo = min(-diff_floor, float(finite.min()) * 1.25) if finite.size else -4 * diff_floor
+    hi = max(diff_floor, float(finite.max()) * 1.25) if finite.size else 4 * diff_floor
+    ax1.fill_between(x, lo, hi, where=sig_a, color=ga.color, alpha=0.12, lw=0,
+                     label=f"{ga.label} {better}, {tag}")
     if sig_b.any():
-        ax1.fill_between(C, lo, hi, where=sig_b, color=gb.color, alpha=0.12, lw=0,
-                         label=f"{gb.label} farther, family-wise p-value < 0.05 (max-T)")
-    ax1.set_ylabel("Δ progress at a given CoT budget [m]")
+        ax1.fill_between(x, lo, hi, where=sig_b, color=gb.color, alpha=0.12, lw=0,
+                         label=f"{gb.label} {better}, {tag}")
     ax1.set_ylim(lo, hi)
     ax1.grid(True, linestyle="--", alpha=0.4)
-    ax1.legend(fontsize=8, loc="upper right")
-    ax2.plot(C, patt["p_raw"], color="0.55", lw=1.2, label="raw p-value (per CoT budget)")
-    ax2.plot(C, patt["p_maxT"], color="black", lw=1.8, label="max-T adjusted p-value")
-    ax2.axhline(ALPHA, color=ga.color, lw=0.9, ls=(0, (4, 2.5)))
+    if family_wise:
+        ax2.plot(x, df["p_raw"], color="0.55", lw=1.2, label=f"raw p-value ({p_label})")
+        ax2.plot(x, df["p_maxT"], color="black", lw=1.8, label="max-T adjusted p-value")
+    else:
+        ax2.plot(x, df["p_raw"], color="black", lw=1.8, label=f"p-value ({p_label})")
+    _alpha_line(ax2, ga.color)
     ax2.set_yscale("log")
-    ax2.set_ylim(min(1e-4, float(patt["p_raw"].min()) / 2), 1.5)
+    ax2.set_ylim(min(1e-4, float(df["p_raw"].min()) / 2), 1.5)
     ax2.set_ylabel("p-value (exact rank-sum)")
-    ax2.set_xlabel("Cost of transport budget")
     ax2.grid(True, linestyle="--", alpha=0.4)
     ax2.legend(fontsize=8, loc="lower right")
+    return fig, ax1, ax2, lo, hi
+
+
+def plot_attainment_difference_progress(ga: StatsGroup, gb: StatsGroup, patt: pd.DataFrame,
+                                        out_path: Path, family_wise: bool = True) -> None:
+    """Δ progress at a given CoT budget (A − B) with the significance band,
+    and the p-value panel — the transpose of ``plot_attainment_difference``.
+    ``family_wise=False`` is the raw-p-value sibling: no Hodges–Lehmann
+    shift, no max-T curve, shading where the raw p-value < 0.05."""
+    import matplotlib.pyplot as plt
+
+    C = patt["cot"].to_numpy()
+    fig, ax1, ax2, lo, hi = _attainment_axes(
+        ga, gb, patt, C, "mean_diff_progress", "farther", 5.0, family_wise,
+        f"mean progress(CoT), {ga.label} − {gb.label}", "per CoT budget")
+    ax1.set_ylabel("Δ progress at a given CoT budget [m]")
+    ax1.legend(fontsize=8, loc="upper right")
+    ax2.set_xlabel("Cost of transport budget")
     n_have = patt[["n_have_a", "n_have_b"]].to_numpy()
     full = (n_have == n_have.max(axis=0)).all(axis=1)
     if full.any() and not full[0]:
@@ -773,8 +803,7 @@ def plot_attainment_difference_progress(ga: StatsGroup, gb: StatsGroup, patt: pd
             ax.axvline(all_arms, color="0.6", lw=0.8, ls=":")
         ax1.text(all_arms + 0.002, hi * 0.95, "every run has a body", fontsize=7,
                  color="0.4", va="top")
-    ax1.set_title(f"Progress-at-CoT difference between conditions "
-                  f"({len(ga.runs)} vs {len(gb.runs)} runs)", fontsize=10)
+    ax1.set_title("Progress-at-CoT difference between conditions", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     fig.savefig(out_path.with_suffix(".pdf"))
@@ -782,40 +811,20 @@ def plot_attainment_difference_progress(ga: StatsGroup, gb: StatsGroup, patt: pd
 
 
 def plot_attainment_difference(ga: StatsGroup, gb: StatsGroup, att: pd.DataFrame,
-                               out_path: Path) -> None:
+                               out_path: Path, family_wise: bool = True) -> None:
+    """Δ CoT at a given progress (A − B) with the significance band and the
+    p-value panel. ``family_wise=False`` is the raw-p-value sibling: no
+    Hodges–Lehmann shift, no max-T curve, shading where the raw p-value
+    < 0.05."""
     import matplotlib.pyplot as plt
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6.4), sharex=True,
-                                   gridspec_kw=dict(height_ratios=[2.2, 1]))
     P = att["progress_m"].to_numpy()
-    ax1.axhline(0, color="0.4", lw=0.8)
-    ax1.plot(P, att["mean_diff_cot"], color="black", lw=1.8,
-             label=f"mean CoT(progress), {ga.label} − {gb.label}")
-    ax1.plot(P, att["hl_shift_cot"], color="0.45", lw=1.2, ls=(0, (4, 2.5)),
-             label="Hodges–Lehmann shift")
-    sig_a = ((att["p_maxT"] < ALPHA) & (att["t_obs"] > 0)).to_numpy()
-    sig_b = ((att["p_maxT"] < ALPHA) & (att["t_obs"] < 0)).to_numpy()
-    finite = att["mean_diff_cot"].to_numpy()[np.isfinite(att["mean_diff_cot"])]
-    lo = min(-0.01, float(finite.min()) * 1.25) if finite.size else -0.05
-    hi = max(0.01, float(finite.max()) * 1.25) if finite.size else 0.05
-    ax1.fill_between(P, lo, hi, where=sig_a, color=ga.color, alpha=0.12, lw=0,
-                     label=f"{ga.label} cheaper, family-wise p-value < 0.05 (max-T)")
-    if sig_b.any():
-        ax1.fill_between(P, lo, hi, where=sig_b, color=gb.color, alpha=0.12, lw=0,
-                         label=f"{gb.label} cheaper, family-wise p-value < 0.05 (max-T)")
+    fig, ax1, ax2, lo, hi = _attainment_axes(
+        ga, gb, att, P, "mean_diff_cot", "cheaper", 0.01, family_wise,
+        f"mean CoT(progress), {ga.label} − {gb.label}", "per progress level")
     ax1.set_ylabel("Δ CoT at a given progress")
-    ax1.set_ylim(lo, hi)
-    ax1.grid(True, linestyle="--", alpha=0.4)
     ax1.legend(fontsize=8, loc="lower left")
-    ax2.plot(P, att["p_raw"], color="0.55", lw=1.2, label="raw p-value (per progress level)")
-    ax2.plot(P, att["p_maxT"], color="black", lw=1.8, label="max-T adjusted p-value")
-    ax2.axhline(ALPHA, color=ga.color, lw=0.9, ls=(0, (4, 2.5)))
-    ax2.set_yscale("log")
-    ax2.set_ylim(min(1e-4, float(att["p_raw"].min()) / 2), 1.5)
-    ax2.set_ylabel("p-value (exact rank-sum)")
     ax2.set_xlabel("Exam progress [m]")
-    ax2.grid(True, linestyle="--", alpha=0.4)
-    ax2.legend(fontsize=8, loc="lower right")
     n_reach = att[["n_reach_a", "n_reach_b"]].to_numpy()
     short = (n_reach < n_reach.max(axis=0)).any(axis=1)
     if short.any():
@@ -823,8 +832,7 @@ def plot_attainment_difference(ga: StatsGroup, gb: StatsGroup, att: pd.DataFrame
         for ax in (ax1, ax2):
             ax.axvline(first_tip, color="0.6", lw=0.8, ls=":")
         ax1.text(first_tip + 1, lo * 0.95, "first tip", fontsize=7, color="0.4", va="bottom")
-    ax1.set_title(f"Attainment-curve difference between conditions "
-                  f"({len(ga.runs)} vs {len(gb.runs)} runs)", fontsize=10)
+    ax1.set_title("Attainment-curve difference between conditions", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     fig.savefig(out_path.with_suffix(".pdf"))
@@ -855,15 +863,14 @@ def plot_eaf_difference(ga: StatsGroup, gb: StatsGroup, eaf: Dict[str, object],
         ax.scatter([star[0]], [star[1]], marker="*", s=300, color="gold",
                    edgecolors="black", linewidths=0.9, zorder=5, label=BIXLER_LABEL)
     ax.scatter([eaf["at_progress"]], [eaf["at_cot"]], marker="x", s=70, color="black",
-               zorder=6, label=f"max |ΔEAF| = {eaf['ks']:.2f} (p-value = {eaf['p']:.1e})")
+               zorder=6, label=f"max |ΔEAF| = {eaf['ks']:.2f}, {pvalue_label(eaf['p'])}")
     ax.set_xlabel("Exam progress [m]")
     ax.set_ylabel("Cost of transport")
     ax.set_xlim(p_grid[0], p_grid[-1])
     ax.set_ylim(c_grid[0], c_grid[-1])
     ax.grid(True, linestyle="--", alpha=0.3)
     ax.legend(fontsize=8, loc="upper left")
-    ax.set_title(f"Empirical attainment function difference "
-                 f"({ga.color}: more {ga.label} runs attain the point)", fontsize=10)
+    ax.set_title("Empirical attainment function difference", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     fig.savefig(out_path.with_suffix(".pdf"))
@@ -923,9 +930,9 @@ def plot_eaf_pvalue(ga: StatsGroup, gb: StatsGroup, eaf: Dict[str, object],
                           fontsize=8)
     cb.set_label(f"p-value, signed: {ga.color} = {ga.label} attains the point in more runs, "
                  f"{gb.color} = {gb.label} does", fontsize=8)
-    fig.suptitle("Where in objective space do the two conditions' fronts differ? Pointwise "
-                 f"test of 'fraction of runs attaining (progress, CoT)', {len(ga.runs)} vs "
-                 f"{len(gb.runs)} runs", fontsize=10.5)
+    fig.suptitle("Where in objective space do the two conditions' fronts differ?\n"
+                 f"Pointwise test of the fraction of runs attaining a progress and CoT point, "
+                 f"{len(ga.runs)} vs {len(gb.runs)} runs", fontsize=10.5)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     fig.savefig(out_path.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(fig)
@@ -946,9 +953,9 @@ def plot_hv_significance(ga: StatsGroup, gb: StatsGroup, hv: Dict[str, object],
     ax_null.set_title("(a) Exact permutation null of the HV difference", fontsize=10)
     n_extreme = int(round(hv["p_meandiff"] * len(hv["diff_null"])))
     ymax = ax_null.get_ylim()[1]
-    ax_null.annotate(f"observed {hv['diff_obs']:+.2f}\nexact two-sided p-value = "
-                     f"{hv['p_meandiff']:.2g}\n({n_extreme} of {len(hv['diff_null'])} "
-                     f"relabellings as extreme)",
+    ax_null.annotate(f"observed {hv['diff_obs']:+.2f}\nexact two-sided "
+                     f"{pvalue_label(hv['p_meandiff'])}\n{n_extreme} of {len(hv['diff_null'])} "
+                     f"relabellings as extreme",
                      xy=(hv["diff_obs"], ymax * 0.55),
                      xytext=(hv["diff_obs"] - 0.05 * abs(hv["diff_obs"]) - 0.1, ymax * 0.75),
                      ha="right", fontsize=8.5,
@@ -973,7 +980,7 @@ def plot_hv_significance(ga: StatsGroup, gb: StatsGroup, hv: Dict[str, object],
     ax_dots.set_xticklabels([ga.label, gb.label, f"{gb.label} median\n+ HL shift"], fontsize=8.5)
     ax_dots.set_xlim(-0.5, 2.6)
     ax_dots.set_ylabel("Hypervolume of the cumulative exam front\n(ref 80 m, CoT 0.5)")
-    ax_dots.set_title(f"(b) Per-run HV, exact Mann–Whitney p-value = {m['p_two_sided']:.2g}, "
+    ax_dots.set_title(f"(b) Per-run HV, exact Mann–Whitney {pvalue_label(m['p_two_sided'])}, "
                       f"Cliff's δ = {m['cliffs_delta']:+.2f}", fontsize=10)
     ax_dots.grid(True, axis="y", linestyle="--", alpha=0.4)
 
@@ -1007,8 +1014,7 @@ def plot_hv_significance(ga: StatsGroup, gb: StatsGroup, hv: Dict[str, object],
         ax.set_title(ttl, fontsize=10)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend(fontsize=7.5, loc="lower right")
-    fig.suptitle(f"Hypervolume significance, {ga.label} vs {gb.label} "
-                 f"({n_a} vs {len(gb.runs)} runs)", fontsize=11)
+    fig.suptitle(f"Hypervolume significance, {ga.label} vs {gb.label}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     fig.savefig(out_path.with_suffix(".pdf"))
@@ -1044,11 +1050,15 @@ def run_analysis(
     levels: Sequence[float] = DEFAULT_LEVELS,
     cot_levels: Sequence[float] = DEFAULT_COT_LEVELS, f_points: int = 51,
     min_progress: Optional[float] = None, star: bool = True, figures: bool = True,
+    no_star_subdir: Optional[str] = None,
 ) -> Dict[str, object]:
     """Run every layer for group A vs group B, write tables, maps, figures
     and ``summary.json`` into ``out_dir``, and return the summary dict.
     Group A is the reference direction: positive shifts, positive ``t_obs``
-    and the A colour mean A is better."""
+    and the A colour mean A is better. With ``no_star_subdir`` the two
+    figures that draw the Bixler star (``eaf_difference``, ``eaf_pvalue``)
+    are re-plotted without it into ``out_dir/<no_star_subdir>/`` as well;
+    nothing else lives there."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     n_a, n_b = len(ga.runs), len(gb.runs)
@@ -1184,12 +1194,24 @@ def run_analysis(
         plot_indicator_strips(ga, gb, ind, out_dir / "indicator_strips.png", levels)
         plot_indicator_strips_progress(ga, gb, ind, out_dir / "indicator_strips_progress.png",
                                        cot_levels)
+        plot_hypervolume_strip(ga, gb, ind, out_dir / "hypervolume_strip.png")
         plot_attainment_difference(ga, gb, att, out_dir / "attainment_difference.png")
         plot_attainment_difference_progress(ga, gb, patt,
                                             out_dir / "attainment_difference_progress.png")
+        plot_attainment_difference(ga, gb, att, out_dir / "attainment_difference_raw.png",
+                                   family_wise=False)
+        plot_attainment_difference_progress(ga, gb, patt,
+                                            out_dir / "attainment_difference_progress_raw.png",
+                                            family_wise=False)
         plot_eaf_difference(ga, gb, eaf, p_grid, c_grid, out_dir / "eaf_difference.png", star_xy)
         plot_eaf_pvalue(ga, gb, eaf, pmaps, p_grid, c_grid, out_dir / "eaf_pvalue.png", star_xy)
         plot_hv_significance(ga, gb, hv, f_grid, out_dir / "hypervolume_significance.png")
+        if no_star_subdir and star_xy is not None:
+            sub = out_dir / no_star_subdir
+            sub.mkdir(parents=True, exist_ok=True)
+            plot_eaf_difference(ga, gb, eaf, p_grid, c_grid, sub / "eaf_difference.png", None)
+            plot_eaf_pvalue(ga, gb, eaf, pmaps, p_grid, c_grid, sub / "eaf_pvalue.png", None)
+            summary["no_star_figures_dir"] = str(sub)
 
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2, default=_jsonable)
@@ -1261,6 +1283,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--cot-step", type=float, default=0.0025, help="CoT grid step")
     parser.add_argument("--no-star", action="store_true",
                         help="omit the WP1 generalist exam baseline star")
+    parser.add_argument("--no-bixler-subdir", nargs="?", const="no_bixler",
+                        default=None, metavar="NAME",
+                        help="also re-plot the star-bearing figures (eaf_difference, "
+                             "eaf_pvalue) without the star into OUT/NAME/ (default "
+                             "name no_bixler); skipped when no star is drawn")
     args = parser.parse_args(argv)
     if not args.group or len(args.group) != 2:
         parser.error("exactly two --group LABEL COLOR RUN_DIR... are required")
@@ -1279,9 +1306,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     summary = run_analysis(groups[0], groups[1], args.out, grid_step=args.grid_step,
                            cot_step=args.cot_step, levels=args.levels,
                            cot_levels=args.cot_levels, min_progress=args.min_progress,
-                           star=not args.no_star)
+                           star=not args.no_star, no_star_subdir=args.no_bixler_subdir)
     _report(groups[0], groups[1], summary)
     print(f"[stats] wrote tables, maps and figures to {args.out}")
+    if args.no_bixler_subdir:
+        if summary.get("no_star_figures_dir"):
+            print(f"[stats] wrote eaf_difference and eaf_pvalue without the star to "
+                  f"{summary['no_star_figures_dir']}")
+        else:
+            print("[stats] star-free copies skipped: no star drawn")
     return 0
 
 

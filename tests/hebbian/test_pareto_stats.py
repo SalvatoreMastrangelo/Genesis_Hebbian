@@ -436,8 +436,9 @@ def test_indicator_tests_table_has_one_row_per_indicator_with_holm(tmp_path):
     a = [load_run(r) for r in runs_a]
     b = [load_run(r) for r in runs_b]
     df = indicator_tests(a, b)
-    assert set(df["key"]) == {"hv", "cot_at_150", "cot_at_170", "cot_at_190",
-                              "prog_at_cot_0.15", "prog_at_cot_0.2", "prog_at_cot_0.25",
+    assert set(df["key"]) == {"hv", "cot_at_130", "cot_at_150", "cot_at_170", "cot_at_190",
+                              "cot_at_210", "prog_at_cot_0.15", "prog_at_cot_0.2",
+                              "prog_at_cot_0.25", "prog_at_cot_0.3", "prog_at_cot_0.35",
                               "tip", "arm"}
     assert df.set_index("key").loc["prog_at_cot_0.2", "better"] == "higher"
     assert df.set_index("key").loc["prog_at_cot_0.25", "hl_shift"] > 0
@@ -481,7 +482,9 @@ def test_run_analysis_writes_tables_figures_and_summary(tmp_path):
                  "attainment_test.csv", "progress_attainment_test.csv", "eaf_maps.npz",
                  "hv_trajectories.csv", "hv_time_test.csv", "summary.json",
                  "indicator_strips.png", "indicator_strips_progress.png",
+                 "hypervolume_strip.png",
                  "attainment_difference.png", "attainment_difference_progress.png",
+                 "attainment_difference_raw.png", "attainment_difference_progress_raw.png",
                  "eaf_difference.png", "eaf_pvalue.png", "hypervolume_significance.png"):
         assert (out / name).is_file(), name
     assert summary["n_labelings"] == comb(10, 5)
@@ -499,6 +502,135 @@ def test_run_analysis_writes_tables_figures_and_summary(tmp_path):
     assert saved["eaf"]["p"] == summary["eaf"]["p"]
 
 
+def test_strip_figures_show_only_the_level_panels_and_hv_stands_alone(tmp_path):
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pareto_stats import (plot_hypervolume_strip, plot_indicator_strips,
+                                             plot_indicator_strips_progress)
+    runs_a, runs_b = _two_condition_runs(tmp_path, n_a=3, n_b=3)
+    ga = StatsGroup("alpha", "red", [load_run(r) for r in runs_a])
+    gb = StatsGroup("beta", "blue", [load_run(r) for r in runs_b])
+    ind = indicator_tests(ga.runs, gb.runs)
+    captured = {}
+    orig = plt.subplots
+
+    def spy(*args, **kwargs):
+        fig, axes = orig(*args, **kwargs)
+        captured[len(captured)] = (fig, axes)
+        return fig, axes
+
+    plt.subplots = spy
+    try:
+        plot_indicator_strips(ga, gb, ind, tmp_path / "s.png")
+        plot_indicator_strips_progress(ga, gb, ind, tmp_path / "sp.png")
+        plot_hypervolume_strip(ga, gb, ind, tmp_path / "hv.png")
+    finally:
+        plt.subplots = orig
+    titles = [[ax.get_title().split("\n")[0] for ax in np.atleast_1d(axes)]
+              for _fig, axes in captured.values()]
+    # bare titles: the former parenthetical details are deleted, not moved
+    assert [fig._suptitle.get_text() for fig, _axes in captured.values()] == [
+        "Per-run CoT at fixed progress", "Per-run progress at fixed CoT budget",
+        "Cumulative exam-front hypervolume"]
+    assert titles[0] == [f"CoT at {l} m" for l in (130, 150, 170, 190, 210)]
+    assert titles[1] == [f"Progress at CoT {c} [m]" for c in ("0.15", "0.2", "0.25", "0.3", "0.35")]
+    assert len(titles[2]) == 1 and titles[2][0].startswith("Hypervolume")
+    assert (tmp_path / "hv.pdf").is_file()
+    # the lone HV strip is as tight as one panel of the 5-panel strips
+    # (2.0 in + 0.8 in for the y tick labels), not a wide standalone axes
+    widths = [fig.get_figwidth() for fig, _axes in captured.values()]
+    assert widths[2] == pytest.approx(2.8)
+    assert widths[2] < widths[0] / 4
+
+
+def test_attainment_raw_pvalue_siblings_drop_hl_and_maxt_and_shade_raw_p(tmp_path):
+    """The ``family_wise=False`` siblings shade raw p-value < 0.05 (not max-T),
+    draw no Hodges–Lehmann shift and no max-T curve, and tag the 0.05 line."""
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pareto_stats import (ALPHA, plot_attainment_difference,
+                                             plot_attainment_difference_progress,
+                                             progress_attainment_test)
+    lab = all_labelings(8, 4)
+    p_grid = np.arange(90.0, 221.0, 10.0)
+    c_grid = np.array([0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40])
+    fronts_a = [np.array([[100.0, 0.10 + e], [150.0, 0.20 + e], [210.0, 0.30 + e]])
+                for e in (0.000, 0.002, 0.004, 0.006)]
+    fronts_b = [np.array([[100.0, 0.10 + e], [150.0, 0.25 + e], [200.0, 0.35 + e]])
+                for e in (0.001, 0.003, 0.005, 0.007)]
+    ga = StatsGroup("alpha", "red", [])
+    gb = StatsGroup("beta", "blue", [])
+    att = attainment_test(fronts_a, fronts_b, p_grid, lab)
+    patt = progress_attainment_test(fronts_a, fronts_b, c_grid, lab)
+    # make the raw and max-T verdicts differ somewhere so the test can tell them apart
+    att.loc[att.index[2], ["p_raw", "p_maxT"]] = [0.02, 0.30]
+    patt.loc[patt.index[2], ["p_raw", "p_maxT"]] = [0.02, 0.30]
+    att.loc[att.index[2], "t_obs"] = 1.0
+    patt.loc[patt.index[2], "t_obs"] = 1.0
+    captured = {}
+    orig = plt.subplots
+
+    def spy(*args, **kwargs):
+        fig, axes = orig(*args, **kwargs)
+        captured[len(captured)] = axes
+        return fig, axes
+
+    plt.subplots = spy
+    try:
+        plot_attainment_difference(ga, gb, att, tmp_path / "fw.png")
+        plot_attainment_difference(ga, gb, att, tmp_path / "raw.png", family_wise=False)
+        plot_attainment_difference_progress(ga, gb, patt, tmp_path / "fwp.png")
+        plot_attainment_difference_progress(ga, gb, patt, tmp_path / "rawp.png",
+                                            family_wise=False)
+    finally:
+        plt.subplots = orig
+    for name in ("fw", "raw", "fwp", "rawp"):
+        assert (tmp_path / f"{name}.png").is_file() and (tmp_path / f"{name}.pdf").is_file()
+    for (ax1_fw, ax2_fw), (ax1, ax2), df, x in (
+            (captured[0], captured[1], att, "progress_m"),
+            (captured[2], captured[3], patt, "cot")):
+        fw_labels = [l.get_label() for l in ax1_fw.get_lines()]
+        raw_labels = [l.get_label() for l in ax1.get_lines()]
+        assert any("Hodges" in l for l in fw_labels)
+        assert not any("Hodges" in l for l in raw_labels)
+        assert [l for l in raw_labels if not l.startswith("_")] == [
+            l for l in fw_labels if not l.startswith("_") and "Hodges" not in l]
+        # bottom panel: only the raw p-value curve remains (plus the 0.05 line)
+        p_lines = [l for l in ax2.get_lines() if not l.get_label().startswith("_")]
+        assert len(p_lines) == 1 and "max-T" not in p_lines[0].get_label()
+        assert any("max-T" in l.get_label() for l in ax2_fw.get_lines())
+        # the 0.05 threshold line carries a red "0.05" tag in both variants
+        for ax in (ax2, ax2_fw):
+            tags = [t for t in ax.texts if t.get_text() == f"{ALPHA:g}"]
+            assert len(tags) == 1 and matplotlib.colors.to_hex(tags[0].get_color()) == "#ff0000"
+        # shading: raw sibling follows p_raw, family-wise follows p_maxT
+        xs = df[x].to_numpy()
+        want_raw = ((df["p_raw"] < ALPHA) & (df["t_obs"] > 0)).to_numpy()
+        want_fw = ((df["p_maxT"] < ALPHA) & (df["t_obs"] > 0)).to_numpy()
+        assert want_raw.sum() > want_fw.sum()
+
+        def shaded(ax):
+            polys = [c for c in ax.collections if "alpha" in c.get_label()]
+            assert len(polys) == 1
+            covered = np.zeros(len(xs), dtype=bool)
+            for path in polys[0].get_paths():
+                v = path.vertices
+                covered |= (xs >= v[:, 0].min() - 1e-9) & (xs <= v[:, 0].max() + 1e-9)
+            return covered
+
+        assert shaded(ax1).sum() >= want_raw.sum() > shaded(ax1_fw).sum()
+        legend_raw = [t.get_text() for t in ax1.get_legend().get_texts()]
+        assert any("p-value < 0.05" in t and "max-T" not in t for t in legend_raw)
+        assert not any("family-wise" in t for t in legend_raw)
+
+
+def test_pvalue_label_thresholds_below_one_permille():
+    from WP2_Outer_Loop.pareto_stats import pvalue_label
+    assert pvalue_label(0.000155) == "p-value < 0.001"
+    assert pvalue_label(0.00099) == "p-value < 0.001"
+    assert pvalue_label(0.0028) == "p-value = 0.0028"
+    assert pvalue_label(0.1304) == "p-value = 0.13"
+    assert pvalue_label(1.0) == "p-value = 1"
+
+
 def test_cli_requires_exactly_two_groups_and_writes_output(tmp_path, capsys):
     runs_a, runs_b = _two_condition_runs(tmp_path, n_a=3, n_b=3)
     out = tmp_path / "cli_out"
@@ -511,3 +643,78 @@ def test_cli_requires_exactly_two_groups_and_writes_output(tmp_path, capsys):
     assert "hv" in printed and "p-value" in printed
     with pytest.raises(SystemExit):
         main(["--group", "alpha", "red", str(runs_a[0]), "--out", str(out)])
+
+
+# ----------------------------------------------------------------------------
+#  Star-free copies: the two EAF figures re-plotted without the Bixler star
+# ----------------------------------------------------------------------------
+
+def _figure_spy(monkeypatch):
+    """Patch ``Figure.savefig`` to record, per saved path, the legend
+    entries of the figure and how many gold (star) scatters it holds."""
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import PathCollection
+    from matplotlib.colors import to_rgba
+    seen = {}
+    real_savefig = plt.Figure.savefig
+    gold = to_rgba("gold")
+
+    def spy(self, fname, *a, **k):
+        labels, stars = [], 0
+        for ax in self.axes:
+            leg = ax.get_legend()
+            if leg is not None:
+                labels.extend(t.get_text() for t in leg.get_texts())
+            stars += sum(1 for c in ax.collections
+                         if isinstance(c, PathCollection) and len(c.get_facecolor())
+                         and tuple(c.get_facecolor()[0]) == gold)
+        seen[Path(fname)] = (labels, stars)
+        return real_savefig(self, fname, *a, **k)
+
+    monkeypatch.setattr(plt.Figure, "savefig", spy)
+    return seen
+
+
+def test_run_analysis_no_star_subdir_replots_only_the_eaf_figures_without_the_star(tmp_path, monkeypatch):
+    seen = _figure_spy(monkeypatch)
+    runs_a, runs_b = _two_condition_runs(tmp_path, n_a=3, n_b=3)
+    ga = StatsGroup("alpha", "red", [load_run(r) for r in runs_a])
+    gb = StatsGroup("beta", "blue", [load_run(r) for r in runs_b])
+    out = tmp_path / "stats"
+    summary = run_analysis(ga, gb, out, grid_step=5.0, cot_step=0.01,
+                           no_star_subdir="no_bixler")
+    assert summary["star"] == pytest.approx([150.0, 0.30])
+    sub = out / "no_bixler"
+    assert sorted(p.name for p in sub.iterdir()) == [
+        "eaf_difference.pdf", "eaf_difference.png", "eaf_pvalue.pdf", "eaf_pvalue.png"]
+    for name in ("eaf_difference.png", "eaf_pvalue.png"):
+        labels, stars = seen[out / name]
+        assert "Bixler (generalist controller)" in labels and stars >= 1
+        labels, stars = seen[sub / name]
+        assert not any("Bixler" in l for l in labels) and stars == 0
+    # every other figure is star-free already and is not duplicated
+    assert not (sub / "hypervolume_significance.png").exists()
+
+
+def test_run_analysis_no_star_subdir_needs_a_star(tmp_path):
+    runs_a, runs_b = _two_condition_runs(tmp_path, n_a=3, n_b=3)
+    ga = StatsGroup("alpha", "red", [load_run(r) for r in runs_a])
+    gb = StatsGroup("beta", "blue", [load_run(r) for r in runs_b])
+    out = tmp_path / "stats"
+    run_analysis(ga, gb, out, grid_step=5.0, cot_step=0.01, star=False,
+                 no_star_subdir="no_bixler")
+    assert (out / "eaf_pvalue.png").is_file()
+    assert not (out / "no_bixler").exists()
+
+
+def test_cli_no_bixler_subdir_flag_defaults_to_no_bixler(tmp_path, capsys):
+    runs_a, runs_b = _two_condition_runs(tmp_path, n_a=3, n_b=3)
+    out = tmp_path / "cli_out"
+    argv = (["--group", "alpha", "red"] + [str(r) for r in runs_a]
+            + ["--group", "beta", "blue"] + [str(r) for r in runs_b]
+            + ["--out", str(out), "--grid-step", "5", "--cot-step", "0.01",
+               "--no-bixler-subdir"])
+    assert main(argv) == 0
+    assert (out / "no_bixler" / "eaf_difference.png").is_file()
+    assert (out / "no_bixler" / "eaf_pvalue.pdf").is_file()
+    assert str(out / "no_bixler") in capsys.readouterr().out

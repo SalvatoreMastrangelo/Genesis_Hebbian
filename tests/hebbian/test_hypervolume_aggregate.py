@@ -6,7 +6,9 @@ Pure-python: synthetic ``outer_population.csv`` fixtures in ``tmp_path``,
 no Genesis. Covers the per-run per-phase / cumulative HV series (checked
 by hand against the fixed (80 m, CoT 0.5) reference), agreement with
 ``pareto_plots.plot_pareto_front``, the group mean ± std aggregate over
-ragged run lengths, the figure writer and the ``--group`` CLI.
+ragged run lengths, the fraction-of-run x-axis (per-run normalisation +
+interpolation onto a common grid), the split single-panel figures, the
+figure writer and the ``--group`` CLI.
 """
 
 import sys
@@ -23,14 +25,19 @@ matplotlib.use("Agg")
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from WP2_Outer_Loop.hypervolume_aggregate import (  # noqa: E402
+    FRACTION_GRID_POINTS,
     HVGroup,
     MEASURES,
     aggregate_hv,
     aggregate_table,
+    build_figure,
     draw_hv_aggregate,
+    fraction_of_run,
     hv_series,
+    legend_label,
     main,
     plot_hv_aggregate,
+    split_panel_path,
 )
 
 
@@ -357,3 +364,169 @@ def test_cli_solid_min_runs_flag(tmp_path):
     assert main(["--group", "co-design", "red", str(c0), str(c1),
                  "--out", str(out), "--solid-min-runs", "1"]) == 0
     assert out.is_file()
+
+
+# ----------------------------------------------------------------------------
+#  Fraction-of-run x-axis
+# ----------------------------------------------------------------------------
+
+def test_fraction_of_run_normalises_by_the_runs_own_final_phase():
+    np.testing.assert_allclose(
+        fraction_of_run(_series([0, 1, 2, 3], [0] * 4, [0] * 4)),
+        [0.0, 1 / 3, 2 / 3, 1.0])
+    # gaps are kept as fractions of the final phase, not of the row count
+    np.testing.assert_allclose(
+        fraction_of_run(_series([0, 2, 4], [0] * 3, [0] * 3)), [0.0, 0.5, 1.0])
+    # a single-phase run has no length: it sits at the start
+    np.testing.assert_array_equal(fraction_of_run(_series([0], [1.0], [1.0])), [0.0])
+
+
+def test_aggregate_hv_fraction_aligns_runs_of_different_length():
+    a = _series([0, 1, 2], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0])       # 3 phases
+    b = _series(range(5), [3.0, 4.0, 5.0, 6.0, 7.0], [3.0] * 5)    # 5 phases
+    agg = aggregate_hv([a, b], "hv_per_phase", "fraction")
+    assert "fraction" not in agg.columns or "phase" not in agg.columns
+    x = agg["fraction"].to_numpy()
+    assert len(x) == FRACTION_GRID_POINTS
+    assert x[0] == 0.0 and x[-1] == 1.0
+    # every run contributes at every grid point: n is the run count, no NaN
+    np.testing.assert_array_equal(agg["n"], [2] * len(x))
+    assert np.isfinite(agg["mean"]).all() and np.isfinite(agg["std"]).all()
+    # ends are the runs' own values (not interpolated): (1+3)/2, (3+7)/2
+    assert agg["mean"].iloc[0] == pytest.approx(2.0)
+    assert agg["mean"].iloc[-1] == pytest.approx(5.0)
+    # half-way both runs sit on a phase (a: phase 1 = 2, b: phase 2 = 5)
+    mid = agg[np.isclose(x, 0.5)]
+    assert mid["mean"].iloc[0] == pytest.approx(3.5)
+    # at 1/4: a is interpolated between phase 0 (1) and phase 1 (2) -> 1.5,
+    # b sits exactly on phase 1 (4) -> mean 2.75
+    q = agg[np.isclose(x, 0.25)]
+    assert q["mean"].iloc[0] == pytest.approx(2.75)
+    assert q["std"].iloc[0] == pytest.approx(abs(1.5 - 4.0) / np.sqrt(2))
+
+
+def test_aggregate_hv_fraction_accepts_a_custom_grid():
+    a = _series([0, 1], [0.0, 10.0], [0.0, 10.0])
+    agg = aggregate_hv([a], "hv_per_phase", "fraction", grid=[0.0, 0.25, 1.0])
+    np.testing.assert_allclose(agg["fraction"], [0.0, 0.25, 1.0])
+    np.testing.assert_allclose(agg["mean"], [0.0, 2.5, 10.0])
+
+
+def test_aggregate_hv_phase_axis_is_unchanged_by_the_x_axis_argument():
+    a = _series([0, 1, 2], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+    b = _series([0, 1], [3.0, 4.0], [3.0, 4.0])
+    pd.testing.assert_frame_equal(aggregate_hv([a, b], "hv_per_phase"),
+                                  aggregate_hv([a, b], "hv_per_phase", "phase"))
+
+
+def test_aggregate_hv_rejects_unknown_x_axis():
+    with pytest.raises(ValueError):
+        aggregate_hv([_series([0], [1.0], [1.0])], "hv_per_phase", "wallclock")
+
+
+def test_aggregate_table_on_the_fraction_grid():
+    table = aggregate_table(_groups(), "fraction")
+    assert "fraction" in table.columns and "phase" not in table.columns
+    assert len(table) == FRACTION_GRID_POINTS
+    assert table["co-design_hv_cumulative_n"].tolist() == [2] * len(table)
+    # last row = the runs' final cumulative values: co-design (3+4)/2
+    assert table["co-design_hv_cumulative_mean"].iloc[-1] == pytest.approx(3.5)
+
+
+def test_legend_label_adds_the_phase_count_on_the_fraction_axis():
+    cod, mor = _groups()
+    assert legend_label(cod) == "co-design (2 runs)"
+    assert legend_label(cod, "fraction") == "co-design (2 runs, 3 phases)"
+    assert legend_label(mor, "fraction") == "morphology-only (2 runs, 5 phases)"
+    assert legend_label(_ragged_group(), "fraction") == "co-design (3 runs, 3–5 phases)"
+
+
+def test_draw_fraction_axis_labels_and_solid_throughout_for_ragged_group():
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    draw_hv_aggregate(ax, [_ragged_group()], "hv_per_phase", x_axis="fraction",
+                      show_runs=True)
+    assert ax.get_xlabel().startswith("Fraction of run")
+    (solid,), dashed = _mean_lines(ax, "co-design (3 runs, 3–5 phases)")
+    # all runs span 0–1 -> no dashed tail, no NaN gap in the mean
+    assert dashed == []
+    assert np.isfinite(solid.get_ydata()).all()
+    assert solid.get_xdata().min() == 0.0 and solid.get_xdata().max() == 1.0
+    # member runs are drawn on their own fraction axis, ending at 1
+    faint = [l for l in ax.get_lines() if l.get_alpha() is not None
+             and l.get_alpha() < 0.5]
+    assert len(faint) == 3
+    assert all(l.get_xdata().max() == pytest.approx(1.0) for l in faint)
+    plt.close(fig)
+
+
+def test_draw_rejects_unknown_x_axis():
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError):
+        draw_hv_aggregate(ax, _groups(), "hv_per_phase", x_axis="wallclock")
+    plt.close(fig)
+
+
+# ----------------------------------------------------------------------------
+#  Split panels + bare title
+# ----------------------------------------------------------------------------
+
+def test_split_panel_path_strips_the_hv_prefix(tmp_path):
+    out = tmp_path / "exam_hv.png"
+    assert split_panel_path(out, "hv_per_phase") == tmp_path / "exam_hv_per_phase.png"
+    assert split_panel_path(out, "hv_cumulative") == tmp_path / "exam_hv_cumulative.png"
+
+
+def test_plot_split_panels_writes_one_figure_per_measure(tmp_path):
+    out = plot_hv_aggregate(_groups(), tmp_path / "hv.png", split_panels=True,
+                            x_axis="fraction")
+    assert out.is_file()
+    for m in MEASURES:
+        p = split_panel_path(out, m)
+        assert p.is_file() and p.with_suffix(".pdf").is_file()
+    # one CSV only, on the fraction grid
+    assert sorted(f.name for f in tmp_path.glob("*.csv")) == ["hv_aggregate.csv"]
+    assert "fraction" in pd.read_csv(tmp_path / "hv_aggregate.csv").columns
+
+
+def test_plot_split_panels_is_a_no_op_for_a_single_measure(tmp_path):
+    plot_hv_aggregate(_groups(), tmp_path / "hv.png", measures=("hv_cumulative",),
+                      split_panels=True)
+    assert sorted(f.name for f in tmp_path.glob("*.png")) == ["hv.png"]
+
+
+def test_build_figure_has_one_panel_per_measure_and_a_bare_title():
+    import matplotlib.pyplot as plt
+
+    fig = build_figure(_groups(), MEASURES)
+    assert len(fig.axes) == 2
+    title = fig._suptitle.get_text()
+    assert "(" not in title and ")" not in title
+    plt.close(fig)
+    fig = build_figure(_groups(), ("hv_cumulative",), x_axis="fraction")
+    assert len(fig.axes) == 1
+    assert fig.axes[0].get_title() == "Cumulative exam front"
+    assert fig.axes[0].get_legend() is not None
+    plt.close(fig)
+
+
+def test_cli_x_axis_fraction_and_split_panels(tmp_path, capsys):
+    c0 = _write_run(tmp_path / "cod_r0", _TWO_PHASES)
+    c1 = _write_run(tmp_path / "cod_r1", _TWO_PHASES[:3])  # one phase only
+    out = tmp_path / "hv.png"
+    assert main(["--group", "co-design", "red", str(c0), str(c1),
+                 "--out", str(out), "--x-axis", "fraction",
+                 "--split-panels"]) == 0
+    assert out.is_file()
+    assert (tmp_path / "hv_per_phase.png").is_file()
+    assert (tmp_path / "hv_cumulative.png").is_file()
+    table = pd.read_csv(tmp_path / "hv_aggregate.csv")
+    assert "fraction" in table.columns
+    assert table["co-design_hv_cumulative_n"].tolist() == [2] * len(table)
+    text = capsys.readouterr().out
+    assert "fraction of run (1–2 phases)" in text
+    assert "hv_per_phase.png" in text and "hv_cumulative.png" in text
+    assert "ref: progress_m = 80, cost_of_transport = 0.5" in text

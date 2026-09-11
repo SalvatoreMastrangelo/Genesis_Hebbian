@@ -27,6 +27,11 @@ Definitions (identical to the batch briefs and to ``pareto_fronts``):
 * **Star**: the zero-rules WP1 generalist on the standard drone, averaged
   over every phase of every run's ``outer_exam_baseline.csv`` (the
   in-run exam baseline is the same to within 0.2 m across runs).
+* **Gap area** (two groups only): the signed area between the two solid
+  means, ``second − first`` in CoT integrated over progress (trapezoids on
+  the grid) wherever *both* means are solid; dashed stretches never count.
+  Positive where the first group is cheaper (shaded orange), negative where
+  the second is (shaded light blue); the net is printed on the figure.
 
 Usage
 -----
@@ -45,8 +50,13 @@ Each ``--group`` takes ``LABEL COLOR RUN_DIR [RUN_DIR ...]``; a run dir may
 be the timestamped run folder itself or the synced ``outer_<exp>_rX``
 wrapper that contains exactly one. Writes ``<out>.png``, ``<out>.pdf``,
 ``<stem>_tail.{png,pdf}`` (same, with the mean also continued dashed past
-the earliest tip) and ``<stem>_mean_attainment.csv`` (grid; per group the
-solid mean, the covering-runs mean and the covering-run count).
+the earliest tip), ``<stem>_area.{png,pdf}`` (the tail figure with the
+gap between the two solid means shaded and its net area written on it;
+only with exactly two groups) and ``<stem>_mean_attainment.csv`` (grid;
+per group the solid mean, the covering-runs mean and the covering-run
+count). ``--no-bixler-subdir [NAME]`` additionally re-plots every figure
+without the star into ``NAME/`` (default ``no_bixler``) beside the
+originals, for a caption that does not need the reference drone.
 """
 
 from __future__ import annotations
@@ -268,6 +278,56 @@ def mean_attainment_table(
     return pd.DataFrame(table)
 
 
+@dataclass
+class GapArea:
+    """Signed area between two solid group means (see ``attainment_gap_area``).
+    ``gap`` is ``second − first`` on the grid, NaN off the shared solid
+    support ``[lo, hi]`` (both ``None`` when there is none); ``positive``
+    (>= 0) and ``negative`` (<= 0) are the parts where the first group is
+    cheaper / dearer, ``net`` their sum. Units: CoT × m."""
+    gap: np.ndarray
+    positive: float
+    negative: float
+    net: float
+    lo: Optional[float]
+    hi: Optional[float]
+
+
+def _trapezoid_segments(grid: np.ndarray, y: np.ndarray) -> float:
+    """Trapezoid-rule integral of ``y`` over ``grid``, summed over the runs
+    of consecutive finite samples (a NaN breaks the integration)."""
+    ok = np.isfinite(y[:-1]) & np.isfinite(y[1:])
+    if not ok.any():
+        return 0.0
+    dx = np.diff(grid)[ok]
+    return float((0.5 * (y[:-1][ok] + y[1:][ok]) * dx).sum())
+
+
+def attainment_gap_area(
+    groups: Sequence[FrontGroup], grid: np.ndarray,
+    min_runs: Optional[int] = None,
+) -> GapArea:
+    """Signed area between the solid means of exactly two groups: the
+    second group's mean attainment minus the first's, integrated over
+    progress (trapezoids on ``grid``) only where **both** means are solid
+    (each has at least ``min_runs`` fronts covering P). Positive = the first
+    group is cheaper. Clipping each trapezoid at zero splits it into the
+    positive and negative parts, whose sum is exactly the net."""
+    if len(groups) != 2:
+        raise ValueError(f"the gap area needs exactly two groups, got {len(groups)}")
+    grid = np.asarray(grid, dtype=float)
+    first = mean_attainment(groups[0].fronts, grid, min_runs)
+    second = mean_attainment(groups[1].fronts, grid, min_runs)
+    gap = second - first                                    # NaN where either is
+    both = np.isfinite(gap)
+    if not both.any():
+        return GapArea(gap, 0.0, 0.0, 0.0, None, None)
+    pos = _trapezoid_segments(grid, np.where(both, np.clip(gap, 0.0, None), np.nan))
+    neg = _trapezoid_segments(grid, np.where(both, np.clip(gap, None, 0.0), np.nan))
+    xs = grid[both]
+    return GapArea(gap, pos, neg, pos + neg, float(xs.min()), float(xs.max()))
+
+
 # ----------------------------------------------------------------------------
 #  Figure
 # ----------------------------------------------------------------------------
@@ -280,10 +340,17 @@ def draw_front_overlay(
     member_alpha: float = 0.28,
     tail: bool = False,
     min_runs: Optional[int] = None,
+    shade_gap: bool = False,
 ) -> None:
     """Draw the overlay onto ``ax``: faint per-run fronts, one group mean
     per group and the gold Bixler star, styled like
     ``pareto_plots.plot_pareto_front`` (dashed grid, framed legend).
+
+    With ``shade_gap`` (exactly two groups) the area between the two solid
+    means is filled orange where the first group is cheaper and light blue
+    where the second is, and the net area (orange minus blue, see
+    ``attainment_gap_area``) is written in the lower-right corner. Dashed
+    stretches are never shaded or counted.
 
     The group mean averages the fronts that cover P. It is **solid** where
     at least ``min_runs`` fronts do (the whole group when ``None``) and
@@ -296,6 +363,8 @@ def draw_front_overlay(
     grid = attainment_grid(groups, grid_step)
     idx = np.arange(len(grid))
     dash = dict(lw=1.6, ls=(0, (4, 2.5)), zorder=3)
+    if shade_gap:
+        _shade_gap(ax, groups, grid, min_runs)
     for g in groups:
         for front in g.fronts:
             if len(front) == 0:
@@ -331,6 +400,34 @@ def draw_front_overlay(
     ax.legend(fontsize=9)
 
 
+GAP_COLORS = {"positive": "orange", "negative": "skyblue"}
+
+
+def _shade_gap(ax, groups: Sequence[FrontGroup], grid: np.ndarray,
+               min_runs: Optional[int]) -> GapArea:
+    """Fill between the two solid means (orange: first group cheaper,
+    light blue: second cheaper) and annotate the net area. Drawn below the
+    lines; kept out of the legend."""
+    area = attainment_gap_area(groups, grid, min_runs)
+    first = mean_attainment(groups[0].fronts, grid, min_runs)
+    second = mean_attainment(groups[1].fronts, grid, min_runs)
+    both = np.isfinite(area.gap)
+    fill = dict(alpha=0.35, lw=0, zorder=1, interpolate=True)
+    ax.fill_between(grid, first, second, where=both & (area.gap > 0),
+                    color=GAP_COLORS["positive"], **fill)
+    ax.fill_between(grid, first, second, where=both & (area.gap < 0),
+                    color=GAP_COLORS["negative"], **fill)
+    support = (f" over {area.lo:.1f}–{area.hi:.1f} m"
+               if area.lo is not None else " (no shared solid range)")
+    ax.text(0.98, 0.03,
+            f"orange: {groups[0].label} cheaper, blue: {groups[1].label} cheaper\n"
+            f"net area (orange − blue) = {area.net:+.2f} CoT·m{support}",
+            transform=ax.transAxes, ha="right", va="bottom", fontsize=9,
+            zorder=6, bbox=dict(boxstyle="round,pad=0.4", fc="white",
+                                ec="0.6", alpha=0.9))
+    return area
+
+
 def plot_front_overlay(
     groups: Sequence[FrontGroup],
     out_path: Path | str,
@@ -340,6 +437,7 @@ def plot_front_overlay(
     member_alpha: float = 0.28,
     tail: bool = False,
     min_runs: Optional[int] = None,
+    shade_gap: bool = False,
 ) -> Path:
     """``draw_front_overlay`` on a fresh figure; saves ``out_path`` (PNG)
     and the same stem as PDF, returns ``out_path``."""
@@ -349,7 +447,8 @@ def plot_front_overlay(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 6))
     draw_front_overlay(ax, groups, star=star, grid_step=grid_step,
-                       member_alpha=member_alpha, tail=tail, min_runs=min_runs)
+                       member_alpha=member_alpha, tail=tail, min_runs=min_runs,
+                       shade_gap=shade_gap)
     if title:
         ax.set_title(title)
     fig.tight_layout()
@@ -405,6 +504,26 @@ def _report(groups: Sequence[FrontGroup], min_runs: Optional[int],
         print(f"    {'mean attainment (runs covering P)':<44s} {'':12s}{cells}")
 
 
+def _write_figures(
+    groups: Sequence[FrontGroup], out: Path, star: Optional[Tuple[float, float]],
+    *, grid_step: float, title: Optional[str], min_runs: Optional[int],
+) -> List[Path]:
+    """The overlay at ``out``, its ``_tail`` sibling and, with exactly two
+    groups, the shaded ``_area`` figure (each as PNG + PDF); returns the
+    PNG paths."""
+    common = dict(star=star, grid_step=grid_step, title=title, min_runs=min_runs)
+    written = [
+        plot_front_overlay(groups, out, **common),
+        plot_front_overlay(groups, out.with_name(f"{out.stem}_tail{out.suffix}"),
+                           tail=True, **common),
+    ]
+    if len(groups) == 2:
+        written.append(plot_front_overlay(
+            groups, out.with_name(f"{out.stem}_area{out.suffix}"),
+            tail=True, shade_gap=True, **common))
+    return written
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Overlay cumulative exam Pareto fronts of run groups "
@@ -420,6 +539,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="attainment grid step [m] (default 0.5)")
     parser.add_argument("--no-star", action="store_true",
                         help="omit the WP1 generalist exam baseline star")
+    parser.add_argument("--no-bixler-subdir", nargs="?", const="no_bixler",
+                        default=None, metavar="NAME",
+                        help="also re-plot every figure without the star into "
+                             "NAME/ beside the originals (default name "
+                             "no_bixler); skipped when no star is drawn")
     parser.add_argument("--solid-min-runs", type=int, default=4,
                         help="draw the group mean solid where at least this "
                              "many fronts cover P, dashed below (default 4; "
@@ -441,17 +565,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"[overlay] star: {star[0]:.1f} m, CoT {star[1]:.3f}")
 
     _report(groups, args.solid_min_runs, grid_step=args.grid_step)
-    out = plot_front_overlay(groups, args.out, star=star,
-                             grid_step=args.grid_step, title=args.title,
-                             min_runs=args.solid_min_runs)
-    tail = plot_front_overlay(groups, out.with_name(f"{out.stem}_tail{out.suffix}"),
-                              star=star, grid_step=args.grid_step,
-                              title=args.title, tail=True,
-                              min_runs=args.solid_min_runs)
     grid = attainment_grid(groups, args.grid_step)
+    if len(groups) == 2:
+        area = attainment_gap_area(groups, grid, args.solid_min_runs)
+        rng = (f"{area.lo:.1f}–{area.hi:.1f} m" if area.lo is not None
+               else "no shared solid range")
+        print(f"[overlay] gap between solid means ({groups[1].label} − "
+              f"{groups[0].label}) over {rng}: {groups[0].label} cheaper "
+              f"{area.positive:+.3f}, {groups[1].label} cheaper "
+              f"{area.negative:+.3f}, net area {area.net:+.2f} CoT·m")
+    else:
+        print(f"[overlay] area figure skipped: needs exactly two groups, "
+              f"got {len(groups)}")
+    out = Path(args.out)
+    style = dict(grid_step=args.grid_step, title=args.title,
+                 min_runs=args.solid_min_runs)
+    written = _write_figures(groups, out, star, **style)
+    if args.no_bixler_subdir:
+        if star is None:
+            print("[overlay] star-free copies skipped: no star drawn")
+        else:
+            sub = out.parent / args.no_bixler_subdir / out.name
+            copies = _write_figures(groups, sub, None, **style)
+            print(f"[overlay] wrote the same figures without the star to "
+                  f"{sub.parent}: {', '.join(p.name for p in copies)} (+ .pdf)")
     csv_path = out.with_name(f"{out.stem}_mean_attainment.csv")
     mean_attainment_table(groups, grid, args.solid_min_runs).to_csv(csv_path, index=False)
-    print(f"[overlay] wrote {out}, {tail} (+ .pdf), {csv_path}")
+    print(f"[overlay] wrote {', '.join(str(p) for p in written)} (+ .pdf), {csv_path}")
     return 0
 
 
