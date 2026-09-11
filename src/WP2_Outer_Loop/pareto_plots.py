@@ -749,7 +749,8 @@ def plot_outer_metrics(run_dir: Path | str) -> None:
     print(f"[pareto_plots] Saved {out}")
 
 
-def render_champions_safe(run_dir: Path | str) -> bool:
+def render_champions_safe(run_dir: Path | str,
+                          min_progress: Optional[float] = None) -> bool:
     """Still renders of the exam champions (``render_champions.render_run``)
     into ``plots/champion_renders/``; ``True`` on success.
 
@@ -760,7 +761,7 @@ def render_champions_safe(run_dir: Path | str) -> bool:
     """
     try:
         from WP2_Outer_Loop.render_champions import render_run
-        render_run(run_dir)
+        render_run(run_dir, min_progress=min_progress)
         return True
     except Exception as exc:  # noqa: BLE001 — renders are best-effort
         print(f"[pareto_plots] champion renders skipped: {exc}")
@@ -783,7 +784,7 @@ def plot_outer_run(
     plot_champion_curves(run_dir)
     plot_outer_metrics(run_dir)
     if render:
-        render_champions_safe(run_dir)
+        render_champions_safe(run_dir, min_progress=min_progress)
 
 
 if __name__ == "__main__":

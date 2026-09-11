@@ -510,7 +510,7 @@ def fly_bodies(
 # ----------------------------------------------------------------------------
 
 _SET_COLORS = {"random": "#1f77b4", "front": "#d62728"}
-_PANELS = (("fitness", "Fitness (WP1 reward sum)"),
+_PANELS = (("fitness", "Fitness"),
            ("progress_m", "Progress [m]"),
            ("cost_of_transport", "Cost of transport"))
 

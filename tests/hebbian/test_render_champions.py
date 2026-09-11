@@ -84,6 +84,14 @@ def test_gate_off_lets_the_non_flyer_hold_the_cot_record(tmp_path):
     assert targets[1][1]["obj_cost_of_transport"] == 0.05
 
 
+def test_min_progress_override_beats_the_saved_gate(tmp_path):
+    run = _write_run(tmp_path / "run", ROWS, min_progress=0.0)   # run predates the gate
+    targets, gate = rc.select_champions(run, min_progress=80.0)
+    assert gate == 80.0
+    assert targets[1][0] == "cot_champion_gated80m"
+    assert targets[1][1]["obj_cost_of_transport"] == 0.15
+
+
 def test_progress_champion_is_identified_by_gen_and_slot_not_by_name(tmp_path):
     # slot 0 holds 150 m at gen 0 and 220 m at gen 1 — same urdf_file name
     run = _write_run(tmp_path / "run", ROWS)
@@ -121,6 +129,21 @@ def test_common_distance_is_set_by_the_largest_body():
     assert dtop_big == pytest.approx(rc.MARGIN * 1.8 / (2 * t * (1200 / 900)))
 
 
+def test_prune_stale_removes_outputs_of_other_stems_only(tmp_path):
+    out = tmp_path / "champion_renders"; out.mkdir()
+    keep = "cot_champion_gated80m_gen48_ind_001"
+    stale = "cot_champion_gated0m_gen17_ind_048"
+    for stem in (keep, stale):
+        for suffix in ("_3quarter.png", "_top.png", ".urdf"):
+            (out / (stem + suffix)).write_text("x")
+    (out / "champions.csv").write_text("x")
+    removed = rc._prune_stale(out, [keep])
+    assert sorted(p.name for p in removed) == sorted(
+        stale + s for s in ("_3quarter.png", "_top.png", ".urdf"))
+    assert sorted(p.name for p in out.iterdir()) == sorted(
+        [keep + s for s in ("_3quarter.png", "_top.png", ".urdf")] + ["champions.csv"])
+
+
 # ----------------------------------------------------------------------------
 #  Batch over several runs
 # ----------------------------------------------------------------------------
@@ -131,8 +154,8 @@ def test_render_runs_resolves_wrappers_and_survives_failures(tmp_path, monkeypat
     (tmp_path / "outer_c_r0").mkdir()   # no CSV at all
     seen = []
 
-    def fake_render(rd, work=None, res=None):   # select like the real thing, skip Genesis
-        rc.select_champions(rd)
+    def fake_render(rd, work=None, res=None, min_progress=None):   # select like the real thing, skip Genesis
+        rc.select_champions(rd, min_progress)
         seen.append(Path(rd))
 
     monkeypatch.setattr(rc, "render_run", fake_render)
@@ -147,7 +170,7 @@ def test_render_runs_resolves_wrappers_and_survives_failures(tmp_path, monkeypat
 
 def test_main_exits_nonzero_when_a_run_fails(tmp_path, monkeypatch):
     _write_run(tmp_path / "run", ROWS)
-    monkeypatch.setattr(rc, "render_run", lambda rd, work=None, res=None: None)
+    monkeypatch.setattr(rc, "render_run", lambda rd, work=None, res=None, min_progress=None: None)
     rc.main([str(tmp_path / "run")])                       # all ok -> returns
     with pytest.raises(SystemExit):
         rc.main([str(tmp_path / "run"), str(tmp_path / "missing")])
@@ -166,15 +189,18 @@ def _stub_plots(monkeypatch):
 def test_plot_outer_run_renders_champions_by_default(tmp_path, monkeypatch):
     _stub_plots(monkeypatch)
     calls = []
-    monkeypatch.setattr(rc, "render_run", lambda rd, work=None, res=None: calls.append(Path(rd)))
+    monkeypatch.setattr(rc, "render_run",
+                        lambda rd, work=None, res=None, min_progress=None: calls.append((Path(rd), min_progress)))
     pareto_plots.plot_outer_run(tmp_path)
-    assert calls == [tmp_path]
+    assert calls == [(tmp_path, None)]
+    pareto_plots.plot_outer_run(tmp_path, min_progress=80.0)   # gate override reaches the renderer
+    assert calls[-1] == (tmp_path, 80.0)
 
 
 def test_plot_outer_run_can_skip_rendering(tmp_path, monkeypatch):
     _stub_plots(monkeypatch)
     calls = []
-    monkeypatch.setattr(rc, "render_run", lambda rd, work=None, res=None: calls.append(rd))
+    monkeypatch.setattr(rc, "render_run", lambda rd, work=None, res=None, min_progress=None: calls.append(rd))
     pareto_plots.plot_outer_run(tmp_path, render=False)
     assert calls == []
 
@@ -182,7 +208,7 @@ def test_plot_outer_run_can_skip_rendering(tmp_path, monkeypatch):
 def test_render_failure_never_breaks_the_plots(tmp_path, monkeypatch, capsys):
     _stub_plots(monkeypatch)
 
-    def boom(rd, work=None, res=None):
+    def boom(rd, work=None, res=None, min_progress=None):
         raise ImportError("No module named 'gstaichi'")
 
     monkeypatch.setattr(rc, "render_run", boom)
@@ -192,5 +218,5 @@ def test_render_failure_never_breaks_the_plots(tmp_path, monkeypatch, capsys):
 
 
 def test_render_champions_safe_reports_success(tmp_path, monkeypatch):
-    monkeypatch.setattr(rc, "render_run", lambda rd, work=None, res=None: tmp_path)
+    monkeypatch.setattr(rc, "render_run", lambda rd, work=None, res=None, min_progress=None: tmp_path)
     assert pareto_plots.render_champions_safe(tmp_path) is True

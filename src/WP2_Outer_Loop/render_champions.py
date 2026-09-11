@@ -29,7 +29,7 @@ initialised (the live run's) and only creates/destroys its own when none is.
 
 Usage (Genesis runtime required — locally via the ``mygenesis`` docker image)::
 
-    python -m WP2_Outer_Loop.render_champions RUN_DIR [RUN_DIR ...] [--work DIR] [--res W H]
+    python -m WP2_Outer_Loop.render_champions RUN_DIR [RUN_DIR ...] [--work DIR] [--res W H] [--min-progress M]
 
 ``RUN_DIR`` is the timestamped run folder or its synced ``outer_<exp>_rX``
 wrapper. Runs whose objectives are not exam-scored are reported and skipped.
@@ -70,11 +70,15 @@ OUT_SUBDIR = Path("plots") / "champion_renders"
 #  Champion selection (pure pandas — testable without Genesis)
 # ----------------------------------------------------------------------------
 
-def select_champions(run_dir: Path) -> Tuple[List[Tuple[str, pd.Series]], float]:
+def select_champions(
+    run_dir: Path, min_progress: float | None = None,
+) -> Tuple[List[Tuple[str, pd.Series]], float]:
     """``[(label, row), ...]`` for the progress and gated-CoT champions.
 
     ``label`` is ``progress_champion`` or ``cot_champion_gated<G>m``; ``row``
     is the exam row that set the record. Returns the gate value too.
+    ``min_progress`` overrides the run's saved ``outer.min_progress_m`` (as
+    ``pareto_plots --min-progress`` does for runs that predate the gate).
     Raises ``RuntimeError`` when the run is not exam-scored, has other
     objectives, or a pick is not on the gated cumulative front.
     """
@@ -102,7 +106,7 @@ def select_champions(run_dir: Path) -> Tuple[List[Tuple[str, pd.Series]], float]
         raise RuntimeError(f"progress record holder ambiguous ({int(m.sum())} rows)")
     prog_row = df[m].iloc[0]
 
-    min_prog = _load_min_progress(run_dir)
+    min_prog = _load_min_progress(run_dir) if min_progress is None else float(min_progress)
     gated = df[_admission_mask(df, specs, min_prog)]
     if gated.empty:
         raise RuntimeError(f"min_progress_m={min_prog:g} admits no row")
@@ -144,6 +148,23 @@ def _distances(sizes: Sequence[np.ndarray], res: Tuple[int, int]) -> Tuple[float
         d34 = max(d34, MARGIN * max(dxy / (2 * t * aspect),
                                     (s[2] * math.cos(el) + dxy * math.sin(el)) / (2 * t)))
     return float(d34), float(d_top)
+
+
+def _prune_stale(out: Path, keep_stems: Sequence[str]) -> List[Path]:
+    """Delete previous champion outputs in ``out`` (``*.png``, ``*.urdf``)
+    whose stem is not in ``keep_stems`` — a re-render with a different gate
+    or a longer run must not leave two "CoT champions" side by side.
+    Returns the removed paths."""
+    removed: List[Path] = []
+    for f in sorted(out.glob("*")):
+        if f.suffix not in (".png", ".urdf"):
+            continue
+        stem = f.stem[:-len("_3quarter")] if f.stem.endswith("_3quarter") else \
+            f.stem[:-len("_top")] if f.stem.endswith("_top") else f.stem
+        if stem not in keep_stems:
+            f.unlink()
+            removed.append(f)
+    return removed
 
 
 # ----------------------------------------------------------------------------
@@ -199,8 +220,10 @@ def _shoot(cam, path: Path) -> Path:
 
 
 def render_run(run_dir: Path | str, work: Path | str | None = None,
-               res: Tuple[int, int] = DEFAULT_RES) -> Path:
+               res: Tuple[int, int] = DEFAULT_RES,
+               min_progress: float | None = None) -> Path:
     """Render both champions of ``run_dir``; returns the output folder.
+    ``min_progress`` overrides the run's gate (see ``select_champions``).
 
     Uses the Genesis runtime that is already initialised when there is one
     (e.g. called from the end of a live run) and otherwise initialises and
@@ -209,11 +232,13 @@ def render_run(run_dir: Path | str, work: Path | str | None = None,
     import genesis as gs
 
     run_dir = Path(run_dir).resolve()
+    targets, min_prog = select_champions(run_dir, min_progress)   # refuse before touching the run dir
     work = Path(work).resolve() if work else Path(tempfile.mkdtemp(prefix="champion_urdfs_"))
     out = run_dir / OUT_SUBDIR
     out.mkdir(parents=True, exist_ok=True)
+    for f in _prune_stale(out, [champion_stem(l, r) for l, r in targets]):
+        print(f"[render_champions] removed stale {f.name}")
 
-    targets, min_prog = select_champions(run_dir)
     items: List[Dict] = []
     for label, row in targets:
         stem = champion_stem(label, row)
@@ -268,7 +293,8 @@ def render_run(run_dir: Path | str, work: Path | str | None = None,
 
 
 def render_runs(run_dirs: Sequence[Path | str], work: Path | str | None = None,
-                res: Tuple[int, int] = DEFAULT_RES) -> Dict[str, str]:
+                res: Tuple[int, int] = DEFAULT_RES,
+                min_progress: float | None = None) -> Dict[str, str]:
     """Render every run in ``run_dirs`` (wrappers resolved), never stopping
     on one failure. Returns ``{run: "ok" | "failed: <reason>"}`` and prints
     a summary."""
@@ -281,7 +307,7 @@ def render_runs(run_dirs: Sequence[Path | str], work: Path | str | None = None,
             run_dir = resolve_run_dir(rd)
             sub = Path(work) / Path(rd).name if work else None
             print(f"\n[render_champions] === {run_dir} ===")
-            render_run(run_dir, sub, res)
+            render_run(run_dir, sub, res, min_progress)
             status[key] = "ok"
         except Exception as exc:  # noqa: BLE001 — batch must go on
             status[key] = f"failed: {exc}"
@@ -299,8 +325,10 @@ def main(argv: List[str] | None = None) -> None:
     ap.add_argument("--work", default=None,
                     help="where to materialise URDFs (default: a temp dir per run)")
     ap.add_argument("--res", nargs=2, type=int, default=DEFAULT_RES, metavar=("W", "H"))
+    ap.add_argument("--min-progress", type=float, default=None, metavar="M",
+                    help="override the run's outer.min_progress_m gate for the CoT champion (metres)")
     a = ap.parse_args(argv)
-    status = render_runs(a.run_dirs, a.work, tuple(a.res))
+    status = render_runs(a.run_dirs, a.work, tuple(a.res), a.min_progress)
     if any(v != "ok" for v in status.values()):
         raise SystemExit(1)
 
