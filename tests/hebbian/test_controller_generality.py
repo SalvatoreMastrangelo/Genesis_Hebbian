@@ -397,6 +397,24 @@ def test_draw_generality_has_a_baseline_line_per_body_set():
     plt.close(fig)
 
 
+def test_draw_generality_can_drop_the_generalist_reference():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.controller_generality import draw_generality
+    fig, axes = plt.subplots(1, 3)
+    draw_generality(axes, _summary_df(), body_sets=("random", "front"),
+                    show_generalist=False)
+    for ax in axes:
+        labels = [l.get_label() for l in ax.get_lines()]
+        assert not any("generalist" in l for l in labels)
+        assert not ax.patches  # no axhspan SE band for the generalist either
+    labels = [l.get_label() for l in axes[0].get_lines()]
+    assert labels.count("hebbian - random morphologies") == 1
+    assert labels.count("hebbian - front morphologies") == 1
+    plt.close(fig)
+
+
 def test_draw_generality_ignores_absent_body_sets():
     import matplotlib
     matplotlib.use("Agg")
@@ -463,8 +481,9 @@ def test_write_outputs_produces_summary_and_the_three_figures(tmp_path):
     out_dir = tmp_path / "out"
     written = write_outputs(out_dir, df, controllers, bodies, run)
     names = {p.name for p in written}
-    assert {"summary.csv", "generality_all.png", "generality_random.png",
-            "generality_front.png", "delta_vs_distance.png"} <= names
+    assert {"summary.csv", "generality_all.png", "generality_all_no_generalist.png",
+            "generality_random.png", "generality_front.png",
+            "delta_vs_distance.png"} <= names
     s = pd.read_csv(out_dir / "summary.csv")
     assert set(s["body_set"]) == {"random", "front"}
 
@@ -479,6 +498,7 @@ def test_write_outputs_random_only_skips_front_and_overlay(tmp_path):
     assert "generality_random.png" in written
     assert "generality_front.png" not in written
     assert "generality_all.png" not in written
+    assert "generality_all_no_generalist.png" not in written
 
 
 def test_plot_only_cli_rebuilds_outputs_from_csvs(tmp_path):

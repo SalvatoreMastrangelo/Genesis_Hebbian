@@ -2404,6 +2404,36 @@
     <bcf:citekey order="26" intorder="1">miconi2018differentiable</bcf:citekey>
     <bcf:citekey order="27" intorder="1">floreano2000evolutionary</bcf:citekey>
     <bcf:citekey order="27" intorder="2">soltoggio2018born</bcf:citekey>
+    <bcf:citekey order="28" intorder="1">sims1994evolving</bcf:citekey>
+    <bcf:citekey order="29" intorder="1">lipson2000automatic</bcf:citekey>
+    <bcf:citekey order="30" intorder="1">cheney2018scalable</bcf:citekey>
+    <bcf:citekey order="31" intorder="1">eiben2020evolves</bcf:citekey>
+    <bcf:citekey order="32" intorder="1">gupta2021embodied</bcf:citekey>
+    <bcf:citekey order="33" intorder="1">muff2026hexacopters</bcf:citekey>
+    <bcf:citekey order="34" intorder="1">bergonti2024codesign</bcf:citekey>
+    <bcf:citekey order="35" intorder="1">gupta2022metamorph</bcf:citekey>
+    <bcf:citekey order="36" intorder="1">floreano2000evolutionary</bcf:citekey>
+    <bcf:citekey order="37" intorder="1">soltoggio2018born</bcf:citekey>
+    <bcf:citekey order="38" intorder="1">soltoggio2008evolutionary</bcf:citekey>
+    <bcf:citekey order="39" intorder="1">miconi2018differentiable</bcf:citekey>
+    <bcf:citekey order="40" intorder="1">miconi2019backpropamine</bcf:citekey>
+    <bcf:citekey order="41" intorder="1">najarro2020meta</bcf:citekey>
+    <bcf:citekey order="42" intorder="1">salimans2017evolution</bcf:citekey>
+    <bcf:citekey order="43" intorder="1">pedersen2021evolving</bcf:citekey>
+    <bcf:citekey order="44" intorder="1">ferigo2023evolving</bcf:citekey>
+    <bcf:citekey order="45" intorder="1">vandiggelen2025emergent</bcf:citekey>
+    <bcf:citekey order="46" intorder="1">gupta2021embodied</bcf:citekey>
+    <bcf:citekey order="46" intorder="2">muff2026hexacopters</bcf:citekey>
+    <bcf:citekey order="47" intorder="1">bergonti2024codesign</bcf:citekey>
+    <bcf:citekey order="48" intorder="1">gupta2022metamorph</bcf:citekey>
+    <bcf:citekey order="49" intorder="1">floreano2000evolutionary</bcf:citekey>
+    <bcf:citekey order="49" intorder="2">najarro2020meta</bcf:citekey>
+    <bcf:citekey order="49" intorder="3">ferigo2023evolving</bcf:citekey>
+    <bcf:citekey order="49" intorder="4">vandiggelen2025emergent</bcf:citekey>
+    <bcf:citekey order="50" intorder="1">miconi2018differentiable</bcf:citekey>
+    <bcf:citekey order="51" intorder="1">raghu2020rapid</bcf:citekey>
+    <bcf:citekey order="52" intorder="1">finn2017maml</bcf:citekey>
+    <bcf:citekey order="53" intorder="1">soltoggio2018born</bcf:citekey>
   </bcf:section>
   <!-- SORTING TEMPLATES -->
   <bcf:sortingtemplate name="nyt">

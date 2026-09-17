@@ -2,7 +2,7 @@ PWD /home/salvatore/Desktop/code/hebbian/Genesis_Hebbian/tesis
 INPUT /usr/local/texlive/2025/texmf.cnf
 INPUT /usr/local/texlive/2025/texmf-dist/web2c/texmf.cnf
 INPUT /usr/local/texlive/2025/texmf-var/web2c/pdftex/pdflatex.fmt
-INPUT thesis.tex
+INPUT /home/salvatore/Desktop/code/hebbian/Genesis_Hebbian/tesis/thesis.tex
 OUTPUT thesis.log
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/report.cls
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/report.cls

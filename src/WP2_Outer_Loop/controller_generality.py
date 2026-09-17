@@ -515,10 +515,12 @@ _PANELS = (("fitness", "Fitness"),
            ("cost_of_transport", "Cost of transport"))
 
 
-def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str]) -> None:
+def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str],
+                    show_generalist: bool = True) -> None:
     """Fitness / progress / CoT vs generation on three axes: per body set the
-    best-of-gen Hebbian controller as a solid line (± SE across bodies) and
-    the zero-rules generalist as a dashed horizontal reference."""
+    best-of-gen Hebbian controller as a solid line (± SE across bodies) and,
+    unless ``show_generalist`` is off, the zero-rules generalist as a dashed
+    horizontal reference."""
     present = [bs for bs in body_sets if bs in set(summary["body_set"])]
     for ax, (metric, ylabel) in zip(axes, _PANELS):
         if metric not in summary.columns:
@@ -537,7 +539,7 @@ def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str]) -> No
                         label=f"hebbian - {bs} morphologies")
                 ax.fill_between(x, y - se, y + se, color=color, alpha=0.18,
                                 linewidth=0)
-            zero = sub[sub["kind"] == "zero"]
+            zero = sub[sub["kind"] == "zero"] if show_generalist else sub.iloc[0:0]
             if len(zero):
                 z = float(zero[metric].iloc[0])
                 zse = float(zero.get(f"{metric}_se", pd.Series([0.0])).iloc[0])
@@ -556,13 +558,13 @@ def draw_generality(axes, summary: pd.DataFrame, body_sets: Sequence[str]) -> No
 
 def plot_generality(summary: pd.DataFrame, out_path: Path,
                     body_sets: Sequence[str] = BODY_SETS,
-                    title: str = "") -> Path:
+                    title: str = "", show_generalist: bool = True) -> Path:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
-    draw_generality(axes, summary, body_sets)
+    draw_generality(axes, summary, body_sets, show_generalist=show_generalist)
     if title:
         fig.suptitle(title)
     fig.tight_layout()
@@ -653,7 +655,8 @@ def write_outputs(out_dir: Path, df: pd.DataFrame, controllers: pd.DataFrame,
                   bodies: pd.DataFrame, run_dir: Path,
                   title: str = "") -> List[Path]:
     """``summary.csv`` + the figures: one per body set present, the overlay
-    when both are, and the delta-vs-distance panel when random bodies are."""
+    (with and without the generalist reference lines) when both are, and the
+    delta-vs-distance panel when random bodies are."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
@@ -673,6 +676,10 @@ def write_outputs(out_dir: Path, df: pd.DataFrame, controllers: pd.DataFrame,
         written.append(plot_generality(
             summary, out_dir / "generality_all.png", body_sets=tuple(present),
             title=f"{base} — random vs front bodies"))
+        written.append(plot_generality(
+            summary, out_dir / "generality_all_no_generalist.png",
+            body_sets=tuple(present), title=f"{base} — random vs front bodies",
+            show_generalist=False))
 
     if "random" in present:
         try:

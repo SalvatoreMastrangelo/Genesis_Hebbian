@@ -13,6 +13,9 @@ Reads the CSVs written by ``NSGA2MorphCMAES``:
 Figures written to ``<run_dir>/plots``:
 
 * ``pareto_front_evolution[_zoomed].png`` / ``pareto_hypervolume.png``
+* ``no_bixler/pareto_front_evolution[_zoomed].png`` — the same two front
+  figures without the Bixler star (``--no-bixler-subdir [NAME]`` /
+  ``no_star_subdir=``; skipped when no star is drawn)
 * ``<source>_champions.png`` — both objectives of the two record-holding
   morphologies vs outer generation, ``<source>`` being ``exam`` when the run
   has an exam rollout and ``phase_mean`` otherwise (``plot_champion_curves``)
@@ -24,7 +27,7 @@ Figures written to ``<run_dir>/plots``:
 
 Usage
 -----
-    PYTHONPATH=src python -m WP2_Outer_Loop.pareto_plots <run_dir> [--min-progress X] [--no-render]
+    PYTHONPATH=src python -m WP2_Outer_Loop.pareto_plots <run_dir> [--min-progress X] [--no-render] [--no-bixler-subdir [NAME]]
 
 Also callable programmatically::
 
@@ -34,6 +37,7 @@ Also callable programmatically::
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -215,6 +219,7 @@ def _axis_label(name: str, direction: str) -> str:
 
 def plot_pareto_front(
     run_dir: Path | str, min_progress: Optional[float] = None,
+    no_star_subdir: Optional[str] = None,
 ) -> Optional[dict]:
     """Objective-space scatter per outer generation + per-gen fronts +
     cumulative front, and a hypervolume-vs-generation curve.
@@ -224,10 +229,18 @@ def plot_pareto_front(
     ``outer.min_progress_m`` from the run's saved config (absent/0 = no
     gate); pass a value explicitly to regenerate old runs with a gate.
 
-    Returns ``{"hypervolume", "ref", "ref_fixed"}`` — the final cumulative
-    hypervolume and its raw-space reference point (see ``_hv_reference``;
-    cross-run comparable only when ``ref_fixed``) — or ``None`` when the
-    run has no plottable data."""
+    ``no_star_subdir`` also writes the two front figures (full + zoomed)
+    WITHOUT the Bixler star into ``plots/<no_star_subdir>/``: the very same
+    figure — points, fronts, gate line, crop, axis limits — with only the
+    star and its legend entry removed. Skipped with a message when no star
+    is drawn (no baseline for the run).
+
+    Returns ``{"hypervolume", "ref", "ref_fixed", "star",
+    "no_star_figures_dir"}`` — the final cumulative hypervolume and its
+    raw-space reference point (see ``_hv_reference``; cross-run comparable
+    only when ``ref_fixed``), the star coordinates (``None`` when not
+    drawn) and the star-free folder (``None`` unless written) — or ``None``
+    when the run has no plottable data."""
     run_dir = Path(run_dir)
     csv_path = run_dir / "results" / "outer_population.csv"
     df = _read_results_csv(csv_path)
@@ -333,33 +346,25 @@ def plot_pareto_front(
     else:
         star = _load_standard_drone_baseline(run_dir, name_x, name_y)
         star_label = BIXLER_LABEL
+    star_artist = None
     if star is not None:
-        ax.scatter([star[0]], [star[1]], marker="*", s=340, color="gold",
-                   edgecolors="black", linewidths=0.9, zorder=5,
-                   label=star_label)
+        star_artist = ax.scatter(
+            [star[0]], [star[1]], marker="*", s=340, color="gold",
+            edgecolors="black", linewidths=0.9, zorder=5, label=star_label)
 
-    ax.set_xlabel(_axis_label(name_x, dir_x))
-    ax.set_ylabel(_axis_label(name_y, dir_y))
-    ax.set_title("Outer-loop Pareto front evolution")
-    ax.grid(True, linestyle="--", alpha=0.4)
-    if few_gens:
-        ax.legend(fontsize=8, ncols=2)
-    else:
-        ax.legend(fontsize=8, loc="best")
-        sm = plt.cm.ScalarMappable(
-            cmap=cmap,
-            norm=plt.Normalize(vmin=uniq_gens.min(), vmax=uniq_gens.max()),
-        )
-        fig.colorbar(sm, ax=ax, label="outer generation")
-    fig.tight_layout()
-    out = plots_dir / "pareto_front_evolution.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    print(f"[pareto_plots] Saved {out}")
+    def _draw_legend() -> None:
+        if few_gens:
+            ax.legend(fontsize=8, ncols=2)
+        else:
+            ax.legend(fontsize=8, loc="best")
 
-    # Zoomed variant: same figure cropped to the cumulative front's bounding
-    # box (plus a small margin), so the front's extreme individuals sit at
-    # the plot corners without their markers being clipped.
-    if len(cum_front) >= 2:
+    def _zoom_to_front() -> bool:
+        """Crop to the cumulative front's bounding box (plus a small
+        margin), so the front's extreme individuals sit at the plot corners
+        without their markers being clipped. ``False`` when the front is a
+        single point (nothing to crop to)."""
+        if len(cum_front) < 2:
+            return False
         (x_lo, y_lo) = cum_front.min(axis=0)
         (x_hi, y_hi) = cum_front.max(axis=0)
         if x_hi > x_lo:
@@ -369,9 +374,52 @@ def plot_pareto_front(
             pad = 0.03 * (y_hi - y_lo)
             ax.set_ylim(y_lo - pad, y_hi + pad)
         ax.set_title("Outer-loop Pareto front evolution (zoomed to front)")
+        return True
+
+    ax.set_xlabel(_axis_label(name_x, dir_x))
+    ax.set_ylabel(_axis_label(name_y, dir_y))
+    ax.set_title("Outer-loop Pareto front evolution")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    _draw_legend()
+    if not few_gens:
+        sm = plt.cm.ScalarMappable(
+            cmap=cmap,
+            norm=plt.Normalize(vmin=uniq_gens.min(), vmax=uniq_gens.max()),
+        )
+        fig.colorbar(sm, ax=ax, label="outer generation")
+    fig.tight_layout()
+    out = plots_dir / "pareto_front_evolution.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    print(f"[pareto_plots] Saved {out}")
+    full_xlim, full_ylim = ax.get_xlim(), ax.get_ylim()
+
+    # Zoomed variant: same figure cropped to the cumulative front.
+    if _zoom_to_front():
         out = plots_dir / "pareto_front_evolution_zoomed.png"
         fig.savefig(out, dpi=150, bbox_inches="tight")
         print(f"[pareto_plots] Saved {out}")
+
+    # Star-free copies: the same figure with only the star (and its legend
+    # entry) removed, at the same full-view limits and the same crop.
+    no_star_dir: Optional[Path] = None
+    if no_star_subdir:
+        if star_artist is None:
+            print("[pareto_plots] star-free copies skipped: no star drawn")
+        else:
+            no_star_dir = plots_dir / no_star_subdir
+            no_star_dir.mkdir(parents=True, exist_ok=True)
+            star_artist.remove()
+            _draw_legend()
+            ax.set_xlim(full_xlim)
+            ax.set_ylim(full_ylim)
+            ax.set_title("Outer-loop Pareto front evolution")
+            out = no_star_dir / "pareto_front_evolution.png"
+            fig.savefig(out, dpi=150, bbox_inches="tight")
+            if _zoom_to_front():
+                out = no_star_dir / "pareto_front_evolution_zoomed.png"
+                fig.savefig(out, dpi=150, bbox_inches="tight")
+            print(f"[pareto_plots] Saved the front figures without the star "
+                  f"to {no_star_dir}")
     plt.close(fig)
 
     # Hypervolume curve
@@ -399,6 +447,7 @@ def plot_pareto_front(
         "ref": ref_raw,
         "ref_fixed": ref_fixed,
         "star": star,
+        "no_star_figures_dir": no_star_dir,
     }
 
 
@@ -770,7 +819,7 @@ def render_champions_safe(run_dir: Path | str,
 
 def plot_outer_run(
     run_dir: Path | str, min_progress: Optional[float] = None,
-    render: bool = True,
+    render: bool = True, no_star_subdir: Optional[str] = None,
 ) -> None:
     """All outer-loop plots for a run directory.
 
@@ -778,32 +827,42 @@ def plot_outer_run(
     backfills the per-generation front table it never wrote live. With
     ``render`` (the default) the two exam champion morphologies are rendered
     last via ``render_champions_safe`` — best-effort, needs Genesis.
+    ``no_star_subdir`` adds the star-free front figures (see
+    ``plot_pareto_front``).
     """
     build_pareto_front_csv(run_dir, min_progress=min_progress)
-    plot_pareto_front(run_dir, min_progress=min_progress)
+    plot_pareto_front(run_dir, min_progress=min_progress,
+                      no_star_subdir=no_star_subdir)
     plot_champion_curves(run_dir)
     plot_outer_metrics(run_dir)
     if render:
         render_champions_safe(run_dir, min_progress=min_progress)
 
 
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m WP2_Outer_Loop.pareto_plots",
+        description="All outer-loop plots for one run directory.")
+    parser.add_argument("run_dir", help="run folder (holds results/)")
+    parser.add_argument("--min-progress", type=float, default=None,
+                        metavar="X",
+                        help="admission gate in meters (default: the run's "
+                             "saved outer.min_progress_m)")
+    parser.add_argument("--no-render", action="store_true",
+                        help="skip the champion morphology renders "
+                             "(they need Genesis)")
+    parser.add_argument("--no-bixler-subdir", nargs="?", const="no_bixler",
+                        default=None, metavar="NAME",
+                        help="also write the two Pareto-front figures "
+                             "without the Bixler star into plots/NAME/ "
+                             "(default name: no_bixler); skipped when no "
+                             "star is drawn")
+    args = parser.parse_args(argv)
+    plot_outer_run(args.run_dir, min_progress=args.min_progress,
+                   render=not args.no_render,
+                   no_star_subdir=args.no_bixler_subdir)
+    return 0
+
+
 if __name__ == "__main__":
-    argv = sys.argv[1:]
-    _min_progress: Optional[float] = None
-    if "--min-progress" in argv:
-        i = argv.index("--min-progress")
-        try:
-            _min_progress = float(argv[i + 1])
-        except (IndexError, ValueError):
-            print("--min-progress requires a numeric value (meters)")
-            sys.exit(1)
-        del argv[i:i + 2]
-    _render = True
-    if "--no-render" in argv:
-        argv.remove("--no-render")
-        _render = False
-    if len(argv) < 1:
-        print("Usage: python -m WP2_Outer_Loop.pareto_plots <run_dir> "
-              "[--min-progress X] [--no-render]")
-        sys.exit(1)
-    plot_outer_run(argv[0], min_progress=_min_progress, render=_render)
+    sys.exit(main())

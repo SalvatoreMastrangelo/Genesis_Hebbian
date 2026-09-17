@@ -39,6 +39,19 @@ started from the same random catalog end nearer each other than runs that
 did not? ``--out DIR`` writes everything to one folder instead of every
 run's ``plots/``.
 
+**Per-seed PCA (``--per-seed``, group mode).** No joint basis at all: for
+every seed shared by the grouped runs a SEPARATE PCA is fit on only that
+seed's runs, giving ``seed_<seed>/pca_population[_centroid_fit].png`` and
+``seed_<seed>/pca_pareto_front[_centroid_fit].png`` (one figure per seed,
+its own axes and explained variance) plus ``*_3d.png`` twins (PC1–PC3 of
+a 3-component fit) and ``*_projections.png`` (PC1–PC2 / PC1–PC3 / PC2–PC3
+side by side), contact-sheet grids of those independent panels
+(``<stem>[_centroid_fit]_seed_pairs[_3d|_pc1_pc3|_pc2_pc3].png``),
+``seed_pair_distances.csv`` (15-D last-gen centroid distance between the
+runs of each seed) and ``seed_pair_pca_variance.csv``. Axes of different
+seeds are not comparable in this mode; use the shared-basis figures above
+for cross-seed comparison.
+
 Usage
 -----
     PYTHONPATH=src python -m WP2_Outer_Loop.pca_trajectories \
@@ -48,6 +61,11 @@ Usage
         --group co-design "#c0392b" <run> <run> ... \
         --group morphology-only "#1f5fa8" <run> <run> ... \
         [--labels ...] --out logs/remote/outer_nsga/pca_exam_seed_paired
+
+    PYTHONPATH=src python -m WP2_Outer_Loop.pca_trajectories --per-seed \
+        --group co-design "#c0392b" <run> ... \
+        --group morphology-only "#1f5fa8" <run> ... \
+        --out logs/remote/outer_nsga/pca_exam_seed_pairs_independent
 """
 
 from __future__ import annotations
@@ -65,6 +83,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 import yaml
@@ -150,24 +169,30 @@ def _group_of(groups: Sequence[RunGroup]) -> Dict[str, RunGroup]:
     return {name: g for g in groups for name in g.names}
 
 
-def fit_pca(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """First two principal components of ``X`` (rows = genomes).
+def fit_pca(
+    X: np.ndarray, n_components: int = 2,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """First ``n_components`` principal components of ``X`` (rows = genomes).
 
-    Returns ``(components, explained)``: a (2, n_genes) row-vector basis and
-    the two explained-variance ratios. Plain PCA on mean-centered data — the
-    genes already share the [0, 1] scale, so no per-gene standardization
-    (z-scoring would inflate near-constant genes into noise directions).
-    Component signs are fixed so each PC's largest-magnitude loading is
-    positive, making outputs reproducible across BLAS/SVD implementations.
+    Returns ``(components, explained)``: an (n_components, n_genes)
+    row-vector basis and the explained-variance ratios. Plain PCA on
+    mean-centered data — the genes already share the [0, 1] scale, so no
+    per-gene standardization (z-scoring would inflate near-constant genes
+    into noise directions). Component signs are fixed so each PC's
+    largest-magnitude loading is positive, making outputs reproducible
+    across BLAS/SVD implementations. Fits nest: the first two rows of a
+    3-component fit are exactly the 2-component fit.
     """
     X = np.asarray(X, dtype=float)
-    if X.ndim != 2 or X.shape[0] < 2 or X.shape[1] < 2:
-        raise ValueError(f"PCA needs a (>=2, >=2) matrix, got {X.shape}")
+    k = int(n_components)
+    if X.ndim != 2 or X.shape[0] < 2 or X.shape[1] < k or k < 1:
+        raise ValueError(f"PCA with {k} components needs a (>=2, >={k}) "
+                         f"matrix, got {X.shape}")
     Xc = X - X.mean(axis=0)
     _, s, vt = np.linalg.svd(Xc, full_matrices=False)
     total = float((s ** 2).sum())
-    explained = (s[:2] ** 2 / total) if total > 0 else np.zeros(2)
-    components = vt[:2].copy()
+    explained = (s[:k] ** 2 / total) if total > 0 else np.zeros(k)
+    components = vt[:k].copy()
     for pc in components:
         if pc[np.argmax(np.abs(pc))] < 0:
             pc *= -1.0
@@ -179,6 +204,17 @@ def centroid_paths(
     fit_on: str = "rows",
 ) -> Tuple[pd.DataFrame, np.ndarray]:
     """Per-generation centroids of every run in one shared PC1–PC2 basis.
+    See ``centroid_paths_with_basis``; this drops the components."""
+    paths, explained, _ = centroid_paths_with_basis(dfs, labels, fit_on)
+    return paths, explained
+
+
+def centroid_paths_with_basis(
+    dfs: Sequence[pd.DataFrame], labels: Sequence[str],
+    fit_on: str = "rows", n_components: int = 2,
+) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """Per-generation centroids of every run in one shared PC basis
+    (``n_components`` axes, PC1–PC2 by default).
 
     ``dfs`` are ``load_genomes`` frames, one per run. Each run's genomes are
     averaged per outer generation — persistent NSGA-II elites appear once
@@ -194,9 +230,10 @@ def centroid_paths(
       population mean.
 
     Either way the projected points are the same centroids, just in a
-    different basis. Returns ``(paths, explained)``: a frame with columns
-    ``run, outer_gen, pc1, pc2`` — runs in input order, generations
-    ascending — and the two explained-variance ratios of the fit matrix.
+    different basis. Returns ``(paths, explained, components)``: a frame
+    with columns ``run, outer_gen, pc1, pc2[, pc3, ...]`` — runs in input
+    order, generations ascending — the explained-variance ratios of the fit
+    matrix, and the (n_components, n_genes) PC basis itself.
     """
     gene_sets = [_gene_columns(df) for df in dfs]
     if any(g != gene_sets[0] for g in gene_sets[1:]):
@@ -223,16 +260,17 @@ def centroid_paths(
     else:
         raise ValueError(f"Unknown fit_on: {fit_on!r} "
                          "(expected 'rows' or 'centroids')")
-    components, explained = fit_pca(X)
+    components, explained = fit_pca(X, n_components)
     # Projecting the centroids == averaging the projected rows (linearity),
     # so the "rows" fit reproduces the mean of per-genome projections.
     proj = (C - X.mean(axis=0)) @ components.T
 
+    pc_cols = [f"pc{i + 1}" for i in range(components.shape[0])]
     paths = pd.DataFrame(
-        [(label, gen, p[0], p[1]) for (label, gen), p in zip(meta, proj)],
-        columns=["run", "outer_gen", "pc1", "pc2"],
+        [(label, gen, *p) for (label, gen), p in zip(meta, proj)],
+        columns=["run", "outer_gen"] + pc_cols,
     )
-    return paths, explained
+    return paths, explained, components
 
 
 # ----------------------------------------------------------------------------
@@ -293,16 +331,36 @@ def _group_cmap(color: str) -> LinearSegmentedColormap:
         f"grp_{color}", [(1, 1, 1), tuple(rgb), tuple(rgb * 0.45)])
 
 
-def _draw_run_path(ax, sub: pd.DataFrame, cmap) -> np.ndarray:
-    """One run's centroid path on ``ax``: line, generation-shaded dots, an
-    open circle at the first gen and a star at the last. Returns the gens."""
+def _gen_shading(sub: pd.DataFrame, cmap) -> Tuple[np.ndarray, np.ndarray]:
+    """``(gens, colors)``: light -> dark encodes generation; starts above
+    0.35 so the earliest centroids stay visible on the white background."""
     gens = sub["outer_gen"].to_numpy(dtype=float)
     span = gens.max() - gens.min()
     frac = (gens - gens.min()) / span if span > 0 else np.ones_like(gens)
-    # Light -> dark encodes generation; start above 0.35 so the earliest
-    # centroids stay visible on the white background.
-    colors = cmap(0.35 + 0.6 * frac)
-    x, y = sub["pc1"].to_numpy(), sub["pc2"].to_numpy()
+    return gens, cmap(0.35 + 0.6 * frac)
+
+
+def _draw_run_path_3d(ax, sub: pd.DataFrame, cmap) -> np.ndarray:
+    """``_draw_run_path`` on a 3-D axes, using ``pc1, pc2, pc3``."""
+    gens, colors = _gen_shading(sub, cmap)
+    x, y, z = (sub[c].to_numpy() for c in ("pc1", "pc2", "pc3"))
+    ax.plot(x, y, z, color=cmap(0.7), lw=1.1, alpha=0.5)
+    ax.scatter(x, y, z, c=colors, s=22, edgecolors="none", depthshade=False)
+    ax.scatter([x[0]], [y[0]], [z[0]], marker="o", s=90, facecolors="none",
+               edgecolors=cmap(0.95), lw=1.5, depthshade=False)
+    ax.scatter([x[-1]], [y[-1]], [z[-1]], marker="*", s=180,
+               color=cmap(0.95), edgecolors="white", lw=0.5, depthshade=False)
+    return gens
+
+
+def _draw_run_path(
+    ax, sub: pd.DataFrame, cmap, cols: Tuple[str, str] = ("pc1", "pc2"),
+) -> np.ndarray:
+    """One run's centroid path on ``ax`` (``cols`` = the two projected
+    columns): line, generation-shaded dots, an open circle at the first gen
+    and a star at the last. Returns the gens."""
+    gens, colors = _gen_shading(sub, cmap)
+    x, y = sub[cols[0]].to_numpy(), sub[cols[1]].to_numpy()
     ax.plot(x, y, color=cmap(0.7), lw=1.1, alpha=0.5, zorder=1)
     ax.scatter(x, y, c=colors, s=22, edgecolors="none", zorder=2)
     ax.scatter(x[0], y[0], marker="o", s=90, facecolors="none",
@@ -429,6 +487,217 @@ def _draw_trajectories(
 
 
 # ----------------------------------------------------------------------------
+#  Per-seed PCA: one INDEPENDENT fit per seed (only that seed's runs)
+# ----------------------------------------------------------------------------
+
+@dataclass
+class SeedPCA:
+    """One seed's runs projected into a PCA fit on those runs alone."""
+    seed: int
+    names: List[str]
+    paths: pd.DataFrame
+    explained: np.ndarray
+    components: np.ndarray
+
+
+def per_seed_pca(
+    dfs: Dict[str, pd.DataFrame], panels: Sequence[Tuple[int, Sequence[str]]],
+    fit_on: str = "rows", n_components: int = 2,
+) -> List[SeedPCA]:
+    """Fit a separate PCA for every ``(seed, [run labels])`` panel on ONLY
+    that seed's genomes (``dfs`` maps run label → ``load_genomes`` frame)
+    and project that seed's centroid paths into it. Unlike the shared-basis
+    figures, the axes of two seeds are NOT comparable; each panel answers
+    "do this seed's two runs drift apart?" in its own best 2-D (or, with
+    ``n_components=3``, 3-D) view."""
+    fits = []
+    for seed, names in panels:
+        names = list(names)
+        paths, explained, components = centroid_paths_with_basis(
+            [dfs[n] for n in names], names, fit_on=fit_on,
+            n_components=n_components)
+        fits.append(SeedPCA(seed, names, paths, explained, components))
+    return fits
+
+
+def _pair_legend_handles(
+    groups: Sequence[RunGroup], fits: Sequence[SeedPCA],
+) -> List[Line2D]:
+    """Group entries (with the generation range the shading spans) plus the
+    first/last-generation marker glyphs."""
+    handles = []
+    for g in groups:
+        gens = pd.concat([f.paths[f.paths["run"].isin(g.names)]["outer_gen"]
+                          for f in fits])
+        span = (f", light to dark = gen {int(gens.min())} to "
+                f"{int(gens.max())}") if len(gens) else ""
+        handles.append(Line2D([], [], color=_group_cmap(g.color)(0.7),
+                              marker="o", markersize=6,
+                              label=f"{g.label}{span}"))
+    handles.append(Line2D([], [], marker="o", markerfacecolor="none",
+                          markeredgecolor="0.3", linestyle="", markersize=8,
+                          label="first generation"))
+    handles.append(Line2D([], [], marker="*", color="0.3", linestyle="",
+                          markersize=11, label="last generation"))
+    return handles
+
+
+def _draw_pair_panel(
+    ax, fit: SeedPCA, groups: Sequence[RunGroup], fit_on: str,
+    pcs: Tuple[int, int] = (1, 2),
+) -> None:
+    """One seed's runs on ``ax`` in that seed's own PCA basis, projected on
+    the 1-based component pair ``pcs`` (PC1–PC2 by default; PC1–PC3 and
+    PC2–PC3 need a 3-component fit); axis labels carry the explained
+    variance of the two components shown."""
+    cols = tuple(f"pc{i}" for i in pcs)
+    missing = [c for c in cols if c not in fit.paths.columns]
+    if missing:
+        raise ValueError(f"projection {pcs} needs component(s) {missing} — "
+                         f"fit with n_components >= {max(pcs)}")
+    grp = _group_of(groups)
+    for name in fit.names:
+        sub = fit.paths[fit.paths["run"] == name]
+        if sub.empty:
+            continue
+        _draw_run_path(ax, sub, _group_cmap(grp[name].color), cols)
+    tag = ", centroid fit" if fit_on == "centroids" else ""
+    ax.set_xlabel(f"PC{pcs[0]} ({fit.explained[pcs[0] - 1] * 100:.1f}% var{tag})")
+    ax.set_ylabel(f"PC{pcs[1]} ({fit.explained[pcs[1] - 1] * 100:.1f}% var{tag})")
+    ax.set_title(f"seed {fit.seed}")
+    ax.grid(alpha=0.3)
+
+
+_PROJECTIONS = ((1, 2), (1, 3), (2, 3))
+
+
+def _draw_seed_pair_projections(
+    fit: SeedPCA, groups: Sequence[RunGroup], title: str, fit_on: str,
+) -> plt.Figure:
+    """One seed, 2×2: the three coordinate-plane projections of its
+    3-component fit (PC1–PC2, PC1–PC3, PC2–PC3) and the 3-D view."""
+    fig = plt.figure(figsize=(11, 10))
+    for i, pcs in enumerate(_PROJECTIONS):
+        ax = fig.add_subplot(2, 2, i + 1)
+        _draw_pair_panel(ax, fit, groups, fit_on, pcs=pcs)
+        ax.set_title("")
+    ax3 = fig.add_subplot(2, 2, 4, projection="3d")
+    _draw_pair_panel_3d(ax3, fit, groups, fit_on)
+    ax3.set_title("")
+    fig.legend(handles=_pair_legend_handles(groups, [fit]),
+               loc="lower center", ncol=len(groups) + 2, fontsize=9,
+               frameon=False, bbox_to_anchor=(0.5, 0.0))
+    fig.suptitle(f"{title}, seed {fit.seed}", fontsize=12)
+    fig.subplots_adjust(left=0.07, right=0.98, bottom=0.08, top=0.95,
+                        wspace=0.25, hspace=0.25)
+    return fig
+
+
+def _draw_seed_pair_figure(
+    fit: SeedPCA, groups: Sequence[RunGroup], title: str, fit_on: str,
+) -> plt.Figure:
+    """Stand-alone figure for one seed (its own PCA basis)."""
+    fig, ax = plt.subplots(figsize=(7, 6))
+    _draw_pair_panel(ax, fit, groups, fit_on)
+    ax.set_title(f"{title}, seed {fit.seed}")
+    ax.legend(handles=_pair_legend_handles(groups, [fit]), loc="best",
+              fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def _draw_seed_pair_grid(
+    fits: Sequence[SeedPCA], groups: Sequence[RunGroup], title: str,
+    fit_on: str = "rows", ncols: int = 3, pcs: Tuple[int, int] = (1, 2),
+) -> plt.Figure:
+    """One panel per seed, EACH in its own PCA basis (independent fits, own
+    axis limits and explained variance), so the grid is a contact sheet of
+    the per-seed figures, not a joint PCA. ``pcs`` picks the projection."""
+    n = max(1, len(fits))
+    ncols = min(ncols, n)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.8 * ncols, 4.3 * nrows),
+                             squeeze=False)
+    flat = axes.ravel()
+    for ax, fit in zip(flat, fits):
+        _draw_pair_panel(ax, fit, groups, fit_on, pcs=pcs)
+    for ax in flat[len(fits):]:
+        ax.set_visible(False)
+    fig.legend(handles=_pair_legend_handles(groups, fits), loc="lower center",
+               ncol=len(groups) + 2, fontsize=9, frameon=False,
+               bbox_to_anchor=(0.5, -0.01))
+    fig.suptitle(f"{title}, one PCA per seed", fontsize=12)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    return fig
+
+
+_VIEW_3D = dict(elev=22, azim=-55)
+
+
+def _draw_pair_panel_3d(
+    ax, fit: SeedPCA, groups: Sequence[RunGroup], fit_on: str,
+) -> None:
+    """``_draw_pair_panel`` on a 3-D axes (PC1–PC3 of a 3-component fit)."""
+    if "pc3" not in fit.paths.columns:
+        raise ValueError("3-D panel needs a 3-component fit (pc3 column)")
+    grp = _group_of(groups)
+    for name in fit.names:
+        sub = fit.paths[fit.paths["run"] == name]
+        if sub.empty:
+            continue
+        _draw_run_path_3d(ax, sub, _group_cmap(grp[name].color))
+    tag = ", centroid fit" if fit_on == "centroids" else ""
+    ax.set_xlabel(f"PC1 ({fit.explained[0] * 100:.1f}% var{tag})", labelpad=6)
+    ax.set_ylabel(f"PC2 ({fit.explained[1] * 100:.1f}% var{tag})", labelpad=6)
+    ax.set_zlabel(f"PC3 ({fit.explained[2] * 100:.1f}% var{tag})", labelpad=6)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_major_locator(MaxNLocator(5))
+    # The 3-D box leaves headroom under the axes' top edge: pull the title
+    # down onto it.
+    ax.set_title(f"seed {fit.seed}", y=0.94)
+    ax.view_init(**_VIEW_3D)
+    ax.set_box_aspect((1, 1, 1), zoom=0.88)
+
+
+def _draw_seed_pair_figure_3d(
+    fit: SeedPCA, groups: Sequence[RunGroup], title: str, fit_on: str,
+) -> plt.Figure:
+    """Stand-alone 3-D figure for one seed (its own 3-component basis)."""
+    fig = plt.figure(figsize=(8, 7))
+    ax = fig.add_subplot(projection="3d")
+    _draw_pair_panel_3d(ax, fit, groups, fit_on)
+    # Figure-level title: the 3-D axes' own title area is where the
+    # upper-left legend sits.
+    ax.set_title("")
+    fig.suptitle(f"{title}, seed {fit.seed}", y=0.985, fontsize=12)
+    ax.legend(handles=_pair_legend_handles(groups, [fit]), loc="upper left",
+              fontsize=9)
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.04, top=0.95)
+    return fig
+
+
+def _draw_seed_pair_grid_3d(
+    fits: Sequence[SeedPCA], groups: Sequence[RunGroup], title: str,
+    fit_on: str = "rows", ncols: int = 3,
+) -> plt.Figure:
+    """``_draw_seed_pair_grid`` with a 3-D panel per seed."""
+    n = max(1, len(fits))
+    ncols = min(ncols, n)
+    nrows = int(np.ceil(n / ncols))
+    fig = plt.figure(figsize=(5.4 * ncols, 5.0 * nrows))
+    for i, fit in enumerate(fits):
+        ax = fig.add_subplot(nrows, ncols, i + 1, projection="3d")
+        _draw_pair_panel_3d(ax, fit, groups, fit_on)
+    fig.legend(handles=_pair_legend_handles(groups, fits), loc="lower center",
+               ncol=len(groups) + 2, fontsize=9, frameon=False,
+               bbox_to_anchor=(0.5, 0.0))
+    fig.suptitle(f"{title}, one PCA per seed", fontsize=12)
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.07, top=0.93,
+                        wspace=0.08, hspace=0.12)
+    return fig
+
+
+# ----------------------------------------------------------------------------
 #  Seed-paired distances between final centroids
 # ----------------------------------------------------------------------------
 
@@ -475,6 +744,30 @@ def summarize_distances(dist: pd.DataFrame) -> pd.DataFrame:
     return agg.sort_values("relation").reset_index(drop=True)
 
 
+def seed_pair_distances(
+    groups: Sequence[RunGroup], panels: Sequence[Tuple[int, Sequence[str]]],
+    source: str = "population",
+) -> pd.DataFrame:
+    """``final_centroid_distances`` restricted to run pairs that share a
+    seed, one block per panel, with a leading ``seed`` column."""
+    dir_of = {n: d for g in groups for n, d in zip(g.names, g.run_dirs)}
+    blocks = []
+    for seed, names in panels:
+        sub = [RunGroup(g.label, g.color,
+                        [dir_of[n] for n in g.names if n in names],
+                        [n for n in g.names if n in names])
+               for g in groups]
+        sub = [g for g in sub if g.names]
+        dist = final_centroid_distances(sub, source)
+        dist = dist[dist["group_a"] != dist["group_b"]].copy()
+        dist.insert(0, "seed", seed)
+        blocks.append(dist)
+    cols = ["seed", "run_a", "run_b", "group_a", "group_b", "seed_a",
+            "seed_b", "gen_a", "gen_b", "relation", "distance"]
+    return (pd.concat(blocks, ignore_index=True) if blocks
+            else pd.DataFrame(columns=cols))
+
+
 _SOURCES = (
     # (load_genomes source, filename stem, figure title)
     ("population", "pca_population",
@@ -482,6 +775,12 @@ _SOURCES = (
     ("front", "pca_pareto_front",
      "Morphology PCA trajectory — per-gen centroid of Pareto front"),
 )
+
+_PAIR_TITLES = {
+    # bare figure titles for the per-seed figures (no asides)
+    "population": "Morphology PCA trajectory of all genomes",
+    "front": "Morphology PCA trajectory of the Pareto front",
+}
 
 _FITS = (
     # (centroid_paths fit_on, filename suffix, title suffix)
@@ -563,6 +862,104 @@ def plot_pca_trajectories(
     return written
 
 
+def plot_pca_seed_pairs(
+    run_dirs: Sequence[Path | str], labels: Optional[Sequence[str]] = None,
+    groups: Optional[Sequence[RunGroup]] = None,
+    out_dir: Optional[Path | str] = None,
+) -> List[Path]:
+    """Per-seed PCA figures: for every seed shared by the grouped runs, ONE
+    PCA fit on only that seed's runs (never a joint basis across seeds).
+
+    Writes, per seed, ``seed_<seed>/{pca_population,pca_pareto_front}
+    [_centroid_fit].png`` (PC1–PC2) plus a ``*_3d.png`` twin (PC1–PC3 of
+    the same 3-component fit) and ``*_projections.png`` (PC1–PC2, PC1–PC3,
+    PC2–PC3 side by side); contact-sheet grids of those independent panels,
+    ``<stem>[_centroid_fit]_seed_pairs[_3d|_pc1_pc3|_pc2_pc3].png``; and
+    two CSVs:
+    ``seed_pair_distances.csv`` (15-D last-gen centroid distance between the
+    runs of each seed) and ``seed_pair_pca_variance.csv`` (explained
+    variance of PC1–PC3 per seed × source × fit). ``groups`` is required (the seed
+    pairing is across conditions) and its ``run_dirs`` must be exactly
+    ``run_dirs`` in order. Returns the written paths.
+    """
+    if not groups:
+        raise ValueError("per-seed PCA needs condition groups")
+    dirs = [Path(d) for d in run_dirs]
+    names = run_labels(dirs, labels)
+    out_dirname = _output_dirname(names)
+    seeds = {n: load_seed(d) for n, d in zip(names, dirs)}
+    it = iter(names)
+    for g in groups:
+        g.names = [next(it) for _ in g.run_dirs]
+    panels = seed_panels(groups, seeds)
+    if not panels:
+        raise ValueError("no run has a seed in reproducibility/config.yaml")
+    targets = ([Path(out_dir)] if out_dir is not None
+               else [d / "plots" / out_dirname for d in dirs])
+
+    written: List[Path] = []
+    var_rows = []
+    for source, stem, _ in _SOURCES:
+        title = _PAIR_TITLES[source]
+        try:
+            dfs = {n: load_genomes(d, source) for n, d in zip(names, dirs)}
+        except FileNotFoundError as exc:
+            if source == "population":
+                raise
+            print(f"[pca] Skipping {stem}*.png: {exc}")
+            continue
+        for fit_on, fname_suffix, _ in _FITS:
+            # One 3-component fit per seed; the 2-D figures use PC1–PC2 of
+            # it (identical to a 2-component fit, PCA nests).
+            fits = per_seed_pca(dfs, panels, fit_on=fit_on, n_components=3)
+            for fit in fits:
+                var_rows.append(dict(
+                    seed=fit.seed, source=source, fit_on=fit_on,
+                    runs=" | ".join(fit.names),
+                    pc1_var=float(fit.explained[0]),
+                    pc2_var=float(fit.explained[1]),
+                    pc3_var=float(fit.explained[2])))
+                for draw, tag in ((_draw_seed_pair_figure, ""),
+                                  (_draw_seed_pair_figure_3d, "_3d"),
+                                  (_draw_seed_pair_projections,
+                                   "_projections")):
+                    fig = draw(fit, groups, title, fit_on)
+                    for target in targets:
+                        out = (target / f"seed_{fit.seed}"
+                               / f"{stem}{fname_suffix}{tag}.png")
+                        out.parent.mkdir(parents=True, exist_ok=True)
+                        fig.savefig(out, dpi=150)
+                        written.append(out)
+                    plt.close(fig)
+            grids = [(lambda *a: _draw_seed_pair_grid(*a), ""),
+                     (_draw_seed_pair_grid_3d, "_3d")]
+            grids += [(lambda *a, p=pcs: _draw_seed_pair_grid(*a, pcs=p),
+                       f"_pc{pcs[0]}_pc{pcs[1]}") for pcs in _PROJECTIONS[1:]]
+            for draw, tag in grids:
+                fig = draw(fits, groups, title, fit_on)
+                for target in targets:
+                    out = target / f"{stem}{fname_suffix}_seed_pairs{tag}.png"
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    fig.savefig(out, dpi=150, bbox_inches="tight")
+                    written.append(out)
+                plt.close(fig)
+
+    dist = seed_pair_distances(groups, panels)
+    var = pd.DataFrame(var_rows)
+    for target in targets:
+        target.mkdir(parents=True, exist_ok=True)
+        dist.to_csv(target / "seed_pair_distances.csv", index=False)
+        var.to_csv(target / "seed_pair_pca_variance.csv", index=False)
+        written += [target / "seed_pair_distances.csv",
+                    target / "seed_pair_pca_variance.csv"]
+    print("[pca] Last-gen centroid distance (15-D genome space) per seed:")
+    print(dist[["seed", "run_a", "run_b", "gen_a", "gen_b", "distance"]]
+          .to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+    for path in written:
+        print(f"[pca] Wrote {path}")
+    return written
+
+
 # ----------------------------------------------------------------------------
 #  CLI
 # ----------------------------------------------------------------------------
@@ -585,6 +982,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--out", type=Path, default=None,
                         help="Write everything here instead of into every "
                              "run's plots/ folder")
+    parser.add_argument("--per-seed", action="store_true",
+                        help="Group mode only: instead of one joint PCA, fit "
+                             "a separate PCA per seed on only that seed's "
+                             "runs (seed_<seed>/ figures + a per-seed grid + "
+                             "seed_pair_distances.csv)")
     args = parser.parse_args(argv)
     groups = None
     run_dirs = list(args.run_dirs)
@@ -600,6 +1002,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             run_dirs += dirs
     if not run_dirs:
         parser.error("no run directories given")
+    if args.per_seed:
+        if not groups:
+            parser.error("--per-seed needs --group (seeds pair runs across "
+                         "conditions)")
+        plot_pca_seed_pairs(run_dirs, args.labels, groups=groups,
+                            out_dir=args.out)
+        return
     plot_pca_trajectories(run_dirs, args.labels, groups=groups, out_dir=args.out)
 
 

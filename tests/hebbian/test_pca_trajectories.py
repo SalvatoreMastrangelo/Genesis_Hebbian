@@ -426,3 +426,291 @@ def test_group_mode_writes_by_seed_figures(tmp_path):
     for fname in ("pca_population_by_seed.png", "pca_population_centroid_fit_by_seed.png",
                   "pca_pareto_front_by_seed.png", "pca_pareto_front_centroid_fit_by_seed.png"):
         assert (out / fname).stat().st_size > 0, fname
+
+
+# ----------------------------------------------------------------------------
+#  Per-seed PCA: one INDEPENDENT fit per seed pair (no joint basis)
+# ----------------------------------------------------------------------------
+
+def _drifting_run(tmp_path, name: str, seed: int, direction, rng) -> Path:
+    """Three gens drifting along ``direction`` (15-D) with small noise."""
+    run_dir = tmp_path / name
+    d = np.asarray(direction, dtype=float)
+    genomes = {
+        gen: (0.5 + 0.1 * gen * d
+              + rng.normal(scale=0.005, size=(4, 15))).clip(0, 1).tolist()
+        for gen in range(3)
+    }
+    _write_population_csv(run_dir, genomes)
+    _write_seed(run_dir, seed)
+    return run_dir
+
+
+def _two_seed_setup(tmp_path):
+    from WP2_Outer_Loop.pca_trajectories import RunGroup
+    rng = np.random.default_rng(3)
+    e = np.eye(15)
+    a = _drifting_run(tmp_path, "cod67", 67, e[0], rng)
+    b = _drifting_run(tmp_path, "cod68", 68, e[2], rng)
+    c = _drifting_run(tmp_path, "morph67", 67, e[1], rng)
+    d = _drifting_run(tmp_path, "morph68", 68, e[3], rng)
+    groups = [RunGroup("co-design", "red", [a, b]),
+              RunGroup("morph-only", "blue", [c, d])]
+    return [a, b, c, d], ["cod67", "cod68", "morph67", "morph68"], groups
+
+
+def test_per_seed_pca_fits_each_seed_on_its_own_runs(tmp_path):
+    from WP2_Outer_Loop.pca_trajectories import (
+        load_genomes, per_seed_pca, seed_panels)
+    dirs, names, groups = _two_seed_setup(tmp_path)
+    for g, sub in zip(groups, (names[:2], names[2:])):
+        g.names = sub
+    seeds = {"cod67": 67, "cod68": 68, "morph67": 67, "morph68": 68}
+    dfs = {n: load_genomes(d) for n, d in zip(names, dirs)}
+    fits = per_seed_pca(dfs, seed_panels(groups, seeds), fit_on="rows")
+    assert [f.seed for f in fits] == [67, 68]
+    assert set(fits[0].paths["run"]) == {"cod67", "morph67"}
+    assert set(fits[1].paths["run"]) == {"cod68", "morph68"}
+    # Each seed's fit is exactly the joint fit over ONLY that seed's runs.
+    from WP2_Outer_Loop.pca_trajectories import centroid_paths
+    ref, ref_expl = centroid_paths([dfs["cod67"], dfs["morph67"]],
+                                   ["cod67", "morph67"], fit_on="rows")
+    pd.testing.assert_frame_equal(fits[0].paths, ref)
+    assert np.allclose(fits[0].explained, ref_expl)
+    # Seed 67 drifts along g0/g1, seed 68 along g2/g3: the two bases differ.
+    assert not np.allclose(np.abs(fits[0].components),
+                           np.abs(fits[1].components))
+
+
+def test_draw_seed_pair_grid_gives_every_panel_its_own_axes(tmp_path):
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import (
+        _draw_seed_pair_grid, load_genomes, per_seed_pca, seed_panels)
+    dirs, names, groups = _two_seed_setup(tmp_path)
+    for g, sub in zip(groups, (names[:2], names[2:])):
+        g.names = sub
+    seeds = {"cod67": 67, "cod68": 68, "morph67": 67, "morph68": 68}
+    dfs = {n: load_genomes(d) for n, d in zip(names, dirs)}
+    fits = per_seed_pca(dfs, seed_panels(groups, seeds), fit_on="rows")
+    fig = _draw_seed_pair_grid(fits, groups, "t")
+    panels = [ax for ax in fig.axes if ax.get_title()]
+    titles = [ax.get_title() for ax in panels]
+    xlabels = [ax.get_xlabel() for ax in panels]
+    legend_texts = [t.get_text() for t in fig.legends[0].get_texts()]
+    plt.close(fig)
+    assert titles == ["seed 67", "seed 68"]
+    # Independent bases: each panel reports its own explained variance.
+    assert all(x.startswith("PC1 (") for x in xlabels)
+    assert any(t.startswith("co-design") for t in legend_texts)
+    assert any(t.startswith("morph-only") for t in legend_texts)
+    # Bare figure-level title: no parenthetical asides.
+    assert "(" not in fig._suptitle.get_text()
+
+
+def test_per_seed_mode_writes_seed_folders_grid_and_csv_only(tmp_path):
+    dirs, names, _ = _two_seed_setup(tmp_path)
+    out = tmp_path / "pca_pairs"
+    main(["--group", "co-design", "red", str(dirs[0]), str(dirs[1]),
+          "--group", "morph-only", "blue", str(dirs[2]), str(dirs[3]),
+          "--labels", *names, "--out", str(out), "--per-seed"])
+    stems = ("pca_population", "pca_population_centroid_fit",
+             "pca_pareto_front", "pca_pareto_front_centroid_fit")
+    for seed in (67, 68):
+        for stem in stems:
+            f = out / f"seed_{seed}" / f"{stem}.png"
+            assert f.stat().st_size > 0, f
+    for stem in stems:
+        assert (out / f"{stem}_seed_pairs.png").stat().st_size > 0, stem
+        # No joint (all-seed) PCA figure in this mode.
+        assert not (out / f"{stem}.png").exists(), stem
+        assert not (out / f"{stem}_by_seed.png").exists(), stem
+    dist = pd.read_csv(out / "seed_pair_distances.csv")
+    assert list(dist["seed"]) == [67, 68]
+    assert set(dist.columns) >= {"seed", "run_a", "run_b", "group_a",
+                                 "group_b", "gen_a", "gen_b", "distance"}
+    assert (dist["distance"] > 0).all()
+    var = pd.read_csv(out / "seed_pair_pca_variance.csv")
+    assert set(var["seed"]) == {67, 68}
+    assert set(var["source"]) == {"population", "front"}
+    assert set(var["fit_on"]) == {"rows", "centroids"}
+    assert len(var) == 8
+    # nothing written into the run folders in --out mode
+    assert not any((r / "plots").exists() for r in dirs)
+
+
+def test_per_seed_requires_group_mode(tmp_path):
+    dirs = _two_synthetic_runs(tmp_path)
+    with pytest.raises(SystemExit):
+        main([str(dirs[0]), str(dirs[1]), "--per-seed"])
+
+
+# ----------------------------------------------------------------------------
+#  Three components / 3-D per-seed figures
+# ----------------------------------------------------------------------------
+
+def test_fit_pca_three_components_nest_the_two_component_fit():
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(60, 15)) * np.linspace(3, 0.1, 15)
+    c2, e2 = fit_pca(X)
+    c3, e3 = fit_pca(X, n_components=3)
+    assert c3.shape == (3, 15) and e3.shape == (3,)
+    assert np.allclose(c3[:2], c2) and np.allclose(e3[:2], e2)
+    assert e3[2] > 0 and e3.sum() <= 1.0 + 1e-9
+    # Every component's largest-magnitude loading is positive.
+    assert all(pc[np.argmax(np.abs(pc))] > 0 for pc in c3)
+
+
+def test_centroid_paths_with_basis_three_components():
+    from WP2_Outer_Loop.pca_trajectories import centroid_paths_with_basis
+    rng = np.random.default_rng(2)
+    df = _population_df({g: (0.5 + 0.05 * g + rng.normal(scale=0.02, size=(5, 15))).tolist()
+                         for g in range(4)})
+    paths, expl, comps = centroid_paths_with_basis([df], ["r"], n_components=3)
+    assert list(paths.columns) == ["run", "outer_gen", "pc1", "pc2", "pc3"]
+    assert comps.shape == (3, 15) and expl.shape == (3,)
+
+
+def test_draw_seed_pair_grid_3d_uses_3d_axes(tmp_path):
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import (
+        _draw_seed_pair_figure_3d, _draw_seed_pair_grid_3d, load_genomes,
+        per_seed_pca, seed_panels)
+    dirs, names, groups = _two_seed_setup(tmp_path)
+    for g, sub in zip(groups, (names[:2], names[2:])):
+        g.names = sub
+    seeds = {"cod67": 67, "cod68": 68, "morph67": 67, "morph68": 68}
+    dfs = {n: load_genomes(d) for n, d in zip(names, dirs)}
+    fits = per_seed_pca(dfs, seed_panels(groups, seeds), fit_on="rows",
+                        n_components=3)
+    fig = _draw_seed_pair_grid_3d(fits, groups, "t")
+    panels = [ax for ax in fig.axes if ax.get_title()]
+    assert [ax.get_title() for ax in panels] == ["seed 67", "seed 68"]
+    assert all(ax.name == "3d" for ax in panels)
+    assert all(ax.get_zlabel().startswith("PC3 (") for ax in panels)
+    assert "(" not in fig._suptitle.get_text()
+    plt.close(fig)
+    fig = _draw_seed_pair_figure_3d(fits[0], groups, "t", "rows")
+    ax = fig.axes[0]
+    assert ax.name == "3d" and fig._suptitle.get_text() == "t, seed 67"
+    assert ax.get_legend() is not None
+    plt.close(fig)
+
+
+def test_per_seed_pca_two_components_by_default(tmp_path):
+    from WP2_Outer_Loop.pca_trajectories import (
+        load_genomes, per_seed_pca, seed_panels)
+    dirs, names, groups = _two_seed_setup(tmp_path)
+    for g, sub in zip(groups, (names[:2], names[2:])):
+        g.names = sub
+    seeds = {"cod67": 67, "cod68": 68, "morph67": 67, "morph68": 68}
+    dfs = {n: load_genomes(d) for n, d in zip(names, dirs)}
+    fits = per_seed_pca(dfs, seed_panels(groups, seeds))
+    assert "pc3" not in fits[0].paths.columns and fits[0].explained.shape == (2,)
+
+
+def test_per_seed_mode_writes_3d_figures_and_pc3_variance(tmp_path):
+    dirs, names, _ = _two_seed_setup(tmp_path)
+    out = tmp_path / "pca_pairs"
+    main(["--group", "co-design", "red", str(dirs[0]), str(dirs[1]),
+          "--group", "morph-only", "blue", str(dirs[2]), str(dirs[3]),
+          "--labels", *names, "--out", str(out), "--per-seed"])
+    stems = ("pca_population", "pca_population_centroid_fit",
+             "pca_pareto_front", "pca_pareto_front_centroid_fit")
+    for seed in (67, 68):
+        for stem in stems:
+            assert (out / f"seed_{seed}" / f"{stem}_3d.png").stat().st_size > 0
+    for stem in stems:
+        assert (out / f"{stem}_seed_pairs_3d.png").stat().st_size > 0
+    var = pd.read_csv(out / "seed_pair_pca_variance.csv")
+    assert {"pc1_var", "pc2_var", "pc3_var"} <= set(var.columns)
+    assert (var["pc3_var"] > 0).all()
+    assert ((var["pc1_var"] + var["pc2_var"] + var["pc3_var"]) <= 1.0 + 1e-9).all()
+
+
+# ----------------------------------------------------------------------------
+#  PC1–PC3 / PC2–PC3 projections of the 3-component per-seed fit
+# ----------------------------------------------------------------------------
+
+def _two_seed_fits(tmp_path, n_components=3):
+    from WP2_Outer_Loop.pca_trajectories import (
+        load_genomes, per_seed_pca, seed_panels)
+    dirs, names, groups = _two_seed_setup(tmp_path)
+    for g, sub in zip(groups, (names[:2], names[2:])):
+        g.names = sub
+    seeds = {"cod67": 67, "cod68": 68, "morph67": 67, "morph68": 68}
+    dfs = {n: load_genomes(d) for n, d in zip(names, dirs)}
+    fits = per_seed_pca(dfs, seed_panels(groups, seeds), fit_on="rows",
+                        n_components=n_components)
+    return fits, groups
+
+
+def test_draw_pair_panel_pcs_selects_the_projection(tmp_path):
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import _draw_pair_panel
+    fits, groups = _two_seed_fits(tmp_path)
+    fig, ax = plt.subplots()
+    _draw_pair_panel(ax, fits[0], groups, "rows", pcs=(2, 3))
+    xl, yl = ax.get_xlabel(), ax.get_ylabel()
+    plt.close(fig)
+    assert xl.startswith("PC2 (") and yl.startswith("PC3 (")
+    # Explained variance of the chosen components, not always PC1/PC2.
+    assert f"{fits[0].explained[1] * 100:.1f}%" in xl
+    assert f"{fits[0].explained[2] * 100:.1f}%" in yl
+
+
+def test_draw_pair_panel_rejects_missing_component(tmp_path):
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import _draw_pair_panel
+    fits, groups = _two_seed_fits(tmp_path, n_components=2)
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError):
+        _draw_pair_panel(ax, fits[0], groups, "rows", pcs=(1, 3))
+    plt.close(fig)
+
+
+def test_draw_seed_pair_projections_is_2x2_with_3d_panel(tmp_path):
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import _draw_seed_pair_projections
+    fits, groups = _two_seed_fits(tmp_path)
+    fig = _draw_seed_pair_projections(fits[0], groups, "t", "rows")
+    axes = [ax for ax in fig.axes if ax.get_xlabel()]
+    flat = [ax for ax in axes if ax.name != "3d"]
+    labels = [(ax.get_xlabel()[:3], ax.get_ylabel()[:3]) for ax in flat]
+    threed = [ax for ax in axes if ax.name == "3d"]
+    sup = fig._suptitle.get_text()
+    legend_texts = [t.get_text() for t in fig.legends[0].get_texts()]
+    plt.close(fig)
+    assert len(axes) == 4
+    assert labels == [("PC1", "PC2"), ("PC1", "PC3"), ("PC2", "PC3")]
+    assert len(threed) == 1 and threed[0].get_zlabel().startswith("PC3 (")
+    assert sup == "t, seed 67" and "(" not in sup
+    assert any(t.startswith("co-design") for t in legend_texts)
+
+
+def test_draw_seed_pair_grid_accepts_pcs(tmp_path):
+    import matplotlib.pyplot as plt
+    from WP2_Outer_Loop.pca_trajectories import _draw_seed_pair_grid
+    fits, groups = _two_seed_fits(tmp_path)
+    fig = _draw_seed_pair_grid(fits, groups, "t", "rows", pcs=(1, 3))
+    panels = [ax for ax in fig.axes if ax.get_title()]
+    assert all(ax.get_xlabel().startswith("PC1 (") for ax in panels)
+    assert all(ax.get_ylabel().startswith("PC3 (") for ax in panels)
+    plt.close(fig)
+
+
+def test_per_seed_mode_writes_projection_figures(tmp_path):
+    dirs, names, _ = _two_seed_setup(tmp_path)
+    out = tmp_path / "pca_pairs"
+    main(["--group", "co-design", "red", str(dirs[0]), str(dirs[1]),
+          "--group", "morph-only", "blue", str(dirs[2]), str(dirs[3]),
+          "--labels", *names, "--out", str(out), "--per-seed"])
+    stems = ("pca_population", "pca_population_centroid_fit",
+             "pca_pareto_front", "pca_pareto_front_centroid_fit")
+    for seed in (67, 68):
+        for stem in stems:
+            f = out / f"seed_{seed}" / f"{stem}_projections.png"
+            assert f.stat().st_size > 0, f
+    for stem in stems:
+        for proj in ("pc1_pc3", "pc2_pc3"):
+            f = out / f"{stem}_seed_pairs_{proj}.png"
+            assert f.stat().st_size > 0, f
