@@ -382,40 +382,6 @@
       \field{pages}{1536\bibrangedash 1546}
       \range{pages}{11}
     \endentry
-    \entry{finn2017maml}{inproceedings}{}{}
-      \name{author}{3}{}{%
-        {{hash=058e82495825ae376c6a96a12169e6ee}{%
-           family={Finn},
-           familyi={F\bibinitperiod},
-           given={Chelsea},
-           giveni={C\bibinitperiod}}}%
-        {{hash=e28d4ee199593959d8c29980a64f1974}{%
-           family={Abbeel},
-           familyi={A\bibinitperiod},
-           given={Pieter},
-           giveni={P\bibinitperiod}}}%
-        {{hash=c9545da54b33744da25943cdf66eadac}{%
-           family={Levine},
-           familyi={L\bibinitperiod},
-           given={Sergey},
-           giveni={S\bibinitperiod}}}%
-      }
-      \strng{namehash}{8fd1a9b285463d1536dcb64b4011a015}
-      \strng{fullhash}{8fd1a9b285463d1536dcb64b4011a015}
-      \strng{fullhashraw}{8fd1a9b285463d1536dcb64b4011a015}
-      \strng{bibnamehash}{8fd1a9b285463d1536dcb64b4011a015}
-      \strng{authorbibnamehash}{8fd1a9b285463d1536dcb64b4011a015}
-      \strng{authornamehash}{8fd1a9b285463d1536dcb64b4011a015}
-      \strng{authorfullhash}{8fd1a9b285463d1536dcb64b4011a015}
-      \strng{authorfullhashraw}{8fd1a9b285463d1536dcb64b4011a015}
-      \field{sortinit}{F}
-      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
-      \field{labelnamesource}{author}
-      \field{labeltitlesource}{title}
-      \field{booktitle}{International Conference on Machine Learning (ICML)}
-      \field{title}{Model-Agnostic Meta-Learning for Fast Adaptation of Deep Networks}
-      \field{year}{2017}
-    \endentry
     \entry{floreano2000evolutionary}{article}{}{}
       \name{author}{2}{}{%
         {{hash=620d43cd0ee8802d53fe4d7b715445ec}{%
@@ -1049,45 +1015,6 @@
       \field{booktitle}{Proceedings of the Genetic and Evolutionary Computation Conference (GECCO '21)}
       \field{title}{Evolving and Merging {H}ebbian Learning Rules: Increasing Generalization by Decreasing the Number of Rules}
       \field{year}{2021}
-    \endentry
-    \entry{raghu2020rapid}{inproceedings}{}{}
-      \name{author}{4}{}{%
-        {{hash=57f2d78b9071875ab75173c35900b33f}{%
-           family={Raghu},
-           familyi={R\bibinitperiod},
-           given={Aniruddh},
-           giveni={A\bibinitperiod}}}%
-        {{hash=033c6488abceea98e75b2582e98d2cfa}{%
-           family={Raghu},
-           familyi={R\bibinitperiod},
-           given={Maithra},
-           giveni={M\bibinitperiod}}}%
-        {{hash=02404a92b0be3f52ec5ac08e41c13445}{%
-           family={Bengio},
-           familyi={B\bibinitperiod},
-           given={Samy},
-           giveni={S\bibinitperiod}}}%
-        {{hash=494b568c5dc85ba8f3f409635f9c5f25}{%
-           family={Vinyals},
-           familyi={V\bibinitperiod},
-           given={Oriol},
-           giveni={O\bibinitperiod}}}%
-      }
-      \strng{namehash}{ad9afecd500de50886152fd72e491aca}
-      \strng{fullhash}{d1f059386386963264583bca9a817beb}
-      \strng{fullhashraw}{d1f059386386963264583bca9a817beb}
-      \strng{bibnamehash}{ad9afecd500de50886152fd72e491aca}
-      \strng{authorbibnamehash}{ad9afecd500de50886152fd72e491aca}
-      \strng{authornamehash}{ad9afecd500de50886152fd72e491aca}
-      \strng{authorfullhash}{d1f059386386963264583bca9a817beb}
-      \strng{authorfullhashraw}{d1f059386386963264583bca9a817beb}
-      \field{sortinit}{R}
-      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
-      \field{labelnamesource}{author}
-      \field{labeltitlesource}{title}
-      \field{booktitle}{International Conference on Learning Representations (ICLR)}
-      \field{title}{Rapid Learning or Feature Reuse? {T}owards Understanding the Effectiveness of {MAML}}
-      \field{year}{2020}
     \endentry
     \entry{salimans2017evolution}{misc}{}{}
       \name{author}{5}{}{%

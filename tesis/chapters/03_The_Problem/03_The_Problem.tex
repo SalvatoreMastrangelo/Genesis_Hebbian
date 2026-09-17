@@ -1,6 +1,62 @@
 \chapter{Problems}
+\label{ch:problems}
+
+The setting of this thesis is a winged drone flying through a forest of obstacles, judged on how far it gets and on the energy it spends getting there. Its body is described by a vector of morphological parameters and its controller is a neural network that reads the drone's sensors and drives its actuators. For this chapter it is enough to keep in mind the nested problem of \eqref{eq:codesign-bilevel}, in which a body $m$ and a controller $\theta$ are judged together by a performance $F(m, \theta)$ that can only be measured by flying them.
+
+The three sections that follow are three steps of one argument. The first shows what is lost when the body is fixed and only the controller is optimized; the second shows what is lost when the controller is fixed and only the body is optimized; the third shows that the obvious remedy, optimizing a controller for every body the search visits, cannot be paid for. What remains after the three steps is the requirement that the rest of the thesis sets out to meet: a controller that adapts to the body it is given, at a cost small enough to sit inside the body search.
+
 \section{The Sequential Design Problem}
+\label{sec:problem-sequential}
+
+The usual way of building a flying robot is sequential. A body is designed first, by an engineer or by a commercial product, and a controller is then optimized for that body, whether by hand tuning, by trajectory optimization or, as in this thesis, by reinforcement learning. In the terms of \eqref{eq:codesign-bilevel} this fixes $m$ at a chosen $m_0$ and solves only the inner problem, $\theta^{\star}(m_0)$. What comes out is the best controller for that body, which is not the same thing as the best pair: any body $m$ with $F(m, \theta^{\star}(m)) > F(m_0, \theta^{\star}(m_0))$ has simply never been tried.
+
+That such bodies exist is not a technicality, because the body bounds what any controller can do. Energy per metre has a floor set by the airframe, its lift-to-drag ratio and the mass it carries, which no controller can change in flight. Manoeuvrability has a ceiling set by control authority, the forces and moments the actuators can produce, which no controller can exceed. A task that rewards both, distance through a cluttered forest and efficiency along the way, asks for a trade-off between the two, and a single hand-designed body sits at one point of that trade-off, chosen before the task was specified. Other points may be better on either objective, or dominate on both. Co-design studies report exactly this: evolved bodies outperform the conventional design they started from once each is given its own controller \cite{gupta2021embodied, muff2026hexacopters, bergonti2024codesign}, and the conventional design was never the winner.
+
+The sequential problem is therefore the reason to search over bodies at all: whatever the controller, a body that was never tried cannot be found.
+% Possible addition: exam results of the standard mydrone with its specialist
+% controller, to serve as the sequential-design baseline.
 
 \section{The Morphology Optimization Problem}
+\label{sec:problem-morphology}
+
+The mirror image of the sequential problem is to fix the controller and search over the body. This is the cheap way to co-design: a single controller $\theta_G$, general enough to fly any body in the search space, scores every candidate, and the search maximizes $F(m, \theta_G)$ instead of $F(m, \theta^{\star}(m))$. The two are not the same function of $m$, and the difference is not a matter of scale that a good optimizer could ignore. Two bodies can be ranked one way under the shared controller and the other way under their own:
+\begin{equation}
+F(m_1, \theta_G) > F(m_2, \theta_G) \qquad \text{and} \qquad F(m_1, \theta^{\star}(m_1)) < F(m_2, \theta^{\star}(m_2)),
+\label{eq:ranking-flip}
+\end{equation}
+in which case the search under $\theta_G$ keeps $m_1$ and discards the body that would have been better.
+
+There is a systematic reason to expect \eqref{eq:ranking-flip} to hold often rather than rarely. A generalist controller is trained on a distribution of bodies and is, on any one of them, a compromise between all of them. The gap between what it achieves on a body and what a controller trained for that body alone achieves is smallest near the centre of the training distribution and grows towards its edges, where the body's dynamics differ most from the average the controller has learned to expect. But the edges are where the search wants to go: a body that is better than the reference is, almost by definition, one that departs from it, in size, in shape, in control authority, and the more it departs the more it is penalized by a controller that was never adapted to it. The fixed controller thus does two things at once. It undervalues exactly the bodies it should be finding, and it rewards the bodies it already flies well, which are the conservative ones. A search under a fixed generalist is biased towards the neighbourhood of its own training distribution, and no amount of evolutionary pressure removes a bias that is built into the fitness function.
+
+The same argument applies one level up. Suppose the search under $\theta_G$ has returned a body, and a controller is then trained on that body alone. The pair obtained is the best controller for the best body under the generalist, which is not the best pair either: a body that ranked lower under $\theta_G$ but has more to gain from specialization, the $m_2$ of \eqref{eq:ranking-flip}, is not recovered by training afterwards, because it was never kept. Specialization applied after the search cannot correct a search that did not account for it.
+
+What the search needs, then, is not a controller that flies every body acceptably but a score that reflects what each body can do with a controller adapted to it. The next section shows why the direct way of obtaining such a score is closed.
 
 \section{The Computational Feasibility Problem}
+\label{sec:problem-feasibility}
+
+The remedy that the previous section seems to call for is the one adopted by the co-design works that train their controllers by reinforcement learning \cite{gupta2021embodied, muff2026hexacopters}: solve the inner problem properly, by training a controller from scratch for every body the search evaluates. In the setting of this thesis the cost of doing so can be computed from two measured quantities, the training of a controller by reinforcement learning and a search over bodies scored by rollouts alone, both executed on a node with two GPUs. \autoref{tab:feasibility} gives the figures.
+
+\begin{table}[htbp]
+\centering
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X r}
+\hline
+Quantity & Value \\
+\hline
+Training of one generalist controller (1\,000 PPO iterations, 65\,536 parallel environments) & 29 h \\
+\hline
+Bodies assessed by one body search (64 per generation, 50 generations) & 3\,200 \\
+One body search with one fixed controller for all bodies, rollouts only & 94 h \\
+One body search with a controller training per body, at the generalist's cost & 92\,800 h \\
+The same, with a specialist trained on the single body (about one hour each) & 3\,200 h \\
+\hline
+\end{tabularx}
+\caption[Cost of a controller training inside the body search]{Cost of a controller training inside the body search, from the production runs of this thesis. The last two rows are hypothetical; the others are measured.}
+\label{tab:feasibility}
+\end{table}
+
+A single training of the generalist takes just over a day, and a single body search visits 3200 bodies. Training a controller for each of them at that cost would take more than ten years on the same hardware. A specialist trained on one body alone is far cheaper, about an hour, and that is the realistic form of the remedy; even so, one training per body brings the search to more than four months, against the four days it takes when a body is scored by rollouts alone, a factor of more than thirty at the present size of the search. And the size is not fixed: every additional body, generation or scenario the search is given multiplies the gap again.
+
+The multiplication is not optional. The performance of a body is a random quantity: forests are generated at random, the controller acts stochastically, and a single flight says little about a body. In this thesis each body is flown on sixty forests before it is ranked, and the ranking is still far from noise-free. Whatever the per-body cost is, it is paid that many times, and it is paid again every time the controller changes, because the score of a body under an old controller is worthless once the controller has moved. A co-design loop whose inner level is a training run therefore cannot scale on any of the axes the search needs: bodies per generation, generations, and scenarios per body. The works that take this route stay under a thousand bodies in total \cite{muff2026hexacopters} or require over a thousand processors for a single run \cite{gupta2021embodied}, and both search far smaller design spaces, with far cheaper evaluations, than a winged drone in a forest.
+
+The feasibility problem thus forbids the natural answer to the morphology problem and fixes the shape that any workable answer must have. The controller cannot be trained per body, so it must be paid for once, for the whole space of bodies. A controller paid for once is, by construction, not adapted to any one body, so its adaptation to the body being scored must come from somewhere else and must cost no more than the rollouts that score the body anyway. Whether an adaptation that cheap can be enough to change which bodies the search finds is the empirical question of this thesis.

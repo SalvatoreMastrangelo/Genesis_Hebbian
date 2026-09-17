@@ -1,15 +1,15 @@
 [0] Config.pm:328> INFO - This is Biber 2.21
 [0] Config.pm:331> INFO - Logfile is 'thesis.blg'
-[30] biber:342> INFO - === Thu Sep 17, 2026, 17:08:11
+[29] biber:342> INFO - === Thu Sep 17, 2026, 18:16:58
 [36] Biber.pm:421> INFO - Reading 'thesis.bcf'
-[65] Biber.pm:1002> INFO - Found 41 citekeys in bib section 0
-[69] Biber.pm:4487> INFO - Processing section 0
+[63] Biber.pm:1002> INFO - Found 39 citekeys in bib section 0
+[68] Biber.pm:4487> INFO - Processing section 0
 [73] Biber.pm:4678> INFO - Looking for bibtex file 'chapters/Bibliografia.bib' for section 0
-[74] bibtex.pm:1713> INFO - LaTeX decoding ...
-[87] bibtex.pm:1519> INFO - Found BibTeX data source 'chapters/Bibliografia.bib'
-[212] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'normalization = NFD' with 'normalization = prenormalized'
-[212] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'variable = shifted' with 'variable = non-ignorable'
-[212] Biber.pm:4307> INFO - Sorting list 'nyt/global//global/global/global' of type 'entry' with template 'nyt' and locale 'en-US'
-[212] Biber.pm:4313> INFO - No sort tailoring available for locale 'en-US'
-[226] bbl.pm:676> INFO - Writing 'thesis.bbl' with encoding 'UTF-8'
-[233] bbl.pm:779> INFO - Output to thesis.bbl
+[73] bibtex.pm:1713> INFO - LaTeX decoding ...
+[85] bibtex.pm:1519> INFO - Found BibTeX data source 'chapters/Bibliografia.bib'
+[198] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'normalization = NFD' with 'normalization = prenormalized'
+[198] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'variable = shifted' with 'variable = non-ignorable'
+[198] Biber.pm:4307> INFO - Sorting list 'nyt/global//global/global/global' of type 'entry' with template 'nyt' and locale 'en-US'
+[198] Biber.pm:4313> INFO - No sort tailoring available for locale 'en-US'
+[211] bbl.pm:676> INFO - Writing 'thesis.bbl' with encoding 'UTF-8'
+[217] bbl.pm:779> INFO - Output to thesis.bbl

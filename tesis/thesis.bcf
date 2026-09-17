@@ -2431,9 +2431,13 @@
     <bcf:citekey order="49" intorder="3">ferigo2023evolving</bcf:citekey>
     <bcf:citekey order="49" intorder="4">vandiggelen2025emergent</bcf:citekey>
     <bcf:citekey order="50" intorder="1">miconi2018differentiable</bcf:citekey>
-    <bcf:citekey order="51" intorder="1">raghu2020rapid</bcf:citekey>
-    <bcf:citekey order="52" intorder="1">finn2017maml</bcf:citekey>
-    <bcf:citekey order="53" intorder="1">soltoggio2018born</bcf:citekey>
+    <bcf:citekey order="51" intorder="1">gupta2021embodied</bcf:citekey>
+    <bcf:citekey order="51" intorder="2">muff2026hexacopters</bcf:citekey>
+    <bcf:citekey order="51" intorder="3">bergonti2024codesign</bcf:citekey>
+    <bcf:citekey order="52" intorder="1">gupta2021embodied</bcf:citekey>
+    <bcf:citekey order="52" intorder="2">muff2026hexacopters</bcf:citekey>
+    <bcf:citekey order="53" intorder="1">muff2026hexacopters</bcf:citekey>
+    <bcf:citekey order="54" intorder="1">gupta2021embodied</bcf:citekey>
   </bcf:section>
   <!-- SORTING TEMPLATES -->
   <bcf:sortingtemplate name="nyt">

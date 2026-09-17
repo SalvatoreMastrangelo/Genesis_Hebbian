@@ -22,46 +22,46 @@
 \contentsline {subsection}{\numberline {2.5.3}Positioning of This Thesis}{25}{subsection.2.5.3}%
 \contentsline {chapter}{\numberline {3}Problems}{26}{chapter.3}%
 \contentsline {section}{\numberline {3.1}The Sequential Design Problem}{26}{section.3.1}%
-\contentsline {section}{\numberline {3.2}The Morphology Optimization Problem}{26}{section.3.2}%
-\contentsline {section}{\numberline {3.3}The Computational Feasibility Problem}{26}{section.3.3}%
-\contentsline {chapter}{\numberline {4}Simulation Environment}{27}{chapter.4}%
-\contentsline {section}{\numberline {4.1}Genesis: The Simulator}{27}{section.4.1}%
-\contentsline {subsection}{\numberline {4.1.1}Advantages and Disadvantages}{27}{subsection.4.1.1}%
-\contentsline {subsection}{\numberline {4.1.2}Physics Simulation}{27}{subsection.4.1.2}%
-\contentsline {subsection}{\numberline {4.1.3}Aerodynamics Simulation}{27}{subsection.4.1.3}%
-\contentsline {section}{\numberline {4.2}Flight Environment}{27}{section.4.2}%
-\contentsline {subsection}{\numberline {4.2.1}Uniform Forests}{27}{subsection.4.2.1}%
-\contentsline {subsection}{\numberline {4.2.2}Growing Forests}{27}{subsection.4.2.2}%
-\contentsline {subsection}{\numberline {4.2.3}Latin Hypercube Forests}{27}{subsection.4.2.3}%
-\contentsline {section}{\numberline {4.3}Drone Model}{27}{section.4.3}%
-\contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{27}{subsection.4.3.1}%
-\contentsline {subsection}{\numberline {4.3.2}Drone Genome}{27}{subsection.4.3.2}%
-\contentsline {subsection}{\numberline {4.3.3}The Standard Drone}{27}{subsection.4.3.3}%
-\contentsline {chapter}{\numberline {5}Methodology}{28}{chapter.5}%
-\contentsline {section}{\numberline {5.1}Base Controllers}{28}{section.5.1}%
-\contentsline {subsection}{\numberline {5.1.1}Specialist LSTM Controller}{28}{subsection.5.1.1}%
-\contentsline {subsection}{\numberline {5.1.2}Generalist LSTM Controller}{28}{subsection.5.1.2}%
-\contentsline {subsection}{\numberline {5.1.3}Training the Generalist LSTM Controller}{28}{subsection.5.1.3}%
-\contentsline {section}{\numberline {5.2}The Hebbian Controller}{28}{section.5.2}%
-\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{28}{subsection.5.2.1}%
-\contentsline {subsection}{\numberline {5.2.2}Weight Decay and Reset Semantics}{28}{subsection.5.2.2}%
-\contentsline {section}{\numberline {5.3}Inner Loop: Evolving the Hebbian Rules}{28}{section.5.3}%
-\contentsline {section}{\numberline {5.4}Outer Loop: Evolving the Drone Morphology}{28}{section.5.4}%
-\contentsline {section}{\numberline {5.5}The Full Co-Design Pipeline}{28}{section.5.5}%
-\contentsline {chapter}{\numberline {6}Results and Experiments}{29}{chapter.6}%
-\contentsline {section}{\numberline {6.1}Inner Loop Experiments}{29}{section.6.1}%
-\contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{29}{subsection.6.1.1}%
-\contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{29}{subsection.6.1.2}%
-\contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{29}{section.6.2}%
-\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{29}{subsection.6.2.1}%
-\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{29}{subsection.6.2.2}%
-\contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{29}{subsection.6.2.3}%
-\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{29}{subsection.6.2.4}%
-\contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{29}{subsection.6.2.5}%
-\contentsline {subsection}{\numberline {6.2.6}Convergence or Plasticity?}{29}{subsection.6.2.6}%
-\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{30}{chapter.7}%
-\contentsline {section}{\numberline {7.1}Conclusions}{30}{section.7.1}%
-\contentsline {section}{\numberline {7.2}Future Work}{30}{section.7.2}%
-\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{30}{subsection.7.2.1}%
-\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{30}{subsection.7.2.2}%
-\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{30}{subsection.7.2.3}%
+\contentsline {section}{\numberline {3.2}The Morphology Optimization Problem}{27}{section.3.2}%
+\contentsline {section}{\numberline {3.3}The Computational Feasibility Problem}{27}{section.3.3}%
+\contentsline {chapter}{\numberline {4}Simulation Environment}{30}{chapter.4}%
+\contentsline {section}{\numberline {4.1}Genesis: The Simulator}{30}{section.4.1}%
+\contentsline {subsection}{\numberline {4.1.1}Advantages and Disadvantages}{30}{subsection.4.1.1}%
+\contentsline {subsection}{\numberline {4.1.2}Physics Simulation}{30}{subsection.4.1.2}%
+\contentsline {subsection}{\numberline {4.1.3}Aerodynamics Simulation}{30}{subsection.4.1.3}%
+\contentsline {section}{\numberline {4.2}Flight Environment}{30}{section.4.2}%
+\contentsline {subsection}{\numberline {4.2.1}Uniform Forests}{30}{subsection.4.2.1}%
+\contentsline {subsection}{\numberline {4.2.2}Growing Forests}{30}{subsection.4.2.2}%
+\contentsline {subsection}{\numberline {4.2.3}Latin Hypercube Forests}{30}{subsection.4.2.3}%
+\contentsline {section}{\numberline {4.3}Drone Model}{30}{section.4.3}%
+\contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{30}{subsection.4.3.1}%
+\contentsline {subsection}{\numberline {4.3.2}Drone Genome}{30}{subsection.4.3.2}%
+\contentsline {subsection}{\numberline {4.3.3}The Standard Drone}{30}{subsection.4.3.3}%
+\contentsline {chapter}{\numberline {5}Methodology}{31}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Base Controllers}{31}{section.5.1}%
+\contentsline {subsection}{\numberline {5.1.1}Specialist LSTM Controller}{31}{subsection.5.1.1}%
+\contentsline {subsection}{\numberline {5.1.2}Generalist LSTM Controller}{31}{subsection.5.1.2}%
+\contentsline {subsection}{\numberline {5.1.3}Training the Generalist LSTM Controller}{31}{subsection.5.1.3}%
+\contentsline {section}{\numberline {5.2}The Hebbian Controller}{31}{section.5.2}%
+\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{31}{subsection.5.2.1}%
+\contentsline {subsection}{\numberline {5.2.2}Weight Decay and Reset Semantics}{31}{subsection.5.2.2}%
+\contentsline {section}{\numberline {5.3}Inner Loop: Evolving the Hebbian Rules}{31}{section.5.3}%
+\contentsline {section}{\numberline {5.4}Outer Loop: Evolving the Drone Morphology}{31}{section.5.4}%
+\contentsline {section}{\numberline {5.5}The Full Co-Design Pipeline}{31}{section.5.5}%
+\contentsline {chapter}{\numberline {6}Results and Experiments}{32}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Inner Loop Experiments}{32}{section.6.1}%
+\contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{32}{subsection.6.1.1}%
+\contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{32}{subsection.6.1.2}%
+\contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{32}{section.6.2}%
+\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{32}{subsection.6.2.1}%
+\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{32}{subsection.6.2.2}%
+\contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{32}{subsection.6.2.3}%
+\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{32}{subsection.6.2.4}%
+\contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{32}{subsection.6.2.5}%
+\contentsline {subsection}{\numberline {6.2.6}Convergence or Plasticity?}{32}{subsection.6.2.6}%
+\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{33}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Conclusions}{33}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Future Work}{33}{section.7.2}%
+\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{33}{subsection.7.2.1}%
+\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{33}{subsection.7.2.2}%
+\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{33}{subsection.7.2.3}%
