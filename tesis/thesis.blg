@@ -1,18 +1,18 @@
 [0] Config.pm:328> INFO - This is Biber 2.21
 [0] Config.pm:331> INFO - Logfile is 'thesis.blg'
-[27] biber:342> INFO - === Fri Sep 18, 2026, 19:06:39
+[27] biber:342> INFO - === Fri Sep 18, 2026, 19:22:08
 [33] Biber.pm:421> INFO - Reading 'thesis.bcf'
 [60] Biber.pm:1002> INFO - Found 54 citekeys in bib section 0
 [64] Biber.pm:4487> INFO - Processing section 0
-[68] Biber.pm:4678> INFO - Looking for bibtex file 'chapters/Bibliografia.bib' for section 0
+[69] Biber.pm:4678> INFO - Looking for bibtex file 'chapters/Bibliografia.bib' for section 0
 [69] bibtex.pm:1713> INFO - LaTeX decoding ...
 [85] bibtex.pm:1519> INFO - Found BibTeX data source 'chapters/Bibliografia.bib'
-[223] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'variable = shifted' with 'variable = non-ignorable'
-[223] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'normalization = NFD' with 'normalization = prenormalized'
-[223] Biber.pm:4307> INFO - Sorting list 'nyt/global//global/global/global' of type 'entry' with template 'nyt' and locale 'en-US'
-[223] Biber.pm:4313> INFO - No sort tailoring available for locale 'en-US'
-[239] bbl.pm:676> INFO - Writing 'thesis.bbl' with encoding 'UTF-8'
-[248] bbl.pm:779> INFO - Output to thesis.bbl
-[248] Biber.pm:132> WARN - legacy month field 'December' in entry 'genesis2024' is not an integer - this will probably not sort properly.
-[248] Biber.pm:132> WARN - legacy month field 'December' in entry 'tao2024genesis' is not an integer - this will probably not sort properly.
-[248] Biber.pm:134> INFO - WARNINGS: 2
+[227] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'normalization = NFD' with 'normalization = prenormalized'
+[227] UCollate.pm:68> INFO - Overriding locale 'en-US' defaults 'variable = shifted' with 'variable = non-ignorable'
+[227] Biber.pm:4307> INFO - Sorting list 'nyt/global//global/global/global' of type 'entry' with template 'nyt' and locale 'en-US'
+[227] Biber.pm:4313> INFO - No sort tailoring available for locale 'en-US'
+[244] bbl.pm:676> INFO - Writing 'thesis.bbl' with encoding 'UTF-8'
+[253] bbl.pm:779> INFO - Output to thesis.bbl
+[253] Biber.pm:132> WARN - legacy month field 'December' in entry 'genesis2024' is not an integer - this will probably not sort properly.
+[253] Biber.pm:132> WARN - legacy month field 'December' in entry 'tao2024genesis' is not an integer - this will probably not sort properly.
+[253] Biber.pm:134> INFO - WARNINGS: 2
