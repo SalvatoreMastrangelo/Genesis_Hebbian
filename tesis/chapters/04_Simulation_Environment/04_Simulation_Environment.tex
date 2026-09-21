@@ -1,4 +1,4 @@
-\chapter{DA RILEGGERE Simulation Environment}
+\chapter{Simulation Environment}
 \label{ch:environment}
 \section{Genesis: The Simulator}
 \label{sec:genesis}
@@ -56,41 +56,41 @@ The costs follow from the same design. Compilation is slow: the first build of a
 
 Numerical precision is a second limitation. Genesis runs in 32-bit floating point by default, with the relaxed arithmetic rules that compilers use for speed, and the order in which parallel GPU threads accumulate sums is not guaranteed. Two runs with the same random seed do not produce the same trajectories: the differences start at the last bit and, because a flight among obstacles is a chaotic system, grow until the two flights end differently. The outcome of a flight must therefore be treated as a random variable even when every explicit source of randomness is held fixed, and a fitness value is only meaningful as an average over many flights.
 
-Finally, Genesis is a young project. Its programming interface still changes between releases and parts of its documentation lag behind the code. The headline figure published with its release, 43 million simulation steps per second for a robot arm on a single consumer GPU, was obtained in conditions (a motionless robot, self-collisions disabled) that an independent evaluation found unrepresentative of robot learning, where it measured a throughput lower by two orders of magnitude \cite{tao2024genesis}; the only figures relied upon in this thesis are those measured on its own workloads. For fixed-wing flight it offers nothing out of the box: its only aerial model is a quadrotor whose propellers produce a thrust proportional to the square of their rotation speed. Everything aerodynamic in this thesis comes from a solver added to the engine, and because an added solver exchanges forces with the rigid body solver explicitly, once per substep, its numerical stability has to be secured by a small time step and by limits on the forces, as described below.
+Finally, Genesis is a young project. Its programming interface still changes between releases and parts of its documentation lag behind the code. For fixed-wing flight it offers nothing out of the box: its only aerial model is a quadrotor whose propellers produce a thrust proportional to the square of their rotation speed. Everything aerodynamic in this thesis comes from a solver added to the engine, and because an added solver exchanges forces with the rigid body solver explicitly, once per substep, its numerical stability has to be secured by a small time step and by limits on the forces, as described below.
 
 \subsection{Physics Simulation}
 \label{subsec:genesis-physics}
 
-The drone is an articulated rigid body: a fuselage that moves freely in space and carries six revolute joints, driven by servomotors, which sweep and twist the two halves of the wing and deflect the elevator and the rudder (the body is described in \autoref{sec:drone-model}). Its configuration $q$ collects the position of the fuselage, its orientation as a unit quaternion and the six joint angles, for $n_q = 13$ numbers, and its generalized velocity $v$ collects the linear and angular velocity of the fuselage and the six joint rates, for $n_v = 12$ degrees of freedom. The rigid body solver of Genesis follows the formulation of MuJoCo \cite{todorov2012mujoco}, and advances the equation of motion in generalized coordinates,
+The drone is an articulated rigid body: a fuselage that moves freely in space and carries six revolute joints, driven by servomotors, which sweep and twist the two front wings and deflect the elevator and the rudder (the body is described in \autoref{sec:drone-model}). Its configuration $\vect{q}$ collects the position of the fuselage, its orientation as a unit quaternion and the six joint angles, for $n_q = 13$ numbers, and its generalized velocity $\vect{v}$ collects the linear and angular velocity of the fuselage and the six joint rates, for $n_v = 12$ degrees of freedom. The rigid body solver of Genesis follows the formulation of MuJoCo \cite{todorov2012mujoco}, and advances the equation of motion in generalized coordinates,
 \begin{equation}
-M(q)\,\dot v + c(q, v) = \tau_{\mathrm{act}} + \tau_{\mathrm{pas}} + J_{\mathrm{a}}(q)^{\top} F_{\mathrm{a}} + J_{\mathrm{c}}(q)^{\top} f_{\mathrm{c}},
+\mat{M}(\vect{q})\,\dot{\vect{v}} + \vect{c}(\vect{q}, \vect{v}) = \vect{\tau}_{\mathrm{act}} + \vect{\tau}_{\mathrm{pas}} + \mat{J}_{\mathrm{a}}(\vect{q})^{\top} \vect{F}_{\mathrm{a}} + \mat{J}_{\mathrm{c}}(\vect{q})^{\top} \vect{f}_{\mathrm{c}},
 \label{eq:eom}
 \end{equation}
-where $M$ is the joint space inertia matrix, $c$ gathers the Coriolis, centrifugal and gravitational terms, $\tau_{\mathrm{act}}$ and $\tau_{\mathrm{pas}}$ are the actuator and the passive joint torques, $F_{\mathrm{a}}$ stacks the aerodynamic forces with $J_{\mathrm{a}}$ the Jacobian of their points of application, and $f_{\mathrm{c}}$ are the constraint forces with Jacobian $J_{\mathrm{c}}$. At every substep the solver computes $M$ with the composite rigid body algorithm and $c$ with the recursive Newton-Euler algorithm \cite{featherstone2008rigid}, both of which traverse the kinematic tree in a time linear in the number of links, and factorizes $M$ once for all the linear systems that follow.
+where $\mat{M}$ is the joint space inertia matrix, $\vect{c}$ gathers the Coriolis, centrifugal and gravitational terms, $\vect{\tau}_{\mathrm{act}}$ and $\vect{\tau}_{\mathrm{pas}}$ are the actuator and the passive joint torques, $\vect{F}_{\mathrm{a}}$ stacks the aerodynamic forces with $\mat{J}_{\mathrm{a}}$ the Jacobian of their points of application, and $\vect{f}_{\mathrm{c}}$ are the constraint forces with Jacobian $\mat{J}_{\mathrm{c}}$. At every substep the solver computes $\mat{M}$ with the composite rigid body algorithm and $\vect{c}$ with the recursive Newton-Euler algorithm \cite{featherstone2008rigid}, both of which traverse the kinematic tree in a time linear in the number of links, and factorizes $\mat{M}$ once for all the linear systems that follow.
 
 The servomotors are modelled as proportional-derivative position controllers with a bounded torque,
 \begin{equation}
 \tau_{\mathrm{act},j} = \operatorname{clip}\!\left( k_p \left(q_j^{\star} - q_j\right) - k_v\, v_j,\; -\tau_j^{\max},\; \tau_j^{\max} \right),
 \label{eq:servo}
 \end{equation}
-with $k_p = 8$~N\,m/rad, $k_v = 2$~N\,m\,s/rad and a torque limit of 1.5~N\,m for the wing joints and 1~N\,m for the tail joints. The target angle $q_j^{\star}$ is what the controller commands. The passive torques are a viscous damping and a dry friction in each joint, and an armature term, which stands for the reflected inertia of the motor and of its gears, is added to the diagonal of $M$. The response of a control surface to a command is thus not instantaneous: it is the response of a damped second order system with a saturating motor, and its delay is part of what the controller has to cope with.
+with $k_p = 8$~N\,m/rad, $k_v = 2$~N\,m\,s/rad and a torque limit of 1.5~N\,m for the wing joints and 1~N\,m for the tail joints. The target angle $q_j^{\star}$ is what the controller commands. The passive torques are a viscous damping and a dry friction in each joint, and an armature term, which stands for the reflected inertia of the motor and of its gears, is added to the diagonal of $\mat{M}$. The response of a control surface to a command is thus not instantaneous: it is the response of a damped second order system with a saturating motor, and its delay is part of what the controller has to cope with.
 
-Constraints are handled as in MuJoCo, by a convex optimization over accelerations rather than by a complementarity problem \cite{todorov2014convex}. Let $a_0 = M^{-1}(\tau_{\mathrm{act}} + \tau_{\mathrm{pas}} + J_{\mathrm{a}}^{\top} F_{\mathrm{a}} - c)$ be the acceleration the system would have without constraints. The solver selects
+Constraints are handled as in MuJoCo, by a convex optimization over accelerations rather than by a complementarity problem \cite{todorov2014convex}. Let $\vect{a}_0 = \mat{M}^{-1}(\vect{\tau}_{\mathrm{act}} + \vect{\tau}_{\mathrm{pas}} + \mat{J}_{\mathrm{a}}^{\top} \vect{F}_{\mathrm{a}} - \vect{c})$ be the acceleration the system would have without constraints. The solver selects
 \begin{equation}
 \begin{gathered}
-\dot v = \arg\min_{a}\; \frac{1}{2}\,(a - a_0)^{\top} M\, (a - a_0) \;+\; \sum_{i \,\in\, \mathcal{A}(a)} \frac{1}{2}\, d_i \left( J_i\, a - a_i^{\mathrm{ref}} \right)^2, \\
-a_i^{\mathrm{ref}} = -b_i\, J_i v - k_i\, r_i ,
+\dot{\vect{v}} = \arg\min_{\vect{a}}\; \frac{1}{2}\,(\vect{a} - \vect{a}_0)^{\top} \mat{M}\, (\vect{a} - \vect{a}_0) \;+\; \sum_{i \,\in\, \mathcal{A}(\vect{a})} \frac{1}{2}\, d_i \left( \mat{J}_i\, \vect{a} - a_i^{\mathrm{ref}} \right)^2, \\
+a_i^{\mathrm{ref}} = -b_i\, \mat{J}_i \vect{v} - k_i\, r_i ,
 \end{gathered}
 \label{eq:constraint-opt}
 \end{equation}
-that is, the acceleration closest to the unconstrained one in the metric of the kinetic energy (Gauss's principle of least constraint), softened by a penalty on each active constraint $i$. The reference acceleration $a_i^{\mathrm{ref}}$ is that of a critically damped spring which would bring the violation $r_i$ back to zero within a chosen time constant, the weight $d_i$ sets how stiffly the constraint is enforced, and the set $\mathcal{A}(a)$ contains the inequality constraints that are currently pushing in their admissible direction. The problem is convex and has a unique solution, and the constraint forces $f_{\mathrm{c}}$ follow from it. Genesis offers a Newton and a conjugate gradient method for \eqref{eq:constraint-opt}; this thesis uses the latter. In the scenes of this work the problem is small, because contacts are disabled (see below): the only constraints are the mechanical limits of the six joints, which become active only when a joint reaches its stop, and the dry friction of the joints.
+that is, the acceleration closest to the unconstrained one in the metric of the kinetic energy (Gauss's principle of least constraint), softened by a penalty on each active constraint $i$. The reference acceleration $a_i^{\mathrm{ref}}$ is that of a critically damped spring which would bring the violation $r_i$ back to zero within a chosen time constant, the weight $d_i$ sets how stiffly the constraint is enforced, and the set $\mathcal{A}(\vect{a})$ contains the inequality constraints that are currently pushing in their admissible direction. The problem is convex and has a unique solution, and the constraint forces $\vect{f}_{\mathrm{c}}$ follow from it. Genesis offers a Newton and a conjugate gradient method for \eqref{eq:constraint-opt}; this thesis uses the latter. In the scenes of this work the problem is small, because contacts are disabled (see below): the only constraints are the mechanical limits of the six joints, which become active only when a joint reaches its stop, and the dry friction of the joints.
 
 Time integration is semi-implicit Euler. With substep $\Delta t$,
 \begin{equation}
-v_{k+1} = v_k + \Delta t\, \dot v_k, \qquad q_{k+1} = q_k \oplus \Delta t\, v_{k+1},
+\vect{v}_{k+1} = \vect{v}_k + \Delta t\, \dot{\vect{v}}_k, \qquad \vect{q}_{k+1} = \vect{q}_k \oplus \Delta t\, \vect{v}_{k+1},
 \label{eq:integration}
 \end{equation}
-where the new velocity is used to advance the positions and $\oplus$ denotes ordinary addition for positions and joint angles and the composition with the rotation of axis and angle $\Delta t\,\omega_{k+1}$ for the quaternion, which thereby stays of unit norm. The default integrator of Genesis, used here, makes one modification for stiff actuators: the joint damping $D$ and the derivative gains $K_v$ of the servomotors are treated implicitly, which amounts to replacing $M$ with $M + \Delta t\,(D + K_v)$ in the computation of the acceleration and keeps the servo loop stable whatever its gains. All other forces, the aerodynamic ones included, are explicit: they are evaluated on the state at the beginning of the substep and held constant across it.
+where the new velocity is used to advance the positions and $\oplus$ denotes ordinary addition for positions and joint angles and the composition with the rotation of axis and angle $\Delta t\,\vect{\omega}_{k+1}$ for the quaternion, which thereby stays of unit norm. The default integrator of Genesis, used here, makes one modification for stiff actuators: the joint damping $\mat{D}$ and the derivative gains $\mat{K}_v$ of the servomotors are treated implicitly, which amounts to replacing $\mat{M}$ with $\mat{M} + \Delta t\,(\mat{D} + \mat{K}_v)$ in the computation of the acceleration and keeps the servo loop stable whatever its gains. All other forces, the aerodynamic ones included, are explicit: they are evaluated on the state at the beginning of the substep and held constant across it.
 
 Two time scales are used. The controller acts at 25~Hz, and every control step of 0.04~s is divided into four physics substeps of $\Delta t = 0.01$~s, so that the dynamics and the aerodynamic forces are updated at 100~Hz while commands are held (\autoref{fig:sim-step}). The finer physics step is what the explicit aerodynamic coupling requires: a lifting surface reacts to a change of incidence with a force that opposes it, which makes the equations stiff, and an explicit scheme remains stable only if the step is small compared with the fastest of these reactions.
 
@@ -101,7 +101,7 @@ Two time scales are used. The controller acts at 25~Hz, and every control step o
     every node/.style={font=\small},
 ]
 \node[agentbox, align=center] (ctrl) at (0,3.0) {controller\\(PyTorch)};
-\node[affbox, align=center] (cmd) at (8.6,3.0) {servo targets $q^{\star}$,\\throttle $u$};
+\node[affbox, align=center] (cmd) at (8.6,3.0) {servo targets $\vect{q}^{\star}$,\\throttle $u$};
 
 \node[tanhbox, align=center] (aero) at (-0.4,0) {aerodynamic\\solver};
 \node[affbox, align=center] (fd) at (2.9,0) {forward\\dynamics};
@@ -118,10 +118,10 @@ Two time scales are used. The controller acts at 25~Hz, and every control step o
 
 \draw[->] (ctrl) -- node[above]{\scriptsize every 0.04 s (25 Hz)} (cmd);
 \draw[->] (cmd.south) -- (cmd.south |- sub.north);
-\draw[->] (aero) -- node[above]{\scriptsize $F_{\mathrm{a}}$} (fd);
-\draw[->] (fd) -- node[above]{\scriptsize $a_0$} (con);
-\draw[->] (con) -- node[above]{\scriptsize $\dot v$} (int);
-\draw[->] (int.south) -- ++(0,-0.45) -| node[below, pos=0.25]{\scriptsize $q, v$} (aero.south);
+\draw[->] (aero) -- node[above]{\scriptsize $\vect{F}_{\mathrm{a}}$} (fd);
+\draw[->] (fd) -- node[above]{\scriptsize $\vect{a}_0$} (con);
+\draw[->] (con) -- node[above]{\scriptsize $\dot{\vect{v}}$} (int);
+\draw[->] (int.south) -- ++(0,-0.45) -| node[below, pos=0.25]{\scriptsize $\vect{q}, \vect{v}$} (aero.south);
 \draw[->] (state.north |- sub.south) -- (state.north);
 \draw[->] (state) -- (obs);
 \draw[->] (obs.west) -| ([xshift=-1.7cm]ctrl.west) -- (ctrl.west);
@@ -137,12 +137,12 @@ Genesis has a complete collision pipeline: a broad phase that sorts axis-aligned
 
 The aerodynamic solver described in this subsection is not a contribution of this thesis. It was designed and implemented by Andrea Vicari as part of his doctoral research, which is still unpublished at the time of writing, and it is used here as he provided it, as the aerodynamic model of every simulation in this work. The credit for this part of the simulator is entirely his, and the author is grateful to him for making it available. What follows documents the model as it was used, so that the results of this thesis can be read and reproduced; it should not be taken as the reference description of his work, which will be his own publication.
 
-The aerodynamic solver computes, at every physics substep and for every environment, the force that the air exerts on each part of the drone, and hands these forces to the rigid body solver as the term $J_{\mathrm{a}}^{\top} F_{\mathrm{a}}$ of \eqref{eq:eom}. It is a \emph{quasi-steady component build-up}: the aircraft is divided into a small number of elements, each element receives one lumped force that depends only on the instantaneous flow it sees, through lift and drag coefficients of closed form, and the forces are summed by the rigid body dynamics. A model of this kind is orders of magnitude cheaper than any solution of the flow field, which is what allows it to run a hundred times per simulated second in a quarter of a million environments. It is also algebraic in the geometry of the body, so that a new body needs no aerodynamic data of its own: areas, chords, spans and aspect ratios are read from the same URDF file that defines the rigid body, and the coefficients follow from them.
+The aerodynamic solver computes, at every physics substep and for every environment, the force that the air exerts on each part of the drone, and hands these forces to the rigid body solver as the term $\mat{J}_{\mathrm{a}}^{\top} \vect{F}_{\mathrm{a}}$ of \eqref{eq:eom}. It is a \emph{quasi-steady component build-up}: the aircraft is divided into a small number of elements, each element receives one lumped force that depends only on the instantaneous flow it sees, through lift and drag coefficients of closed form, and the forces are summed by the rigid body dynamics. A model of this kind is orders of magnitude cheaper than any solution of the flow field, which is what allows it to run a hundred times per simulated second in a quarter of a million environments. It is also algebraic in the geometry of the body, so that a new body needs no aerodynamic data of its own: areas, chords, spans and aspect ratios are read from the same URDF file that defines the rigid body, and the coefficients follow from them.
 
-\paragraph{Elements and local flow.} The drone has seven aerodynamic elements: the fuselage, the two halves of the wing, the two halves of the elevator, the rudder and the propeller. Each lifting surface carries a reference frame at the quarter of its chord, with the $x$ axis along the chord towards the trailing edge, the $y$ axis along the span and the $z$ axis normal to the surface. The frame is rigidly attached to the link of the surface and moves with it, and this is how the morphing of the wing enters the aerodynamics without any dedicated model: a twist of a wing half pitches its frame and changes its angle of attack, a sweep yaws the frame, changes its sideslip and displaces its point of application. The air is assumed at rest. If $v_{\mathrm{cm}}$ is the velocity of the centre of mass of the drone and $R_i$ the orientation of the frame of element $i$, the relative wind seen by the element and its aerodynamic angles are
+\paragraph{Elements and local flow.} The drone has seven aerodynamic elements: the fuselage, the two halves of the wing, the two halves of the elevator, the rudder and the propeller. Each lifting surface carries a reference frame at the quarter of its chord, with the $x$ axis along the chord towards the trailing edge, the $y$ axis along the span and the $z$ axis normal to the surface. The frame is rigidly attached to the link of the surface and moves with it, and this is how the morphing of the wing enters the aerodynamics without any dedicated model: a twist of a wing half pitches its frame and changes its angle of attack, a sweep yaws the frame, changes its sideslip and displaces its point of application. The air is assumed at rest. If $\vect{v}_{\mathrm{cm}}$ is the velocity of the centre of mass of the drone and $\mat{R}_i$ the orientation of the frame of element $i$, the relative wind seen by the element and its aerodynamic angles are
 \begin{equation}
 \begin{gathered}
-w_i = -R_i^{\top} v_{\mathrm{cm}}, \qquad V_i = \lVert w_i \rVert, \\
+\vect{w}_i = -\mat{R}_i^{\top} \vect{v}_{\mathrm{cm}}, \qquad V_i = \lVert \vect{w}_i \rVert, \\
 \alpha_i = \operatorname{atan2}\!\left(w_{i,z},\, w_{i,x}\right), \qquad \beta_i = \arcsin\frac{w_{i,y}}{V_i},
 \end{gathered}
 \label{eq:aero-angles}
@@ -225,10 +225,10 @@ L = \tfrac{1}{2}\,\rho V^2 S\, C_L \cos^2\!\beta, \qquad D = \tfrac{1}{2}\,\rho 
 \end{equation}
 where the factor $\cos^2\beta$, applied to the wing and to the elevator, expresses the classical result that only the component of the flow normal to the span of a surface loads it. The two magnitudes are assembled in wind axes and rotated into the frame of the surface through the two aerodynamic angles,
 \begin{equation}
-F = R_z(\beta)\, R_y(\alpha)\, \bigl( D,\; 0,\; L \bigr)^{\top},
+\vect{F} = \mat{R}_z(\beta)\, \mat{R}_y(\alpha)\, \bigl( D,\; 0,\; L \bigr)^{\top},
 \label{eq:aero-force}
 \end{equation}
-with $R_y$ and $R_z$ the elementary rotations about the $y$ and $z$ axes of the frame. The rudder is treated as a wing turned by ninety degrees: its incidence is the sideslip angle, its coefficients are evaluated at $\beta$, and its lift acts as a side force along $y$. The force is not applied at the origin of the frame but at the \emph{centre of pressure} of the surface, which for an attached flow lies at the quarter of the chord and moves towards the middle of the chord as the flow separates:
+with $\mat{R}_y$ and $\mat{R}_z$ the elementary rotations about the $y$ and $z$ axes of the frame. The rudder is treated as a wing turned by ninety degrees: its incidence is the sideslip angle, its coefficients are evaluated at $\beta$, and its lift acts as a side force along $y$. The force is not applied at the origin of the frame but at the \emph{centre of pressure} of the surface, which for an attached flow lies at the quarter of the chord and moves towards the middle of the chord as the flow separates:
 \begin{equation}
 \frac{x_{\mathrm{cp}}}{\bar c} = \frac{1}{4} + \frac{1}{4}\, \frac{\lvert\alpha\rvert}{\pi/2} .
 \label{eq:aero-cp}
@@ -257,7 +257,7 @@ with $V_a$ the component of the relative wind along the axis of the propeller, $
 v_{\mathrm{ind}} = \frac{1}{2}\left( -V_a + \sqrt{V_a^2 + \frac{2T}{\rho A}} \right).
 \label{eq:prop-induced}
 \end{equation}
-The dependence of the thrust on the flight speed matters for the two objectives of this thesis. A model with a thrust proportional to the throttle would make fast flight as cheap as slow flight; with \eqref{eq:prop-thrust} the propeller loses effectiveness with speed, and the energy spent per metre depends on how well the drag of the body matches the propeller over the range of speeds at which the controller chooses to fly.
+The dependence of the thrust on the flight speed matters for the two objectives of this thesis. A model with a thrust proportional to the throttle would make fast flight as cheap as slow flight; with \eqref{eq:prop-thrust} the propeller loses effectiveness with speed, and the energy spent per metre depends on how well the drag of the body matches the propeller over the range of speeds at which the controller is commanded to fly.
 
 \paragraph{Coupling and safeguards.} At each substep the forces of all elements, with their points of application, are transformed to the world frame and accumulated on the links of the rigid body as forces and moments. Three safeguards protect the explicit coupling. The speed $V$ that enters the coefficients is limited to 40~m/s, the force on each element is limited to 30~N, several times the weight of the drone, and values that are not finite are replaced by zero before they reach the rigid body solver. In a parallel simulation this last point is not cosmetic: the environments of a scene are advanced by the same kernels on shared arrays, and a single environment whose state diverges can otherwise spread its invalid values to the rest of the batch.
 
@@ -271,12 +271,12 @@ A deterministic simulator invites overfitting. A controller trained by reinforce
 The first level is the aerodynamic force itself. At every physics substep, and independently for every lifting surface of every environment, the force \eqref{eq:aero-force} is perturbed in magnitude and in direction before it is applied:
 \begin{equation}
 \begin{gathered}
-\tilde F = \lVert F \rVert \left(1 + \sigma_m\, s\, \xi\right) \frac{\hat F + \sigma_d\, s\, g_{\perp}}{\lVert \hat F + \sigma_d\, s\, g_{\perp} \rVert}, \\
+\tilde{\vect{F}} = \lVert \vect{F} \rVert \left(1 + \sigma_m\, s\, \xi\right) \frac{\hat{\vect{F}} + \sigma_d\, s\, \vect{g}_{\perp}}{\lVert \hat{\vect{F}} + \sigma_d\, s\, \vect{g}_{\perp} \rVert}, \\
 s(\alpha, \beta) = 1 + 3 \left( \frac{\min\!\left(\sqrt{\alpha^2 + \beta^2},\, \pi\right)}{\pi} \right)^{\!2},
 \end{gathered}
 \label{eq:aero-noise}
 \end{equation}
-where $\hat F$ is the unit vector of $F$, $\xi$ a standard normal variable, $g_{\perp}$ a random unit vector orthogonal to $F$, and $\sigma_m = \sigma_d = 0.05$. The scale $s$ grows from 1 in aligned flow to 4 in fully reversed flow, so that the force is least reliable exactly where the model is: at large incidence, around and beyond stall. The centre of pressure is displaced at the same time by a random offset whose standard deviation is a fraction $\sigma_{\mathrm{cp}}\, s / 4$ of the chord, with $\sigma_{\mathrm{cp}} = 0.01$, limited to 15\% of the chord. The thrust of the propeller is not perturbed. Being drawn anew a hundred times per second, this noise acts on the drone as a broadband buffeting: its effect on the trajectory partly averages out, but it denies the controller a perfectly repeatable response to its commands.
+where $\hat{\vect{F}}$ is the unit vector of $\vect{F}$, $\xi$ a standard normal variable, $\vect{g}_{\perp}$ a random unit vector orthogonal to $\vect{F}$, and $\sigma_m = \sigma_d = 0.05$. The scale $s$ grows from 1 in aligned flow to 4 in fully reversed flow, so that the force is least reliable exactly where the model is: at large incidence, around and beyond stall. The centre of pressure is displaced at the same time by a random offset whose standard deviation is a fraction $\sigma_{\mathrm{cp}}\, s / 4$ of the chord, with $\sigma_{\mathrm{cp}} = 0.01$, limited to 15\% of the chord. The thrust of the propeller is not perturbed. Being drawn anew a hundred times per second, this noise acts on the drone as a broadband buffeting: its effect on the trajectory partly averages out, but it denies the controller a perfectly repeatable response to its commands.
 
 The second level is the body. At the beginning of every flight the mass of each link is multiplied by a factor drawn from a normal distribution with mean one and standard deviation 2\%, and its centre of mass is displaced along each axis by a normal offset of standard deviation 4~mm. Both remain fixed for the duration of the flight. Genesis supports these perturbations natively: although the environments of a scene share one model, the mass and the centre of mass of every link carry an offset that is specific to the environment. For a winged drone the position of the centre of mass relative to the wing decides the stability of the aircraft, so a few millimetres are a meaningful disturbance, of the size that a real airframe shows from one assembly to the next.
 
@@ -291,12 +291,12 @@ The task is the same in every experiment of this thesis: fly forward through a f
 
 As anticipated in \autoref{subsec:genesis-physics}, the trees are not objects of the physics engine. A forest is nothing more than the list of the positions of its trunks, and a batch of $F$ forests of $T$ trees each is a single tensor of $F \times T$ positions that resides on the GPU. At the beginning of every flight an environment is assigned one of the $F$ forests, and from then on the forest enters the simulation through two operations only, which are computed for all environments at once: what the drone sees, which is described with its sensors in \autoref{subsec:drone-sensors}, and whether it has hit something.
 
-\paragraph{Collision.} Let $(x_b, y_b)$ be the position of the centre of a trunk in the horizontal frame centred on the drone and aligned with its heading, $b$ the wingspan of the body (the sum of its two wing halves) and $\phi$ its roll angle. The drone has hit the trunk when
+\paragraph{Collision.} Let $(x_b, y_b)$ be the position of the centre of a trunk in the horizontal frame centred on the drone and aligned with its heading, $b$ the combined span of the two wing panels (1.4~m for the reference drone, whose wing measures 1.5~m from tip to tip once the fuselage between the panels is counted) and $\phi$ its roll angle. The drone has hit the trunk when
 \begin{equation}
 \lvert x_b \rvert \le r + \tau \qquad \text{and} \qquad \lvert y_b \rvert \le \frac{b}{2}\cos\phi + r + \tau ,
 \label{eq:forest-collision}
 \end{equation}
-that is, when the trunk overlaps the segment that the wing projects on the ground, which shortens as the drone banks (the rectangle is drawn in \autoref{fig:forest-sensing}). A drone can therefore pass through a gap narrower than its wingspan, but only by rolling steeply while it does so. The margin $\tau$ is 1~cm when a body is evaluated and 20~cm during the training of the controllers, which teaches them to keep some distance from the trunks.
+that is, when the trunk overlaps the segment that the wing projects on the ground, which shortens as the drone banks (the rectangle is drawn in \autoref{fig:forest-sensing}). A drone can therefore pass through a gap narrower than its wingspan, but only by rolling steeply while it does so. The test is an approximation: it ignores the width of the fuselage, the length of the body and the sweep of the panels. The margin $\tau$ is 1~cm when a body is evaluated and 20~cm during the training of the controllers, which teaches them to keep some distance from the trunks.
 
 \paragraph{End of a flight.} A flight ends when the drone hits a trunk, leaves the corridor sideways, descends to the ground, exceeds a quarter of a turn in roll, pitch or yaw (it has tumbled, or turned back), flies past the end of the forest, or reaches a time limit. The coordinate $x$ at which the flight ends is its \emph{progress}, the first of the two quantities by which bodies and controllers are judged in this thesis; the second is the energy spent per metre.
 
@@ -321,7 +321,7 @@ The same property makes it a poor instrument for measuring. The difficulty of a 
 S(x) = \exp\!\left( -\frac{w}{W} \int_0^x \lambda(\xi)\, d\xi \right),
 \label{eq:forest-survival}
 \end{equation}
-which for a constant $\lambda$ is an exponential law: the risk of the next metre is the same whatever the distance already flown, and the distance covered has a standard deviation equal to its mean. In the forest of \autoref{fig:forest-uniform}, with the wingspan $b = 1.4$~m of the reference drone, that mean is 11~m. A controller that sees the trees does much better than this, but it inherits the structure of the problem: in a stationary forest the length of a flight has a large memoryless component, and many flights are needed before two bodies can be told apart.
+which for a constant $\lambda$ is an exponential law: the risk of the next metre is the same whatever the distance already flown, and the distance covered has a standard deviation equal to its mean. In the forest of \autoref{fig:forest-uniform}, with $b = 1.4$~m for the reference drone, that mean is 11~m. A controller that sees the trees does much better than this, but it inherits the structure of the problem: in a stationary forest the length of a flight has a large memoryless component, and many flights are needed before two bodies can be told apart.
 
 \subsection{Growing Density Forests}
 \label{subsec:forest-growing}
@@ -357,12 +357,12 @@ The design also helps learning. A controller at the beginning of its training cr
 \subsection{Latin Hypercube Forests}
 \label{subsec:forest-latin}
 
-Independent positions have a cost. Nothing prevents two trunks from being drawn on top of each other, or a few of them from lining up so closely that they form a wall. The effect is not marginal. For independent positions of areal density $n$, the probability that a tree has a neighbour closer than a distance $d$ is $1 - e^{-n\pi d^2}$: at one tree every 25~m$^2$, a density that the forests of this work reach in their last part, a quarter of the trunks overlap another trunk ($d = 2r$), and almost two thirds are separated from their nearest neighbour by a gap narrower than the wingspan of the reference drone ($d = 2r + b$). Chains of such pairs form barriers several metres wide (\autoref{fig:forest-overlaps}, left). A flight that ends against one of them says little about the body or about the controller, and this luck of the draw is one of the sources of the noise that every comparison in this thesis has to average out.
+Independent positions have a cost. Nothing prevents two trunks from being drawn on top of each other, or a few of them from lining up so closely that they form a wall. The effect is not marginal. For independent positions of areal density $n$, the probability that a tree has a neighbour closer than a distance $d$ is $1 - e^{-n\pi d^2}$: at one tree every 25~m$^2$, a density that the forests of this work reach in their last part, a quarter of the trunks overlap another trunk ($d = 2r$), and almost two thirds are separated from their nearest neighbour by a gap narrower than the width $b$ of the reference drone ($d = 2r + b$). Chains of such pairs form barriers several metres wide (\autoref{fig:forest-overlaps}, left). A flight that ends against one of them says little about the body or about the controller, and this luck of the draw is one of the sources of the noise that every comparison in this thesis has to average out.
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{images/04_Simulation_Environment/forest_random_vs_stratified.pdf}
-\caption[Independent and stratified positions at the same density]{Independent and stratified positions at the same density, one tree every 25~m$^2$, in a window of 50~m by 50~m with trunks to scale. With independent positions 25\% of the trunks overlap another and 64\% leave a gap narrower than the 1.4~m wingspan of the reference drone; with one tree per cell the two figures fall to 6\% and 39\% (averages over 200 forests).}
+\caption[Independent and stratified positions at the same density]{Independent and stratified positions at the same density, one tree every 25~m$^2$, in a window of 50~m by 50~m with trunks to scale. With independent positions 25\% of the trunks overlap another and 64\% leave a gap narrower than the width $b = 1.4$~m of the reference drone; with one tree per cell the two figures fall to 6\% and 39\% (averages over 200 forests).}
 \label{fig:forest-overlaps}
 \end{figure}
 
@@ -375,7 +375,7 @@ The third generator was written to remove this effect. It borrows the idea of \e
 \label{fig:forest-latin}
 \end{figure}
 
-The stratification does what it was meant to do. At the same density the overlapping trunks fall from 25\% to 6\% and the gaps narrower than the wingspan from 64\% to 39\% (\autoref{fig:forest-overlaps}, right); no region can be crowded, because at most four trees can meet around the corner shared by four cells, and none can be empty, because every cell is occupied. The number of trees is also identical in all the forests of a batch, which removes the need for padding.
+The stratification does what it was meant to do. At the same density the overlapping trunks fall from 25\% to 6\% and the gaps narrower than the width $b$ from 64\% to 39\% (\autoref{fig:forest-overlaps}, right); no region can be crowded, because at most four trees can meet around the corner shared by four cells, and none can be empty, because every cell is occupied. The number of trees is also identical in all the forests of a batch, which removes the need for padding.
 
 It was nevertheless abandoned, because what it removes is part of the task. A forest drawn in this way is tidy: the trees are almost evenly spaced, every gap is about one cell wide, and the thickets and the clearings that a real forest has, and that \autoref{fig:forest-uniform} and \autoref{fig:forest-growing} show, are gone. A body and a controller selected in such a forest are selected in the presence of a regularity that no real environment offers, and a search could come to rely on it. Deciding when to go around a thicket and when to cut through a clearing is, on the contrary, part of what flying through a forest means. The choice made in this thesis is therefore to keep the forest natural and to pay for its luck with numbers: the results are obtained in growing density forests with independent positions, and the chance of an unlucky forest is averaged out over many of them.
 
@@ -391,7 +391,7 @@ The drone has a conventional layout (\autoref{fig:drone-actuators}). A straight 
 
 What is not conventional is the way the drone is controlled. There are no ailerons, no flaps and no hinged control surfaces of any kind: the surfaces move as a whole. Each wing panel is connected to the fuselage by two revolute joints in series that share the same point at its root, on the quarter-chord line. The first rotates the panel about the vertical axis and changes its \emph{sweep}; the second rotates it about its own spanwise axis and changes its \emph{twist}, that is, its incidence. The elevator is a single all-moving surface that pitches about a hinge at the end of the fuselage, and the rudder is an all-moving fin that turns about a vertical axis mounted on the elevator, so that it pitches with it. Together with the throttle of the propeller, this gives the seven commands that a controller issues at every control step:
 \begin{equation}
-a = \left( u,\; \delta^{\mathrm{sw}}_{\mathrm{L}},\; \delta^{\mathrm{sw}}_{\mathrm{R}},\; \delta^{\mathrm{tw}}_{\mathrm{L}},\; \delta^{\mathrm{tw}}_{\mathrm{R}},\; \delta^{\mathrm{el}},\; \delta^{\mathrm{ru}} \right),
+\vect{a} = \left( u,\; \delta^{\mathrm{sw}}_{\mathrm{L}},\; \delta^{\mathrm{sw}}_{\mathrm{R}},\; \delta^{\mathrm{tw}}_{\mathrm{L}},\; \delta^{\mathrm{tw}}_{\mathrm{R}},\; \delta^{\mathrm{el}},\; \delta^{\mathrm{ru}} \right),
 \label{eq:drone-actions}
 \end{equation}
 the throttle $u \in [0,1]$ and six target angles, each bounded by the mechanical range of its joint. The two panels are commanded independently, so the wing can be moved symmetrically, to trim the aircraft and to change its lift, or asymmetrically, to roll and to turn: a differential twist does the work of the ailerons of a conventional aircraft. This is the kind of morphing wing studied for winged drones by Bergonti et al. \cite{bergonti2024codesign}, here combined with a moving tail.
@@ -434,7 +434,7 @@ the throttle $u \in [0,1]$ and six target angles, each bounded by the mechanical
 \caption{}
 \label{fig:drone-actuators-render}
 \end{subfigure}
-\caption[Parts and actuators of the drone]{Parts and actuators of the drone. (a) The seven commands, on a schematic top view with the nose up: the throttle of the propeller, the sweep and the twist of each wing panel, the elevator and the rudder. (b) The reference drone with both panels swept back to the limit of their range and twisted in opposite directions, and with the elevator and the rudder deflected; the neutral position of every surface is shown in light grey.}
+\caption[Parts and actuators of the drone]{Parts and actuators of the drone. (a) The seven commands, on a schematic top view with the nose up: the throttle of the propeller, the sweep and the twist of each wing panel, the elevator and the rudder. (b) The reference drone with the left panel swept back to the limit of its range, the two panels twisted in opposite directions, and the elevator and the rudder deflected; the neutral position of every surface is shown in light grey.}
 \label{fig:drone-actuators}
 \end{figure}
 

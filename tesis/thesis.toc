@@ -8,76 +8,76 @@
 \contentsline {section}{\numberline {2.2}Long Short-Term Memory Networks}{12}{section.2.2}%
 \contentsline {subsection}{\numberline {2.2.1}Recurrent Neural Networks}{12}{subsection.2.2.1}%
 \contentsline {subsection}{\numberline {2.2.2}Vanishing Gradient Problem}{12}{subsection.2.2.2}%
-\contentsline {subsection}{\numberline {2.2.3}Long Short-Term Memory}{12}{subsection.2.2.3}%
-\contentsline {section}{\numberline {2.3}Evolutionary Algorithms}{14}{section.2.3}%
+\contentsline {subsection}{\numberline {2.2.3}Long Short-Term Memory}{13}{subsection.2.2.3}%
+\contentsline {section}{\numberline {2.3}Evolutionary Algorithms}{15}{section.2.3}%
 \contentsline {subsection}{\numberline {2.3.1}CMA-ES}{15}{subsection.2.3.1}%
 \contentsline {subsection}{\numberline {2.3.2}NSGA-II}{17}{subsection.2.3.2}%
 \contentsline {section}{\numberline {2.4}Hebbian Learning}{19}{section.2.4}%
-\contentsline {subsection}{\numberline {2.4.1}Hebb's Postulate}{19}{subsection.2.4.1}%
+\contentsline {subsection}{\numberline {2.4.1}Hebb's Postulate}{20}{subsection.2.4.1}%
 \contentsline {subsection}{\numberline {2.4.2}The Generalized Hebbian Rule}{20}{subsection.2.4.2}%
-\contentsline {subsection}{\numberline {2.4.3}Plasticity Rules as the Object of Optimization}{21}{subsection.2.4.3}%
+\contentsline {subsection}{\numberline {2.4.3}Plasticity Rules as the Object of Optimization}{22}{subsection.2.4.3}%
 \contentsline {section}{\numberline {2.5}Related Work}{22}{section.2.5}%
-\contentsline {subsection}{\numberline {2.5.1}Co-Design of Morphology and Control}{22}{subsection.2.5.1}%
-\contentsline {subsection}{\numberline {2.5.2}Evolved and Learned Plasticity}{24}{subsection.2.5.2}%
+\contentsline {subsection}{\numberline {2.5.1}Co-Design of Morphology and Control}{23}{subsection.2.5.1}%
+\contentsline {subsection}{\numberline {2.5.2}Evolved and Learned Plasticity}{25}{subsection.2.5.2}%
 \contentsline {subsection}{\numberline {2.5.3}Positioning of This Thesis}{26}{subsection.2.5.3}%
-\contentsline {chapter}{\numberline {3}Problems}{27}{chapter.3}%
-\contentsline {section}{\numberline {3.1}The Sequential Design Problem}{27}{section.3.1}%
-\contentsline {section}{\numberline {3.2}The Morphology Optimization Problem}{28}{section.3.2}%
-\contentsline {section}{\numberline {3.3}The Computational Feasibility Problem}{28}{section.3.3}%
-\contentsline {chapter}{\numberline {4}DA RILEGGERE Simulation Environment}{31}{chapter.4}%
-\contentsline {section}{\numberline {4.1}Genesis: The Simulator}{31}{section.4.1}%
-\contentsline {subsection}{\numberline {4.1.1}Architecture and Taichi Kernels}{31}{subsection.4.1.1}%
-\contentsline {subsection}{\numberline {4.1.2}Advantages and Disadvantages}{33}{subsection.4.1.2}%
-\contentsline {subsection}{\numberline {4.1.3}Physics Simulation}{34}{subsection.4.1.3}%
+\contentsline {chapter}{\numberline {3}Challenges}{28}{chapter.3}%
+\contentsline {section}{\numberline {3.1}The Sequential Design Challenge}{28}{section.3.1}%
+\contentsline {section}{\numberline {3.2}The Morphology Optimization Challenge}{29}{section.3.2}%
+\contentsline {section}{\numberline {3.3}The Computational Feasibility Challenge}{29}{section.3.3}%
+\contentsline {chapter}{\numberline {4}Simulation Environment}{32}{chapter.4}%
+\contentsline {section}{\numberline {4.1}Genesis: The Simulator}{32}{section.4.1}%
+\contentsline {subsection}{\numberline {4.1.1}Architecture and Taichi Kernels}{32}{subsection.4.1.1}%
+\contentsline {subsection}{\numberline {4.1.2}Advantages and Disadvantages}{34}{subsection.4.1.2}%
+\contentsline {subsection}{\numberline {4.1.3}Physics Simulation}{35}{subsection.4.1.3}%
 \contentsline {subsection}{\numberline {4.1.4}Aerodynamics Simulation}{37}{subsection.4.1.4}%
-\contentsline {paragraph}{Elements and local flow.}{37}{paragraph*.13}%
-\contentsline {paragraph}{Lift and drag coefficients.}{37}{paragraph*.14}%
-\contentsline {paragraph}{Forces and points of application.}{39}{paragraph*.16}%
-\contentsline {paragraph}{Interaction between the elements.}{40}{paragraph*.17}%
-\contentsline {paragraph}{Propeller.}{40}{paragraph*.18}%
-\contentsline {paragraph}{Coupling and safeguards.}{41}{paragraph*.19}%
-\contentsline {paragraph}{Limits of the model.}{41}{paragraph*.20}%
-\contentsline {subsection}{\numberline {4.1.5}Simulation Noise}{41}{subsection.4.1.5}%
-\contentsline {section}{\numberline {4.2}Flight Environment}{42}{section.4.2}%
-\contentsline {paragraph}{Collision.}{43}{paragraph*.21}%
-\contentsline {paragraph}{End of a flight.}{43}{paragraph*.22}%
-\contentsline {subsection}{\numberline {4.2.1}Uniform Density Forests}{43}{subsection.4.2.1}%
-\contentsline {subsection}{\numberline {4.2.2}Growing Density Forests}{44}{subsection.4.2.2}%
-\contentsline {subsection}{\numberline {4.2.3}Latin Hypercube Forests}{46}{subsection.4.2.3}%
-\contentsline {section}{\numberline {4.3}Drone Model}{48}{section.4.3}%
-\contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{48}{subsection.4.3.1}%
-\contentsline {paragraph}{Servomotors and gear ratios.}{49}{paragraph*.28}%
-\contentsline {paragraph}{Masses.}{50}{paragraph*.29}%
-\contentsline {paragraph}{Energy.}{50}{paragraph*.30}%
-\contentsline {subsection}{\numberline {4.3.2}Sensors}{50}{subsection.4.3.2}%
-\contentsline {paragraph}{Depth sensor.}{51}{paragraph*.32}%
-\contentsline {subsection}{\numberline {4.3.3}Drone Genome}{51}{subsection.4.3.3}%
-\contentsline {subsection}{\numberline {4.3.4}The Standard Drone}{53}{subsection.4.3.4}%
-\contentsline {chapter}{\numberline {5}Methodology}{56}{chapter.5}%
-\contentsline {section}{\numberline {5.1}Base Controllers}{56}{section.5.1}%
-\contentsline {subsection}{\numberline {5.1.1}Specialist LSTM Controller}{56}{subsection.5.1.1}%
-\contentsline {subsection}{\numberline {5.1.2}Generalist LSTM Controller}{56}{subsection.5.1.2}%
-\contentsline {subsection}{\numberline {5.1.3}Training the Generalist LSTM Controller}{56}{subsection.5.1.3}%
-\contentsline {section}{\numberline {5.2}The Hebbian Controller}{56}{section.5.2}%
-\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{56}{subsection.5.2.1}%
-\contentsline {subsection}{\numberline {5.2.2}Weight Decay and Reset Semantics}{56}{subsection.5.2.2}%
-\contentsline {section}{\numberline {5.3}Inner Loop: Evolving the Hebbian Rules}{56}{section.5.3}%
-\contentsline {section}{\numberline {5.4}Outer Loop: Evolving the Drone Morphology}{56}{section.5.4}%
-\contentsline {section}{\numberline {5.5}The Full Co-Design Pipeline}{56}{section.5.5}%
-\contentsline {chapter}{\numberline {6}Results and Experiments}{57}{chapter.6}%
-\contentsline {section}{\numberline {6.1}Inner Loop Experiments}{57}{section.6.1}%
-\contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{57}{subsection.6.1.1}%
-\contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{57}{subsection.6.1.2}%
-\contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{57}{section.6.2}%
-\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{57}{subsection.6.2.1}%
-\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{57}{subsection.6.2.2}%
-\contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{57}{subsection.6.2.3}%
-\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{57}{subsection.6.2.4}%
-\contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{57}{subsection.6.2.5}%
-\contentsline {subsection}{\numberline {6.2.6}Convergence or Plasticity?}{57}{subsection.6.2.6}%
-\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{58}{chapter.7}%
-\contentsline {section}{\numberline {7.1}Conclusions}{58}{section.7.1}%
-\contentsline {section}{\numberline {7.2}Future Work}{58}{section.7.2}%
-\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{58}{subsection.7.2.1}%
-\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{58}{subsection.7.2.2}%
-\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{58}{subsection.7.2.3}%
+\contentsline {paragraph}{Elements and local flow.}{38}{paragraph*.13}%
+\contentsline {paragraph}{Lift and drag coefficients.}{38}{paragraph*.14}%
+\contentsline {paragraph}{Forces and points of application.}{40}{paragraph*.16}%
+\contentsline {paragraph}{Interaction between the elements.}{41}{paragraph*.17}%
+\contentsline {paragraph}{Propeller.}{41}{paragraph*.18}%
+\contentsline {paragraph}{Coupling and safeguards.}{42}{paragraph*.19}%
+\contentsline {paragraph}{Limits of the model.}{42}{paragraph*.20}%
+\contentsline {subsection}{\numberline {4.1.5}Simulation Noise}{42}{subsection.4.1.5}%
+\contentsline {section}{\numberline {4.2}Flight Environment}{43}{section.4.2}%
+\contentsline {paragraph}{Collision.}{44}{paragraph*.21}%
+\contentsline {paragraph}{End of a flight.}{44}{paragraph*.22}%
+\contentsline {subsection}{\numberline {4.2.1}Uniform Density Forests}{45}{subsection.4.2.1}%
+\contentsline {subsection}{\numberline {4.2.2}Growing Density Forests}{46}{subsection.4.2.2}%
+\contentsline {subsection}{\numberline {4.2.3}Latin Hypercube Forests}{47}{subsection.4.2.3}%
+\contentsline {section}{\numberline {4.3}Drone Model}{49}{section.4.3}%
+\contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{49}{subsection.4.3.1}%
+\contentsline {paragraph}{Servomotors and gear ratios.}{50}{paragraph*.28}%
+\contentsline {paragraph}{Masses.}{51}{paragraph*.29}%
+\contentsline {paragraph}{Energy.}{51}{paragraph*.30}%
+\contentsline {subsection}{\numberline {4.3.2}Sensors}{52}{subsection.4.3.2}%
+\contentsline {paragraph}{Depth sensor.}{52}{paragraph*.32}%
+\contentsline {subsection}{\numberline {4.3.3}Drone Genome}{54}{subsection.4.3.3}%
+\contentsline {subsection}{\numberline {4.3.4}The Standard Drone}{54}{subsection.4.3.4}%
+\contentsline {chapter}{\numberline {5}Methodology}{57}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Base Controllers}{57}{section.5.1}%
+\contentsline {subsection}{\numberline {5.1.1}Specialist LSTM Controller}{57}{subsection.5.1.1}%
+\contentsline {subsection}{\numberline {5.1.2}Generalist LSTM Controller}{57}{subsection.5.1.2}%
+\contentsline {subsection}{\numberline {5.1.3}Training the Generalist LSTM Controller}{57}{subsection.5.1.3}%
+\contentsline {section}{\numberline {5.2}The Hebbian Controller}{57}{section.5.2}%
+\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{57}{subsection.5.2.1}%
+\contentsline {subsection}{\numberline {5.2.2}Weight Decay and Reset Semantics}{57}{subsection.5.2.2}%
+\contentsline {section}{\numberline {5.3}Inner Loop: Evolving the Hebbian Rules}{57}{section.5.3}%
+\contentsline {section}{\numberline {5.4}Outer Loop: Evolving the Drone Morphology}{57}{section.5.4}%
+\contentsline {section}{\numberline {5.5}The Full Co-Design Pipeline}{57}{section.5.5}%
+\contentsline {chapter}{\numberline {6}Experiments And Results}{58}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Inner Loop Experiments}{58}{section.6.1}%
+\contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{58}{subsection.6.1.1}%
+\contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{58}{subsection.6.1.2}%
+\contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{58}{section.6.2}%
+\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{58}{subsection.6.2.1}%
+\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{58}{subsection.6.2.2}%
+\contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{58}{subsection.6.2.3}%
+\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{58}{subsection.6.2.4}%
+\contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{58}{subsection.6.2.5}%
+\contentsline {subsection}{\numberline {6.2.6}Convergence or Plasticity?}{58}{subsection.6.2.6}%
+\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{59}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Conclusions}{59}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Future Work}{59}{section.7.2}%
+\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{59}{subsection.7.2.1}%
+\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{59}{subsection.7.2.2}%
+\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{59}{subsection.7.2.3}%

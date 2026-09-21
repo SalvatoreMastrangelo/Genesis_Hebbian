@@ -7,19 +7,19 @@
 \contentsline {figure}{\numberline {2.4}{\ignorespaces Structure of an LSTM cell}}{14}{figure.caption.6}%
 \contentsline {figure}{\numberline {2.5}{\ignorespaces Covariance adaptation in CMA-ES}}{16}{figure.caption.7}%
 \contentsline {figure}{\numberline {2.6}{\ignorespaces Pareto dominance, non-dominated fronts and crowding distance}}{18}{figure.caption.8}%
-\contentsline {figure}{\numberline {2.7}{\ignorespaces Locality of the Hebbian update}}{20}{figure.caption.9}%
+\contentsline {figure}{\numberline {2.7}{\ignorespaces Locality of the Hebbian update}}{21}{figure.caption.9}%
 \addvspace {10\p@ }
 \addvspace {10\p@ }
-\contentsline {figure}{\numberline {4.1}{\ignorespaces Life of a Taichi kernel}}{32}{figure.caption.11}%
-\contentsline {figure}{\numberline {4.2}{\ignorespaces One control step of the simulation}}{36}{figure.caption.12}%
-\contentsline {figure}{\numberline {4.3}{\ignorespaces Lift and drag coefficients of the aerodynamic model}}{39}{figure.caption.15}%
-\contentsline {figure}{\numberline {4.4}{\ignorespaces A uniform density forest}}{44}{figure.caption.23}%
-\contentsline {figure}{\numberline {4.5}{\ignorespaces A growing density forest}}{45}{figure.caption.24}%
-\contentsline {figure}{\numberline {4.6}{\ignorespaces Independent and stratified positions at the same density}}{47}{figure.caption.25}%
-\contentsline {figure}{\numberline {4.7}{\ignorespaces A Latin hypercube forest}}{47}{figure.caption.26}%
-\contentsline {figure}{\numberline {4.8}{\ignorespaces Parts and actuators of the drone}}{49}{figure.caption.27}%
-\contentsline {figure}{\numberline {4.9}{\ignorespaces Depth sectors and collision rectangle}}{52}{figure.caption.33}%
-\contentsline {figure}{\numberline {4.10}{\ignorespaces The standard drone}}{55}{figure.caption.35}%
+\contentsline {figure}{\numberline {4.1}{\ignorespaces Life of a Taichi kernel}}{33}{figure.caption.11}%
+\contentsline {figure}{\numberline {4.2}{\ignorespaces One control step of the simulation}}{37}{figure.caption.12}%
+\contentsline {figure}{\numberline {4.3}{\ignorespaces Lift and drag coefficients of the aerodynamic model}}{40}{figure.caption.15}%
+\contentsline {figure}{\numberline {4.4}{\ignorespaces A uniform density forest}}{45}{figure.caption.23}%
+\contentsline {figure}{\numberline {4.5}{\ignorespaces A growing density forest}}{46}{figure.caption.24}%
+\contentsline {figure}{\numberline {4.6}{\ignorespaces Independent and stratified positions at the same density}}{48}{figure.caption.25}%
+\contentsline {figure}{\numberline {4.7}{\ignorespaces A Latin hypercube forest}}{48}{figure.caption.26}%
+\contentsline {figure}{\numberline {4.8}{\ignorespaces Parts and actuators of the drone}}{50}{figure.caption.27}%
+\contentsline {figure}{\numberline {4.9}{\ignorespaces Depth sectors and collision rectangle}}{53}{figure.caption.33}%
+\contentsline {figure}{\numberline {4.10}{\ignorespaces The standard drone}}{56}{figure.caption.35}%
 \addvspace {10\p@ }
 \addvspace {10\p@ }
 \addvspace {10\p@ }

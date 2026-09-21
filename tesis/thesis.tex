@@ -90,7 +90,20 @@ sorting=nyt,
 % Librerie matematiche
 \usepackage{amssymb}
 \usepackage{amsmath}
-\usepackage{amsthm}         
+\usepackage{amsthm}
+\usepackage{bm}
+
+% Notation standard of the whole thesis: everything that is not a scalar is bold.
+%   \vect{x}  a vector (bold italic, Latin and Greek alike): \vect{x}, \vect{\theta}
+%   \mat{W}   a matrix (bold capital)
+% Scalars, and the single components of a vector or of a matrix (x_j, W_{ij}),
+% stay in plain italic, and so do the elements of abstract sets (the states and
+% actions of an MDP). Always write vectors and matrices through these two macros,
+% never with \mathbf or \bm directly, so that the style is decided here only
+% (e.g. \mathbf for upright bold, or \newcommand{\mat}[1]{#1} for plain matrices).
+% The convention is not stated in the text of the thesis (author's decision, 2026-09-21).
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\bm{#1}}
 
 % Uso delle immagini
 \usepackage{graphicx}
@@ -323,7 +336,7 @@ sorting=nyt,
 %\begin{spacing}{1.2}
 \include{chapters/01_Introduction/01_Introduction.tex}
 \include{chapters/02_Technical_Background/02_Technical_Background.tex}
-\include{chapters/03_The_Problem/03_The_Problem.tex}
+\include{chapters/03_Challenges/03_Challenges.tex}
 \include{chapters/04_Simulation_Environment/04_Simulation_Environment.tex}
 \include{chapters/05_Method/05_Method.tex}
 \include{chapters/06_Results_and_Experiments/06_Results_and_Experiments.tex}

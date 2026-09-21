@@ -83,6 +83,35 @@
       \field{title}{Small Unmanned Aircraft: Theory and Practice}
       \field{year}{2012}
     \endentry
+    \entry{bellman1957dynamic}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=7bb51e859e70aaedef4ed1f3bb67779b}{%
+           family={Bellman},
+           familyi={B\bibinitperiod},
+           given={Richard},
+           giveni={R\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Princeton, NJ}%
+      }
+      \list{publisher}{1}{%
+        {Princeton University Press}%
+      }
+      \strng{namehash}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \strng{fullhash}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \strng{fullhashraw}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \strng{bibnamehash}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \strng{authorbibnamehash}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \strng{authornamehash}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \strng{authorfullhash}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \strng{authorfullhashraw}{7bb51e859e70aaedef4ed1f3bb67779b}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Dynamic Programming}
+      \field{year}{1957}
+    \endentry
     \entry{bergonti2024codesign}{inproceedings}{}{}
       \name{author}{7}{}{%
         {{hash=d5ef8488b3a2997ca195ba3a28905763}{%
@@ -139,6 +168,42 @@
       \field{pages}{8679\bibrangedash 8685}
       \range{pages}{7}
     \endentry
+    \entry{beyer2002evolution}{article}{}{}
+      \name{author}{2}{}{%
+        {{hash=695e551c7bda7f41c62840003f872fdb}{%
+           family={Beyer},
+           familyi={B\bibinitperiod},
+           given={Hans-Georg},
+           giveni={H\bibinithyphendelim G\bibinitperiod}}}%
+        {{hash=67288c65997bce06c3796cdeed061ea6}{%
+           family={Schwefel},
+           familyi={S\bibinitperiod},
+           given={Hans-Paul},
+           giveni={H\bibinithyphendelim P\bibinitperiod}}}%
+      }
+      \strng{namehash}{ef76889def7bf07771c56b52e8551e6d}
+      \strng{fullhash}{ef76889def7bf07771c56b52e8551e6d}
+      \strng{fullhashraw}{ef76889def7bf07771c56b52e8551e6d}
+      \strng{bibnamehash}{ef76889def7bf07771c56b52e8551e6d}
+      \strng{authorbibnamehash}{ef76889def7bf07771c56b52e8551e6d}
+      \strng{authornamehash}{ef76889def7bf07771c56b52e8551e6d}
+      \strng{authorfullhash}{ef76889def7bf07771c56b52e8551e6d}
+      \strng{authorfullhashraw}{ef76889def7bf07771c56b52e8551e6d}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Natural Computing}
+      \field{number}{1}
+      \field{title}{Evolution Strategies: A Comprehensive Introduction}
+      \field{volume}{1}
+      \field{year}{2002}
+      \field{pages}{3\bibrangedash 52}
+      \range{pages}{50}
+      \verb{doi}
+      \verb 10.1023/A:1015059928466
+      \endverb
+    \endentry
     \entry{cheney2018scalable}{article}{}{}
       \name{author}{4}{}{%
         {{hash=074e0c77a80fb701b57bdd1820af79bf}{%
@@ -181,6 +246,35 @@
       \field{year}{2018}
       \field{pages}{20170937}
       \range{pages}{1}
+    \endentry
+    \entry{deb2001multi}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=b11d1da0cc2920eef235d484e6b858ef}{%
+           family={Deb},
+           familyi={D\bibinitperiod},
+           given={Kalyanmoy},
+           giveni={K\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Chichester}%
+      }
+      \list{publisher}{1}{%
+        {John Wiley \& Sons}%
+      }
+      \strng{namehash}{b11d1da0cc2920eef235d484e6b858ef}
+      \strng{fullhash}{b11d1da0cc2920eef235d484e6b858ef}
+      \strng{fullhashraw}{b11d1da0cc2920eef235d484e6b858ef}
+      \strng{bibnamehash}{b11d1da0cc2920eef235d484e6b858ef}
+      \strng{authorbibnamehash}{b11d1da0cc2920eef235d484e6b858ef}
+      \strng{authornamehash}{b11d1da0cc2920eef235d484e6b858ef}
+      \strng{authorfullhash}{b11d1da0cc2920eef235d484e6b858ef}
+      \strng{authorfullhashraw}{b11d1da0cc2920eef235d484e6b858ef}
+      \field{sortinit}{D}
+      \field{sortinithash}{6f385f66841fb5e82009dc833c761848}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Multi-Objective Optimization Using Evolutionary Algorithms}
+      \field{year}{2001}
     \endentry
     \entry{deb1995sbx}{article}{}{}
       \name{author}{2}{}{%
@@ -603,6 +697,7 @@
       \strng{authornamehash}{225ceca3ae15a3be0c4e961b916dd72d}
       \strng{authorfullhash}{225ceca3ae15a3be0c4e961b916dd72d}
       \strng{authorfullhashraw}{225ceca3ae15a3be0c4e961b916dd72d}
+      \field{extraname}{1}
       \field{sortinit}{G}
       \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
       \field{labelnamesource}{author}
@@ -614,6 +709,86 @@
       \field{year}{2002}
       \field{pages}{404\bibrangedash 415}
       \range{pages}{12}
+    \endentry
+    \entry{gerstner2002spiking}{book}{}{}
+      \name{author}{2}{}{%
+        {{hash=6b2c6d8dbc66b301f2a7077d805f0ba7}{%
+           family={Gerstner},
+           familyi={G\bibinitperiod},
+           given={Wulfram},
+           giveni={W\bibinitperiod}}}%
+        {{hash=c6558e8019511c94733ffe99f3f258e0}{%
+           family={Kistler},
+           familyi={K\bibinitperiod},
+           given={Werner\bibnamedelima M.},
+           giveni={W\bibinitperiod\bibinitdelim M\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Cambridge}%
+      }
+      \list{publisher}{1}{%
+        {Cambridge University Press}%
+      }
+      \strng{namehash}{225ceca3ae15a3be0c4e961b916dd72d}
+      \strng{fullhash}{225ceca3ae15a3be0c4e961b916dd72d}
+      \strng{fullhashraw}{225ceca3ae15a3be0c4e961b916dd72d}
+      \strng{bibnamehash}{225ceca3ae15a3be0c4e961b916dd72d}
+      \strng{authorbibnamehash}{225ceca3ae15a3be0c4e961b916dd72d}
+      \strng{authornamehash}{225ceca3ae15a3be0c4e961b916dd72d}
+      \strng{authorfullhash}{225ceca3ae15a3be0c4e961b916dd72d}
+      \strng{authorfullhashraw}{225ceca3ae15a3be0c4e961b916dd72d}
+      \field{extraname}{2}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Spiking Neuron Models: Single Neurons, Populations, Plasticity}
+      \field{year}{2002}
+      \verb{doi}
+      \verb 10.1017/CBO9780511815706
+      \endverb
+    \endentry
+    \entry{goodfellow2016deep}{book}{}{}
+      \name{author}{3}{}{%
+        {{hash=5d2585c11210cf1d4512e6e0a03ec315}{%
+           family={Goodfellow},
+           familyi={G\bibinitperiod},
+           given={Ian},
+           giveni={I\bibinitperiod}}}%
+        {{hash=40a8e4774982146adc2688546f54efb2}{%
+           family={Bengio},
+           familyi={B\bibinitperiod},
+           given={Yoshua},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=ccec1ccd2e1aa86960eb2e872c6b7020}{%
+           family={Courville},
+           familyi={C\bibinitperiod},
+           given={Aaron},
+           giveni={A\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {MIT Press}%
+      }
+      \strng{namehash}{3ae53fe582e8a815b118d26947eaa326}
+      \strng{fullhash}{3ae53fe582e8a815b118d26947eaa326}
+      \strng{fullhashraw}{3ae53fe582e8a815b118d26947eaa326}
+      \strng{bibnamehash}{3ae53fe582e8a815b118d26947eaa326}
+      \strng{authorbibnamehash}{3ae53fe582e8a815b118d26947eaa326}
+      \strng{authornamehash}{3ae53fe582e8a815b118d26947eaa326}
+      \strng{authorfullhash}{3ae53fe582e8a815b118d26947eaa326}
+      \strng{authorfullhashraw}{3ae53fe582e8a815b118d26947eaa326}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Deep Learning}
+      \field{year}{2016}
+      \verb{urlraw}
+      \verb https://www.deeplearningbook.org
+      \endverb
+      \verb{url}
+      \verb https://www.deeplearningbook.org
+      \endverb
     \endentry
     \entry{gupta2021embodied}{article}{}{}
       \name{author}{4}{}{%
@@ -839,6 +1014,35 @@
       \field{year}{1997}
       \field{pages}{1735\bibrangedash 1780}
       \range{pages}{46}
+    \endentry
+    \entry{howard1960dynamic}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=05a2fc9b7560322dc0c43806e2bce7e9}{%
+           family={Howard},
+           familyi={H\bibinitperiod},
+           given={Ronald\bibnamedelima A.},
+           giveni={R\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Cambridge, MA}%
+      }
+      \list{publisher}{1}{%
+        {MIT Press}%
+      }
+      \strng{namehash}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \strng{fullhash}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \strng{fullhashraw}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \strng{bibnamehash}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \strng{authorbibnamehash}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \strng{authornamehash}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \strng{authorfullhash}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \strng{authorfullhashraw}{05a2fc9b7560322dc0c43806e2bce7e9}
+      \field{sortinit}{H}
+      \field{sortinithash}{23a3aa7c24e56cfa16945d55545109b5}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Dynamic Programming and {M}arkov Processes}
+      \field{year}{1960}
     \endentry
     \entry{hu2019taichi}{article}{}{}
       \name{author}{5}{}{%
@@ -1193,6 +1397,38 @@
       \field{title}{Backpropamine: Training Self-Modifying Neural Networks with Differentiable Neuromodulated Plasticity}
       \field{year}{2019}
     \endentry
+    \entry{miettinen1998nonlinear}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=20376f7658e6889e42babc850cadbf3c}{%
+           family={Miettinen},
+           familyi={M\bibinitperiod},
+           given={Kaisa},
+           giveni={K\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Boston}%
+      }
+      \list{publisher}{1}{%
+        {Kluwer Academic Publishers}%
+      }
+      \strng{namehash}{20376f7658e6889e42babc850cadbf3c}
+      \strng{fullhash}{20376f7658e6889e42babc850cadbf3c}
+      \strng{fullhashraw}{20376f7658e6889e42babc850cadbf3c}
+      \strng{bibnamehash}{20376f7658e6889e42babc850cadbf3c}
+      \strng{authorbibnamehash}{20376f7658e6889e42babc850cadbf3c}
+      \strng{authornamehash}{20376f7658e6889e42babc850cadbf3c}
+      \strng{authorfullhash}{20376f7658e6889e42babc850cadbf3c}
+      \strng{authorfullhashraw}{20376f7658e6889e42babc850cadbf3c}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Nonlinear Multiobjective Optimization}
+      \field{year}{1998}
+      \verb{doi}
+      \verb 10.1007/978-1-4615-5563-6
+      \endverb
+    \endentry
     \entry{muff2026hexacopters}{inproceedings}{}{}
       \name{author}{5}{}{%
         {{hash=75968b14124015a840c6bf1172e5f922}{%
@@ -1427,6 +1663,67 @@
       \verb{doi}
       \verb 10.1109/ICRA.2018.8460528
       \endverb
+    \endentry
+    \entry{puterman1994markov}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=b4258b9291d903d97b69d703eebf790a}{%
+           family={Puterman},
+           familyi={P\bibinitperiod},
+           given={Martin\bibnamedelima L.},
+           giveni={M\bibinitperiod\bibinitdelim L\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {New York}%
+      }
+      \list{publisher}{1}{%
+        {John Wiley \& Sons}%
+      }
+      \strng{namehash}{b4258b9291d903d97b69d703eebf790a}
+      \strng{fullhash}{b4258b9291d903d97b69d703eebf790a}
+      \strng{fullhashraw}{b4258b9291d903d97b69d703eebf790a}
+      \strng{bibnamehash}{b4258b9291d903d97b69d703eebf790a}
+      \strng{authorbibnamehash}{b4258b9291d903d97b69d703eebf790a}
+      \strng{authornamehash}{b4258b9291d903d97b69d703eebf790a}
+      \strng{authorfullhash}{b4258b9291d903d97b69d703eebf790a}
+      \strng{authorfullhashraw}{b4258b9291d903d97b69d703eebf790a}
+      \field{sortinit}{P}
+      \field{sortinithash}{ff3bcf24f47321b42cb156c2cc8a8422}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Markov Decision Processes: Discrete Stochastic Dynamic Programming}
+      \field{year}{1994}
+      \verb{doi}
+      \verb 10.1002/9780470316887
+      \endverb
+    \endentry
+    \entry{rechenberg1973evolutionsstrategie}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=b58e12d54f5d5bc1ab10d52d28863dce}{%
+           family={Rechenberg},
+           familyi={R\bibinitperiod},
+           given={Ingo},
+           giveni={I\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Stuttgart}%
+      }
+      \list{publisher}{1}{%
+        {Frommann-Holzboog}%
+      }
+      \strng{namehash}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \strng{fullhash}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \strng{fullhashraw}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \strng{bibnamehash}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \strng{authorbibnamehash}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \strng{authornamehash}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \strng{authorfullhash}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \strng{authorfullhashraw}{b58e12d54f5d5bc1ab10d52d28863dce}
+      \field{sortinit}{R}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Evolutionsstrategie: Optimierung technischer Systeme nach Prinzipien der biologischen Evolution}
+      \field{year}{1973}
     \endentry
     \entry{salimans2017evolution}{misc}{}{}
       \name{author}{5}{}{%
@@ -1793,31 +2090,6 @@
       \field{title}{Policy Gradient Methods for Reinforcement Learning with Function Approximation}
       \field{year}{1999}
     \endentry
-    \entry{tao2024genesis}{misc}{}{}
-      \name{author}{1}{}{%
-        {{hash=ec227b5b4aee5a57955c6fa1f9f87fcb}{%
-           family={Tao},
-           familyi={T\bibinitperiod},
-           given={Stone},
-           giveni={S\bibinitperiod}}}%
-      }
-      \strng{namehash}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \strng{fullhash}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \strng{fullhashraw}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \strng{bibnamehash}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \strng{authorbibnamehash}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \strng{authornamehash}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \strng{authorfullhash}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \strng{authorfullhashraw}{ec227b5b4aee5a57955c6fa1f9f87fcb}
-      \field{sortinit}{T}
-      \field{sortinithash}{9af77f0292593c26bde9a56e688eaee9}
-      \field{labelnamesource}{author}
-      \field{labeltitlesource}{title}
-      \field{howpublished}{\url{https://stoneztao.substack.com/p/the-new-hyped-genesis-simulator-is}}
-      \field{month}{12}
-      \field{title}{How fast is the new hyped {G}enesis simulator?}
-      \field{year}{2024}
-    \endentry
     \entry{tobin2017domain}{inproceedings}{}{}
       \name{author}{6}{}{%
         {{hash=e6a2e03971ee3e138dbe64b3a4c5a95a}{%
@@ -2000,6 +2272,37 @@
       \field{year}{1990}
       \field{pages}{1550\bibrangedash 1560}
       \range{pages}{11}
+    \endentry
+    \entry{williams1992simple}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=6cbc29ad7fd57ffdb9ed4728418fd988}{%
+           family={Williams},
+           familyi={W\bibinitperiod},
+           given={Ronald\bibnamedelima J.},
+           giveni={R\bibinitperiod\bibinitdelim J\bibinitperiod}}}%
+      }
+      \strng{namehash}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \strng{fullhash}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \strng{fullhashraw}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \strng{bibnamehash}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \strng{authorbibnamehash}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \strng{authornamehash}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \strng{authorfullhash}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \strng{authorfullhashraw}{6cbc29ad7fd57ffdb9ed4728418fd988}
+      \field{sortinit}{W}
+      \field{sortinithash}{4315d78024d0cea9b57a0c6f0e35ed0d}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Machine Learning}
+      \field{number}{3--4}
+      \field{title}{Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement Learning}
+      \field{volume}{8}
+      \field{year}{1992}
+      \field{pages}{229\bibrangedash 256}
+      \range{pages}{28}
+      \verb{doi}
+      \verb 10.1007/BF00992696
+      \endverb
     \endentry
     \entry{zitzler1999hypervolume}{article}{}{}
       \name{author}{2}{}{%
