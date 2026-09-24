@@ -35,7 +35,7 @@ What the search needs, then, is not a controller that flies every body acceptabl
 \section{The Computational Feasibility Challenge}
 \label{sec:challenge-feasibility}
 
-The remedy that the previous section seems to call for is the one adopted by the co-design works that train their controllers by reinforcement learning \cite{gupta2021embodied, muff2026hexacopters}: solve the inner problem properly, by training a controller from scratch for every body the search evaluates. In the setting of this thesis the cost of doing so can be computed from two measured quantities, the training of a controller by reinforcement learning and a search over bodies scored by rollouts alone, both executed on a node with two GPUs (NVIDIA V100 PCIe 32GB). \autoref{tab:feasibility} gives the figures.
+The remedy that the previous section seems to call for is the one adopted by the co-design works that train their controllers by reinforcement learning \cite{gupta2021embodied, muff2026hexacopters}: solve the inner problem properly, by training a controller from scratch for every body the search evaluates. In the setting of this thesis the cost of doing so can be computed from measured quantities, the training of a controller by reinforcement learning, on many bodies and on one, and a search over bodies scored by rollouts alone, all executed on a node with two GPUs (NVIDIA V100 PCIe 32GB). \autoref{tab:feasibility} gives the figures.
 
 \begin{table}[htbp]
 \centering
@@ -43,19 +43,20 @@ The remedy that the previous section seems to call for is the one adopted by the
 \hline
 Quantity & Value \\
 \hline
-Training of one generalist controller (1\,000 PPO iterations, 65\,536 parallel environments) & 29 h \\
+Training of one generalist controller (1\,000 PPO iterations, 65\,536 parallel environments) & 14 h \\
+Training of one specialist controller on a single body (same settings, on one of the two GPUs) & 1.7 h \\
 \hline
-Bodies assessed by one body search (64 per generation, 50 generations) & 3\,200 \\
-One body search with one fixed controller for all bodies, rollouts only & 94 h \\
-One body search with a controller training per body, at the generalist's cost & 92\,800 h \\
-The same, with a specialist trained on the single body (about one hour each) & 3\,200 h \\
+Distinct bodies assessed by one body search (64 at first, then 32 new ones at each of 48 updates) & 1\,600 \\
+One body search in which bodies are scored by rollouts alone, with no training inside the loop (Proposed Co-Design Pipeline) & \textbf{94 h} \\
+One body search with a controller training per body, at the generalist's cost & 22\,400 h \\
+The same, with a specialist trained on the single body (two at a time, one per GPU) & 1\,360 h \\
 \hline
 \end{tabularx}
-\caption[Cost of a controller training inside the body search]{Cost of a controller training inside the body search, from the production runs of this thesis. The last two rows are hypothetical; the others are measured.}
+\caption[Cost of a controller training inside the body search]{Cost of a controller training inside the body search, from the production runs of this thesis. All times are wall-clock hours of the node. The last two rows are hypothetical; the others are measured.}
 \label{tab:feasibility}
 \end{table}
 
-A single training of the generalist takes just over a day, and a single body search visits 3200 bodies. Training a controller for each of them at that cost would take more than ten years on the same hardware. A specialist trained on one body alone is far cheaper, about an hour, and that is the realistic form of the remedy; even so, one training per body brings the search to more than four months, against the four days it takes when a body is scored by rollouts alone, a factor of more than thirty at the present size of the search. And the size is not fixed: every additional body, generation or scenario the search is given multiplies the gap again.
+A single training of the generalist takes fourteen hours, and a single body search assesses 1\,600 distinct bodies. Training a controller for each of them at that cost would take two and a half years on the same hardware. A specialist trained on one body alone is far cheaper, less than two hours on a single GPU, and that is the realistic form of the remedy; even so, with two trainings running side by side, one training per body brings the search to almost two months, against the four days it takes when a body is scored by rollouts alone, a factor of almost fifteen at the present size of the search. And the size is not fixed: every additional body, generation or scenario the search is given multiplies the gap again.
 
 The multiplication is not optional. The performance of a body is a random quantity: forests are generated at random, the controller acts stochastically, and a single flight says little about a body. In this thesis each body is flown on sixty forests before it is ranked, and the ranking is still far from noise-free. Whatever the per-body cost is, it is paid that many times, and it is paid again every time the controller changes, because the score of a body under an old controller is worthless once the controller has moved. A co-design loop whose inner level is a training run therefore cannot scale on any of the axes the search needs: scenarios per body, bodies per generation and number of generations. The works that take this route stay under a thousand bodies in total \cite{muff2026hexacopters} or require over a thousand processors for a single run \cite{gupta2021embodied}, and both search far smaller design spaces, with far cheaper evaluations, than a winged drone in a forest.
 

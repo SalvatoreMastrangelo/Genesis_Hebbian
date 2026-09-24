@@ -247,6 +247,40 @@
       \field{pages}{20170937}
       \range{pages}{1}
     \endentry
+    \entry{clevert2016elu}{inproceedings}{}{}
+      \name{author}{3}{}{%
+        {{hash=4356103aee47c13e10848e6a527f76b4}{%
+           family={Clevert},
+           familyi={C\bibinitperiod},
+           given={Djork-Arné},
+           giveni={D\bibinithyphendelim A\bibinitperiod}}}%
+        {{hash=1a47640139e63b9b5969c969dfe95def}{%
+           family={Unterthiner},
+           familyi={U\bibinitperiod},
+           given={Thomas},
+           giveni={T\bibinitperiod}}}%
+        {{hash=41b31e29fb2bdbf9f5c9c1b0d5b3e815}{%
+           family={Hochreiter},
+           familyi={H\bibinitperiod},
+           given={Sepp},
+           giveni={S\bibinitperiod}}}%
+      }
+      \strng{namehash}{73dfc8e22f6348b9ab52185224c77223}
+      \strng{fullhash}{73dfc8e22f6348b9ab52185224c77223}
+      \strng{fullhashraw}{73dfc8e22f6348b9ab52185224c77223}
+      \strng{bibnamehash}{73dfc8e22f6348b9ab52185224c77223}
+      \strng{authorbibnamehash}{73dfc8e22f6348b9ab52185224c77223}
+      \strng{authornamehash}{73dfc8e22f6348b9ab52185224c77223}
+      \strng{authorfullhash}{73dfc8e22f6348b9ab52185224c77223}
+      \strng{authorfullhashraw}{73dfc8e22f6348b9ab52185224c77223}
+      \field{sortinit}{C}
+      \field{sortinithash}{4d103a86280481745c9c897c925753c0}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{International Conference on Learning Representations (ICLR)}
+      \field{title}{Fast and Accurate Deep Network Learning by Exponential Linear Units ({ELU}s)}
+      \field{year}{2016}
+    \endentry
     \entry{deb2001multi}{book}{}{}
       \name{author}{1}{}{%
         {{hash=b11d1da0cc2920eef235d484e6b858ef}{%
@@ -620,6 +654,40 @@
       \field{pages}{1536\bibrangedash 1546}
       \range{pages}{11}
     \endentry
+    \entry{finn2017maml}{inproceedings}{}{}
+      \name{author}{3}{}{%
+        {{hash=058e82495825ae376c6a96a12169e6ee}{%
+           family={Finn},
+           familyi={F\bibinitperiod},
+           given={Chelsea},
+           giveni={C\bibinitperiod}}}%
+        {{hash=e28d4ee199593959d8c29980a64f1974}{%
+           family={Abbeel},
+           familyi={A\bibinitperiod},
+           given={Pieter},
+           giveni={P\bibinitperiod}}}%
+        {{hash=c9545da54b33744da25943cdf66eadac}{%
+           family={Levine},
+           familyi={L\bibinitperiod},
+           given={Sergey},
+           giveni={S\bibinitperiod}}}%
+      }
+      \strng{namehash}{8fd1a9b285463d1536dcb64b4011a015}
+      \strng{fullhash}{8fd1a9b285463d1536dcb64b4011a015}
+      \strng{fullhashraw}{8fd1a9b285463d1536dcb64b4011a015}
+      \strng{bibnamehash}{8fd1a9b285463d1536dcb64b4011a015}
+      \strng{authorbibnamehash}{8fd1a9b285463d1536dcb64b4011a015}
+      \strng{authornamehash}{8fd1a9b285463d1536dcb64b4011a015}
+      \strng{authorfullhash}{8fd1a9b285463d1536dcb64b4011a015}
+      \strng{authorfullhashraw}{8fd1a9b285463d1536dcb64b4011a015}
+      \field{sortinit}{F}
+      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{International Conference on Machine Learning (ICML)}
+      \field{title}{Model-Agnostic Meta-Learning for Fast Adaptation of Deep Networks}
+      \field{year}{2017}
+    \endentry
     \entry{floreano2000evolutionary}{article}{}{}
       \name{author}{2}{}{%
         {{hash=620d43cd0ee8802d53fe4d7b715445ec}{%
@@ -872,6 +940,49 @@
       \field{booktitle}{International Conference on Learning Representations (ICLR)}
       \field{title}{{MetaMorph}: Learning Universal Controllers with Transformers}
       \field{year}{2022}
+    \endentry
+    \entry{haarnoja2018soft}{inproceedings}{}{}
+      \name{author}{4}{}{%
+        {{hash=45b14f55dd7ae28cb6cb2e23e4a168b9}{%
+           family={Haarnoja},
+           familyi={H\bibinitperiod},
+           given={Tuomas},
+           giveni={T\bibinitperiod}}}%
+        {{hash=519033a7338e5ef684c77d4d04748a4a}{%
+           family={Zhou},
+           familyi={Z\bibinitperiod},
+           given={Aurick},
+           giveni={A\bibinitperiod}}}%
+        {{hash=e28d4ee199593959d8c29980a64f1974}{%
+           family={Abbeel},
+           familyi={A\bibinitperiod},
+           given={Pieter},
+           giveni={P\bibinitperiod}}}%
+        {{hash=c9545da54b33744da25943cdf66eadac}{%
+           family={Levine},
+           familyi={L\bibinitperiod},
+           given={Sergey},
+           giveni={S\bibinitperiod}}}%
+      }
+      \strng{namehash}{b8c131de85c5000ff50df59a4d062227}
+      \strng{fullhash}{951e86110020d3107317b3e819f3d92d}
+      \strng{fullhashraw}{951e86110020d3107317b3e819f3d92d}
+      \strng{bibnamehash}{b8c131de85c5000ff50df59a4d062227}
+      \strng{authorbibnamehash}{b8c131de85c5000ff50df59a4d062227}
+      \strng{authornamehash}{b8c131de85c5000ff50df59a4d062227}
+      \strng{authorfullhash}{951e86110020d3107317b3e819f3d92d}
+      \strng{authorfullhashraw}{951e86110020d3107317b3e819f3d92d}
+      \field{sortinit}{H}
+      \field{sortinithash}{23a3aa7c24e56cfa16945d55545109b5}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 35th International Conference on Machine Learning (ICML)}
+      \field{series}{Proceedings of Machine Learning Research}
+      \field{title}{Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor}
+      \field{volume}{80}
+      \field{year}{2018}
+      \field{pages}{1861\bibrangedash 1870}
+      \range{pages}{10}
     \endentry
     \entry{hansen2016tutorial}{misc}{}{}
       \name{author}{1}{}{%
@@ -1188,6 +1299,35 @@
       \field{year}{1998}
       \field{pages}{99\bibrangedash 134}
       \range{pages}{36}
+    \endentry
+    \entry{kingma2015adam}{inproceedings}{}{}
+      \name{author}{2}{}{%
+        {{hash=b6fbd171848aad4edf3925543f1f1522}{%
+           family={Kingma},
+           familyi={K\bibinitperiod},
+           given={Diederik\bibnamedelima P.},
+           giveni={D\bibinitperiod\bibinitdelim P\bibinitperiod}}}%
+        {{hash=8aa66e8231cc2fdbe67aa4f18ca970c6}{%
+           family={Ba},
+           familyi={B\bibinitperiod},
+           given={Jimmy},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{a09df9f123146b8e2c7f1134c9496932}
+      \strng{fullhash}{a09df9f123146b8e2c7f1134c9496932}
+      \strng{fullhashraw}{a09df9f123146b8e2c7f1134c9496932}
+      \strng{bibnamehash}{a09df9f123146b8e2c7f1134c9496932}
+      \strng{authorbibnamehash}{a09df9f123146b8e2c7f1134c9496932}
+      \strng{authornamehash}{a09df9f123146b8e2c7f1134c9496932}
+      \strng{authorfullhash}{a09df9f123146b8e2c7f1134c9496932}
+      \strng{authorfullhashraw}{a09df9f123146b8e2c7f1134c9496932}
+      \field{sortinit}{K}
+      \field{sortinithash}{c02bf6bff1c488450c352b40f5d853ab}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{International Conference on Learning Representations (ICLR)}
+      \field{title}{Adam: A Method for Stochastic Optimization}
+      \field{year}{2015}
     \endentry
     \entry{konda2000actorcritic}{inproceedings}{}{}
       \name{author}{2}{}{%
@@ -1664,6 +1804,53 @@
       \verb 10.1109/ICRA.2018.8460528
       \endverb
     \endentry
+    \entry{pinto2018asymmetric}{inproceedings}{}{}
+      \name{author}{5}{}{%
+        {{hash=9d4b78f1220fe5cab8395d811fc9c5b2}{%
+           family={Pinto},
+           familyi={P\bibinitperiod},
+           given={Lerrel},
+           giveni={L\bibinitperiod}}}%
+        {{hash=0d8b72cabbd1b548097b4a7b81a0f335}{%
+           family={Andrychowicz},
+           familyi={A\bibinitperiod},
+           given={Marcin},
+           giveni={M\bibinitperiod}}}%
+        {{hash=462853f8544f0acfb7014fe747f84922}{%
+           family={Welinder},
+           familyi={W\bibinitperiod},
+           given={Peter},
+           giveni={P\bibinitperiod}}}%
+        {{hash=e9fec85bbce1b087a6ebefe26e73f7bf}{%
+           family={Zaremba},
+           familyi={Z\bibinitperiod},
+           given={Wojciech},
+           giveni={W\bibinitperiod}}}%
+        {{hash=e28d4ee199593959d8c29980a64f1974}{%
+           family={Abbeel},
+           familyi={A\bibinitperiod},
+           given={Pieter},
+           giveni={P\bibinitperiod}}}%
+      }
+      \strng{namehash}{009a5c68c897047df971c989b06bc577}
+      \strng{fullhash}{d012a902a710a88caa929eec5b3f11c1}
+      \strng{fullhashraw}{d012a902a710a88caa929eec5b3f11c1}
+      \strng{bibnamehash}{009a5c68c897047df971c989b06bc577}
+      \strng{authorbibnamehash}{009a5c68c897047df971c989b06bc577}
+      \strng{authornamehash}{009a5c68c897047df971c989b06bc577}
+      \strng{authorfullhash}{d012a902a710a88caa929eec5b3f11c1}
+      \strng{authorfullhashraw}{d012a902a710a88caa929eec5b3f11c1}
+      \field{sortinit}{P}
+      \field{sortinithash}{ff3bcf24f47321b42cb156c2cc8a8422}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Robotics: Science and Systems XIV}
+      \field{title}{Asymmetric Actor Critic for Image-Based Robot Learning}
+      \field{year}{2018}
+      \verb{doi}
+      \verb 10.15607/RSS.2018.XIV.008
+      \endverb
+    \endentry
     \entry{puterman1994markov}{book}{}{}
       \name{author}{1}{}{%
         {{hash=b4258b9291d903d97b69d703eebf790a}{%
@@ -1696,6 +1883,45 @@
       \verb 10.1002/9780470316887
       \endverb
     \endentry
+    \entry{raghu2020rapid}{inproceedings}{}{}
+      \name{author}{4}{}{%
+        {{hash=57f2d78b9071875ab75173c35900b33f}{%
+           family={Raghu},
+           familyi={R\bibinitperiod},
+           given={Aniruddh},
+           giveni={A\bibinitperiod}}}%
+        {{hash=033c6488abceea98e75b2582e98d2cfa}{%
+           family={Raghu},
+           familyi={R\bibinitperiod},
+           given={Maithra},
+           giveni={M\bibinitperiod}}}%
+        {{hash=02404a92b0be3f52ec5ac08e41c13445}{%
+           family={Bengio},
+           familyi={B\bibinitperiod},
+           given={Samy},
+           giveni={S\bibinitperiod}}}%
+        {{hash=494b568c5dc85ba8f3f409635f9c5f25}{%
+           family={Vinyals},
+           familyi={V\bibinitperiod},
+           given={Oriol},
+           giveni={O\bibinitperiod}}}%
+      }
+      \strng{namehash}{ad9afecd500de50886152fd72e491aca}
+      \strng{fullhash}{d1f059386386963264583bca9a817beb}
+      \strng{fullhashraw}{d1f059386386963264583bca9a817beb}
+      \strng{bibnamehash}{ad9afecd500de50886152fd72e491aca}
+      \strng{authorbibnamehash}{ad9afecd500de50886152fd72e491aca}
+      \strng{authornamehash}{ad9afecd500de50886152fd72e491aca}
+      \strng{authorfullhash}{d1f059386386963264583bca9a817beb}
+      \strng{authorfullhashraw}{d1f059386386963264583bca9a817beb}
+      \field{sortinit}{R}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{International Conference on Learning Representations (ICLR)}
+      \field{title}{Rapid Learning or Feature Reuse? {T}owards Understanding the Effectiveness of {MAML}}
+      \field{year}{2020}
+    \endentry
     \entry{rechenberg1973evolutionsstrategie}{book}{}{}
       \name{author}{1}{}{%
         {{hash=b58e12d54f5d5bc1ab10d52d28863dce}{%
@@ -1724,6 +1950,49 @@
       \field{labeltitlesource}{title}
       \field{title}{Evolutionsstrategie: Optimierung technischer Systeme nach Prinzipien der biologischen Evolution}
       \field{year}{1973}
+    \endentry
+    \entry{rudin2022learning}{inproceedings}{}{}
+      \name{author}{4}{}{%
+        {{hash=5ac29b212261fe3d27e4d51cf14a990e}{%
+           family={Rudin},
+           familyi={R\bibinitperiod},
+           given={Nikita},
+           giveni={N\bibinitperiod}}}%
+        {{hash=93c4a2b776cc893ccb2f86e35e82fcd7}{%
+           family={Hoeller},
+           familyi={H\bibinitperiod},
+           given={David},
+           giveni={D\bibinitperiod}}}%
+        {{hash=60cbc78a7a7379afdab68a90e478f9da}{%
+           family={Reist},
+           familyi={R\bibinitperiod},
+           given={Philipp},
+           giveni={P\bibinitperiod}}}%
+        {{hash=164607f9daa616a03bed0e2bf6531a8d}{%
+           family={Hutter},
+           familyi={H\bibinitperiod},
+           given={Marco},
+           giveni={M\bibinitperiod}}}%
+      }
+      \strng{namehash}{5f8eebe34c472dc01f89b4339c3789c8}
+      \strng{fullhash}{7b30bae853adb350379ddd4bf62c03e2}
+      \strng{fullhashraw}{7b30bae853adb350379ddd4bf62c03e2}
+      \strng{bibnamehash}{5f8eebe34c472dc01f89b4339c3789c8}
+      \strng{authorbibnamehash}{5f8eebe34c472dc01f89b4339c3789c8}
+      \strng{authornamehash}{5f8eebe34c472dc01f89b4339c3789c8}
+      \strng{authorfullhash}{7b30bae853adb350379ddd4bf62c03e2}
+      \strng{authorfullhashraw}{7b30bae853adb350379ddd4bf62c03e2}
+      \field{sortinit}{R}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 5th Conference on Robot Learning (CoRL)}
+      \field{series}{Proceedings of Machine Learning Research}
+      \field{title}{Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning}
+      \field{volume}{164}
+      \field{year}{2022}
+      \field{pages}{91\bibrangedash 100}
+      \range{pages}{10}
     \endentry
     \entry{salimans2017evolution}{misc}{}{}
       \name{author}{5}{}{%

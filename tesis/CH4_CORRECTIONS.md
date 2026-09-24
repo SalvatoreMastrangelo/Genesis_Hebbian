@@ -24,12 +24,14 @@ Legend: **[fact]** the text is wrong or inconsistent; **[gap]** something promis
 ## B. Corrections
 
 ### B1. Definition of progress, l. 301 [fact] (found while checking, not in the review)
+- **APPLIED 2026-09-21 (author: "progress should be defined as delta x instead of simply x"):** l. 301 now defines the progress as the distance $\Delta x$ covered along the corridor from the point of release, with "a flight that ends at the first tree has a progress of 30 m"; the two blind-flight means (11 m, 26 m) now say "from the first tree".
 - Text: "The coordinate $x$ at which the flight ends is its progress".
 - Code: `src/WP2/evaluate.py:829`, `dx = base_pos.x − x0`, with x0 the release point (−30 m). Every progress value in the results (80 m gate, CoT at 190 m, blind ceiling 60 to 72 m = 30 + 26…32…) is a distance from the release point, 30 m more than the coordinate.
 - Proposed: *"The distance covered along the corridor, from the point of release to the point where the flight ends, is its \emph{progress}, the first of the two quantities […]. A flight that ends at the first tree therefore has a progress of 30~m."*
 - Follow-ups: l. 324 and l. 353 quote blind-flight means (11 m, 26 m) measured from the first tree; add "measured from the first tree" so they are not read as progress. `eq:drone-cot` (l. 457-460) stays correct ("Δx the progress of the flight") and the reviewer's "CoT diverges for Δx ≤ 0" no longer applies (Δx > 0 from release; the code clamps at 1e-2 m). Check that the axes of chapter 6 use the same definition.
 
 ### B2. Servo torque limit and gains, l. 76 [fact]
+- **APPLIED 2026-09-21 on the author's explanation ("the servo torque limit is such, the wing is instead limited according to the gear ratio"):** l. 76 now gives 1 N m for the tail joints and says that the servomotors of the wing have a fixed limit, multiplied at the joint by the gear ratio of the body (pointer to 4.3.1), 1.5 N m on the reference drone. The sentence on the gains being defined at the joint was not added.
 - "a torque limit of 1.5 N m for the wing joints" is true only for the reference gear ratios (0.75 × 2 and 0.6 × 2.5, l. 446).
 - Proposed: *"and a torque limit of 1~N\,m for the tail joints and, on the reference drone, 1.5~N\,m for the wing joints, where it scales with the gear ratio of the joint (\autoref{subsec:drone-shape}). The gains are defined at the joint and are the same for every joint and every body."*
 - Source: `actuators.csv` (kp 8, kv 2 for both servo types), `env.py:826` sets them per dof with no scaling by k.
@@ -65,6 +67,7 @@ Legend: **[fact]** the text is wrong or inconsistent; **[gap]** something promis
 - Proposed, after "the forward speed it is asked to keep": *"The commanded speed is set by the experiment, not by the controller, and is constant during a flight. The flights by which a body is evaluated cover a fixed set of speeds between 10 and 20~m/s, so that a body is judged over a range of speeds and not at the one that suits it best."* Training range to chapter 5.
 
 ### B9. End of a flight: missing thresholds and the time limit, l. 301 [gap]
+- **Correction 2026-09-21 (B5 of `reviews/2026-09-21_review_3.md`): there is NO altitude ceiling. `termination_if_z_greater_than: 50.0` is a key of the default configuration (`src/winged_drone_train/train.py:201`) that nothing reads; `env.py::_compute_termination_flags` tests the lateral position and the minimum altitude only. Do not add a ceiling to the list. The ground threshold of 0.1 m is now given in `tab:training-environment` (chapter 5).**
 - Add the values: ground = altitude below 0.1 m; also an altitude ceiling of 50 m, which the list omits; time limit 60 s when a body is evaluated (`evaluate.py:694`; 100 s in training).
 - Proposed: *"The time limit is not what ends a flight in practice: a drone that keeps the lowest commanded speed covers the longest course of this thesis in about half of it, so the progress measures how far a body gets and not how fast."*
 - **Verify before writing "never"**: count the time-outs in the exam logs of one production run.

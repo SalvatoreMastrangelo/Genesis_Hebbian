@@ -2474,6 +2474,17 @@
     <bcf:citekey order="80" intorder="1">bergonti2024codesign</bcf:citekey>
     <bcf:citekey order="81" intorder="1">hobbyking2026bixler3</bcf:citekey>
     <bcf:citekey order="82" intorder="1">bergonti2024codesign</bcf:citekey>
+    <bcf:citekey order="83" intorder="1">rudin2022learning</bcf:citekey>
+    <bcf:citekey order="84" intorder="1">clevert2016elu</bcf:citekey>
+    <bcf:citekey order="85" intorder="1">haarnoja2018soft</bcf:citekey>
+    <bcf:citekey order="86" intorder="1">gupta2022metamorph</bcf:citekey>
+    <bcf:citekey order="87" intorder="1">pinto2018asymmetric</bcf:citekey>
+    <bcf:citekey order="90" intorder="1">kingma2015adam</bcf:citekey>
+    <bcf:citekey order="91" intorder="1">finn2017maml</bcf:citekey>
+    <bcf:citekey order="92" intorder="1">raghu2020rapid</bcf:citekey>
+    <bcf:citekey order="93" intorder="1">vandiggelen2025emergent</bcf:citekey>
+    <bcf:citekey order="94" intorder="1">soltoggio2018born</bcf:citekey>
+    <bcf:citekey order="95" intorder="1">najarro2020meta</bcf:citekey>
   </bcf:section>
   <!-- SORTING TEMPLATES -->
   <bcf:sortingtemplate name="nyt">

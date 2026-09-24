@@ -1,16 +1,558 @@
 \chapter{Methodology}
 \label{ch:method}
+
+\autoref{ch:challenges} ended with the shape that any workable answer must have: a controller that is paid for once, for the whole space of bodies, and an adaptation to the body being scored that costs no more than the flights that score it. This chapter describes the method that gives that shape a content, in the order in which the method is built. \autoref{sec:base-controllers} trains by reinforcement learning the controllers on which everything else rests. \autoref{sec:hebbian-controller} takes one of them, freezes it, and makes its output layer plastic through Hebbian rules. \autoref{sec:pipeline} describes the co-design pipeline, in which an inner loop evolves those rules and an outer loop evolves the bodies they are meant to serve, and whose results are reported in \autoref{ch:results}.
+
 \section{Base Controllers}
-\subsection{Specialist LSTM Controller}
-\subsection{Generalist LSTM Controller}
-\subsection{Training the Generalist LSTM Controller}
+\label{sec:base-controllers}
+
+Everything in the method rests on a controller that can already fly. Two kinds of such controllers are used in this thesis. They share the architecture, the task, the reward and the learning algorithm, and differ only in the bodies they are trained on. A \emph{generalist} is trained on a large pool of different bodies at once: it is the $\vect{\theta}_G$ of \autoref{sec:challenge-morphology}, a single set of weights that is expected to fly any body of the design space, and it is the controller on which the co-design loop is built. A \emph{specialist} is trained on one body alone: it is the closest that this thesis comes to the $\vect{\theta}^{\star}(\vect{m})$ of \eqref{eq:codesign-bilevel}, and it serves as a term of comparison and as a second base on which the rules of \autoref{sec:hebbian-controller} are evolved. Both are trained with PPO (\autoref{subsec:ppo}), in the implementation of the RSL-RL library \cite{rudin2022learning}, which was written for the regime used here: thousands of environments simulated in parallel on the GPU, each contributing a short segment of experience to every update. This section describes the network first, then the environment in which it is trained and the reward that defines what flying well means, and finally the two training regimes with their numbers.
+
+\subsection{Architecture of the Controller}
+\label{subsec:controller-architecture}
+
+The controller is the actor of an actor-critic pair (\autoref{subsec:actor-critic}). At every control step, 25 times per second, it receives the 36 numbers of \autoref{tab:drone-sensors}, collected in the observation $\vect{o}_t$, and returns the seven commands $\vect{a}_t$ of \eqref{eq:drone-actions}. Before entering the network each component of the observation is standardized with the running mean and standard deviation of the observations collected during training; these statistics are frozen after the first $10^8$ samples, about a hundred iterations, and are stored with the weights. The network itself is small (\autoref{fig:controller-architecture}): an LSTM layer of 128 units (\autoref{sec:lstm}), two fully connected layers of 128 and 32 units with the exponential linear unit (ELU) as activation \cite{clevert2016elu}, and a linear output layer of seven units.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>={Stealth[length=2mm]}, thick, scale=0.9, transform shape, every node/.style={font=\small}]
+\tikzset{
+  alayer/.style={draw=orange!70!black, fill=orange!12, rounded corners, thick, align=center, minimum width=1.55cm, minimum height=1.05cm},
+  aplastic/.style={alayer, very thick, fill=orange!40},
+  clayer/.style={draw=violet!60!black, fill=violet!10, rounded corners, thick, align=center, minimum width=1.55cm, minimum height=1.05cm},
+}
+% ---- actor
+\node[align=center] (o) at (0,0) {observation\\$\vect{o}_t$ (36)};
+\node[alayer] (al) at (2.7,0) {LSTM\\128};
+\node[alayer] (a1) at (4.8,0) {128\\ELU};
+\node[alayer] (a2) at (6.9,0) {32\\ELU};
+\node[aplastic] (a3) at (9.1,0) {linear\\$32 \to 7$};
+\node[tanhbox, align=center] (as) at (11.5,0) {sample,\\$\tanh$};
+\node[align=center] (a) at (14.0,0) {commands\\$\vect{a}_t$ (7)};
+\draw[->] (o) -- (al);
+\draw[->] (al) -- (a1);
+\draw[->] (a1) -- (a2);
+\draw[->] (a2) -- node[above]{\scriptsize $\vect{x}_t$} (a3);
+\draw[->] (a3) -- node[above]{\scriptsize $\vect{\mu}_t$} (as);
+\draw[->] (as) -- (a);
+\draw[->] (al.north east) .. controls +(0.55,0.95) and +(-0.55,0.95) .. node[above]{\scriptsize $\vect{h}_{t-1}, \vect{c}_{t-1}$} (al.north west);
+\node[font=\scriptsize, text=orange!45!black] at (9.1,-0.85) {224 weights};
+\node[font=\scriptsize, text=red!50!black] at (11.5,-0.85) {$\vect{\sigma}$ learned};
+\node[anchor=east, font=\scriptsize, text=gray!50!black] at (15.0,1.3) {actor: trained, then deployed};
+% ---- critic
+\node[align=center] (po) at (0,-3.2) {privileged\\observation (67)};
+\node[clayer] (cl) at (2.7,-3.2) {LSTM\\128};
+\node[clayer] (c1) at (4.8,-3.2) {128\\ELU};
+\node[clayer] (c2) at (6.9,-3.2) {128\\ELU};
+\node[clayer] (c3) at (9.1,-3.2) {linear\\$128 \to 1$};
+\node[align=center] (v) at (11.5,-3.2) {value\\$V_{\vect{w}}$};
+\draw[->] (po) -- (cl);
+\draw[->] (cl) -- (c1);
+\draw[->] (c1) -- (c2);
+\draw[->] (c2) -- (c3);
+\draw[->] (c3) -- (v);
+\draw[->] (cl.north east) .. controls +(0.55,0.95) and +(-0.55,0.95) .. (cl.north west);
+\node[anchor=east, font=\scriptsize, text=gray!50!black] at (15.0,-1.9) {critic: used during training only};
+\end{tikzpicture}
+\caption[The networks of a base controller]{The two networks of a base controller, with the sizes of the generalist. The actor maps the observation of \autoref{tab:drone-sensors} to the seven commands; its output layer, highlighted, is the part of the network on which the rest of the method acts. The critic estimates the value of the current state from a richer input, which for the generalist includes the genome of the body (the critic of a specialist does without it and has 52 inputs), and is discarded when training ends.}
+\label{fig:controller-architecture}
+\end{figure}
+
+The recurrent layer comes first, and its role is to make the controller stateful. The task is only partially observable: the drone does not measure its angular rates, its airspeed or the angles of its joints (\autoref{subsec:drone-sensors}); its measurements are noisy; and its commands take effect after a latency that changes from flight to flight, through servomotors that respond with a delay of their own. A controller without memory would have to decide from a single noisy snapshot of all this. A controller with a state can use the history of what it observed and commanded: a rate from successive attitudes, the state of an actuator from the commands that were sent to it, a measurement steadied by those that preceded it. This is why the previous commands are part of the observation, and why the memory is placed where it acts on the raw history.
+
+The two fully connected layers compress the state of the LSTM into a vector $\vect{x}_t \in \mathbb{R}^{32}$, from which the output layer computes
+\begin{equation}
+\vect{\mu}_t = \mat{W}\, \vect{x}_t + \vect{b}, \qquad \mat{W} \in \mathbb{R}^{7 \times 32}.
+\label{eq:actor-output}
+\end{equation}
+The width of the last hidden layer fixes the size of the output layer at $7 \times 32 = 224$ weights, a number that matters later: the output layer is the part of the controller that \autoref{sec:hebbian-controller} makes plastic, and every one of its weights will carry evolved coefficients. In total the actor has 105\,863 weights and biases, four fifths of which belong to the LSTM.
+
+The policy is stochastic. The output $\vect{\mu}_t$ is the mean of a Gaussian from which a vector is sampled and then squashed,
+\begin{equation}
+\vect{z}_t \sim \mathcal{N}\!\big(\vect{\mu}_t,\, \operatorname{diag}(\vect{\sigma}^2)\big), \qquad \tilde{\vect{a}}_t = \tanh(\vect{z}_t) \in (-1, 1)^7,
+\label{eq:actor-sampling}
+\end{equation}
+where $\vect{\sigma}$ is a vector of seven learned parameters that does not depend on the observation, initialized at 0.3. The first component of $\tilde{\vect{a}}_t$ becomes the throttle, $u = (\tilde{a}_1 + 1)/2$, and each of the other six is multiplied by the range of its joint \eqref{eq:drone-gear} to give a target angle. The squashing keeps every command inside its range by construction. The usual alternative, a Gaussian whose samples are clipped at the limits, makes the executed command differ from the sampled one whenever a limit is hit, and the probability ratio on which PPO relies is then computed for an action that was not the one taken. With \eqref{eq:actor-sampling} the density of the executed command is known exactly: it is the Gaussian density of $\vect{z}_t$ corrected by the Jacobian of the hyperbolic tangent \cite{haarnoja2018soft}.
+
+One input is absent on purpose: the actor never receives the genome of the body, nor any other description of it, whether it is trained on one body or on many. The controller does not know which body it is flying. The purpose is to let it learn to fly any morphology without hints on what its flight dynamics could be. This is the opposite of the choice made by MetaMorph \cite{gupta2022metamorph}, whose policy reads a description of its morphology. A generalist trained in this way is one set of weights for all bodies and is adapted to none of them in particular; adapting it to the body it is given is the task of the next section.
+
+The critic has no such restriction, because it is never deployed. It is a separate network with its own LSTM layer of 128 units, two fully connected layers of 128 units and a scalar output, and it is an asymmetric critic \cite{pinto2018asymmetric}. Its input has 67 components: the 36 of the actor, but without sensor noise; the angular velocity of the fuselage, the angles and the rates of the six joints, and the thrust actually delivered by the propeller, as a fraction of its maximum; and the 15 genes of the body. The value of a state depends on the body that is in it, since the same attitude and the same trees ahead promise more to a body that turns readily than to one that does not, and the critic can simply be told what the actor is never told. The genome shown to the critic is perturbed by Gaussian noise, with a standard deviation of 10\% of the range of each gene drawn once per flight and of 2\% drawn at every step (the discrete airfoil genes excepted), so that it reads as a description of a body rather than as the label of one of the training bodies.
+
+\subsection{Training Environment}
+\label{subsec:training-environment}
+
+The controllers are trained on the task of \autoref{sec:flight-environment}, with the simulation noise and the sensors described in the same chapter. What that chapter left open are the numbers, which \autoref{tab:training-environment} collects.
+
+\begin{table}[htbp]
+\centering
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{4.6cm} >{\raggedright\arraybackslash}X}
+\hline
+Quantity & Value during training \\
+\hline
+Course & growing density forest (\autoref{subsec:forest-growing}), 150~m long and 100~m wide \\
+Density at the end, $\lambda_1$ & 4 trees per metre \\
+Density at the entrance, $\lambda_0$ & uniform between 0 and 3 trees per metre, drawn for each forest \\
+Forests & ten for each environment, generated once; one of them drawn at random at every flight \\
+Commanded speed & uniform between 5 and 25~m/s, drawn at every flight and held \\
+Release point & $(-30, 0, 15)$~m, displaced uniformly by up to $\pm 15$~m along the course, $\pm 40$~m across it and between $-10$ and $+5$~m in altitude \\
+Initial velocity & forward component uniform between 5 and 25~m/s; lateral and vertical components normal, with a standard deviation of 1~m/s; nose aligned with the velocity \\
+End of a flight & as in \autoref{sec:flight-environment}: the ground is an altitude of 0.1~m, the collision margin is 0.2~m, the attitude limits are $90^{\circ}$ and the time limit is 100~s (2\,500 control steps) \\
+Latency of the commands & zero or one control step, drawn at every flight \\
+Offset of the joint targets & normal, with a standard deviation of 0.01~rad drawn at every flight plus 0.005~rad drawn at every step \\
+\hline
+\end{tabularx}
+\caption[The training environment in numbers]{The training environment in numbers. Sensor noise is that of \autoref{tab:drone-sensors}; the aerodynamic noise and the randomization of masses and centres of mass are those of \autoref{subsec:genesis-noise}.}
+\label{tab:training-environment}
+\end{table}
+
+The course is short, 150~m, and dense from the start. With an entrance density drawn between 0 and 3 trees per metre a forest holds between 300 and 525 trees, and the controller meets, in the first metres of some flights, the density that other flights reach only at the end: this is the option anticipated in \autoref{subsec:forest-growing}, and it prevents the first part of every flight from being an empty stretch in which nothing is learned about trees. A flight that ends is replaced at once, in the same environment, by a new one with a new forest, a new commanded speed and a new release.
+
+The release is randomized for two reasons. The environments all begin together, and without it their first seconds would be thousands of copies of the same flight. And a controller that is always released in trimmed flight on the axis of the corridor never learns to recover: here it starts anywhere across the corridor, as low as 5~m above the ground, and at a speed that has nothing to do with the one it is asked to keep, so that the first thing it has to do in every flight is accelerate or slow down. The range of the commands is wider than what most bodies can hold: the reference drone stalls below about 6~m/s, and above 23~m/s the propeller of \eqref{eq:prop-thrust} delivers no thrust to any body. A command near either end cannot be met in level flight, and the tracking term of the reward then favours the closest speed that the body can reach; the evaluations of the following sections use a narrower range of commands. The commanded speed makes of the controller a family of controllers indexed by one number. Both quantities by which flights are judged depend on the speed, since a faster flight leaves less time to react to a trunk that appears at 30~m and changes the energy spent per metre, and leaving the speed as an input keeps that choice open instead of burying it in the weights. The evaluations of the following sections exploit it by flying every body over a range of commanded speeds.
+
+\subsection{Reward Function}
+\label{subsec:reward}
+
+In this thesis the bodies are piloted by the Hebbian controllers of \autoref{sec:hebbian-controller} and judged by two quantities, the progress and the cost of transport \eqref{eq:drone-cot}, which are properties of a whole flight. They say nothing about which of the hundreds of commands of a flight were good ones, and a learning signal is needed at every step. The reward is therefore a separate object, designed to be informative step by step and to have, as its maximizer, a pilot that does well on both quantities. It is a weighted sum of eight terms,
+\begin{equation}
+r_t = \sum_{i=1}^{8} w_i\, f_i(t),
+\label{eq:reward}
+\end{equation}
+listed in \autoref{tab:reward-terms}. The weights of the table are those that multiply each term at every control step. One term is positive and seven are penalties; the same reward is used for every body and for both kinds of controller, and it contains nothing that depends on the body.
+
+\begin{table}[htbp]
+\centering
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{3.1cm} >{\raggedright\arraybackslash}X r}
+\hline
+Term & Expression $f_i$ & Weight $w_i$ \\
+\hline
+Speed tracking & $\exp\!\left[-\dfrac{1}{2}\left(\dfrac{v_x / v^{\star} - 1}{0.25}\right)^{2}\right]$ & $+1$ \\
+Crash & 1 at the step in which the flight ends in a crash, 0 otherwise & $-5$ \\
+Obstacle proximity & $\sum_{j=1}^{20} \exp\!\big(-1.5\, \max(\rho_j,\, 0.5)\big)$, with $\rho_j$ from \eqref{eq:reward-obstacle} & $-0.2$ \\
+Energy & power $P$ drawn from the battery, in watts & $-0.002$ \\
+Altitude & $\max(0,\; 10 - z)^2$, with the altitude $z$ in metres & $-0.006$ \\
+Smoothness & $\lVert \vect{a}_t - \vect{a}_{t-1} \rVert^2$ & $-0.2$ \\
+Angular rate & $\lVert \vect{\omega} \rVert$, in rad/s & $-0.01$ \\
+Symmetry & $\big(q^{\mathrm{sw}}_{\mathrm{L}} + q^{\mathrm{sw}}_{\mathrm{R}}\big)^2 + \big(q^{\mathrm{tw}}_{\mathrm{L}} - q^{\mathrm{tw}}_{\mathrm{R}}\big)^2 + \big(q^{\mathrm{ru}}\big)^2$, angles in radians & $-2$ \\
+\hline
+\end{tabularx}
+\caption[The terms of the reward]{The terms of the reward \eqref{eq:reward}, with the weight that multiplies each of them at every control step. All quantities are the true ones of the simulator, without sensor noise.}
+\label{tab:reward-terms}
+\end{table}
+
+\paragraph{Speed tracking.} The only positive term rewards the drone for moving along the corridor at the speed it was asked to keep. Here $v_x$ is the component of its velocity along the axis of the corridor and $v^{\star}$ the commanded speed. The term is a bell curve of the relative error, with a width of 25\%: it is worth 1 when the two speeds coincide, 0.61 when they differ by a quarter, 0.14 when they differ by half, and practically nothing for a drone that hovers, flies across the corridor or turns back. Because $v_x$ is measured along the corridor and not along the heading, what is rewarded is the rate at which progress accumulates, and a drone that weaves more than the trees require loses reward as it loses ground. A flight that holds the commanded speed for $T$ seconds collects $25\,T$ and covers $v^{\star} T$ metres: for a given command, the reward accumulated by this term is proportional to the progress of the flight. It is the progress of \autoref{sec:flight-environment} in the form of a rate, divided by the commanded speed so that a slow flight and a fast one earn the same per unit of time. Rewarding the distance itself would have been simpler, and would have pushed every body to the highest speed it can reach, whatever that costs in energy and in collisions.
+
+\paragraph{Crash.} A penalty of 5 is paid once, at the step in which the flight ends because the drone has hit a trunk (with the margin of 0.2~m), has left the corridor sideways or downwards, or has exceeded the attitude limits. The figure is small, five steps of perfect tracking, because the real cost of a crash is elsewhere: the flight is over, and with it the reward that the rest of the flight would have collected. With the discount factor used here, $\gamma = 0.99$, a drone that is tracking its speed well expects a discounted return close to $1/(1-\gamma) = 100$, and a crash forfeits all of it. The explicit penalty is what distinguishes a crash from the other ways in which a flight can end, the end of the course and the time limit, which carry none.
+
+\paragraph{Obstacle proximity.} A crash is a late signal: by the time it arrives, the commands that caused it lie one or two seconds in the past. The proximity term anticipates it. Each of the 20 sectors of the depth sensor contributes a penalty that decays exponentially with an anisotropic distance to what the sector sees. If $d_j$ is the depth of sector $j$ and $\psi_j$ its direction with respect to the heading, the obstacle seen by the sector lies at $(d_j \cos\psi_j,\; d_j \sin\psi_j)$ in the horizontal frame of the drone, and
+\begin{equation}
+\rho_j = \frac{1}{5~\mathrm{m}} \sqrt{\left(d_j \cos\psi_j\right)^2 + 24 \left(d_j \sin\psi_j\right)^2}.
+\label{eq:reward-obstacle}
+\end{equation}
+The lateral offset of an obstacle weighs $\sqrt{24} \approx 4.9$ times its distance ahead, so the curves of equal penalty are ellipses centred on the drone and stretched along its heading, five times longer than they are wide. A trunk 5~m straight ahead gives $\rho = 1$ and a contribution of $e^{-1.5} = 0.22$ in every sector that it fills; the same trunk at the same distance but at the edge of the fan, $40^{\circ}$ off the heading, gives $\rho = 3.2$ and a contribution below 0.01. The term therefore does not ask the drone to stay away from trees, which in a forest would be asking it not to fly: it asks the drone not to point at them, and lets it pass close beside a trunk. As a trunk ahead comes nearer the penalty grows twice over, because $\rho$ shrinks and because the trunk fills more sectors, up to the floor $\rho \ge 0.5$ that bounds the contribution of a sector at 0.47. With a wall of trunks filling the view at close range the term exceeds the tracking reward, and slowing down or turning away becomes the better choice well before the collision. The lateral walls of the corridor are seen by the sensor like trunks and are penalized in the same way.
+
+\paragraph{Energy.} The power $P$ is the total power drawn from the battery of the drone, by the propeller and by the servomotors, as defined with \eqref{eq:drone-prop-power}. It is the only term through which the cost of transport enters the training, and its weight is small: at the 83~W of full throttle at rest it amounts to 0.17 per step, a sixth of the tracking reward. At this level energy is never worth a crash or a missed command, but between two ways of holding the same speed through the same trees the cheaper one earns more.
+
+\paragraph{Altitude.} Below 10~m the drone pays a penalty that grows with the square of the missing altitude, 0.15 per step at 5~m and 0.6 at the ground; above 10~m it pays nothing. The trees cannot be flown over, so height brings no advantage in the forest, but it is the reserve from which a drone recovers after a steep turn, and the one-sided form tells the controller that the reserve matters long before the ground ends the flight.
+
+\paragraph{Smoothness and angular rate.} Two terms regularize the way the drone is flown. The first penalizes the squared change of the commands applied to the actuators between two consecutive steps, the throttle in its unit range and the joint targets in radians. A stochastic policy trained in simulation drifts easily towards commands that jump from one extreme to the other at every step, which a simulated servomotor tolerates and a real one does not; the term also keeps down the energy spent by the servomotors. The second penalizes the norm of the angular velocity $\vect{\omega}$ of the fuselage, and it is light: a turn at 1~rad/s costs one hundredth of the tracking reward. It discourages oscillations without discouraging manoeuvres.
+
+\paragraph{Symmetry.} With seven commands the aircraft is redundant: the same straight flight can be held by many combinations of joint angles, including crossed ones in which an asymmetry of the wing is balanced by the rudder. The last term selects among them. It penalizes the difference in sweep between the two panels (with the sign convention of the joints a symmetric sweep corresponds to opposite angles, hence the sum), the difference in twist, and the deflection of the rudder, all measured on the actual joint angles $q$ and not on their targets. The symmetric sweep, the symmetric twist and the elevator, which are the controls that trim the aircraft, are left free. Asymmetric deflections are what rolls and turns the drone, and the term does not prevent them, since a differential twist of 0.2~rad costs 0.08 per step: it makes them transient, used for a manoeuvre and released after it. \\
+
+Two further terms exist in the environment and carry a weight of zero in the final configuration: a bonus for reaching the end of the course and a penalty on the roll and pitch angles.
+
+The reward has a second use after the training. Summed over a whole flight, it is the fitness by which the Hebbian rules are evolved (\autoref{subsec:inner-loop}), so that the rules are judged by the same measure as the controller on which they act. The search over bodies (\autoref{subsec:outer-loop}) never sees it: bodies are judged by progress and by cost of transport, measured on whole flights. With respect to those two quantities the reward is a dense proxy, with the tracking term standing for the rate of progress, the crash and proximity terms for survival, and the energy term for the cost of transport, and the correspondence is only approximate. A base controller is therefore a competent pilot and not an optimum of either objective; optimizing against the objectives themselves is the task of the search over bodies.
+
+\subsection{Training the Generalist}
+\label{subsec:generalist-training}
+
+The generalist is trained on a pool of $K = 256$ bodies. Their genomes are drawn independently and uniformly from the unit hypercube, once, before training, and each is built into a body by the generator that builds every body of this thesis. No body is rejected: since the genome has no constraint beyond its ranges, the pool contains bodies that fly well, bodies that fly badly and bodies that hardly fly at all, in the proportions in which the design space contains them. The reference drone is deliberately left out, so that for the generalist it is a body like any other that the search may propose: one that it has never flown. What the generalist maximizes is the average, over the pool, of the expected discounted return of the reward \eqref{eq:reward},
+\begin{equation}
+J_G(\vect{\theta}) = \frac{1}{K} \sum_{k=1}^{K}\; \mathbb{E}_{\pi_{\vect{\theta}},\, \vect{m}_k}\!\left[\, \sum_{t \ge 0} \gamma^{t}\, r_{t+1} \right], \qquad \vect{m}_k \sim \mathcal{U}\big([0,1]^{15}\big),
+\label{eq:generalist-objective}
+\end{equation}
+where the inner expectation is over the forests, the commanded speeds, the releases, the noise and the actions of the policy when the body is $\vect{m}_k$. Two hundred and fifty-six points are a sparse sample of a space of fifteen dimensions and do not cover it. What they do is make the strategy that works across bodies the only one that pays, because the network is never told which of them it is flying. The objective also states the compromise of \autoref{sec:challenge-morphology} in one line: an average can be raised by flying many ordinary bodies well, and nothing in \eqref{eq:generalist-objective} asks for the best that each single body could give.
+
+Each body is simulated in 256 parallel environments, for 65\,536 environments in total. The environments of a Genesis scene share one model, so every body needs a scene of its own: the 256 scenes are distributed over eight processes of 32 bodies each, four processes on each of the two GPUs of the node of \autoref{tab:feasibility}. The scenes advance in lock-step. At every control step the learner gathers the 65\,536 observations, evaluates the single policy once for all of them, and sends the commands back. After 15 control steps, 0.6~s of flight in every environment, the 983\,040 transitions collected from all bodies are pooled in one buffer and used for one PPO update, and the cycle repeats for 1\,000 iterations. \autoref{tab:ppo-hyperparameters} lists the settings.
+
+\begin{table}[htbp]
+\centering
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}p{6.2cm}}
+\hline
+Quantity & Value \\
+\hline
+Parallel environments & 65\,536 (256 for each of 256 bodies) \\
+Control steps per environment per iteration & 15 (0.6~s of flight) \\
+Transitions per iteration & 983\,040 \\
+Iterations & 1\,000 \\
+\hline
+Discount factor $\gamma$ & 0.99 \\
+Decay parameter of the advantage estimate (GAE) & 0.9 \\
+Clipping parameter $\epsilon$ & 0.15 \\
+Epochs per iteration & 2 \\
+Mini-batches per epoch & 32, of 2\,048 environments each \\
+Optimizer and learning rate & Adam \cite{kingma2015adam}, $10^{-4}$ at the start, then adapted \\
+Target KL divergence between successive policies & 0.006 \\
+Value loss coefficient $c_1$ & 0.3, with clipped value loss \\
+Entropy coefficient $c_2$ & 0.002 \\
+Limit on the norm of the gradient & 0.5 \\
+\hline
+\end{tabularx}
+\caption[Settings of the training of the base controllers]{Settings of the training of the base controllers. The symbols are those of \autoref{subsec:actor-critic} and \autoref{subsec:ppo}.}
+\label{tab:ppo-hyperparameters}
+\end{table}
+
+A few of these settings deserve a comment. At 25~Hz a discount factor of 0.99 gives a horizon of about a hundred steps, or 4~s: twice the time that separates the drone, at 15~m/s, from a trunk at the limit of its depth sensor, beyond which there is nothing to plan for. The learning rate is not scheduled in advance. After every mini-batch the KL divergence between the policy being optimized and the one that collected the data is compared with the target: the rate is divided by 1.5 when the divergence exceeds twice the target and multiplied by 1.5 when it falls below half of it, which keeps the size of the policy updates roughly constant while the landscape changes. Since the policy is recurrent, a mini-batch is not a set of transitions but a set of environments, each with its whole segment of 15 steps, and the advantages are standardized within the mini-batch, that is, within a group of eight bodies. Gradients are propagated through time inside a segment only, while the recurrent state itself is carried from one segment to the next and is reset when a flight ends: what the controller remembers beyond 0.6~s is shaped by the gradient only indirectly.
+
+The experience consumed is large in absolute terms and modest per body. A thousand iterations amount to $9.8 \times 10^{8}$ control steps, fifteen months of flight, of which every body receives one part in 256: $3.8 \times 10^{6}$ steps, or 43 hours. The training takes fourteen hours on the two GPUs (\autoref{tab:feasibility}), most of them spent in the simulation, because the 256 scenes cannot be advanced all at once: inside each process they are stepped one after the other. The weights obtained at the last iteration are the generalist used in the rest of this thesis. They are not trained again: the critic is discarded and the actor is frozen, and the co-design loop of the following sections is built on top of it.
+
+\subsection{Specialist Controllers}
+\label{subsec:specialist-training}
+
+A specialist is the same procedure with $K = 1$ in \eqref{eq:generalist-objective}. The 65\,536 environments all fly the same body, in a single scene on a single GPU; the network, the environment, the reward, the settings of \autoref{tab:ppo-hyperparameters} and the number of iterations are unchanged. The only difference is in the critic, which no longer receives the genome, a constant, and has 52 inputs. Because the experience is not shared with other bodies, a specialist sees of its body 256 times what the generalist sees of any of its own, and its training, with one scene instead of 256, takes less than two hours (\autoref{tab:feasibility}).
+
+In this thesis a specialist is trained for the reference drone of \autoref{subsec:drone-standard}. It is the sequential design of \autoref{sec:challenge-sequential} in concrete form, a given body with a controller optimized for it alone, and it has two uses. It is the term against which the generalist is compared on a body that it was not trained on. And, frozen like the generalist, it is a second base for the Hebbian rules: evolving them on the reference drone on top of its own specialist asks whether plasticity still has something to add when the controller was already trained for the body.
 
 \section{The Hebbian Controller}
+\label{sec:hebbian-controller}
+
+The generalist of the previous section is one set of weights for all bodies, adapted to none of them in particular. This section describes the mechanism that adapts it. The trained actor is frozen, and the weights of its output layer alone are allowed to change during the flight, at every control step, under local Hebbian rules of the form \eqref{eq:abcd}. The rules are shown neither the genome of the body nor the reward: they see the activity that flows through the layer, and the body shapes that activity through the way in which it answers the commands. Their coefficients are evolved, and they are the only part of the controller that is searched for once the training of \autoref{sec:base-controllers} is over.
+
+The way in which the rules are exploited is the main novelty of this thesis. In the evolved plastic controllers reviewed in \autoref{subsec:rw-plasticity} the weights are drawn at random at the start of every episode, and the rules have to build a controller out of nothing every time. Here the controller already exists and already flies. The rules start every flight from the trained weights and only have to move them, by a bounded amount, towards what the body in flight requires: plasticity is not used to learn the task, but to adapt to a body a solution of the task that was learned for all bodies. The following subsections describe the mechanism, the reasons for placing it at the output layer, the decay that keeps the weights bounded, and the values of the parameters involved.
+
 \subsection{Hebbian Rules on the Output Layer}
-\subsection{Weight Decay and Reset Semantics}
+\label{subsec:hebbian-rules}
 
-\section{Inner Loop: Evolving the Hebbian Rules}
+When the training of a base controller ends, the actor is frozen. The statistics that normalize the observation, the LSTM, the two fully connected layers and the bias $\vect{b}$ of the output layer keep the values of the last iteration, and no gradient is computed from this point on. The only part of the network that is released is the matrix $\mat{W}$ of \eqref{eq:actor-output}. It stops being a parameter and becomes part of the state of the controller, like the state of the LSTM: it has a value $\mat{W}_t$ at every control step, it starts every flight from the trained weights, written $\mat{W}_0$ from here on, and what happens to it in between is decided by the rules.
 
-\section{Outer Loop: Evolving the Drone Morphology}
+At step $t$ the frozen layers deliver the vector $\vect{x}_t \in \mathbb{R}^{32}$, and the output layer computes the mean of the command distribution with the weights it has at that moment, $\vect{\mu}_t = \mat{W}_t\, \vect{x}_t + \vect{b}$; the command is then sampled and squashed as in \eqref{eq:actor-sampling}. The same two vectors are the activities at the two ends of every synapse of the layer, the presynaptic $x_{j,t}$ and the postsynaptic $\mu_{i,t}$, and from them each weight computes its own Hebbian term, which is the bracket of \eqref{eq:abcd} with $\vect{\mu}_t$ in the place of $\vect{y}$:
+\begin{equation}
+H_{ij,t} = A_{ij}\, x_{j,t}\, \mu_{i,t} + B_{ij}\, x_{j,t} + C_{ij}\, \mu_{i,t} + D_{ij}.
+\label{eq:hebbian-term}
+\end{equation}
+The weights used at the next step are
+\begin{equation}
+\mat{W}_{t+1} = \mat{W}_t + \eta\, \mat{H}_t - \lambda \left( \mat{W}_t - \mat{W}_0 \right),
+\label{eq:hebbian-update}
+\end{equation}
+where $\eta$ is the learning rate and the last term is a decay towards the trained weights, to which \autoref{subsec:hebbian-decay} is dedicated. The postsynaptic activity is the mean $\vect{\mu}_t$, taken before the sampling and before the hyperbolic tangent: the exploration noise of the policy does not enter the rule directly, and what the rule sees is the intention of the controller and not the squashed command. \autoref{fig:hebbian-controller} shows the two loops that result, the control loop that passes through the body and the plasticity loop that closes around the output layer.
 
-\section{The Full Co-Design Pipeline}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>={Stealth[length=2mm]}, thick, scale=0.9, transform shape, every node/.style={font=\small}]
+\tikzset{
+  frozenbox/.style={draw=gray!70!black, fill=gray!12, rounded corners, thick, align=center, minimum width=2.5cm, minimum height=1.05cm},
+  plasticbox/.style={draw=orange!70!black, fill=orange!40, rounded corners, very thick, align=center, minimum width=2.1cm, minimum height=1.05cm},
+  rulebox/.style={draw=blue!55!black, fill=blue!10, rounded corners, thick, align=center, minimum width=4.6cm, minimum height=1.0cm},
+  tap/.style={circle, fill=black, inner sep=0pt, minimum size=3.5pt},
+}
+% ---- control loop
+\node[frozenbox] (f) at (0,0) {frozen layers\\LSTM, 128, 32};
+\node[plasticbox] (w) at (4.4,0) {output layer\\$\mat{W}_t$};
+\node[tanhbox, align=center] (s) at (8.3,0) {sample,\\$\tanh$};
+\node[envbox, align=center] (b) at (12.0,0) {body in\\the forest};
+\draw[->] (f) -- node[above, pos=0.6]{\scriptsize $\vect{x}_t$} (w);
+\draw[->] (w) -- node[above, pos=0.4]{\scriptsize $\vect{\mu}_t$} (s);
+\draw[->] (s) -- node[above]{\scriptsize $\vect{a}_t$} (b);
+\draw[->] (b.north) -- ++(0,0.95) -| node[above, pos=0.25]{\scriptsize observation $\vect{o}_{t+1}$} (f.north);
+\node[font=\scriptsize, text=gray!50!black, align=center] at (12.0,-1.15) {its genome is shown\\neither to the network\\nor to the rule};
+% ---- plasticity loop
+\node[rulebox] (r) at (4.4,-2.4) {Hebbian rule \eqref{eq:hebbian-update}};
+\node[tap] (tx) at (1.85,0) {};
+\node[tap] (tm) at (6.95,0) {};
+\draw[->] (tx) |- node[left, pos=0.25]{\scriptsize presynaptic} (r.west);
+\draw[->] (tm) |- node[right, pos=0.25]{\scriptsize postsynaptic} (r.east);
+\draw[->, orange!70!black, very thick] (r.north) -- node[right]{\scriptsize $\mat{W}_{t+1}$} (w.south);
+\node[align=center] (c) at (2.7,-4.3) {evolved coefficients\\$\mat{A}, \mat{B}, \mat{C}, \mat{D}$ (896)};
+\node[align=center] (w0) at (6.5,-4.3) {trained weights $\mat{W}_0$\\(decay, reset at release)};
+\draw[->] (c.north) -- (c.north |- r.south);
+\draw[->] (w0.north) -- (w0.north |- r.south);
+\end{tikzpicture}
+\caption[The Hebbian controller]{The Hebbian controller. Everything that precedes the output layer is frozen. At every control step the output layer computes the mean of the commands with its current weights, and the rule then rewrites the weights from the activities at the two ends of the layer, with coefficients that were evolved and do not change during the flight. The body is inside the control loop, so the activities from which the weights are rewritten carry its mark, although nothing describes the body to the network or to the rule.}
+\label{fig:hebbian-controller}
+\end{figure}
+
+The update inherits the properties discussed in \autoref{subsec:hebb-postulate}. It is local, since the change of a weight depends on the two activities at its ends and on nothing else, and it needs no reward, no error and no gradient, so that it runs during the flight, inside the forward pass of the network, at the cost of a few multiplications for each of the 224 weights. This is the adaptation that \autoref{sec:challenge-feasibility} asked for, one that costs no more than the flights that score the body. Every simulated flight has its own copy of $\mat{W}_t$, as it has its own LSTM state; what the flights share are the frozen layers and the coefficients.
+
+Every weight follows its own rule: $\mat{A}$, $\mat{B}$, $\mat{C}$ and $\mat{D}$ are four matrices with the shape of $\mat{W}$, $4 \times 224 = 896$ coefficients in all, and they are the genome of the Hebbian controller, the object of the search of \autoref{subsec:inner-loop}. The rate $\eta$ and the decay $\lambda$ are shared by all the weights and are fixed. Within a flight the coefficients do not change, the weights do; and the coefficients are the same on every body, so that what differs from one body to another is the activity and, through it, the trajectory of the weights.
+
+One property of this parametrization is used throughout the rest of the chapter. With all the coefficients at zero the Hebbian term vanishes and $\mat{W}_t = \mat{W}_0$ at every step: the frozen base controller is a point of the search space of the rules, its origin. Where the search of the rules starts (\autoref{subsec:inner-loop}) and what its results are compared with (\autoref{subsec:pipeline-control}) both follow from this.
+
+\subsection{Why the Output Layer}
+\label{subsec:hebbian-why-output}
+
+The two parts of the network do different jobs. The frozen layers compute $\vect{x}_t$ from the history of observations and commands: a compact, high-level representation of the situation of the flight, in which what the sensors deliver, and what the LSTM has reconstructed of the quantities that they do not deliver, is condensed into 32 features. The output layer is the read-out that translates the features into the seven commands, and each $W_{ij}$ is a gain: how much feature $j$ moves actuator $i$. These $7 \times 32$ gains are the place of the network where the body matters most directly. What a situation calls for, raising the nose, turning away from a trunk, slowing down, is largely the same on every body. How much elevator, twist or throttle that takes is not: it depends on the size of the tail, on the span and the chord of the wing, on the mass, on the gear ratios of the joints. A generalist has to settle for one set of gains for all bodies. Changing the gains in flight changes the control law, and with it the dynamics of the closed loop that the body forms with its controller: how promptly it answers, how well it is damped, how tightly it turns. This is the role given to plasticity here: to keep the representation that the training built, and to retune at run time, for the body that is flying, the map from that representation to the actuators.
+
+The choice has a counterpart in gradient-based meta-learning. MAML \cite{finn2017maml} learns an initialization from which a few gradient steps adapt a network to a new task, and Raghu et al.\ \cite{raghu2020rapid} showed that almost all of that adaptation takes place in the last layer: the features of the layers below are reused unchanged from one task to another, and an algorithm that adapts the last layer alone performs as well as the complete one. If the bodies are read as tasks, the generalist is a network whose features were trained across 256 of them, and the finding says that the last layer is where adapting to a new one pays. The difference is in the mechanism. In those works the last layer is adapted by gradient steps on a loss measured on the new task; in flight there is no loss to descend, and the layer is adapted by a local rule whose coefficients were evolved so that the adaptation is a useful one.
+
+There are practical reasons as well. The output layer is small: 224 weights give 896 coefficients, a number that an evolution strategy can search, whereas the LSTM alone has about 85\,000 weights. It is linear, so the effect of a change of the weights on the commands is direct, $\Delta \vect{\mu}_t = \Delta \mat{W}\, \vect{x}_t$. And it is followed by the hyperbolic tangent of \eqref{eq:actor-sampling}, which keeps every command inside the range of its actuator whatever the rules do to the weights.
+
+The rules are never told which body is flying, and neither is the network below them. The body is nonetheless present in what the rules see, because it is inside the loop of \autoref{fig:hebbian-controller}: the commands act on the body, the body answers according to its wings, its tail and its mass, the sensors report the answer, and the frozen layers turn it into the next $\vect{x}_t$. Two bodies that are given the same commands produce different sequences of activities and therefore, under the same rules, different weights. It is the mechanism by which identical rules differentiate the robots of a swarm \cite{vandiggelen2025emergent}, and here it differentiates the controllers of different bodies. As an illustration, on a body whose tail is small for its weight a pitch error lasts longer, and the features that carry it stay active together with the elevator command; a positive correlation coefficient on those synapses then raises the gain of the elevator more than it does on a body that answers at once. Whether evolution finds rules of this kind is a question for \autoref{ch:results}. What matters here is that information about the body reaches the rule through the activity that the body induces, without being given.
+
+There is finally the condition under which evolution selects plasticity at all: something must vary between lifetimes that fixed weights cannot anticipate \cite{soltoggio2018born}. When nothing does, fixed weights win, as they do on the intact quadruped of Najarro and Risi \cite{najarro2020meta}. In this thesis what varies is the body. In the co-design loop a set of rules is never scored on one body: it is scored on all the bodies that the morphology search is considering at that moment, a population that changes as the search proceeds (\autoref{sec:pipeline}), and no single setting of the 224 gains can be right for all of them, which is the compromise of the generalist written in \eqref{eq:generalist-objective}. The body is fixed within a flight, hidden from the controller and different from one flight to the next: the situation in which a rule that adapts within the lifetime has something to gain over any fixed weights. The rules evolved on the specialist of \autoref{subsec:specialist-training} are the opposite case, in which the body does not vary and the weights were trained for it.
+
+\subsection{Weight Decay and the Lifetime of the Weights}
+\label{subsec:hebbian-decay}
+
+Without its last term, \eqref{eq:hebbian-update} is an integrator: the weights are the trained ones plus $\eta$ times the sum of all the Hebbian terms since the release, and a sum forgets nothing. A term with a mean different from zero makes the weight drift for as long as the flight lasts. A constant $D_{ij} = 1$ moves its weight by 0.005 at every step and by 7.5 over a flight of one minute, when the weights of the trained output layer have a mean absolute value of 0.05 and the largest of them is 0.42. The correlation term is worse, because it feeds on itself: a weight that grows raises the output, a larger output raises the product $x_j\, \mu_i$, and the product makes the weight grow faster. This is the runaway anticipated in \autoref{subsec:abcd}, and in a controller it ends with the commands pinned at their limits.
+
+The remedy recalled there is a decay of the weights towards zero, and it cannot be used as it is. A controller whose output weights are zero answers every situation with its biases, and a decay towards zero would keep erasing what the training built. The resting state of the plastic layer has to be the trained controller, so the decay of \eqref{eq:hebbian-update} acts on the deviation $\mat{W}_t - \mat{W}_0$ and not on the weights. Written for the deviation, the update is a linear recursion with the closed form
+\begin{equation}
+\mat{W}_t - \mat{W}_0 = \eta \sum_{k=0}^{t-1} (1-\lambda)^{k}\, \mat{H}_{t-1-k}.
+\label{eq:hebbian-trace}
+\end{equation}
+The plastic weights are the trained weights plus a trace of the recent activity, in which the Hebbian term of $k$ steps earlier is weighted by $(1-\lambda)^{k}$. It is the decomposition of \eqref{eq:diffplast}, a part that is fixed and a part that is written by experience and forgotten geometrically, with a trained controller as the fixed part.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=2.4cm, y=1.55cm, >={Stealth[length=2mm]}, every node/.style={font=\small}]
+\fill[orange!14] (0,0) rectangle (2,2.85);
+\node[font=\scriptsize, text=orange!45!black] at (1,2.68) {Hebbian term equal to $h$};
+\node[font=\scriptsize, text=gray!50!black] at (3.05,2.68) {Hebbian term equal to zero};
+\draw[->, thick] (0,0) -- (4.3,0);
+\draw[->, thick] (0,0) -- (0,3.0);
+\foreach \t in {0,1,2,3,4} \draw (\t,0) -- (\t,-0.06) node[below]{\t};
+\foreach \v in {0,1,2} \draw (0,\v) -- (-0.04,\v) node[left]{\v};
+\node at (2.15,-0.62) {time (s)};
+\node[rotate=90] at (-0.42,1.45) {deviation, in units of $\eta h / \lambda$};
+\draw[dashed, gray] (0,1) -- (4.2,1);
+\draw[dotted, thick, gray!70!black] (0.78,0) -- (0.78,0.632);
+\node[font=\scriptsize, text=gray!40!black, anchor=west] at (0.8,0.22) {$1/\lambda = 0.8$~s};
+\draw[very thick, red!65!black] (0,0) -- (2,2.5) -- (4.2,2.5);
+\draw[very thick, blue!65!black] plot[domain=0:2, samples=60] (\x, {1-exp(-1.2823*\x)}) -- plot[domain=2:4.2, samples=60] (\x, {0.92305*exp(-1.2823*(\x-2))});
+\node[font=\scriptsize, text=red!65!black, anchor=south] at (3.1,2.12) {without decay};
+\node[font=\scriptsize, text=blue!65!black, anchor=west] at (2.75,0.58) {with decay, $\lambda = 0.05$};
+\end{tikzpicture}
+\caption[Effect of the decay on a plastic weight]{Deviation of one weight from its trained value when its Hebbian term is held at a constant value $h$ for two seconds and then vanishes. Without decay the weight integrates: it grows for as long as the term lasts and keeps what it has accumulated. With the decay of \eqref{eq:hebbian-update} it settles at $\eta h / \lambda$ with a time constant of 0.8~s, and returns to the trained value at the same rate when the term vanishes.}
+\label{fig:hebbian-decay}
+\end{figure}
+
+Three properties follow from \eqref{eq:hebbian-trace}. The first is that the deviation is bounded whenever the activity is. The weights $(1-\lambda)^{k}$ of the trace sum to $1/\lambda$, so the deviation is $\eta/\lambda$ times a weighted average of the recent Hebbian terms and cannot exceed $\eta/\lambda$ times the largest of them; a Hebbian term held at a constant value $h$ takes the weight to $\eta h/\lambda$ from its trained value and no further (\autoref{fig:hebbian-decay}). The ratio $\eta/\lambda$ is the authority of the rules over the weights. The second property is a time scale. The trace has a memory of $1/\lambda$ control steps: a deviation covers about two thirds of the way to its final value in that time, and is forgotten at the same rate when the activity that sustained it ceases. With the value used here the memory is 20 steps, 0.8~s of flight. The weights therefore describe the last second of the flight and not the whole of it. They settle during the approach, since the 30~m that separate the release from the first trees take about two seconds to fly, and they keep following the flight afterwards, so that the gains of a turn need not be those of straight flight. Plasticity, with these values, is closer to a continuous retuning of the gains, according to a law that was evolved, than to a slow learning that accumulates over the flight. The third property is that the length of the flight drops out: nothing in the weights depends on how long the drone has been flying, and rules evolved on a short course remain meaningful on a longer one.
+
+The decay does not make the runaway impossible: it gives it a threshold. Since $\vect{\mu}_t$ depends on the weights, the Hebbian terms of row $i$ contain the deviation of that row, multiplied by the loop gain $g_i = \sum_j (A_{ij}\, x_j + C_{ij})\, x_j$. Without decay any positive gain, however small, makes the deviation grow geometrically. With it, growth requires $\eta\, g_i > \lambda$, which with the values used here means $g_i > 10$. In the flights of the frozen generalist the squared norm of $\vect{x}_t$ is about 5 on average and seldom above 12, so the threshold can be reached only by rules whose coefficients are large, and of concordant sign, along a whole row. Such rules saturate the commands, the drone crashes, and selection removes them.
+
+The closed form also tells the four coefficients apart. $D_{ij}$ is not plastic at all: after the first second its contribution is the constant $\eta D_{ij} / \lambda$, a correction of the trained weight that is the same on every body and in every flight. Through $\mat{D}$ the search can retune the output layer itself. The other three depend on the activity, and they are the ones that can tell one body from another: $B_{ij}$ adds to the weight a filtered copy of its own input, $C_{ij}$ a filtered copy of the command that it serves, and $A_{ij}$ their filtered product, the correlation between what the network perceives and what it commands.
+
+A lifetime, in the sense of \autoref{subsec:evolved-plasticity}, is one flight. At every release the weights are set back to $\mat{W}_0$ and the state of the LSTM to zero, and nothing of what the weights became during a flight is carried to the next. This makes the flights independent samples. The score of a set of rules is an average over flights whose order does not matter, and the flights can be simulated side by side. It also forces the rules to adapt within the flight, every time from the same starting point; with a memory shorter than a second there would in any case be little to carry over.
+
+\subsection{Parameters of the Plastic Layer}
+\label{subsec:hebbian-parameters}
+
+\autoref{tab:hebbian-parameters} collects the quantities that define the plastic layer.
+
+\begin{table}[htbp]
+\centering
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{3.6cm} >{\raggedright\arraybackslash}p{2.9cm} >{\raggedright\arraybackslash}X}
+\hline
+Quantity & Value & Meaning \\
+\hline
+Plastic weights & 224 ($7 \times 32$) & the matrix $\mat{W}$ of \eqref{eq:actor-output}; the bias and all the other layers are frozen \\
+Evolved coefficients & 896 & $A_{ij}$, $B_{ij}$, $C_{ij}$ and $D_{ij}$ for every weight: the genome of the controller \\
+Range of a coefficient & $[-1.5,\, 1.5]$ & bounds of the search; all coefficients at zero give the frozen controller \\
+Learning rate $\eta$ & 0.005 & size of a single update; shared by all weights, not evolved \\
+Decay $\lambda$ & 0.05 per step & memory of the weights, $1/\lambda = 20$ steps or 0.8~s; shared by all weights, not evolved \\
+Ratio $\eta / \lambda$ & 0.1 & deviation of a weight per unit of sustained Hebbian term \\
+Bound on a weight & $\pm 5\,000$ & numerical guard, not reached by viable rules \\
+Update & every control step & 25 times per second, after the command of the step has been computed \\
+Initial weights & $\mat{W}_0$ & the trained weights, restored at every release together with a zero LSTM state \\
+\hline
+\end{tabularx}
+\caption[Parameters of the plastic output layer]{Parameters of the plastic output layer.}
+\label{tab:hebbian-parameters}
+\end{table}
+
+Two of these values are less independent than they look. The rate $\eta$ multiplies all four coefficients, so that only the products matter: its value, together with the range of the coefficients, fixes the largest step that a weight can take, 0.0075 per unit of activity, and a different $\eta$ with a rescaled range would describe the same family of rules. The decay is a true parameter, because it sets the memory. Both are constants: the rate is not modulated by any signal during the flight, so the neuromodulation mentioned in \autoref{subsec:abcd} is not used. Both are shared by all the weights and were set by hand in preliminary runs. They could have been evolved for each weight, at the price of 448 more coefficients, and this was not done: the memory of the weights is thus a choice of the designer, and what the rules do within it is left to evolution.
+
+The third value to read with care is the range. With $\eta/\lambda = 0.1$, a coefficient $D_{ij}$ at the limit of its range moves a weight by 0.15, three times the mean absolute value of the trained weights. The activities are mostly below one in magnitude, with a root mean square of 0.4 for the features and of 0.5 for the outputs, so the other three coefficients move a weight by a few hundredths per unit, which is the order of the trained weights themselves. The range is therefore wide enough for the rules to overwrite the output layer, and not only to perturb it, which decides where the search of the rules has to start (\autoref{subsec:inner-loop}).
+
+\section{The Co-Design Pipeline}
+\label{sec:pipeline}
+
+The previous section defined the Hebbian controller but left its 896 coefficients unset, and the design space of the drone leaves the body just as open. The co-design pipeline searches both at once, with two evolutionary algorithms nested one inside the other (\autoref{fig:pipeline}). The \emph{inner loop} evolves the rules with CMA-ES (\autoref{subsec:cmaes}): at every generation it flies a population of candidate sets of rules, on top of the frozen generalist, on all the bodies that are under consideration at that moment. The \emph{outer loop} evolves the bodies with NSGA-II (\autoref{subsec:nsga2}): once every few generations of the inner loop, a \emph{phase}, it puts the current bodies through an \emph{exam} under the best rules found so far, keeps the better half and replaces the rest. Every flight of the pipeline is a rollout of a network that is never trained again, which is what \autoref{sec:challenge-feasibility} required of the adaptation.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>={Stealth[length=2mm]}, thick, scale=0.85, transform shape, every node/.style={font=\small}]
+\tikzset{
+  pframe/.style={draw=#1!60!black, fill=#1!6, rounded corners=8pt, thick},
+  pbox/.style={draw=blue!55!black, fill=blue!10, rounded corners, thick, align=center, minimum height=1.0cm},
+  pfrozen/.style={draw=gray!70!black, fill=gray!12, rounded corners, thick, align=center, minimum width=1.9cm, minimum height=0.9cm},
+  prules/.style={draw=orange!70!black, fill=orange!40, rounded corners, very thick, align=center, minimum width=1.9cm, minimum height=0.9cm},
+}
+% frames
+\path[pframe=red] (-1.3,-3.5) rectangle (16.0,3.1);
+\path[pframe=orange] (3.5,-2.7) rectangle (12.3,1.7);
+\node[font=\scriptsize, text=red!45!black] at (7.35,-3.15) {outer loop, NSGA-II on the bodies: once every four generations of the inner loop};
+\node[font=\scriptsize, text=orange!40!black] at (7.9,-2.35) {inner loop, CMA-ES on the rules: every generation};
+% outer nodes
+\node[pbox, minimum width=1.7cm] (nsga) at (0,0) {NSGA-II};
+\node[envbox, align=center, minimum width=1.3cm] (bod) at (2.3,0) {64\\bodies};
+\node[pbox, minimum width=2.3cm] (exam) at (14.4,0) {exam:\\8 sets of rules\\$\times$ 64 bodies\\$\times$ 480 forests};
+% inner nodes
+\node[pfrozen] (gen) at (4.85,0.75) {frozen\\generalist};
+\node[prules] (rul) at (4.85,-0.75) {64 sets\\of rules};
+\node[pbox, minimum width=2.5cm] (fl) at (7.7,0) {flights:\\64 sets of rules\\$\times$ 64 bodies\\$\times$ 60 forests};
+\node[pbox, minimum width=1.5cm] (cma) at (11.05,0) {CMA-ES};
+% arrows
+\draw[->] (nsga) -- (bod);
+\draw[->] (bod.east) -- (fl.west);
+\draw[->] (gen.east) -- ++(0.25,0) |- ([yshift=4mm]fl.west);
+\draw[->] (rul.east) -- ++(0.25,0) |- ([yshift=-4mm]fl.west);
+\draw[->] (fl) -- node[above]{\scriptsize fitness} (cma);
+\draw[->] (cma.south) -- ++(0,-1.15) -| node[below, pos=0.25]{\scriptsize new sets of rules} (rul.south);
+\draw[->] (12.3,0) -- (exam.west);
+\draw[->] (exam.north) -- ++(0,1.35) -| node[above, pos=0.25]{\scriptsize progress and cost of transport of every body} (nsga.north);
+\end{tikzpicture}
+\caption[The co-design pipeline]{The co-design pipeline. In the inner loop CMA-ES proposes 64 sets of rules, each of them is flown on top of the frozen generalist on every body of the current population, and the mean reward of its flights is its fitness. Every four generations the eight best sets of rules fly the same bodies on a harder course, the exam, and the progress and the cost of transport measured there are the two objectives by which NSGA-II keeps half of the bodies and replaces the other half. The search of the rules is not restarted when the bodies change.}
+\label{fig:pipeline}
+\end{figure}
+
+The names of the two loops need a word, because they do not map onto the two levels of \eqref{eq:codesign-bilevel} one to one. The outer loop is the search over $\vect{m}$ of that equation. The inner loop is not its inner problem, which would have to be solved once for every body: it evolves one set of rules for all the bodies of the population, and what is specific to a body, the adaptation of the output weights, takes place inside each flight, at no cost beyond the flight itself. Inner and outer refer to how the two searches are nested in time, several generations of the rules for every update of the bodies. This section describes the flights on which both loops rest, then the two loops, the course of a complete run, and the control condition against which a run is compared.
+
+\subsection{Evaluation Flights}
+\label{subsec:evaluation-flights}
+
+Both loops judge by flying, and the flights differ from those of training (\autoref{tab:training-environment}) in what is randomized. In training every flight starts from a different state, because the controller has to learn to recover; here flights are measurements, and everything that is not meant to be compared is held fixed. The drone is released at $(-30, 0, 15)$~m, level, at 15~m/s along the corridor. The commanded speeds are not drawn at random: they are evenly spaced between 10 and 20~m/s, one for each forest, so that every body and every set of rules is judged over the same range of speeds, from a slow flight that leaves time to react to a fast one that does not. A flight ends as described in \autoref{sec:flight-environment}, with the collision margin of 1~cm, attitude limits of $90^{\circ}$ in pitch and yaw and $100^{\circ}$ in roll, a little wider than in training so that a steep turn is not counted as a loss of control, and a time limit of 60~s.
+
+What is not held fixed is the noise. The sensor noise, the aerodynamic noise, the perturbation of masses and centres of mass, the latency of the commands and the offsets of the joint targets are those of training, drawn independently in every flight, and the commands are sampled from the policy as in \eqref{eq:actor-sampling}: a flight of the pipeline is as stochastic as a flight of training. The plastic weights start from $\mat{W}_0$ at every release (\autoref{subsec:hebbian-decay}). Three quantities are recorded for each flight: the sum of the rewards of \eqref{eq:reward} over its steps, its progress, and the energy it consumed.
+
+\begin{table}[htbp]
+\centering
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{4.2cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X}
+\hline
+ & Search course & Exam course \\
+\hline
+Used by & the inner loop, at every generation & the outer loop, at the end of every phase \\
+Length & 100~m & 300~m \\
+Density at the entrance, $\lambda_0$ & 0 trees per metre & 1 tree per metre \\
+Density at the end, $\lambda_1$ & 5 trees per metre & 5.5 trees per metre \\
+Trees per forest & 250 & 975 \\
+Forests & 60, new at every generation & 480 for each set of rules, new at every exam \\
+Commanded speeds & 60 values from 10 to 20~m/s & 480 values from 10 to 20~m/s \\
+\hline
+\end{tabularx}
+\caption[The two courses of the pipeline]{The two courses of the pipeline, both growing density forests (\autoref{subsec:forest-growing}) in the same corridor. Release, end of a flight and noise are the same on both.}
+\label{tab:evaluation-courses}
+\end{table}
+
+Two courses are used (\autoref{tab:evaluation-courses}). The \emph{search course}, on which the rules are evolved, is short: 100~m, from an empty entrance to five trees per metre. A generation of the inner loop flies it a quarter of a million times, and most of what distinguishes a good set of rules from a bad one happens in the first hundred metres. The \emph{exam course}, on which the bodies are judged, is three times longer, and is the kind of forest in \autoref{fig:forest-growing}: it starts with one tree per metre, grows more slowly than the search course, and goes on to 5.5 trees per metre at 300~m. The forests of an exam are drawn anew, but the course they are drawn from, its length and its density profile, is the same at every exam of a run: what the exams have to show is that the bodies of a late phase are better than those of an early one, that is, that the evolution is making progress.
+
+\subsection{Inner Loop: Evolving the Hebbian Rules}
+\label{subsec:inner-loop}
+
+The genome of the inner loop is the vector of the 896 coefficients, each encoded by a gene in $[0, 1]$ that is mapped linearly onto the range $[-1.5, 1.5]$ of \autoref{tab:hebbian-parameters}. CMA-ES searches this unit cube with a population of 64, a full covariance matrix and the default settings of its reference implementation for everything else; samples that leave the cube are brought back by the boundary handling of the library.
+
+\paragraph{Starting from zero.} The search does not start from random rules. Its initial mean is the centre of the cube, where every coefficient is zero and the Hebbian controller is the frozen generalist (\autoref{subsec:hebbian-rules}), and its initial step size is 0.075 in units of the cube, 0.225 in units of the coefficients. The first generation is thus a cloud of small perturbations of a controller that already flies, which move a weight by about 0.02 where the trained weights have a mean absolute value of 0.05, and the search grows the rules outwards from there, as far as selection allows. The alternative was tried. With coefficients drawn from their whole range the rules overwrite the output layer within a second (\autoref{subsec:hebbian-parameters}), and in preliminary runs started in this way almost every flight ended in a crash within a few seconds: the search was handed a population in which nothing flew, and had to find its way back to a working controller before it could improve on it. Starting from zero reverses the burden. A set of rules has to earn its departure from the trained controller, and a search that finds nothing useful stays where it started, at the frozen generalist.
+
+\paragraph{One generation.} Each of the 64 candidate sets of rules is flown on every body of the current population, 64 bodies, over 60 forests of the search course: $64 \times 64 \times 60 = 245\,760$ flights, all simulated at the same time, with one scene for each body as in the training of the generalist. The 60 forests and the 60 commanded speeds are the same for every set of rules and for every body, so that no candidate is favoured by an easier draw, while the noise of \autoref{subsec:evaluation-flights} differs from flight to flight. The forests are generated anew at every generation: a set of rules is never selected twice on the same trees, and the search cannot fit the rules to a particular sample of forests.
+
+\paragraph{Fitness.} The fitness of a set of rules is the mean, over its $64 \times 60 = 3\,840$ flights, of the reward summed over the flight. It is the reward of \autoref{subsec:reward}, unchanged, and not the pair of quantities by which the bodies are judged. The choice is a practical one. CMA-ES optimizes a single number, and the cumulative reward is a number that already exists: it weighs speed, survival and energy against each other, and it is known to produce a good pilot, since it trained one. Evolving the rules on it avoids engineering a second fitness function, with weights of its own to tune, for a task that already has one. The price is the one stated in \autoref{subsec:reward}, that the correspondence between the reward and the two objectives is only approximate. Since CMA-ES uses the ranking of the candidates and not their fitness values (\autoref{subsec:cmaes}), what matters is that the ranking is reliable, and both remedies recalled there are used: each fitness is an average over 3\,840 stochastic flights, and the population is 64 where the default for 896 dimensions would be 24.
+
+A last remark concerns what the rules are evolved for. One set of rules serves all the bodies, and its fitness is an average over them, which is the structure of the compromise of \eqref{eq:generalist-objective}. There are two differences. What is averaged is not a fixed set of weights but a procedure that gives different weights to different bodies (\autoref{subsec:hebbian-why-output}); and the average is not over the whole design space but over the 64 bodies that the outer loop currently retains, a narrower set that moves, as the run proceeds, towards the bodies worth flying. The average has a bias of its own: the reward is summed over the flight, so a body that flies for long weighs more in it than one that crashes early, and the rules are selected above all on the bodies that already fly.
+
+The inner loop can also run alone, on a set of bodies that is never updated. This is how the rules are evolved on the reference drone on top of its specialist (\autoref{subsec:specialist-training}): the population of bodies is that single body, and all the flights of a generation are flights of it.
+
+\subsection{Outer Loop: Evolving the Drone Morphology}
+\label{subsec:outer-loop}
+
+The outer loop holds a population of 64 bodies. The first population is drawn uniformly at random from the unit hypercube of the genome, like the pool on which the generalist was trained but independently of it, and the reference drone is not among its members: whatever the search finds, it finds without being shown a design that works. The bodies stay fixed for a phase of four generations of the inner loop, during which the rules adapt to them, and at the end of the phase they are examined and updated.
+
+\paragraph{The exam.} The objectives of a body are not read from the flights of the inner loop. At the end of a phase the eight sets of rules with the highest fitness in the last generation, one eighth of the population, fly every body on the exam course, each over 480 newly generated forests, so that every body is judged on $8 \times 480 = 3\,840$ flights. The exam exists for three reasons: 
+
+\begin{enumerate}
+  \item Its course is longer than the search course and forest generator parameters do not change along the run, so that the scores of successive exams tell whether the bodies are improving.
+  \item Its forests are new, whereas the forests of the last generation are the ones on which those eight sets of rules were selected, and a score measured on them would be biased in their favour.
+  \item Each set of rules flies eight times as many forests as in a generation of the inner loop, which the ranking of 64 bodies on two noisy objectives needs.
+\end{enumerate}
+
+Using eight sets of rules and not the best one alone makes the score of a body depend less on the accident of which candidate came first in a noisy ranking: what is measured is what the body achieves under the good rules of the moment.
+
+\paragraph{Objectives.} For every body and every one of the eight sets of rules, the \emph{progress} is the mean of the progress of the 480 flights, and the \emph{cost of transport} is \eqref{eq:drone-cot} computed on the totals: the energy consumed in all the flights, divided by the weight of the body times the distance covered in all of them. The ratio of the totals is not the mean of the ratios, and the difference matters. A flight that ends a few metres after the release has a cost of transport of its own that is meaningless, and that a mean would either have to discard, rewarding the bodies that crash at once, or let dominate. In the ratio of the totals such a flight counts for the little energy it spent and the little distance it covered. The two objectives of the body are the means, over the eight sets of rules, of these two quantities, the first to be maximized and the second to be minimized.
+
+\paragraph{Admission.} A body whose progress in the exam is below 80~m is not admitted to the selection. Without this gate the front fills with designs of no interest: a body that glides to the ground after twenty metres with its throttle closed has spent almost nothing per metre, nothing dominates it on the second objective, and NSGA-II dutifully keeps it and breeds from it. The gate removes such bodies from the survivors and from the parents; if fewer bodies pass it than there are places for survivors, the places left empty go to offspring.
+
+\paragraph{Update.} Among the admitted bodies, the 32 best under the crowded comparison of NSGA-II survive. The other 32 places are filled with offspring: two parents are drawn by binary tournament among the admitted bodies, recombined by simulated binary crossover (with probability 0.9 and distribution index 15) and mutated by polynomial mutation (each gene with probability $1/15$, distribution index 20), with the genes kept in $[0, 1]$. The operators treat the three airfoil genes as real numbers, and the discrete value is taken when the body is built. The 64 bodies of the new population are then generated, a scene is compiled for each of them, and the next phase begins.
+
+In the terms of \autoref{subsec:nsga2} the survivors are the parents $P$, the offspring are $Q$, and the population that flies is the merged pool $P \cup Q$. The difference from the textbook algorithm is that the pool is scored again, as a whole, at every exam. The scores of the survivors are not carried over from the phase in which they were selected, because the rules have moved in the meantime, and the score of a body under an old controller is worthless. All 64 bodies of an exam are flown by the same sets of rules, on the same forests, at the same speeds: for selection, bodies are only ever compared within an exam. Across exams only the fronts are compared, as a measure of the progress of a run: the length and the density of the course are fixed, its forests are drawn anew, and the sets of rules are those of the moment.
+
+At every exam one more measurement is taken, which does not enter the search: the reference drone, flown by the frozen generalist without rules, on 4\,096 forests of the exam course. It is the point against which the fronts of \autoref{ch:results} are read.
+
+\subsection{The Course of a Run}
+\label{subsec:pipeline-run}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>={Stealth[length=2mm]}, thick, x=1cm, y=1cm, every node/.style={font=\scriptsize}]
+\tikzset{
+  gcell/.style={draw=orange!70!black, fill=orange!18, minimum width=0.52cm, minimum height=0.6cm, inner sep=0pt},
+  ecell/.style={draw=blue!55!black, fill=blue!18, minimum width=0.62cm, minimum height=0.6cm, inner sep=0pt},
+  bcell/.style={draw=green!40!black, fill=green!10, rounded corners=2pt, minimum height=0.6cm, inner sep=1pt, align=center},
+}
+% rules arrow
+\draw[->, very thick, orange!70!black] (0,0.95) -- (13.6,0.95);
+\node[anchor=south west, align=left, text=orange!40!black, inner sep=0pt] at (0,1.1) {rules: one CMA-ES search from the first generation to the last;\\its mean, covariance and step size are carried across the updates of the bodies};
+% phases
+\foreach \p/\a/\b/\c/\d in {0/0/1/2/3, 1/4/5/6/7, 2/8/9/10/11} {
+  \pgfmathsetmacro{\xo}{\p*3.55}
+  \node[gcell] at (\xo+0.26,0) {\a};
+  \node[gcell] at (\xo+0.78,0) {\b};
+  \node[gcell] at (\xo+1.30,0) {\c};
+  \node[gcell] at (\xo+1.82,0) {\d};
+  \node[ecell] (e\p) at (\xo+2.45,0) {E};
+  \draw[->] (\xo+2.78,0) -- (\xo+3.5,0);
+  \node at (\xo+3.13,0.28) {U};
+}
+\node at (10.95,0) {$\cdots$};
+\node[gcell] at (11.66,0) {196};
+\node[gcell] at (12.18,0) {197};
+\node[gcell] at (12.70,0) {198};
+\node[gcell] at (13.22,0) {199};
+% body populations
+\node[bcell, minimum width=2.7cm] at (1.38,-1.0) {64 random bodies};
+\node[bcell, minimum width=2.7cm] at (4.93,-1.0) {32 kept, 32 new};
+\node[bcell, minimum width=2.7cm] at (8.48,-1.0) {32 kept, 32 new};
+\node[bcell, minimum width=2.1cm] at (12.44,-1.0) {last population};
+\node at (10.95,-1.0) {$\cdots$};
+\node[anchor=north west, align=left, inner sep=0pt] at (0,-1.6) {numbered cells: generations of the inner loop, on the search course\\E: exam, on the exam course \qquad U: update of the bodies by NSGA-II, new bodies built};
+\end{tikzpicture}
+\caption[The course of a run]{The course of a run of 200 generations. The bodies are fixed for phases of four generations of the inner loop; every phase but the last ends with an exam and with an update of the bodies, in which half of the population survives and is examined again at the end of the next phase.}
+\label{fig:pipeline-run}
+\end{figure}
+
+A run is 200 generations of the inner loop, that is 50 phases (\autoref{fig:pipeline-run}). It starts with the rules at zero and with 64 random bodies, most of which fly badly. For four generations CMA-ES perturbs the rules and is told which perturbations helped, on those bodies. The first exam then ranks the bodies under rules that are still close to the frozen generalist, the gate discards those that do not get through the first 80~m, and the first update breeds from the rest. From here on the two searches shape each other. The rules are selected on the bodies that survive, which resemble each other more at every update, so that the question put to them narrows from flying anything to flying well this family of bodies; and the bodies are selected under the rules of the moment, so that a body whose value shows only with a controller adapted to it is no longer discarded, which is what the challenge of morphology optimization asked for.
+
+The search of the rules is never restarted. When the bodies are updated, CMA-ES keeps its mean, its covariance and its step size, and goes on from where it was. Half of the bodies are the same as before and the new ones are their offspring, so the rules that served the old population are a good starting point for the new one, and a restart would throw away at every update waht the four generations had gained. The cost of the choice is that the fitness of the rules is not comparable across phases, since the bodies on which it is measured change; within a generation, which is where CMA-ES uses it, it is.
+
+A run holds 49 exams, since the last phase ends with the run and is not examined, and therefore scores $49 \times 64 = 3\,136$ bodies, of which at most $64 + 48 \times 32 = 1\,600$ are distinct. Every examined body is recorded with its genome and its two objectives, and this archive is the material from which the Pareto fronts of the results are computed, among the bodies that passed the gate. Two further measurements are taken along the run and do not enter the search: every four generations the frozen generalist without rules is flown on the same bodies and the same course, and at every generation the best set of rules and the frozen generalist are flown with the reference drone on 4\,096 new forests of the search course, which the search never sees; this is not the measurement of \autoref{subsec:outer-loop}, which is taken on the exam course. They show, respectively, what the rules add on the bodies they are evolved on, and what becomes of them on a body they are not evolved on. \autoref{tab:pipeline-settings} collects the settings; with them a run takes about four days on the node of \autoref{tab:feasibility}, most of them spent in the flights, and the rest in building the bodies and compiling their scenes at every update.
+
+\begin{table}[htbp]
+\centering
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}p{6.4cm}}
+\hline
+Quantity & Value \\
+\hline
+Generations of the inner loop & 200 \\
+Sets of rules per generation & 64 \\
+Initial mean and step size of CMA-ES & all coefficients at zero; 0.075 in the unit cube \\
+Flights per generation & 245\,760 (64 sets of rules $\times$ 64 bodies $\times$ 60 forests) \\
+Fitness of a set of rules & mean summed reward over its 3\,840 flights \\
+\hline
+Bodies in the population & 64, the first drawn at random \\
+Length of a phase & 4 generations \\
+Exam & 8 best sets of rules $\times$ 64 bodies $\times$ 480 forests \\
+Objectives of a body & progress (maximized), cost of transport (minimized) \\
+Admission gate & progress of at least 80~m in the exam \\
+Survivors and offspring per update & 32 and 32 \\
+Crossover & simulated binary, probability 0.9, index 15 \\
+Mutation & polynomial, probability $1/15$ per gene, index 20 \\
+\hline
+\end{tabularx}
+\caption[Settings of the co-design pipeline]{Settings of the co-design pipeline. The courses are those of \autoref{tab:evaluation-courses}, the parameters of the plastic layer those of \autoref{tab:hebbian-parameters}.}
+\label{tab:pipeline-settings}
+\end{table}
+
+\subsection{The Control Condition}
+\label{subsec:pipeline-control}
+
+What the pipeline is compared with is the search of \autoref{sec:challenge-morphology}: the same bodies, judged under one fixed controller. Because the frozen generalist is the Hebbian controller with its coefficients at zero (\autoref{subsec:hebbian-rules}), that search does not need a second implementation. The \emph{morphology-only} runs are runs of the same pipeline with the learning rate $\eta$ set to zero, so that no set of rules changes any weight and every flight is flown by the frozen generalist. The base controller, the courses, the exam, the gate and the operators of NSGA-II are the same, and so are the random seeds, so that a morphology-only run starts from the same 64 bodies as the co-design run it is paired with. The two are flown under the same conditions and differ in the coefficients; their schedules differ too, as described next.
+
+With rules that do nothing there is no inner search to wait for, and the schedule is adapted accordingly, so that the bodies are updated at every generation. In the exam the single controller flies every body on 3\,840 new forests, which gives each body the same number of exam flights as in a co-design run. A morphology-only run lasts 88 generations, that is 87 exams and 5\,568 examined bodies against 49 and 3\,136, and about 132 hours of the node against 94. The co-design pipeline flies more in total, because four fifths of its flights go to the search of the rules, which the control does not need; in computing time, and in everything that concerns the bodies, the control is given more than the pipeline it is compared with, so that a better front of the pipeline cannot be the effect of a larger budget.

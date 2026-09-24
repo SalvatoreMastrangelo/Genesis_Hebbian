@@ -55,29 +55,50 @@
 \contentsline {subsection}{\numberline {4.3.4}The Standard Drone}{54}{subsection.4.3.4}%
 \contentsline {chapter}{\numberline {5}Methodology}{57}{chapter.5}%
 \contentsline {section}{\numberline {5.1}Base Controllers}{57}{section.5.1}%
-\contentsline {subsection}{\numberline {5.1.1}Specialist LSTM Controller}{57}{subsection.5.1.1}%
-\contentsline {subsection}{\numberline {5.1.2}Generalist LSTM Controller}{57}{subsection.5.1.2}%
-\contentsline {subsection}{\numberline {5.1.3}Training the Generalist LSTM Controller}{57}{subsection.5.1.3}%
-\contentsline {section}{\numberline {5.2}The Hebbian Controller}{57}{section.5.2}%
-\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{57}{subsection.5.2.1}%
-\contentsline {subsection}{\numberline {5.2.2}Weight Decay and Reset Semantics}{57}{subsection.5.2.2}%
-\contentsline {section}{\numberline {5.3}Inner Loop: Evolving the Hebbian Rules}{57}{section.5.3}%
-\contentsline {section}{\numberline {5.4}Outer Loop: Evolving the Drone Morphology}{57}{section.5.4}%
-\contentsline {section}{\numberline {5.5}The Full Co-Design Pipeline}{57}{section.5.5}%
-\contentsline {chapter}{\numberline {6}Experiments And Results}{58}{chapter.6}%
-\contentsline {section}{\numberline {6.1}Inner Loop Experiments}{58}{section.6.1}%
-\contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{58}{subsection.6.1.1}%
-\contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{58}{subsection.6.1.2}%
-\contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{58}{section.6.2}%
-\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{58}{subsection.6.2.1}%
-\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{58}{subsection.6.2.2}%
-\contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{58}{subsection.6.2.3}%
-\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{58}{subsection.6.2.4}%
-\contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{58}{subsection.6.2.5}%
-\contentsline {subsection}{\numberline {6.2.6}Convergence or Plasticity?}{58}{subsection.6.2.6}%
-\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{59}{chapter.7}%
-\contentsline {section}{\numberline {7.1}Conclusions}{59}{section.7.1}%
-\contentsline {section}{\numberline {7.2}Future Work}{59}{section.7.2}%
-\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{59}{subsection.7.2.1}%
-\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{59}{subsection.7.2.2}%
-\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{59}{subsection.7.2.3}%
+\contentsline {subsection}{\numberline {5.1.1}Architecture of the Controller}{57}{subsection.5.1.1}%
+\contentsline {subsection}{\numberline {5.1.2}Training Environment}{59}{subsection.5.1.2}%
+\contentsline {subsection}{\numberline {5.1.3}Reward Function}{61}{subsection.5.1.3}%
+\contentsline {paragraph}{Speed tracking.}{61}{paragraph*.39}%
+\contentsline {paragraph}{Crash.}{61}{paragraph*.40}%
+\contentsline {paragraph}{Obstacle proximity.}{63}{paragraph*.41}%
+\contentsline {paragraph}{Energy.}{63}{paragraph*.42}%
+\contentsline {paragraph}{Altitude.}{63}{paragraph*.43}%
+\contentsline {paragraph}{Smoothness and angular rate.}{64}{paragraph*.44}%
+\contentsline {paragraph}{Symmetry.}{64}{paragraph*.45}%
+\contentsline {subsection}{\numberline {5.1.4}Training the Generalist}{64}{subsection.5.1.4}%
+\contentsline {subsection}{\numberline {5.1.5}Specialist Controllers}{67}{subsection.5.1.5}%
+\contentsline {section}{\numberline {5.2}The Hebbian Controller}{67}{section.5.2}%
+\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{67}{subsection.5.2.1}%
+\contentsline {subsection}{\numberline {5.2.2}Why the Output Layer}{69}{subsection.5.2.2}%
+\contentsline {subsection}{\numberline {5.2.3}Weight Decay and the Lifetime of the Weights}{70}{subsection.5.2.3}%
+\contentsline {subsection}{\numberline {5.2.4}Parameters of the Plastic Layer}{72}{subsection.5.2.4}%
+\contentsline {section}{\numberline {5.3}The Co-Design Pipeline}{74}{section.5.3}%
+\contentsline {subsection}{\numberline {5.3.1}Evaluation Flights}{75}{subsection.5.3.1}%
+\contentsline {subsection}{\numberline {5.3.2}Inner Loop: Evolving the Hebbian Rules}{75}{subsection.5.3.2}%
+\contentsline {paragraph}{Starting from zero.}{77}{paragraph*.52}%
+\contentsline {paragraph}{One generation.}{77}{paragraph*.53}%
+\contentsline {paragraph}{Fitness.}{77}{paragraph*.54}%
+\contentsline {subsection}{\numberline {5.3.3}Outer Loop: Evolving the Drone Morphology}{78}{subsection.5.3.3}%
+\contentsline {paragraph}{The exam.}{78}{paragraph*.55}%
+\contentsline {paragraph}{Objectives.}{78}{paragraph*.56}%
+\contentsline {paragraph}{Admission.}{79}{paragraph*.57}%
+\contentsline {paragraph}{Update.}{79}{paragraph*.58}%
+\contentsline {subsection}{\numberline {5.3.4}The Course of a Run}{79}{subsection.5.3.4}%
+\contentsline {subsection}{\numberline {5.3.5}The Control Condition}{80}{subsection.5.3.5}%
+\contentsline {chapter}{\numberline {6}Experiments And Results}{83}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Inner Loop Experiments}{83}{section.6.1}%
+\contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{83}{subsection.6.1.1}%
+\contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{83}{subsection.6.1.2}%
+\contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{83}{section.6.2}%
+\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{83}{subsection.6.2.1}%
+\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{83}{subsection.6.2.2}%
+\contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{83}{subsection.6.2.3}%
+\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{83}{subsection.6.2.4}%
+\contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{83}{subsection.6.2.5}%
+\contentsline {subsection}{\numberline {6.2.6}Convergence or Plasticity?}{83}{subsection.6.2.6}%
+\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{84}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Conclusions}{84}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Future Work}{84}{section.7.2}%
+\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{84}{subsection.7.2.1}%
+\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{84}{subsection.7.2.2}%
+\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{84}{subsection.7.2.3}%

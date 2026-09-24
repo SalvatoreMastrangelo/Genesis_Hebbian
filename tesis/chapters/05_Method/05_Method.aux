@@ -5,18 +5,86 @@
 \@writefile{lot}{\addvspace {10\p@ }}
 \newlabel{ch:method}{{5}{57}{Methodology}{chapter.5}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {5.1}Base Controllers}{57}{section.5.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.1}Specialist LSTM Controller}{57}{subsection.5.1.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.2}Generalist LSTM Controller}{57}{subsection.5.1.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.3}Training the Generalist LSTM Controller}{57}{subsection.5.1.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.2}The Hebbian Controller}{57}{section.5.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{57}{subsection.5.2.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.2}Weight Decay and Reset Semantics}{57}{subsection.5.2.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.3}Inner Loop: Evolving the Hebbian Rules}{57}{section.5.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.4}Outer Loop: Evolving the Drone Morphology}{57}{section.5.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.5}The Full Co-Design Pipeline}{57}{section.5.5}\protected@file@percent }
+\newlabel{sec:base-controllers}{{5.1}{57}{Base Controllers}{section.5.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.1}Architecture of the Controller}{57}{subsection.5.1.1}\protected@file@percent }
+\newlabel{subsec:controller-architecture}{{5.1.1}{57}{Architecture of the Controller}{subsection.5.1.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.1}{\ignorespaces The networks of a base controller}}{58}{figure.caption.36}\protected@file@percent }
+\newlabel{fig:controller-architecture}{{5.1}{58}{The networks of a base controller}{figure.caption.36}{}}
+\newlabel{eq:actor-output}{{5.1}{58}{Architecture of the Controller}{equation.5.1}{}}
+\newlabel{eq:actor-sampling}{{5.2}{58}{Architecture of the Controller}{equation.5.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.2}Training Environment}{59}{subsection.5.1.2}\protected@file@percent }
+\newlabel{subsec:training-environment}{{5.1.2}{59}{Training Environment}{subsection.5.1.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.1}{\ignorespaces The training environment in numbers}}{60}{table.caption.37}\protected@file@percent }
+\newlabel{tab:training-environment}{{5.1}{60}{The training environment in numbers}{table.caption.37}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.3}Reward Function}{61}{subsection.5.1.3}\protected@file@percent }
+\newlabel{subsec:reward}{{5.1.3}{61}{Reward Function}{subsection.5.1.3}{}}
+\newlabel{eq:reward}{{5.3}{61}{Reward Function}{equation.5.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Speed tracking.}{61}{paragraph*.39}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Crash.}{61}{paragraph*.40}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5.2}{\ignorespaces The terms of the reward}}{62}{table.caption.38}\protected@file@percent }
+\newlabel{tab:reward-terms}{{5.2}{62}{The terms of the reward}{table.caption.38}{}}
+\@writefile{toc}{\contentsline {paragraph}{Obstacle proximity.}{63}{paragraph*.41}\protected@file@percent }
+\newlabel{eq:reward-obstacle}{{5.4}{63}{Obstacle proximity}{equation.5.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Energy.}{63}{paragraph*.42}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Altitude.}{63}{paragraph*.43}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Smoothness and angular rate.}{64}{paragraph*.44}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Symmetry.}{64}{paragraph*.45}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.4}Training the Generalist}{64}{subsection.5.1.4}\protected@file@percent }
+\newlabel{subsec:generalist-training}{{5.1.4}{64}{Training the Generalist}{subsection.5.1.4}{}}
+\newlabel{eq:generalist-objective}{{5.5}{65}{Training the Generalist}{equation.5.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.3}{\ignorespaces Settings of the training of the base controllers}}{66}{table.caption.46}\protected@file@percent }
+\newlabel{tab:ppo-hyperparameters}{{5.3}{66}{Settings of the training of the base controllers}{table.caption.46}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.5}Specialist Controllers}{67}{subsection.5.1.5}\protected@file@percent }
+\newlabel{subsec:specialist-training}{{5.1.5}{67}{Specialist Controllers}{subsection.5.1.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5.2}The Hebbian Controller}{67}{section.5.2}\protected@file@percent }
+\newlabel{sec:hebbian-controller}{{5.2}{67}{The Hebbian Controller}{section.5.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.1}Hebbian Rules on the Output Layer}{67}{subsection.5.2.1}\protected@file@percent }
+\newlabel{subsec:hebbian-rules}{{5.2.1}{67}{Hebbian Rules on the Output Layer}{subsection.5.2.1}{}}
+\newlabel{eq:hebbian-term}{{5.6}{68}{Hebbian Rules on the Output Layer}{equation.5.6}{}}
+\newlabel{eq:hebbian-update}{{5.7}{68}{Hebbian Rules on the Output Layer}{equation.5.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.2}{\ignorespaces The Hebbian controller}}{68}{figure.caption.47}\protected@file@percent }
+\newlabel{fig:hebbian-controller}{{5.2}{68}{The Hebbian controller}{figure.caption.47}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.2}Why the Output Layer}{69}{subsection.5.2.2}\protected@file@percent }
+\newlabel{subsec:hebbian-why-output}{{5.2.2}{69}{Why the Output Layer}{subsection.5.2.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.3}Weight Decay and the Lifetime of the Weights}{70}{subsection.5.2.3}\protected@file@percent }
+\newlabel{subsec:hebbian-decay}{{5.2.3}{70}{Weight Decay and the Lifetime of the Weights}{subsection.5.2.3}{}}
+\newlabel{eq:hebbian-trace}{{5.8}{71}{Weight Decay and the Lifetime of the Weights}{equation.5.8}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.3}{\ignorespaces Effect of the decay on a plastic weight}}{71}{figure.caption.48}\protected@file@percent }
+\newlabel{fig:hebbian-decay}{{5.3}{71}{Effect of the decay on a plastic weight}{figure.caption.48}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.4}Parameters of the Plastic Layer}{72}{subsection.5.2.4}\protected@file@percent }
+\newlabel{subsec:hebbian-parameters}{{5.2.4}{72}{Parameters of the Plastic Layer}{subsection.5.2.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.4}{\ignorespaces Parameters of the plastic output layer}}{73}{table.caption.49}\protected@file@percent }
+\newlabel{tab:hebbian-parameters}{{5.4}{73}{Parameters of the plastic output layer}{table.caption.49}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5.3}The Co-Design Pipeline}{74}{section.5.3}\protected@file@percent }
+\newlabel{sec:pipeline}{{5.3}{74}{The Co-Design Pipeline}{section.5.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.4}{\ignorespaces The co-design pipeline}}{74}{figure.caption.50}\protected@file@percent }
+\newlabel{fig:pipeline}{{5.4}{74}{The co-design pipeline}{figure.caption.50}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.1}Evaluation Flights}{75}{subsection.5.3.1}\protected@file@percent }
+\newlabel{subsec:evaluation-flights}{{5.3.1}{75}{Evaluation Flights}{subsection.5.3.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.2}Inner Loop: Evolving the Hebbian Rules}{75}{subsection.5.3.2}\protected@file@percent }
+\newlabel{subsec:inner-loop}{{5.3.2}{75}{Inner Loop: Evolving the Hebbian Rules}{subsection.5.3.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.5}{\ignorespaces The two courses of the pipeline}}{76}{table.caption.51}\protected@file@percent }
+\newlabel{tab:evaluation-courses}{{5.5}{76}{The two courses of the pipeline}{table.caption.51}{}}
+\@writefile{toc}{\contentsline {paragraph}{Starting from zero.}{77}{paragraph*.52}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{One generation.}{77}{paragraph*.53}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Fitness.}{77}{paragraph*.54}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.3}Outer Loop: Evolving the Drone Morphology}{78}{subsection.5.3.3}\protected@file@percent }
+\newlabel{subsec:outer-loop}{{5.3.3}{78}{Outer Loop: Evolving the Drone Morphology}{subsection.5.3.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{The exam.}{78}{paragraph*.55}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Objectives.}{78}{paragraph*.56}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Admission.}{79}{paragraph*.57}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Update.}{79}{paragraph*.58}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.4}The Course of a Run}{79}{subsection.5.3.4}\protected@file@percent }
+\newlabel{subsec:pipeline-run}{{5.3.4}{79}{The Course of a Run}{subsection.5.3.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.5}{\ignorespaces The course of a run}}{80}{figure.caption.59}\protected@file@percent }
+\newlabel{fig:pipeline-run}{{5.5}{80}{The course of a run}{figure.caption.59}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.5}The Control Condition}{80}{subsection.5.3.5}\protected@file@percent }
+\newlabel{subsec:pipeline-control}{{5.3.5}{80}{The Control Condition}{subsection.5.3.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.6}{\ignorespaces Settings of the co-design pipeline}}{81}{table.caption.60}\protected@file@percent }
+\newlabel{tab:pipeline-settings}{{5.6}{81}{Settings of the co-design pipeline}{table.caption.60}{}}
 \@setckpt{chapters/05_Method/05_Method}{
-\setcounter{page}{58}
-\setcounter{equation}{0}
+\setcounter{page}{83}
+\setcounter{equation}{8}
 \setcounter{enumi}{3}
 \setcounter{enumii}{0}
 \setcounter{enumiii}{0}
@@ -25,13 +93,13 @@
 \setcounter{mpfootnote}{0}
 \setcounter{part}{0}
 \setcounter{chapter}{5}
-\setcounter{section}{5}
-\setcounter{subsection}{0}
+\setcounter{section}{3}
+\setcounter{subsection}{5}
 \setcounter{subsubsection}{0}
 \setcounter{paragraph}{0}
 \setcounter{subparagraph}{0}
-\setcounter{figure}{0}
-\setcounter{table}{0}
+\setcounter{figure}{5}
+\setcounter{table}{6}
 \setcounter{parentequation}{0}
 \setcounter{LT@tables}{0}
 \setcounter{LT@chunks}{0}
@@ -45,7 +113,7 @@
 \setcounter{citetotal}{0}
 \setcounter{multicitecount}{0}
 \setcounter{multicitetotal}{0}
-\setcounter{instcount}{101}
+\setcounter{instcount}{112}
 \setcounter{maxnames}{3}
 \setcounter{minnames}{1}
 \setcounter{maxitems}{3}
@@ -153,15 +221,15 @@
 \setcounter{r@tfl@t}{0}
 \setcounter{lofdepth}{1}
 \setcounter{lotdepth}{1}
-\setcounter{caption@flags}{6}
+\setcounter{caption@flags}{2}
 \setcounter{continuedfloat}{0}
 \setcounter{subfigure}{0}
 \setcounter{subtable}{0}
 \setcounter{lstnumber}{1}
 \setcounter{section@level}{0}
-\setcounter{Item}{7}
+\setcounter{Item}{10}
 \setcounter{Hfootnote}{0}
-\setcounter{bookmark@seq@number}{52}
+\setcounter{bookmark@seq@number}{59}
 \setcounter{definition}{0}
 \setcounter{theorem}{0}
 \setcounter{lstlisting}{0}

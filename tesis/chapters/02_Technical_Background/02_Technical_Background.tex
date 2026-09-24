@@ -116,6 +116,7 @@ An \emph{optimal} policy $\pi_*$ is one whose action-value function $q_*(s,a) = 
 When $\mathcal{S}$ and $\mathcal{A}$ are small and finite and $(P,R)$ are fully known, $v_\pi$ and $q_*$ can be computed exactly, by dynamic-programming methods such as policy iteration or value iteration \cite{bellman1957dynamic, howard1960dynamic}, which apply the Bellman equations above as update rules until convergence (the \emph{model-based} setting). In the \emph{model-free} setting considered for the rest of this section, which includes every task in this work, $P$ and $R$ are unknown, and value functions must instead be estimated from sampled transitions $(s_t, a_t, r_{t+1}, s_{t+1})$ obtained by actually interacting with the environment. Whenever $\mathcal{S}$, or $\mathcal{A}$, is continuous or otherwise too large to enumerate (as is the case for the sensor observations and continuous control commands used throughout this work), a lookup table, as in tabular Q-Learning \cite{watkins1992qlearning}, is no longer an option, and $v_\pi$, $q_\pi$, or $\pi$ itself must instead be represented by parametric function approximators, typically deep neural networks; this is what is meant by \emph{deep} reinforcement learning. The remainder of this section develops the \emph{policy-based} branch of deep RL, which parametrizes the policy directly rather than deriving it from a value function, and which is the branch this work builds on.
 
 \subsection{Actor-Critic Reinforcement Learning}
+\label{subsec:actor-critic}
 
 Policy-based methods \cite{williams1992simple, sutton1999policygradient} parametrize the policy itself, $\pi_{\vect{\theta}}(a\mid s)$, a deep neural network with parameters $\vect{\theta}$, and optimize such parameters directly by gradient ascent on the expected return
 \begin{equation}
@@ -191,6 +192,7 @@ L(\vect{\theta}) = L^{\mathrm{CLIP}}(\vect{\theta}) - c_1 L^{\mathrm{VF}}(\vect{
 maximized by a handful of epochs of minibatch stochastic gradient ascent over each freshly collected batch of trajectories \cite{schulman2017ppo}. Once these epochs are done the batch is discarded, $\vect{\theta}_{\mathrm{old}} \leftarrow \vect{\theta}$ is refreshed, and a new batch is collected with the updated policy: an on-policy training loop that strictly alternates environment interaction under a fixed policy with optimization of that same policy on the data it just produced.
 
 \section{Long Short-Term Memory Networks}
+\label{sec:lstm}
 
 The material of this section is standard: a textbook treatment of recurrent networks, of the difficulty of training them over long sequences and of the gated architectures that address it is given by Goodfellow, Bengio and Courville \cite{goodfellow2016deep}.
 
