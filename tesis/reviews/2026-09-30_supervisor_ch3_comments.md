@@ -133,3 +133,4 @@ so define it once and keep it, but not as a plain verb).
 3. Does the `\emph` rule extend to the closing sentences of §3.2 and §3.3?
 4. Should the writing pass on chapters 2, 4, 5, 6 wait for his comments on chapter 4,
    or start now on chapter 3 alone so that he sees the new style on chapter 4?
+   ANSWERED 2026-09-30: chapters 3, 4 and 6 done the same day; chapter 5 later; chapter 2 exempt.
