@@ -1,0 +1,122 @@
+# Thesis section 6.1 inner-loop experiment on the reference drone: rules on SPECIALIST r2; third line = frozen generalist
+# Settings of logs/runs_hebbian/2026-06-10_10-40-16_validation_wspecialist_no_bix_15_lstm (single body,
+# 64 sets of rules x 200 forests per generation, 200 generations, held-out validation of the best rules,
+# the zero-rule base and a third reference controller on 2 048 fresh forests every generation).
+# The single-body path copies the on-disk standard URDF (genesis/assets/urdf/mydrone, 0.747 kg), the body
+# the specialists were trained on. The `specialist_checkpoint_*` slot is a generic third reference line.
+# Launched by run_queue.sh in the local Genesis docker image (about 3 h per run on the RTX 5060).
+base_dir: logs/runs_hebbian
+baseline_checkpoint_config_path: ''
+baseline_checkpoint_path: ''
+catalog:
+  force_multi_urdf: false
+  include_standard_mydrone: true
+  mutate: false
+  mutation_std: 0.02
+  num_episodes: 1
+  num_urdfs: 1
+  path: ''
+  refresh_urdfs_every: 0
+checkpoint_config_path: logs/remote/wp1_training/wp1_bix_single_65536_lstm_15_r2/logs/runs/2026-07-07_17-56-23_bix_single_65536_lstm_15/config.yaml
+checkpoint_path: logs/remote/wp1_training/wp1_bix_single_65536_lstm_15_r2/logs/runs/2026-07-07_17-56-23_bix_single_65536_lstm_15/tb/model_999.pt
+cmaes:
+  algorithm: cmaes
+  population_size: 64
+  sigma0: 0.075
+  sigma_reinflate: 1.0
+  tol_fun: 0.0
+  tol_sigma: 0.0
+  uh_alphasigma: 0.0
+  uh_enabled: false
+  uh_every: 1
+  uh_reevals: 0.0
+  uh_theta: 0.5
+  fitness_aggregator: mean
+  normalize_fitness: false
+  uniform_weighting: false
+device: cuda:0
+evaluation:
+  baseline_every: 1
+  crn: false
+  dens_max: null
+  dens_min: null
+  noise:
+    action_latency: true
+    aero_noise: true
+    com_shift: true
+    joint_target_episode_bias: true
+    joint_target_step_noise: true
+    mass_shift: true
+  num_eval_envs: 12800
+  num_eval_episodes: 1
+  num_eval_workers: 1
+  num_gpus: 0
+  refresh_forests_per_generation: true
+  run_baseline: true
+  run_specialist: true
+  specialist_every: 1
+  stochastic: true
+  vmax: 20.0
+  vmin: 10.0
+  x_upper: null
+evolution:
+  num_generations: 200
+  population_size: 0
+exp_name: rules_on_specialist_r2_s5537
+forest:
+  dens_max: 5.0
+  dens_min: 0.0
+  dens_min_max: 0.0
+  dens_min_min: 0.0
+  forest_length: null
+  mode: growing
+  num_trees: null
+  num_trees_eval: null
+  tree_height: null
+  tree_radius: null
+  x_lower: 0
+  x_spacing_end: 6.667
+  x_spacing_start: 8.333
+  x_upper: 100
+  y_lower: null
+  y_spacing_max: 3.0
+  y_spacing_min: 3.0
+  y_upper: null
+hebbian:
+  A_range:
+  - -1.5
+  - 1.5
+  B_range:
+  - -1.5
+  - 1.5
+  C_range:
+  - -1.5
+  - 1.5
+  D_range:
+  - -1.5
+  - 1.5
+  decay: 0.05
+  decay_range:
+  - 0.0
+  - 0.1
+  enabled: true
+  eta: 0.005
+  eta_range:
+  - 0.0
+  - 0.01
+  evolve_decay: false
+  evolve_eta: false
+  hidden_dim: 32
+  initialize_rules_to_zero: true
+  num_actions: 7
+  rules_per_neuron: false
+  use_oja_coefficient: false
+  w_max: 5000.0
+seed: 5537
+specialist_checkpoint_config_path: logs/remote/wp1_training/wp1_no_bix_256_65536_lstm_15_r1/logs/runs/2026-06-07_17-06-05_no_bix_256_65536_lstm_15/config.yaml
+specialist_checkpoint_path: logs/remote/wp1_training/wp1_no_bix_256_65536_lstm_15_r1/logs/runs/2026-06-07_17-06-05_no_bix_256_65536_lstm_15/tb/model_999.pt
+validation:
+  enable: true
+  n_val_envs: 2048
+  period: 1
+  validation_catalog: ''

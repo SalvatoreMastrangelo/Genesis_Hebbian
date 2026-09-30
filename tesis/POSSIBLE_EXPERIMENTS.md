@@ -21,7 +21,32 @@ Format of an item: what, why (the question it answers, with the review item if t
   Runs locally in the `mygenesis` docker image (see the memory note on the local docker runtime) or on IZAR. A lighter variant without any flight: compare $\eta D/\lambda$ of the best genome with the ΔW histories already stored in `plots/champion_videos/*/trajectory.pkl` (`champion_deltaw_diff.py` reads them).
 - **Cost.** A front of about twenty bodies × 480 forests × 4 controllers: minutes to a few tens of minutes on one GPU. Repeating it on the eight co-design runs: an afternoon. The expensive form (co-design runs with D removed from the genome, four days each) is not proposed.
 - **Where it would land.** Chapter 6, next to the comparison between co-design and morphology-only fronts (the "Convergence or Plasticity?" subsection of the outline is the natural place); one sentence in 5.2.3, after "Through D the search can retune the output layer itself", pointing to it.
-- **Status.** Not run. The author may run it before finishing the thesis.
+- **Status.** RUN on 2026-09-24 on the author's instruction ("do the D ablation too"), in two parts.
+  (a) Fixed body (the reference drone, section 6.1.2): `tesis/scripts/d_ablation_fixed_body.py`, output
+  `images/06_Results_and_Experiments/inner_loop/d_ablation_fixed_body.json` and `<run>/results/d_ablation.json`
+  for the generalist run (`2026-07-08_09-59-42_validation_wspecialis_15_no_bix_15_lstm`) and the specialist
+  run (`2026-09-24_16-47-43_rules_on_specialist_r1_s5535`): seven controllers (zero; best rules, best with D = 0,
+  best with A = B = C = 0; the CMA-ES mean and its two ablations) on the same 2 048 forests, 4 repeats.
+  Result: the gain is NOT decomposable into a static part and a plastic part. Generalist: best +3.7, D alone
+  −0.4, A B C alone −11.2 (crashes 53 → 63 %); mean +4.4, D alone +3.9, A B C alone −0.3. Specialist: best +10.0,
+  D alone +1.9, A B C alone +2.9 (crashes 27 → 38 %); mean +10.5, D alone 0.0, A B C alone +4.1. On the
+  generalist the centre of the search works mostly through D; on the specialist D alone does nothing and the
+  gain needs the activity-dependent terms together with D. Written into 6.1.2 (`tab:d-ablation-fixed`).
+  (b) Fronts of the eight co-design runs on the exam course (480 forests, seed 0, four controllers on identical
+  forests): `tesis/scripts/d_ablation_fronts.py`, output `logs/remote/outer_nsga/d_ablation/<run>/` and
+  `images/06_Results_and_Experiments/d_ablation/d_ablation_fronts.json`; launched 2026-09-24 about 22:55;
+  ALL 8 RUNS DONE 2026-09-25 16:52 (the 4 `extra` runs overnight, ~1.4 h each while sharing the GPU; the process was
+  stopped during the 5th run because the script leaks host RAM per chunk, 12 GB after 26 chunks; the other 4 were run
+  after the queue with `src/WP2/experiments/thesis_inner_loop/run_fronts_ablation_rest.sh`, one process per run, ~30 min
+  each). RESULT, mean over the front bodies of the change against the frozen generalist (zero), 328 bodies in 8 fronts,
+  exam course, 480 identical forests: best rules progress +17.1 m (per run +9.3 to +25.6; 321 of 328 bodies better),
+  CoT −0.006 (262 of 328 lower); D alone +13.7 m (+9.3 to +19.2; 324 of 328 better), CoT −0.004 (237 lower);
+  A B C alone −11.7 m (−30.6 to +2.9; 69 of 328 better), CoT −0.004 (230 lower). So on the evolved bodies flown by the
+  generalist the constant term D carries about 80 % of the progress gain and the activity terms alone are harmful for
+  progress while saving energy; the pair adds ~3 m and more energy saving over D alone. Consistent with the generalist
+  half of the fixed-body ablation (the search's centre works mostly through D), unlike the specialists. Per-run rows in
+  `logs/remote/outer_nsga/d_ablation/<run>/ablation.csv`; figure `images/06_Results_and_Experiments/d_ablation/d_ablation_fronts.pdf`; first chunk of `extra_r0` (8 bodies): progress zero 198 m, best 210 m, noD 199 m,
+  onlyD 207 m (D carries most of the progress gain on evolved bodies, unlike on the reference drone); to be written into 6.2 ("Convergence or Plasticity?") when that section is written.
 
 ---
 

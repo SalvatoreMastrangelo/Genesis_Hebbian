@@ -1,0 +1,631 @@
+{
+ "A": {
+  "run": "2026-06-13_02-23-30_mutation_4_bix_validation_lstm_15",
+  "generations": 50,
+  "window": [
+   40,
+   49
+  ],
+  "search_best_first": 137.584,
+  "search_mean_first": 126.112,
+  "search_baseline_first": 140.859,
+  "search_best_last": [
+   142.1607,
+   0.7649438686741828,
+   10
+  ],
+  "search_mean_last": [
+   137.0551,
+   0.6383632630059186,
+   10
+  ],
+  "search_baseline_last": [
+   138.2161,
+   0.45090759092696003,
+   10
+  ],
+  "search_sigma_first_last": [
+   0.0737727,
+   0.058283
+  ],
+  "val_best_first": 171.991,
+  "val_baseline_first": 175.344,
+  "val_best_last": [
+   177.1209,
+   0.7886441881834673,
+   10
+  ],
+  "val_baseline_last": [
+   174.5902,
+   0.6643574673656083,
+   10
+  ],
+  "val_gain_last": [
+   2.5306999999999986,
+   0.5851488034869632
+  ],
+  "val_gain_first_phase": -2.5024999999999906,
+  "val_baseline_std_over_gens": 0.5947203767575258,
+  "val_gain_by_phase": [
+   -2.5024999999999906,
+   -0.7659999999999982,
+   -0.786999999999999,
+   -1.0112499999999969,
+   -0.07674999999999699,
+   1.0977499999999978,
+   0.36225000000000307,
+   2.3205000000000027,
+   1.1487499999999997,
+   2.667500000000004,
+   2.6357500000000016,
+   2.364750000000001,
+   2.652499999999989
+  ],
+  "val_progress_last": [
+   117.22619999999999,
+   116.80999999999999
+  ],
+  "val_crash_rate_last": [
+   0.5200682000000001,
+   0.5343262
+  ],
+  "val_cot_last": [
+   0.27287819999999996,
+   0.28499620000000003
+  ],
+  "val_velocity_last": [
+   13.579930000000001,
+   13.893440000000002
+  ]
+ },
+ "G": [
+  {
+   "run": "2026-09-24_20-15-15_rules_on_generalist_s5535",
+   "generations": 200,
+   "window": [
+    150,
+    199
+   ],
+   "kind": "rules on the generalist; third = frozen specialist",
+   "val_best_first": 172.844,
+   "val_base_first": 175.311,
+   "val_best_last": [
+    177.93760000000003,
+    1.103847002116522,
+    50
+   ],
+   "val_base_last": [
+    174.5242,
+    0.6349199210313466,
+    50
+   ],
+   "val_gain_last": [
+    3.4133999999999984,
+    1.2409492087815321
+   ],
+   "val_gain_rel_last": 0.019558319132819392,
+   "val_gain_gen_0_9": -0.28839999999999577,
+   "val_gain_gen_40_49": 1.428000000000003,
+   "val_gain_gen_90_99": 2.7400000000000033,
+   "val_base_std_over_gens": 0.7539689194072657,
+   "search_best_last": [
+    182.01166,
+    0.8803524945690108,
+    50
+   ],
+   "search_mean_last": [
+    176.04696,
+    0.5647290829617835,
+    50
+   ],
+   "search_base_last": [
+    174.58255999999994,
+    0.28090256572087907,
+    50
+   ],
+   "winners_curse_last": 4.0740599999999745,
+   "sigma_first_last": [
+    0.0737671,
+    0.0538349
+   ],
+   "val_third_last": [
+    182.20086,
+    0.5251671846533563,
+    50
+   ],
+   "val_gap_third_minus_base_last": 7.676659999999998,
+   "recovered_share_last": 0.44210876865823706,
+   "recovered_share_from_means": 0.44464649991011707,
+   "val_progress_last": {
+    "rules": 116.87094,
+    "frozen": 116.75832000000003,
+    "third": 124.25092000000002
+   },
+   "val_crash_rate_last": {
+    "rules": 0.52636718,
+    "frozen": 0.53418946,
+    "third": 0.27583982
+   },
+   "val_cot_last": {
+    "rules": 0.25941004,
+    "frozen": 0.28466726,
+    "third": 0.32078338
+   },
+   "val_velocity_last": {
+    "rules": 13.415156000000001,
+    "frozen": 13.890139999999999,
+    "third": 13.958409999999999
+   }
+  },
+  {
+   "run": "2026-09-25_09-11-59_rules_on_generalist_s5536",
+   "generations": 200,
+   "window": [
+    150,
+    199
+   ],
+   "kind": "rules on the generalist; third = frozen specialist",
+   "val_best_first": 174.488,
+   "val_base_first": 175.156,
+   "val_best_last": [
+    178.2327,
+    0.8636406388430482,
+    50
+   ],
+   "val_base_last": [
+    174.65849999999995,
+    0.6634879772221697,
+    50
+   ],
+   "val_gain_last": [
+    3.5742000000000003,
+    0.9736005550616359
+   ],
+   "val_gain_rel_last": 0.02046393390530665,
+   "val_gain_gen_0_9": -0.4019999999999982,
+   "val_gain_gen_40_49": 2.385300000000001,
+   "val_gain_gen_90_99": 2.366200000000009,
+   "val_base_std_over_gens": 0.7710465092959614,
+   "search_best_last": [
+    182.25001999999998,
+    1.0054786755266276,
+    50
+   ],
+   "search_mean_last": [
+    176.09261999999998,
+    0.47670967890235083,
+    50
+   ],
+   "search_base_last": [
+    174.66448,
+    0.28052576294071363,
+    50
+   ],
+   "winners_curse_last": 4.017319999999984,
+   "sigma_first_last": [
+    0.0737693,
+    0.0528749
+   ],
+   "val_third_last": [
+    189.9777,
+    0.6229188124778187,
+    50
+   ],
+   "val_gap_third_minus_base_last": 15.3192,
+   "recovered_share_last": 0.23268004793734579,
+   "recovered_share_from_means": 0.2333150556164813,
+   "val_progress_last": {
+    "rules": 116.82960000000001,
+    "frozen": 116.8205,
+    "third": 123.50725999999999
+   },
+   "val_crash_rate_last": {
+    "rules": 0.52955078,
+    "frozen": 0.53236328,
+    "third": 0.31127938
+   },
+   "val_cot_last": {
+    "rules": 0.26082036,
+    "frozen": 0.28480938,
+    "third": 0.2153012
+   },
+   "val_velocity_last": {
+    "rules": 13.329234000000001,
+    "frozen": 13.892862000000001,
+    "third": 13.310526
+   }
+  },
+  {
+   "run": "2026-07-08_09-59-42_validation_wspecialis_15_no_bix_15_lstm",
+   "generations": 100,
+   "window": [
+    75,
+    99
+   ],
+   "kind": "rules on the generalist; third = frozen specialist",
+   "val_best_first": 171.882,
+   "val_base_first": 174.599,
+   "val_best_last": [
+    177.56312000000003,
+    0.8934128534259295,
+    25
+   ],
+   "val_base_last": [
+    174.58804,
+    0.7717078721899867,
+    25
+   ],
+   "val_gain_last": [
+    2.975080000000003,
+    1.1606808677094054
+   ],
+   "val_gain_rel_last": 0.017040571622202773,
+   "val_gain_gen_0_9": -0.07019999999999982,
+   "val_gain_gen_40_49": 2.398500000000001,
+   "val_gain_gen_90_99": 3.0329000000000006,
+   "val_base_std_over_gens": 0.7346809223579771,
+   "search_best_last": [
+    182.08088,
+    0.784961799495148,
+    25
+   ],
+   "search_mean_last": [
+    175.58115999999998,
+    0.4594043861349177,
+    25
+   ],
+   "search_base_last": [
+    174.67824000000002,
+    0.25024825673718537,
+    25
+   ],
+   "winners_curse_last": 4.517759999999981,
+   "sigma_first_last": [
+    0.073745,
+    0.0559966
+   ],
+   "val_third_last": [
+    182.15624000000003,
+    0.5919827052653934,
+    25
+   ],
+   "val_gap_third_minus_base_last": 7.568200000000003,
+   "recovered_share_last": 0.3888470071100485,
+   "recovered_share_from_means": 0.3931027192727467,
+   "val_progress_last": {
+    "rules": 117.09276,
+    "frozen": 116.79415999999999,
+    "third": 124.22956
+   },
+   "val_crash_rate_last": {
+    "rules": 0.5270507600000001,
+    "frozen": 0.5321094399999999,
+    "third": 0.27640628
+   },
+   "val_cot_last": {
+    "rules": 0.25452787999999993,
+    "frozen": 0.28461152,
+    "third": 0.32066651999999995
+   },
+   "val_velocity_last": {
+    "rules": 13.39028,
+    "frozen": 13.888520000000002,
+    "third": 13.957156
+   }
+  },
+  {
+   "run": "2026-06-10_10-40-16_validation_wspecialist_no_bix_15_lstm",
+   "generations": 200,
+   "window": [
+    150,
+    199
+   ],
+   "kind": "rules on the generalist; third = frozen specialist",
+   "val_best_first": 168.318,
+   "val_base_first": 174.612,
+   "val_best_last": [
+    179.23266,
+    1.0525124772152936,
+    50
+   ],
+   "val_base_last": [
+    174.76442,
+    0.7635412686813925,
+    50
+   ],
+   "val_gain_last": [
+    4.46824,
+    1.1894397851295244
+   ],
+   "val_gain_rel_last": 0.025567217858188752,
+   "val_gain_gen_0_9": 0.7458000000000027,
+   "val_gain_gen_40_49": 3.5265999999999993,
+   "val_gain_gen_90_99": 3.528400000000002,
+   "val_base_std_over_gens": 0.7014729304368615,
+   "search_best_last": [
+    183.66517999999996,
+    1.054964796588404,
+    50
+   ],
+   "search_mean_last": [
+    176.85287999999997,
+    0.5204508892904933,
+    50
+   ],
+   "search_base_last": [
+    174.52969999999996,
+    0.2912856967701238,
+    50
+   ],
+   "winners_curse_last": 4.432519999999954,
+   "sigma_first_last": [
+    0.0737528,
+    0.0531121
+   ],
+   "val_third_last": [
+    191.13067999999998,
+    0.4658178429999697,
+    50
+   ],
+   "val_gap_third_minus_base_last": 16.36626,
+   "recovered_share_last": 0.272043590882128,
+   "recovered_share_from_means": 0.2730153376519742,
+   "val_progress_last": {
+    "rules": 117.3733,
+    "frozen": 116.87968,
+    "third": 125.75126
+   },
+   "val_crash_rate_last": {
+    "rules": 0.5156445399999999,
+    "frozen": 0.53040038,
+    "third": 0.2145899
+   },
+   "val_cot_last": {
+    "rules": 0.25593276,
+    "frozen": 0.28457054,
+    "third": 0.2695719
+   },
+   "val_velocity_last": {
+    "rules": 13.396394,
+    "frozen": 13.887528000000001,
+    "third": 13.775284
+   }
+  }
+ ],
+ "S": [
+  {
+   "run": "2026-09-24_16-47-43_rules_on_specialist_r1_s5535",
+   "generations": 200,
+   "window": [
+    150,
+    199
+   ],
+   "kind": "rules on the specialist; third = frozen generalist",
+   "val_best_first": 184.389,
+   "val_base_first": 182.585,
+   "val_best_last": [
+    191.88212,
+    1.1340159744042784,
+    50
+   ],
+   "val_base_last": [
+    182.24620000000002,
+    0.4058630511964986,
+    50
+   ],
+   "val_gain_last": [
+    9.63592,
+    1.1632373165841459
+   ],
+   "val_gain_rel_last": 0.05287309145540483,
+   "val_gain_gen_0_9": 4.264400000000006,
+   "val_gain_gen_40_49": 7.811000000000002,
+   "val_gain_gen_90_99": 8.942400000000006,
+   "val_base_std_over_gens": 0.4576636426723467,
+   "search_best_last": [
+    194.35448,
+    0.7635366486800422,
+    50
+   ],
+   "search_mean_last": [
+    183.72871999999998,
+    2.0257644063918416,
+    50
+   ],
+   "search_base_last": [
+    182.30738000000002,
+    0.1982257927161821,
+    50
+   ],
+   "winners_curse_last": 2.472360000000009,
+   "sigma_first_last": [
+    0.0737497,
+    0.0556002
+   ],
+   "val_third_last": [
+    174.18857999999997,
+    0.7599041854210362,
+    50
+   ],
+   "val_gap_third_minus_base_last": -8.057620000000002,
+   "recovered_share_last": -1.209971627064007,
+   "recovered_share_from_means": -1.1958766980820636,
+   "val_progress_last": {
+    "rules": 123.90953999999999,
+    "frozen": 124.23592,
+    "third": 116.69172
+   },
+   "val_crash_rate_last": {
+    "rules": 0.2786621,
+    "frozen": 0.27860352,
+    "third": 0.53567376
+   },
+   "val_cot_last": {
+    "rules": 0.25667246,
+    "frozen": 0.3198753,
+    "third": 0.28562770000000004
+   },
+   "val_velocity_last": {
+    "rules": 13.311555999999998,
+    "frozen": 13.937972,
+    "third": 13.908277999999997
+   }
+  },
+  {
+   "run": "2026-09-25_01-17-04_rules_on_specialist_r0_s5536",
+   "generations": 200,
+   "window": [
+    150,
+    199
+   ],
+   "kind": "rules on the specialist; third = frozen generalist",
+   "val_best_first": 185.873,
+   "val_base_first": 188.823,
+   "val_best_last": [
+    190.17888000000002,
+    0.86217834321572,
+    50
+   ],
+   "val_base_last": [
+    189.70388000000005,
+    0.5940541320761382,
+    50
+   ],
+   "val_gain_last": [
+    0.4749999999999977,
+    1.0008172578815109
+   ],
+   "val_gain_rel_last": 0.002503902397779094,
+   "val_gain_gen_0_9": -1.6976000000000055,
+   "val_gain_gen_40_49": -0.29250000000000115,
+   "val_gain_gen_90_99": -0.10599999999999739,
+   "val_base_std_over_gens": 0.6107581238339327,
+   "search_best_last": [
+    193.24078,
+    0.8922268470129184,
+    50
+   ],
+   "search_mean_last": [
+    187.41188,
+    0.5768480732323149,
+    50
+   ],
+   "search_base_last": [
+    189.71970000000002,
+    0.2351629265866882,
+    50
+   ],
+   "winners_curse_last": 3.06189999999998,
+   "sigma_first_last": [
+    0.0737605,
+    0.0533274
+   ],
+   "val_third_last": [
+    174.40646000000004,
+    0.7246727680935224,
+    50
+   ],
+   "val_gap_third_minus_base_last": -15.297419999999997,
+   "recovered_share_last": -0.032930892264804494,
+   "recovered_share_from_means": -0.031050987682890174,
+   "val_progress_last": {
+    "rules": 122.72669999999998,
+    "frozen": 123.51199999999999,
+    "third": 116.83516
+   },
+   "val_crash_rate_last": {
+    "rules": 0.34069336,
+    "frozen": 0.3114942,
+    "third": 0.53094732
+   },
+   "val_cot_last": {
+    "rules": 0.21188766,
+    "frozen": 0.21459035999999998,
+    "third": 0.2830043
+   },
+   "val_velocity_last": {
+    "rules": 13.333641999999998,
+    "frozen": 13.276726000000002,
+    "third": 13.868455999999998
+   }
+  },
+  {
+   "run": "2026-09-25_05-45-56_rules_on_specialist_r2_s5537",
+   "generations": 200,
+   "window": [
+    150,
+    199
+   ],
+   "kind": "rules on the specialist; third = frozen generalist",
+   "val_best_first": 179.756,
+   "val_base_first": 181.738,
+   "val_best_last": [
+    192.28510000000003,
+    0.6673149135734557,
+    50
+   ],
+   "val_base_last": [
+    182.39314000000002,
+    0.6317464296919882,
+    50
+   ],
+   "val_gain_last": [
+    9.89196,
+    0.8213136804124578
+   ],
+   "val_gain_rel_last": 0.05423427657421764,
+   "val_gain_gen_0_9": 4.501900000000001,
+   "val_gain_gen_40_49": 8.861800000000008,
+   "val_gain_gen_90_99": 9.292599999999998,
+   "val_base_std_over_gens": 0.6106169052893367,
+   "search_best_last": [
+    195.55356,
+    0.7470532631340177,
+    50
+   ],
+   "search_mean_last": [
+    191.46396000000001,
+    0.3460134455332574,
+    50
+   ],
+   "search_base_last": [
+    182.34112000000005,
+    0.22043395419777023,
+    50
+   ],
+   "winners_curse_last": 3.268459999999976,
+   "sigma_first_last": [
+    0.0737722,
+    0.0549965
+   ],
+   "val_third_last": [
+    174.25431999999998,
+    0.6131167761727695,
+    50
+   ],
+   "val_gap_third_minus_base_last": -8.138820000000003,
+   "recovered_share_last": -1.2316390768708942,
+   "recovered_share_from_means": -1.2154046901147828,
+   "val_progress_last": {
+    "rules": 124.26278,
+    "frozen": 123.97877999999999,
+    "third": 116.72150000000002
+   },
+   "val_crash_rate_last": {
+    "rules": 0.27984368,
+    "frozen": 0.29084966,
+    "third": 0.5337598
+   },
+   "val_cot_last": {
+    "rules": 0.2428865,
+    "frozen": 0.34398091999999997,
+    "third": 0.28535647999999997
+   },
+   "val_velocity_last": {
+    "rules": 13.320293999999999,
+    "frozen": 13.861559999999999,
+    "third": 13.903634000000002
+   }
+  }
+ ]
+}

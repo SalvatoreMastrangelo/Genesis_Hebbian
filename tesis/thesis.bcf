@@ -2485,6 +2485,15 @@
     <bcf:citekey order="93" intorder="1">vandiggelen2025emergent</bcf:citekey>
     <bcf:citekey order="94" intorder="1">soltoggio2018born</bcf:citekey>
     <bcf:citekey order="95" intorder="1">najarro2020meta</bcf:citekey>
+    <bcf:citekey order="96" intorder="1">hansen2019pycma</bcf:citekey>
+    <bcf:citekey order="97" intorder="1">fortin2012deap</bcf:citekey>
+    <bcf:citekey order="98" intorder="1">paszke2019pytorch</bcf:citekey>
+    <bcf:citekey order="99" intorder="1">genesis2024</bcf:citekey>
+    <bcf:citekey order="100" intorder="1">fonseca1996performance</bcf:citekey>
+    <bcf:citekey order="100" intorder="2">lopezibanez2010exploratory</bcf:citekey>
+    <bcf:citekey order="101" intorder="1">mann1947test</bcf:citekey>
+    <bcf:citekey order="102" intorder="1">hodges1963estimates</bcf:citekey>
+    <bcf:citekey order="103" intorder="1">westfall1993resampling</bcf:citekey>
   </bcf:section>
   <!-- SORTING TEMPLATES -->
   <bcf:sortingtemplate name="nyt">
