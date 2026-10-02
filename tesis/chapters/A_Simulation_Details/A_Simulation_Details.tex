@@ -1,7 +1,7 @@
 \chapter{Simulation Details}
 \label{app:simulation}
 
-This appendix collects the parts of the simulation that \autoref{ch:environment} summarizes: the internal organization of Genesis, the equations of its rigid body solver, the aerodynamic model in full, the formula of the aerodynamic noise, the collision test and the statistics of the forests, and the mass and power models of the drone. It documents the simulator as it was used in every experiment of this thesis.
+This appendix collects the parts of the simulation that \autoref{ch:environment} summarizes: the internal organization of Genesis, the equations of its rigid body solver, the aerodynamic model in full, the formula of the aerodynamic noise, the collision test and the statistics of the forests, and the mass model of the drone with the power of its propeller. It documents the simulator as it was used in every experiment of this thesis.
 
 \section{Genesis Architecture and Taichi Kernels}
 \label{app:genesis-architecture}
@@ -253,7 +253,7 @@ x = L\; \frac{\sqrt{\lambda_0^2 + u\left(\lambda_1^2 - \lambda_0^2\right)} - \la
 \label{eq:forest-inverse-cdf}
 \end{equation} Since the forests of a batch share one tensor and may have different numbers of trees, the shorter lists are padded with inactive trees parked outside the corridor, where they can be neither seen nor hit.
 
-\section{Mass and Power Models of the Drone}
+\section{Mass Model and Propeller Power of the Drone}
 \label{app:drone-mass-power}
 
 \paragraph{Masses.} The structure is foam. The fuselage is a shell 15~mm thick and the wing and tail surfaces are solid panels whose thickness follows their airfoil section, all with a density of 20~kg/m$^3$ (reduced by a fill factor of 0.68 for the surfaces); each part receives the mass of its volume and the inertia tensor of a box of its dimensions. To this are added the fixed masses: 200~g for the battery and the electronics, 30~g for the camera, 41.5~g for the motor and the propeller, 90~g for the six servomotors and 40~g for hinges and fittings. The fixed masses amount to about 0.40~kg and are the same for every body; the structural mass is what the genome controls. It grows quickly with the size of the wing, since the volume of a panel is proportional to the cube of its span for a given aspect ratio and section: the lightest body that the genome can express weighs 0.44~kg and the heaviest 2.5~kg, while nine bodies out of ten drawn uniformly at random weigh between 0.50 and 1.10~kg. The position of the centre of mass is controlled by a gene as well, which places the mass of the fuselage, battery included, along its length.

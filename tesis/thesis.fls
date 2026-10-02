@@ -507,7 +507,6 @@ INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecbx1200.tfm
 INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecbx1440.tfm
 INPUT /usr/local/texlive/2025/texmf-var/fonts/map/pdftex/updmap/pdftex.map
 INPUT /usr/local/texlive/2025/texmf-dist/fonts/enc/dvips/cm-super/cm-super-t1.enc
-INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecti1200.tfm
 INPUT ./chapters/XX_Glossario/XX_Glossario.tex
 OUTPUT chapters/XX_Glossario/XX_Glossario.aux
 INPUT ./chapters/XX_Glossario/XX_Glossario.tex
@@ -563,12 +562,13 @@ OUTPUT chapters/01_Introduction/01_Introduction.aux
 INPUT ./chapters/01_Introduction/01_Introduction.tex
 INPUT ./chapters/01_Introduction/01_Introduction.tex
 INPUT chapters/01_Introduction/01_Introduction.tex
+INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecti1200.tfm
+INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecbx1728.tfm
 INPUT ./chapters/02_Technical_Background/02_Technical_Background.tex
 OUTPUT chapters/02_Technical_Background/02_Technical_Background.aux
 INPUT ./chapters/02_Technical_Background/02_Technical_Background.tex
 INPUT ./chapters/02_Technical_Background/02_Technical_Background.tex
 INPUT chapters/02_Technical_Background/02_Technical_Background.tex
-INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecbx1728.tfm
 INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecrm0800.tfm
 INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecrm0600.tfm
 INPUT /usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/ecrm1095.tfm

@@ -1,43 +1,43 @@
 \babel@toc {english}{}\relax 
 \addvspace {10\p@ }
 \addvspace {10\p@ }
-\contentsline {figure}{\numberline {2.1}{\ignorespaces The agent-environment interaction loop}}{7}{figure.caption.3}%
-\contentsline {figure}{\numberline {2.2}{\ignorespaces Actor and critic networks}}{10}{figure.caption.4}%
-\contentsline {figure}{\numberline {2.3}{\ignorespaces A LSTM gate}}{13}{figure.caption.5}%
-\contentsline {figure}{\numberline {2.4}{\ignorespaces Structure of an LSTM cell}}{14}{figure.caption.6}%
-\contentsline {figure}{\numberline {2.5}{\ignorespaces Covariance adaptation in CMA-ES}}{16}{figure.caption.7}%
-\contentsline {figure}{\numberline {2.6}{\ignorespaces Pareto dominance, non-dominated fronts and crowding distance}}{18}{figure.caption.8}%
-\contentsline {figure}{\numberline {2.7}{\ignorespaces Locality of the Hebbian update}}{21}{figure.caption.9}%
+\contentsline {figure}{\numberline {2.1}{\ignorespaces The agent-environment interaction loop}}{9}{figure.caption.3}%
+\contentsline {figure}{\numberline {2.2}{\ignorespaces Actor and critic networks}}{12}{figure.caption.4}%
+\contentsline {figure}{\numberline {2.3}{\ignorespaces A LSTM gate}}{15}{figure.caption.5}%
+\contentsline {figure}{\numberline {2.4}{\ignorespaces Structure of an LSTM cell}}{16}{figure.caption.6}%
+\contentsline {figure}{\numberline {2.5}{\ignorespaces Covariance adaptation in CMA-ES}}{18}{figure.caption.7}%
+\contentsline {figure}{\numberline {2.6}{\ignorespaces Pareto dominance, non-dominated fronts and crowding distance}}{20}{figure.caption.8}%
+\contentsline {figure}{\numberline {2.7}{\ignorespaces Locality of the Hebbian update}}{23}{figure.caption.9}%
 \addvspace {10\p@ }
 \addvspace {10\p@ }
-\contentsline {figure}{\numberline {4.1}{\ignorespaces One control step of the simulation}}{35}{figure.caption.11}%
-\contentsline {figure}{\numberline {4.2}{\ignorespaces A uniform density forest}}{39}{figure.caption.14}%
-\contentsline {figure}{\numberline {4.3}{\ignorespaces A growing density forest}}{40}{figure.caption.15}%
-\contentsline {figure}{\numberline {4.4}{\ignorespaces Independent and stratified positions at the same density}}{42}{figure.caption.16}%
-\contentsline {figure}{\numberline {4.5}{\ignorespaces A Latin hypercube forest}}{43}{figure.caption.17}%
-\contentsline {figure}{\numberline {4.6}{\ignorespaces Parts and actuators of the drone}}{44}{figure.caption.18}%
-\contentsline {figure}{\numberline {4.7}{\ignorespaces Depth sectors and collision rectangle}}{47}{figure.caption.24}%
-\contentsline {figure}{\numberline {4.8}{\ignorespaces The standard drone}}{49}{figure.caption.26}%
+\contentsline {figure}{\numberline {4.1}{\ignorespaces One control step of the simulation}}{36}{figure.caption.11}%
+\contentsline {figure}{\numberline {4.2}{\ignorespaces A uniform density forest}}{40}{figure.caption.14}%
+\contentsline {figure}{\numberline {4.3}{\ignorespaces A growing density forest}}{41}{figure.caption.15}%
+\contentsline {figure}{\numberline {4.4}{\ignorespaces Independent and stratified positions at the same density}}{43}{figure.caption.16}%
+\contentsline {figure}{\numberline {4.5}{\ignorespaces A Latin hypercube forest}}{44}{figure.caption.17}%
+\contentsline {figure}{\numberline {4.6}{\ignorespaces Parts and actuators of the drone}}{45}{figure.caption.18}%
+\contentsline {figure}{\numberline {4.7}{\ignorespaces Depth sectors and collision rectangle}}{48}{figure.caption.24}%
+\contentsline {figure}{\numberline {4.8}{\ignorespaces The standard drone}}{50}{figure.caption.26}%
 \addvspace {10\p@ }
-\contentsline {figure}{\numberline {5.1}{\ignorespaces The networks of a base controller}}{52}{figure.caption.27}%
-\contentsline {figure}{\numberline {5.2}{\ignorespaces The Hebbian controller}}{62}{figure.caption.38}%
-\contentsline {figure}{\numberline {5.3}{\ignorespaces Effect of the decay on a plastic weight}}{65}{figure.caption.39}%
-\contentsline {figure}{\numberline {5.4}{\ignorespaces The co-design pipeline}}{68}{figure.caption.41}%
-\contentsline {figure}{\numberline {5.5}{\ignorespaces The course of a run}}{74}{figure.caption.50}%
+\contentsline {figure}{\numberline {5.1}{\ignorespaces The networks of a base controller}}{53}{figure.caption.27}%
+\contentsline {figure}{\numberline {5.2}{\ignorespaces The Hebbian controller}}{63}{figure.caption.38}%
+\contentsline {figure}{\numberline {5.3}{\ignorespaces Effect of the decay on a plastic weight}}{66}{figure.caption.39}%
+\contentsline {figure}{\numberline {5.4}{\ignorespaces The co-design pipeline}}{69}{figure.caption.41}%
+\contentsline {figure}{\numberline {5.5}{\ignorespaces The course of a run}}{75}{figure.caption.50}%
 \addvspace {10\p@ }
-\contentsline {figure}{\numberline {6.1}{\ignorespaces The inner loop on 64 random bodies}}{79}{figure.caption.53}%
-\contentsline {figure}{\numberline {6.2}{\ignorespaces The inner loop on the reference drone alone, generalist base}}{81}{figure.caption.54}%
-\contentsline {figure}{\numberline {6.3}{\ignorespaces The inner loop on the reference drone alone, specialist base}}{82}{figure.caption.56}%
+\contentsline {figure}{\numberline {6.1}{\ignorespaces The inner loop on 64 random bodies}}{80}{figure.caption.53}%
+\contentsline {figure}{\numberline {6.2}{\ignorespaces The inner loop on the reference drone alone, generalist base}}{82}{figure.caption.54}%
+\contentsline {figure}{\numberline {6.3}{\ignorespaces The inner loop on the reference drone alone, specialist base}}{84}{figure.caption.56}%
 \contentsline {figure}{\numberline {6.4}{\ignorespaces The cumulative fronts of the sixteen runs}}{86}{figure.caption.57}%
 \contentsline {figure}{\numberline {6.5}{\ignorespaces The fronts read at fixed progress and at fixed cost of transport}}{87}{figure.caption.58}%
 \contentsline {figure}{\numberline {6.6}{\ignorespaces Hypervolume of the cumulative fronts}}{89}{figure.caption.60}%
 \contentsline {figure}{\numberline {6.7}{\ignorespaces Front bodies flown by the frozen generalist and by the Hebbian controller}}{90}{figure.caption.61}%
-\contentsline {figure}{\numberline {6.8}{\ignorespaces The path of the population of the two runs of each seed in the space of the genome}}{93}{figure.caption.63}%
+\contentsline {figure}{\numberline {6.8}{\ignorespaces The path of the population of the two runs of each seed in the space of the genome}}{92}{figure.caption.63}%
 \contentsline {figure}{\numberline {6.9}{\ignorespaces The examined bodies of a co-design run}}{94}{figure.caption.65}%
 \contentsline {figure}{\numberline {6.10}{\ignorespaces The two ends of the front of a co-design run}}{95}{figure.caption.66}%
-\contentsline {figure}{\numberline {6.11}{\ignorespaces Difference of the plastic weights on the two bodies}}{97}{figure.caption.68}%
+\contentsline {figure}{\numberline {6.11}{\ignorespaces Difference of the plastic weights on the two bodies}}{95}{figure.caption.68}%
 \contentsline {figure}{\numberline {6.12}{\ignorespaces The best set of rules of every generation on the bodies of the front and on random bodies}}{98}{figure.caption.69}%
 \addvspace {10\p@ }
 \addvspace {10\p@ }
-\contentsline {figure}{\numberline {A.1}{\ignorespaces Life of a Taichi kernel}}{102}{figure.caption.70}%
-\contentsline {figure}{\numberline {A.2}{\ignorespaces Lift and drag coefficients of the aerodynamic model}}{107}{figure.caption.73}%
+\contentsline {figure}{\numberline {A.1}{\ignorespaces Life of a Taichi kernel}}{105}{figure.caption.78}%
+\contentsline {figure}{\numberline {A.2}{\ignorespaces Lift and drag coefficients of the aerodynamic model}}{110}{figure.caption.81}%
