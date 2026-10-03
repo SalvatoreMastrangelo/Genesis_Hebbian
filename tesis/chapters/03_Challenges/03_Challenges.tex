@@ -13,7 +13,7 @@ This thesis sits at the meeting point of two lines of research that have so far 
 \subsection{Co-Design of Morphology and Control}
 \label{subsec:rw-codesign}
 
-Designing a robot means choosing a body and a controller, and the two choices are not independent: the best controller depends on the body it drives, and the value of a body can only be judged through the best behaviour it affords. \emph{Co-design} makes this coupling explicit by optimizing both. Writing $\vect{m}$ for a morphology in a design space $\mathcal{M}$, $\vect{\theta}$ for the parameters of a controller and $F(\vect{m}, \vect{\theta})$ for the performance of the closed loop they form, obtained by simulating it, the problem is a nested one:
+Designing a robot means choosing a body and a controller, and the two choices depend on each other: the best controller depends on the body it drives, and the value of a body can only be judged through the best behaviour it affords. \emph{Co-design} makes this coupling explicit by optimizing both. Writing $\vect{m}$ for a morphology in a design space $\mathcal{M}$, $\vect{\theta}$ for the parameters of a controller and $F(\vect{m}, \vect{\theta})$ for the performance of the closed loop they form, obtained by simulating it, the problem is a nested one:
 \begin{equation}
 \vect{m}^{\star} = \arg\max_{\vect{m} \in \mathcal{M}} F\big(\vect{m}, \vect{\theta}^{\star}(\vect{m})\big), \qquad \vect{\theta}^{\star}(\vect{m}) = \arg\max_{\vect{\theta}} F(\vect{m}, \vect{\theta}).
 \label{eq:codesign-bilevel}
