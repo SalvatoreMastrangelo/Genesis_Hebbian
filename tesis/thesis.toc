@@ -39,14 +39,14 @@
 \contentsline {paragraph}{End of a flight.}{39}{paragraph*.13}%
 \contentsline {subsection}{\numberline {4.2.1}Growing Density Forests}{40}{subsection.4.2.1}%
 \contentsline {section}{\numberline {4.3}Drone Model}{41}{section.4.3}%
-\contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{42}{subsection.4.3.1}%
-\contentsline {paragraph}{Servomotors and gear ratios.}{43}{paragraph*.16}%
+\contentsline {subsection}{\numberline {4.3.1}Drone Shape and Actuators}{41}{subsection.4.3.1}%
+\contentsline {paragraph}{Servomotors and gear ratios.}{42}{paragraph*.16}%
 \contentsline {paragraph}{Masses.}{43}{paragraph*.17}%
 \contentsline {paragraph}{Energy.}{43}{paragraph*.18}%
 \contentsline {subsection}{\numberline {4.3.2}Sensors}{44}{subsection.4.3.2}%
 \contentsline {paragraph}{Depth sensor.}{44}{paragraph*.20}%
-\contentsline {subsection}{\numberline {4.3.3}Drone Genome}{45}{subsection.4.3.3}%
-\contentsline {subsection}{\numberline {4.3.4}The Standard Drone}{47}{subsection.4.3.4}%
+\contentsline {subsection}{\numberline {4.3.3}Drone Genome}{46}{subsection.4.3.3}%
+\contentsline {subsection}{\numberline {4.3.4}The Standard Drone}{46}{subsection.4.3.4}%
 \contentsline {chapter}{\numberline {5}Methodology}{49}{chapter.5}%
 \contentsline {section}{\numberline {5.1}Base Controllers}{49}{section.5.1}%
 \contentsline {subsection}{\numberline {5.1.1}Architecture of the Controller}{49}{subsection.5.1.1}%
@@ -84,44 +84,44 @@
 \contentsline {subsection}{\numberline {6.1.1}Recovering Performance on Generalist Controllers}{76}{subsection.6.1.1}%
 \contentsline {subsection}{\numberline {6.1.2}Improving Performance on Specialist Controllers}{79}{subsection.6.1.2}%
 \contentsline {section}{\numberline {6.2}Full Co-Design Experiments}{82}{section.6.2}%
-\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{83}{subsection.6.2.1}%
-\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{86}{subsection.6.2.2}%
+\contentsline {subsection}{\numberline {6.2.1}Co-Design vs. Morphology-Only Evolution}{82}{subsection.6.2.1}%
+\contentsline {subsection}{\numberline {6.2.2}Swapping the Pareto Fronts}{87}{subsection.6.2.2}%
 \contentsline {subsection}{\numberline {6.2.3}PCA Analysis of the Evolved Morphologies}{89}{subsection.6.2.3}%
-\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{90}{subsection.6.2.4}%
+\contentsline {subsection}{\numberline {6.2.4}Morphology Choices of The Evolution}{91}{subsection.6.2.4}%
 \contentsline {subsection}{\numberline {6.2.5}Generalization Capabilities of Evolved Controllers}{94}{subsection.6.2.5}%
-\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{96}{chapter.7}%
-\contentsline {section}{\numberline {7.1}Conclusions}{96}{section.7.1}%
-\contentsline {paragraph}{The adaptation costs no more than the flights.}{96}{paragraph*.67}%
-\contentsline {paragraph}{Co-design improves on morphology-only evolution on both objectives.}{96}{paragraph*.68}%
-\contentsline {paragraph}{The body search takes a different direction when the controller adapts.}{97}{paragraph*.69}%
-\contentsline {paragraph}{The controller adapts to the morphology.}{97}{paragraph*.70}%
-\contentsline {paragraph}{The rules recover part of what the generalist lacks on a given body.}{97}{paragraph*.71}%
-\contentsline {paragraph}{On a specialist, the rules make the flight dynamics plastic.}{98}{paragraph*.72}%
-\contentsline {paragraph}{The price is the generality of the controller.}{98}{paragraph*.73}%
-\contentsline {paragraph}{Limits of the study.}{98}{paragraph*.74}%
-\contentsline {section}{\numberline {7.2}Future Work}{99}{section.7.2}%
-\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{99}{subsection.7.2.1}%
-\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{100}{subsection.7.2.2}%
-\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{100}{subsection.7.2.3}%
-\contentsline {chapter}{\numberline {A}Simulation Details}{101}{appendix.A}%
-\contentsline {section}{\numberline {A.1}Genesis Architecture and Taichi Kernels}{101}{section.A.1}%
-\contentsline {section}{\numberline {A.2}Rigid Body Dynamics}{103}{section.A.2}%
-\contentsline {section}{\numberline {A.3}Aerodynamic Model}{104}{section.A.3}%
-\contentsline {paragraph}{Elements and local flow.}{104}{paragraph*.76}%
-\contentsline {paragraph}{Lift and drag coefficients.}{104}{paragraph*.77}%
-\contentsline {paragraph}{Forces and points of application.}{106}{paragraph*.79}%
-\contentsline {paragraph}{Interaction between the elements.}{107}{paragraph*.80}%
-\contentsline {paragraph}{Propeller.}{107}{paragraph*.81}%
-\contentsline {paragraph}{Coupling and safeguards.}{108}{paragraph*.82}%
-\contentsline {paragraph}{Limits of the model.}{108}{paragraph*.83}%
-\contentsline {section}{\numberline {A.4}Aerodynamic Noise}{108}{section.A.4}%
-\contentsline {section}{\numberline {A.5}Collision Test and Forest Statistics}{108}{section.A.5}%
-\contentsline {paragraph}{Collision.}{108}{paragraph*.84}%
-\contentsline {paragraph}{Survival of a blind flight.}{109}{paragraph*.85}%
-\contentsline {paragraph}{Sampling of a growing forest.}{109}{paragraph*.86}%
-\contentsline {section}{\numberline {A.6}Uniform and Latin Hypercube Forests}{109}{section.A.6}%
-\contentsline {subsection}{\numberline {A.6.1}Uniform Density Forests}{109}{subsection.A.6.1}%
-\contentsline {subsection}{\numberline {A.6.2}Latin Hypercube Forests}{110}{subsection.A.6.2}%
-\contentsline {section}{\numberline {A.7}Mass Model and Propeller Power of the Drone}{112}{section.A.7}%
-\contentsline {paragraph}{Masses.}{112}{paragraph*.90}%
-\contentsline {paragraph}{Propeller power.}{112}{paragraph*.91}%
+\contentsline {chapter}{\numberline {7}Conclusions \& Future Work}{97}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Conclusions}{97}{section.7.1}%
+\contentsline {paragraph}{The adaptation costs no more than the flights.}{97}{paragraph*.67}%
+\contentsline {paragraph}{Co-design improves on morphology-only evolution on both objectives.}{97}{paragraph*.68}%
+\contentsline {paragraph}{The body search takes a different direction when the controller adapts.}{98}{paragraph*.69}%
+\contentsline {paragraph}{The controller adapts to the morphology.}{98}{paragraph*.70}%
+\contentsline {paragraph}{The rules recover part of what the generalist lacks on a given body.}{98}{paragraph*.71}%
+\contentsline {paragraph}{On a specialist, the rules make the flight dynamics plastic.}{99}{paragraph*.72}%
+\contentsline {paragraph}{The price is the generality of the controller.}{99}{paragraph*.73}%
+\contentsline {paragraph}{Limits of the study.}{99}{paragraph*.74}%
+\contentsline {section}{\numberline {7.2}Future Work}{100}{section.7.2}%
+\contentsline {subsection}{\numberline {7.2.1}Meta-Learning Techniques}{100}{subsection.7.2.1}%
+\contentsline {subsection}{\numberline {7.2.2}Testing on Real Drones}{101}{subsection.7.2.2}%
+\contentsline {subsection}{\numberline {7.2.3}Testing on Different Systems}{101}{subsection.7.2.3}%
+\contentsline {chapter}{\numberline {A}Simulation Details}{102}{appendix.A}%
+\contentsline {section}{\numberline {A.1}Genesis Architecture and Taichi Kernels}{102}{section.A.1}%
+\contentsline {section}{\numberline {A.2}Rigid Body Dynamics}{104}{section.A.2}%
+\contentsline {section}{\numberline {A.3}Aerodynamic Model}{105}{section.A.3}%
+\contentsline {paragraph}{Elements and local flow.}{105}{paragraph*.76}%
+\contentsline {paragraph}{Lift and drag coefficients.}{105}{paragraph*.77}%
+\contentsline {paragraph}{Forces and points of application.}{107}{paragraph*.79}%
+\contentsline {paragraph}{Interaction between the elements.}{108}{paragraph*.80}%
+\contentsline {paragraph}{Propeller.}{108}{paragraph*.81}%
+\contentsline {paragraph}{Coupling and safeguards.}{109}{paragraph*.82}%
+\contentsline {paragraph}{Limits of the model.}{109}{paragraph*.83}%
+\contentsline {section}{\numberline {A.4}Aerodynamic Noise}{109}{section.A.4}%
+\contentsline {section}{\numberline {A.5}Collision Test and Forest Statistics}{109}{section.A.5}%
+\contentsline {paragraph}{Collision.}{109}{paragraph*.84}%
+\contentsline {paragraph}{Survival of a blind flight.}{110}{paragraph*.85}%
+\contentsline {paragraph}{Sampling of a growing forest.}{110}{paragraph*.86}%
+\contentsline {section}{\numberline {A.6}Uniform and Latin Hypercube Forests}{110}{section.A.6}%
+\contentsline {subsection}{\numberline {A.6.1}Uniform Density Forests}{110}{subsection.A.6.1}%
+\contentsline {subsection}{\numberline {A.6.2}Latin Hypercube Forests}{111}{subsection.A.6.2}%
+\contentsline {section}{\numberline {A.7}Mass Model and Propeller Power of the Drone}{113}{section.A.7}%
+\contentsline {paragraph}{Masses.}{113}{paragraph*.90}%
+\contentsline {paragraph}{Propeller power.}{113}{paragraph*.91}%

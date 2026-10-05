@@ -642,6 +642,7 @@
       \strng{authornamehash}{ea767d8f549bb4d4b89b4b9cff1748d0}
       \strng{authorfullhash}{23ec64ebd1591da24f08391da6ba63cb}
       \strng{authorfullhashraw}{23ec64ebd1591da24f08391da6ba63cb}
+      \field{extraname}{1}
       \field{sortinit}{F}
       \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
       \field{labelnamesource}{author}
@@ -653,6 +654,52 @@
       \field{year}{2023}
       \field{pages}{1536\bibrangedash 1546}
       \range{pages}{11}
+    \endentry
+    \entry{ferigo2025totipotent}{article}{}{}
+      \name{author}{4}{}{%
+        {{hash=0f29933b439864b06d3e5eec5729031d}{%
+           family={Ferigo},
+           familyi={F\bibinitperiod},
+           given={Andrea},
+           giveni={A\bibinitperiod}}}%
+        {{hash=8d570e2ed89c5ef6759c88f49d148a7e}{%
+           family={Iacca},
+           familyi={I\bibinitperiod},
+           given={Giovanni},
+           giveni={G\bibinitperiod}}}%
+        {{hash=db5cd850f4a7baa1e31a4cd416ce6015}{%
+           family={Medvet},
+           familyi={M\bibinitperiod},
+           given={Eric},
+           giveni={E\bibinitperiod}}}%
+        {{hash=b9320ef34ad52a256cba4949d9494368}{%
+           family={Nadizar},
+           familyi={N\bibinitperiod},
+           given={Giorgia},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{ea767d8f549bb4d4b89b4b9cff1748d0}
+      \strng{fullhash}{066769f765bd0a8e65b8722edf7d2401}
+      \strng{fullhashraw}{066769f765bd0a8e65b8722edf7d2401}
+      \strng{bibnamehash}{ea767d8f549bb4d4b89b4b9cff1748d0}
+      \strng{authorbibnamehash}{ea767d8f549bb4d4b89b4b9cff1748d0}
+      \strng{authornamehash}{ea767d8f549bb4d4b89b4b9cff1748d0}
+      \strng{authorfullhash}{066769f765bd0a8e65b8722edf7d2401}
+      \strng{authorfullhashraw}{066769f765bd0a8e65b8722edf7d2401}
+      \field{extraname}{2}
+      \field{sortinit}{F}
+      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Neurocomputing}
+      \field{title}{Totipotent Neural Controllers for Modular Soft Robots: Achieving Specialization in Body--Brain Co-Evolution through {H}ebbian Learning}
+      \field{volume}{614}
+      \field{year}{2025}
+      \field{pages}{128811}
+      \range{pages}{1}
+      \verb{doi}
+      \verb 10.1016/j.neucom.2024.128811
+      \endverb
     \endentry
     \entry{finn2017maml}{inproceedings}{}{}
       \name{author}{3}{}{%
@@ -2934,40 +2981,6 @@
       \field{year}{1990}
       \field{pages}{1550\bibrangedash 1560}
       \range{pages}{11}
-    \endentry
-    \entry{westfall1993resampling}{book}{}{}
-      \name{author}{2}{}{%
-        {{hash=00daf180933da47a4a60b307b6324f1b}{%
-           family={Westfall},
-           familyi={W\bibinitperiod},
-           given={Peter\bibnamedelima H.},
-           giveni={P\bibinitperiod\bibinitdelim H\bibinitperiod}}}%
-        {{hash=b0b21dcd79c24fae4aee1ff5a4047ca6}{%
-           family={Young},
-           familyi={Y\bibinitperiod},
-           given={S.\bibnamedelimi Stanley},
-           giveni={S\bibinitperiod\bibinitdelim S\bibinitperiod}}}%
-      }
-      \list{location}{1}{%
-        {New York}%
-      }
-      \list{publisher}{1}{%
-        {Wiley}%
-      }
-      \strng{namehash}{b20fb0c7be297a434642cc8a578e1eec}
-      \strng{fullhash}{b20fb0c7be297a434642cc8a578e1eec}
-      \strng{fullhashraw}{b20fb0c7be297a434642cc8a578e1eec}
-      \strng{bibnamehash}{b20fb0c7be297a434642cc8a578e1eec}
-      \strng{authorbibnamehash}{b20fb0c7be297a434642cc8a578e1eec}
-      \strng{authornamehash}{b20fb0c7be297a434642cc8a578e1eec}
-      \strng{authorfullhash}{b20fb0c7be297a434642cc8a578e1eec}
-      \strng{authorfullhashraw}{b20fb0c7be297a434642cc8a578e1eec}
-      \field{sortinit}{W}
-      \field{sortinithash}{4315d78024d0cea9b57a0c6f0e35ed0d}
-      \field{labelnamesource}{author}
-      \field{labeltitlesource}{title}
-      \field{title}{Resampling-Based Multiple Testing: Examples and Methods for p-Value Adjustment}
-      \field{year}{1993}
     \endentry
     \entry{williams1992simple}{article}{}{}
       \name{author}{1}{}{%

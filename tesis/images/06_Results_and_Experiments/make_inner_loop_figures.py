@@ -57,7 +57,7 @@ ACCENT = "#D55E00"   # specialist with rules
 INK = "#222222"
 MUTED = "#8a8a8a"    # frozen generalist
 GRID = "#c9c9c9"
-REFRESH = "#b0b0b0"
+REFRESH = ACCENT    # morphology refresh
 
 plt.rcParams.update({
     "font.family": "serif",
