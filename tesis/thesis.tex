@@ -300,6 +300,12 @@ sorting=nyt,
   {\cleardoublepage \thispagestyle{empty} \vspace*{\stretch{1}} \begin{flushright}}
   {\end{flushright} \vspace*{\stretch{3}} \clearpage}
 
+% Separatore tra i paragrafi dei ringraziamenti: linea, rombo, linea
+\newcommand{\separatore}{%
+  \par\vspace{4mm}%
+  {\centering\rule[0.6ex]{0.15\textwidth}{0.4pt}\hspace{0.8em}$\scriptstyle\blacklozenge$\hspace{0.8em}\rule[0.6ex]{0.15\textwidth}{0.4pt}\par}%
+  \vspace{4mm}}
+
 % -----------------------------------------------------------------
 \begin{document}
 \include{chapters/00_Frontespizio/00_Frontespizio.tex}
@@ -307,24 +313,24 @@ sorting=nyt,
 % \facciata
 \clearpage
 
-% \begin{dedication}
-%     \textit{Alla mia Famiglia, a tutti i miei Amici, a chi c'è stato e chi se n'è andato. \\ \vspace{15mm}
-%     Appartengo, io ci tengo, se prometto poi mantengo.\\
-%     Appartieni se ci tieni, tu prometti, poi mantieni. \\
-%     Marracash, Appartengo - Il Sangue}
-% \end{dedication}
+% \newpage
+\thispagestyle{empty}
+% \mbox{}
+
+\include{chapters/XX_Abstract/XX_Abstract.tex}
+
+\begin{dedication}
+    \textit{Alla mia Famiglia, a tutti i miei Amici, a chi c'è stato e chi se n'è andato. \\ \vspace{15mm}
+    Appartengo, io ci tengo, se prometto poi mantengo.\\
+    Appartieni se ci tieni, tu prometti, poi mantieni. \\
+    Marracash, Appartengo - Il Sangue}
+\end{dedication}
 
 % \newpage
 \thispagestyle{empty}
 % \mbox{}
 
 \include{chapters/XX_Glossario/XX_Glossario.tex}
-
-% \newpage
-\thispagestyle{empty}
-% \mbox{}
-
-\include{chapters/XX_Abstract/XX_Abstract.tex}
 
 % \newpage
 \thispagestyle{empty}
@@ -344,6 +350,8 @@ sorting=nyt,
 \include{chapters/05_Method/05_Method.tex}
 \include{chapters/06_Results_and_Experiments/06_Results_and_Experiments.tex}
 \include{chapters/07_Conclusions_and_Future_Work/07_Conclusions_and_Future_Work.tex}
+\printbibliography
+
 \appendix
 \include{chapters/A_Simulation_Details/A_Simulation_Details.tex}
 %\end{spacing}
@@ -351,9 +359,9 @@ sorting=nyt,
 
 \listoffigures
 
-% \include{chapters/XX_Ringraziamenti/XX_ringraziamenti.tex}
-
-\printbibliography
+% Ringraziamenti numerati "X" nell'indice invece della lettera di appendice successiva
+\renewcommand{\thechapter}{X}
+\include{chapters/XX_Ringraziamenti/XX_ringraziamenti.tex}
 
 \end{document}
 % -----------------------------------------------------------------
