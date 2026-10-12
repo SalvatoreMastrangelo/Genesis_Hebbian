@@ -1,0 +1,8 @@
+% Versione per il relatore: la stessa tesi senza dedica e ringraziamenti.
+% Compilare con:
+%   for d in chapters/*/; do mkdir -p "build_relatore/$d"; done
+%   latexmk -pdf -auxdir=build_relatore -outdir=. thesis_relatore.tex
+% (la cartella ausiliaria separata evita di sovrascrivere gli .aux della tesi completa;
+%  pdflatex non crea da solo le sottocartelle per gli .aux dei capitoli inclusi)
+\def\versionerelatore{}
+\input{thesis.tex}

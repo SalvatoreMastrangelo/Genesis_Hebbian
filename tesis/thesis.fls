@@ -2,13 +2,15 @@ PWD /home/salvatore/Desktop/code/hebbian/Genesis_Hebbian/tesis
 INPUT /usr/local/texlive/2025/texmf.cnf
 INPUT /usr/local/texlive/2025/texmf-dist/web2c/texmf.cnf
 INPUT /usr/local/texlive/2025/texmf-var/web2c/pdftex/pdflatex.fmt
-INPUT /home/salvatore/Desktop/code/hebbian/Genesis_Hebbian/tesis/thesis.tex
+INPUT thesis.tex
 OUTPUT thesis.log
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/report.cls
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/report.cls
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/size10.clo
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/size10.clo
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/size10.clo
+INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/emptypage/emptypage.sty
+INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/emptypage/emptypage.sty
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/glossaries/base/glossaries.sty
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/glossaries/base/glossaries.sty
 INPUT /usr/local/texlive/2025/texmf-dist/tex/latex/base/ifthen.sty

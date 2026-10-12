@@ -1,7 +1,12 @@
     %   Questo template nasce dal "Template Tesi Università di Pisa" disponibile su Overleaf, a cui è stato aggiunto un pizzico di autismo e tanto altro ce ne si può aggiungere ancora. Ricorda: l'automasturbazione durante la stesura della tesi non gratifica molti altri se non te stesso ma in fondo ne vale la pena.
 
-% Tipo di documento. L'uso di twoside implica che i capitoli inizino sempre con la prima pagina a sinistra, eventualmente lasciando una pagina vuota nel capitolo precedente. Se questa cosa è fastidiosa, è possibile rimuoverlo. 
-\documentclass[a4paper, openright]{report}%twoside
+% Tipo di documento. twoside + openright fanno iniziare ogni capitolo (anche abstract, dedica, glossario, indice, bibliografia ed elenco delle figure) su una pagina dispari, cioè a destra, eventualmente lasciando una pagina vuota alla fine del capitolo precedente. Senza twoside, openright non ha effetto.
+\documentclass[a4paper, twoside, openright]{report}
+% Le pagine lasciate vuote da \cleardoublepage non mostrano header né numero di pagina
+\usepackage{emptypage}
+% Versione per il relatore (thesis_relatore.tex definisce \versionerelatore): senza dedica e ringraziamenti
+\newif\ifrelatore
+\ifdefined\versionerelatore \relatoretrue \fi
 
 % Paccetti personalizzati
 \usepackage{glossaries}
@@ -69,6 +74,8 @@ sorting=nyt,
 ]{biblatex}
 % Sorgente della bibliografia
 \addbibresource{chapters/Bibliografia.bib}
+% Lascia più spazio tra le parole in bibliografia invece di far uscire dal margine titoli non sillababili (es. "Meta-Learning", "CMA-ES/pycma")
+\appto{\bibsetup}{\setlength{\emergencystretch}{2em}}
 % Citazioni
 \usepackage{csquotes}
 % Per ruotare le immagini
@@ -135,10 +142,11 @@ sorting=nyt,
 % Modifica lo stile dell'header
 \pagestyle{fancy}
 \fancyhf{}
-\lhead{\rightmark}
-\rhead{\textbf{\thepage}}
+% Fronte-retro: numero di pagina sul bordo esterno (destra sulle dispari, sinistra sulle pari)
+\fancyhead[LO,RE]{\rightmark}
+\fancyhead[RO,LE]{\textbf{\thepage}}
 \fancyfoot{}
-\setlength{\headheight}{12.5pt}
+\setlength{\headheight}{14.5pt}
 
 % Rimuove il numero di pagina all'inizio dei capitoli
 \fancypagestyle{plain}{
@@ -319,12 +327,14 @@ sorting=nyt,
 
 \include{chapters/XX_Abstract/XX_Abstract.tex}
 
+\ifrelatore\else
 \begin{dedication}
     \textit{Alla mia Famiglia, a tutti i miei Amici, a chi c'è stato e chi se n'è andato. \\ \vspace{15mm}
     Appartengo, io ci tengo, se prometto poi mantengo.\\
     Appartieni se ci tieni, tu prometti, poi mantieni. \\
     Marracash, Appartengo - Il Sangue}
 \end{dedication}
+\fi
 
 % \newpage
 \thispagestyle{empty}
@@ -336,11 +346,9 @@ sorting=nyt,
 \thispagestyle{empty}
 % \mbox{}
 
+% tocloft ridefinisce \tableofcontents e \listoffigures senza salto pagina: lo si forza qui, a destra
+\cleardoublepage
 \tableofcontents
-
-% \newpage
-\thispagestyle{empty}
-% \mbox{}
 
 %\begin{spacing}{1.2}
 \include{chapters/01_Introduction/01_Introduction.tex}
@@ -357,11 +365,14 @@ sorting=nyt,
 %\end{spacing}
 
 
+\cleardoublepage
 \listoffigures
 
+\ifrelatore\else
 % Ringraziamenti numerati "X" nell'indice invece della lettera di appendice successiva
 \renewcommand{\thechapter}{X}
 \include{chapters/XX_Ringraziamenti/XX_ringraziamenti.tex}
+\fi
 
 \end{document}
 % -----------------------------------------------------------------
