@@ -235,8 +235,8 @@ so that, for any signal $\vect{v} \in \mathbb{R}^{d_h}$, $\vect{\gamma}_t \odot 
 \node[affbox, draw=orange!40!yellow!70!black, fill=orange!40!yellow!30] (aff) at (-1,0) {$\mat{U}_\gamma \vect{h}_{t-1} + \mat{W}_\gamma \vect{x}_t + \vect{b}_\gamma$};
 \node[actbox, right=1.4cm of aff] (sig) {$\sigma$};
 \node[opdot, right=2.6cm of sig] (mul) {$\times$};
-\node[left=1.2cm of aff] (in) {$\vect{h}_{t-1}, \vect{x}_t$};
-\node[right=1.2cm of mul] (out) {$\vect{\gamma}_t \odot \vect{v}$};
+\node[left=0.9cm of aff] (in) {$\vect{h}_{t-1}, \vect{x}_t$};
+\node[right=0.9cm of mul] (out) {$\vect{\gamma}_t \odot \vect{v}$};
 \node[below=1.5cm of in] (v) {$\vect{v}$};
 
 \draw[->] (in) -- (aff);

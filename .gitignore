@@ -161,3 +161,6 @@ dmypy.json
 src/WP1_OLD/
 src/winged_drone_train_old/
 tesis/presentation/
+
+# Cartella ausiliaria della versione per il relatore (thesis_relatore.tex)
+tesis/build_relatore/
